@@ -10,16 +10,15 @@ class TaskTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "description": {"type": "string", "description": "3～10 个字的任务标题（界面显示用）"},
-            "prompt": {"type": "string", "description": "完整的子任务说明：目标、已知背景、相关路径、要求的输出"},
-            "agent": {"type": "string", "description": "子代理类型：general（默认，可读写）/ explore（只读探索）/ 自定义"},
+            "description": {"type": "string", "description": "3～10 个字的任务标题"},
+            "prompt": {"type": "string", "description": "完整子任务说明：目标、背景、相关路径、要求的输出"},
+            "agent": {"type": "string", "description": "general（默认）/ explore / 自定义子代理名"},
             "mode": {"type": "string", "enum": ["inherit", "read-only"],
-                     "description": "权限：inherit 与主会话相同（默认）；read-only 只读"},
-            "max_steps": {"type": "integer", "description": "最多步数，默认用设置里的子代理步数"},
-            "model": {"type": "string", "description": "可选：子代理用的模型名，默认与主会话相同"},
+                     "description": "inherit 同主会话（默认）/ read-only 只读"},
+            "max_steps": {"type": "integer", "description": "最多步数"},
+            "model": {"type": "string", "description": "子代理用的模型，默认同你"},
             "isolation": {"type": "string", "enum": ["auto", "worktree", "none"],
-                          "description": "会改文件的子代理在哪里干活：auto（默认：同一步有多个时各进独立 git worktree 并行）/ "
-                                         "worktree（放进独立 worktree）/ none（在主目录按顺序）"},
+                          "description": "auto（默认）/ worktree / none（主目录顺序执行）"},
         },
         "required": ["description", "prompt"],
     }

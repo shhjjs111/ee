@@ -12,7 +12,7 @@ class PresentPlanTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "方案标题（一句话）"},
+            "title": {"type": "string"},
             "plan": {"type": "string", "description": "完整方案（markdown）"},
         },
         "required": ["plan"],

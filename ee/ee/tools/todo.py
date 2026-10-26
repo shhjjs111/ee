@@ -14,11 +14,11 @@ class TodoTool(Tool):
         "properties": {
             "todos": {
                 "type": "array",
-                "description": "完整的任务清单（整表替换）",
+                "description": "完整清单",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "content": {"type": "string", "description": "这一步要做什么（祈使句）"},
+                        "content": {"type": "string", "description": "这一步做什么（祈使句）"},
                         "status": {"type": "string", "enum": list(STATUSES)},
                     },
                     "required": ["content", "status"],

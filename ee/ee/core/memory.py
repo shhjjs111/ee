@@ -188,9 +188,10 @@ class MemoryBlock:
         return {"role": "user", "content": self.text, "_kind": "agents", "_sub": "memory"}
 
 
-def load_memory(home: Path, cwd: Path | None, cfg: dict | None = None) -> MemoryBlock:
+def load_memory(home: Path, cwd: Path | None, cfg: dict | None = None, tool: bool = True) -> MemoryBlock:
+    """tool：本会话有没有 memory 工具（决定说明里提不提它）。"""
     cfg = cfg or {}
-    if not cfg.get("enabled", True):
+    if not cfg.get("enabled", True) or not cfg.get("inject", True):
         return MemoryBlock("", [])
     max_bytes = int(cfg.get("max_bytes", DEFAULT_MAX_BYTES) or DEFAULT_MAX_BYTES)
     parts: list[str] = []
@@ -198,13 +199,13 @@ def load_memory(home: Path, cwd: Path | None, cfg: dict | None = None) -> Memory
     up = user_path(home)
     ue = parse_entries(read_text(up))
     if ue:
-        parts.append("## 用户级（所有项目通用）\n" + "\n".join(f"- {e}" for e in ue))
+        parts.append("## 用户级\n" + "\n".join(f"- {e}" for e in ue))
         sources.append(str(up))
     if cwd is not None and cfg.get("workspace", True):
         wp = workspace_path(cwd)
         we = parse_entries(read_text(wp))
         if we:
-            parts.append("## 工作区级（只对这个项目）\n" + "\n".join(f"- {e}" for e in we))
+            parts.append("## 本项目\n" + "\n".join(f"- {e}" for e in we))
             sources.append(str(wp))
     if not parts:
         return MemoryBlock("", [])
@@ -213,6 +214,6 @@ def load_memory(home: Path, cwd: Path | None, cfg: dict | None = None) -> Memory
     if max_bytes > 0 and len(body.encode("utf-8")) > max_bytes:
         body = _clip_bytes(body, max_bytes) + TRUNC_NOTE.format(limit=max_bytes)
         truncated = True
-    head = ("# 长期记忆\n以下是用户之前让你记住的事实和偏好（会话开始时加载，供参考；与用户当前的直接要求冲突时以当前要求为准）。"
-            "用 memory 工具增删条目，改动从下一个新会话起出现在这里。\n<MEMORY>\n")
+    head = ("# 长期记忆（用户让你记住的偏好和事实；与用户当前要求冲突时以当前为准"
+            + ("；用 memory 工具增删，下个新会话生效" if tool else "") + "）\n<MEMORY>\n")
     return MemoryBlock(head + body + "\n</MEMORY>", sources, truncated)

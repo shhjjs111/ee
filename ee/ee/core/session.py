@@ -35,7 +35,7 @@ from ee.core.permissions import MODE_LABEL, Decision, PermissionPolicy
 from ee.core.providers import transforms as T
 from ee.core.providers.openai_chat import ChatClient, Completion
 from ee.core.store import SessionStore
-from ee.tools import ToolContext, ToolError, ToolResult, ToolState, build_tools
+from ee.tools import AGENT_PROFILES, ToolContext, ToolError, ToolResult, ToolState, agent_profile, build_tools
 from ee.tools.shellenv import ShellNotFound, resolve_shell
 from ee.tools.truncate import truncate_output
 
@@ -49,7 +49,7 @@ INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执�
 class Session:
     def __init__(self, config: Config, model: str | None = None, cwd: Path | None = None, mode: str | None = None,
                  client=None, client_factory: Callable | None = None, persist: bool = True,
-                 shell: str | None = None, home: Path | None = None):
+                 shell: str | None = None, home: Path | None = None, agent: str | None = None):
         self.config = config
         self.cwd = Path(cwd or config.cwd).resolve()
         self.home = home or ee_home()
@@ -57,7 +57,9 @@ class Session:
         self._client_factory = client_factory
         self._client = None
         self.spec = config.resolve_model(model)
-        self.tools = build_tools(self.spec.profile, config)
+        # 精简模式 full / lean：会话开始时定下（恢复会话时沿用会话记下的），之后切模型也不变
+        self.agent_profile = agent if agent in AGENT_PROFILES else agent_profile(config)
+        self.tools = build_tools(self.spec.profile, config, agent=self.agent_profile)
         self.tool_map = {t.name: t for t in self.tools}
         self.prefix: FrozenPrefix | None = None
         self.history: list[dict] = []
@@ -163,7 +165,7 @@ class Session:
         same_prefix = (spec.profile.prompt_patch == self.spec.profile.prompt_patch and
                        spec.profile.edit_style == self.spec.profile.edit_style)
         self.spec = spec
-        self.tools = build_tools(spec.profile, self.config)
+        self.tools = build_tools(spec.profile, self.config, agent=self.agent_profile)
         self.tool_map = {t.name: t for t in self.tools}
         self._install_mcp()
         self._client = None
@@ -214,7 +216,8 @@ class Session:
         return ST.switch_part(ST.get(self.home, self.style))
 
     def _env_parts(self) -> dict:
-        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
+        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode),
+                          plan_tool="present_plan" in self.tool_map)
         sp = self._style_part()
         if sp:
             parts["style"] = sp
@@ -556,7 +559,8 @@ class Session:
     def current_prefix(self) -> FrozenPrefix:
         style = self._prefix_style if (self.prefix is not None and self._prefix_style is not None) else self.style
         seg = ST.system_segment(ST.get(self.home, style))
-        return FrozenPrefix.freeze(system_prompt(self.profile, seg), [t.schema() for t in self.tools])
+        return FrozenPrefix.freeze(system_prompt(self.profile, seg, self.tools, self.agent_profile),
+                                   [t.schema() for t in self.tools])
 
     def _ensure_prefix(self, emit) -> FrozenPrefix:
         if self.prefix is None:
@@ -604,7 +608,8 @@ class Session:
                 or any(m.get("_kind") != "agents" for m in self.history):
             return
         # 长期记忆：紧跟 AGENTS.md 的固定 user 消息，会话内不再改动（保住前缀缓存）
-        mem = await asyncio.to_thread(load_memory, self.home, self.cwd, self.config.data.get("memory") or {})
+        mem = await asyncio.to_thread(load_memory, self.home, self.cwd, self.config.data.get("memory") or {},
+                                      "memory" in self.tool_map)
         mmsg = mem.message()
         if mmsg is not None:
             self._append(mmsg)
@@ -630,7 +635,7 @@ class Session:
                 self._append(msg)
                 self.instruction_sources = [str(p) for p in ins.sources]
         # 长期记忆：紧跟 AGENTS.md 的固定 user 消息，会话内不再改动（保住前缀缓存）
-        mem = load_memory(self.home, self.cwd, self.config.data.get("memory") or {})
+        mem = load_memory(self.home, self.cwd, self.config.data.get("memory") or {}, "memory" in self.tool_map)
         mmsg = mem.message()
         if mmsg is not None:
             self._append(mmsg)
@@ -654,7 +659,7 @@ class Session:
         from ee.core import skills as K
         if not K.settings(self.config.data).get("enabled", True):
             return None
-        blk = K.load_block(self.home, self.cwd, self.config.data, catalog=self.skill_catalog())
+        blk = K.load_block(self.home, self.cwd, self.config.data, catalog=self.skill_catalog(), tool="skill" in self.tool_map)
         self.skill_names = list(blk.names)
         return blk.message()
 

@@ -79,8 +79,8 @@ class GlobTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "glob 模式，如 **/*.py 或 src/**/*.{ts,tsx}"},
-            "path": {"type": "string", "description": "搜索的根目录，默认工作目录"},
+            "pattern": {"type": "string", "description": "glob 模式"},
+            "path": {"type": "string", "description": "搜索根目录，默认工作目录"},
         },
         "required": ["pattern"],
     }
@@ -121,12 +121,12 @@ class GrepTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "正则表达式（rg 语法）"},
-            "path": {"type": "string", "description": "搜索的文件或目录，默认工作目录"},
-            "include": {"type": "string", "description": "只搜这些文件，glob，如 *.py 或 *.{ts,tsx}"},
+            "pattern": {"type": "string", "description": "正则（rg 语法）"},
+            "path": {"type": "string", "description": "文件或目录，默认工作目录"},
+            "include": {"type": "string", "description": "glob 过滤，如 *.py"},
             "output_mode": {"type": "string", "enum": ["content", "files", "count"],
-                            "description": "content=匹配行（默认），files=只列文件，count=每文件计数"},
-            "ignore_case": {"type": "boolean", "description": "忽略大小写，默认 false"},
+                            "description": "默认 content"},
+            "ignore_case": {"type": "boolean"},
         },
         "required": ["pattern"],
     }

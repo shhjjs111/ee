@@ -13,7 +13,7 @@ class SkillTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "技能名（会话开头技能清单里的名字）"},
+            "name": {"type": "string", "description": "技能名"},
         },
         "required": ["name"],
     }

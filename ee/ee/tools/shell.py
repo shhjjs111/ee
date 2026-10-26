@@ -88,19 +88,32 @@ async def _kill(proc) -> None:
         pass
 
 
+BG_DESC = "后台运行，立即返回 id；之后用 shell_output 看输出、shell_write 输入、shell_kill 结束"
+BG_DESC_LEAN = "后台运行，立即返回 pid 和日志路径（用 read 看日志）"
+
+
 class ShellTool(Tool):
     name = "shell"
     parameters = {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "要执行的命令（使用环境信息里给出的当前 shell 的语法）"},
+            "command": {"type": "string", "description": "要执行的命令"},
             "timeout": {"type": "integer", "description": f"超时秒数，默认 120，最大 {MAX_TIMEOUT}"},
-            "workdir": {"type": "string", "description": "在哪个目录执行，默认工作目录。优先用这个参数而不是 cd"},
-            "description": {"type": "string", "description": "5-10 个字说明这条命令做什么"},
-            "background": {"type": "boolean", "description": "true = 后台运行（dev server、watch、长测试、交互程序），立即返回后台命令 id，之后用 shell_output 看输出、shell_write 输入、shell_kill 结束"},
+            "workdir": {"type": "string", "description": "执行目录，默认工作目录"},
+            "description": {"type": "string", "description": "5～10 字说明"},
+            "background": {"type": "boolean", "description": BG_DESC},
         },
         "required": ["command"],
     }
+
+    def __init__(self, bg_tools: bool = True) -> None:
+        """bg_tools=False（没有 shell_output/shell_write/shell_kill，如精简模式）：background 改成用 read 看日志，结果里给出结束进程的命令。"""
+        super().__init__()
+        if not bg_tools:
+            props = dict(self.parameters["properties"])
+            props.pop("description", None)          # 界面不用它，精简模式省掉
+            props["background"] = {"type": "boolean", "description": BG_DESC_LEAN}
+            self.parameters = {**self.parameters, "properties": props}
 
     def summary(self, args: dict) -> str:
         return f"Ran {args.get('command', '')}"
@@ -153,7 +166,12 @@ async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) 
     if text:
         ctx.emit(text)
     head = f"[后台命令 {p.id} · pid {p.pid}]"
-    if p.running:
+    tmap = getattr(sess, "tool_map", None) or {}
+    if p.running and "shell_output" not in tmap:      # 没有后台命令工具（精简模式）：用 read 看日志、用 shell 结束
+        sl = "//" if getattr(shell, "syntax", "posix") == "posix" else "/"     # Git Bash 下 / 开头的参数会被当成路径
+        kill = f"taskkill {sl}T {sl}F {sl}PID {p.pid}" if IS_WINDOWS else f"kill {p.pid}"
+        state = f"\n[仍在运行。完整日志：{p.log_path}（用 read 查看）；用完用 shell 执行 `{kill}` 结束]"
+    elif p.running:
         state = (f"\n[仍在运行。用 shell_output(id=\"{p.id}\") 看后续输出，shell_write 输入，shell_kill 结束；"
                  f"完整日志：{p.log_path}]")
     else:

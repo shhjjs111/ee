@@ -16,12 +16,12 @@ class MemoryTool(Tool):
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["add", "list", "remove"],
-                       "description": "add 新增一条；list 列出；remove 删除一条"},
+                       "description": "add 新增 / list 列出 / remove 删除"},
             "scope": {"type": "string", "enum": ["user", "workspace"],
-                      "description": "user = 用户级（所有项目通用，默认）；workspace = 只对当前项目"},
-            "text": {"type": "string", "description": "add：要记住的内容（一句话，写清楚适用条件）"},
-            "index": {"type": "integer", "description": "remove：要删除的条目序号（从 list 结果里看）"},
-            "match": {"type": "string", "description": "remove：也可以给内容片段，唯一匹配时删除"},
+                      "description": "user（默认）/ workspace"},
+            "text": {"type": "string", "description": "add：要记住的一句话"},
+            "index": {"type": "integer", "description": "remove：list 里的序号"},
+            "match": {"type": "string", "description": "remove：或给唯一匹配的内容片段"},
         },
         "required": ["action"],
     }

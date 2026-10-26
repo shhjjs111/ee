@@ -67,7 +67,7 @@ def test_builtin_styles_listed_and_user_style(ee_home):
 def test_default_style_keeps_system_prompt_bytes(ee_home, workspace):
     s, fake = make_session(workspace, [answer()])
     run(turn(s, "hi"))
-    assert fake.calls[0]["messages"][0]["content"] == system_prompt(s.profile)
+    assert fake.calls[0]["messages"][0]["content"] == system_prompt(s.profile, "", s.tools, s.agent_profile)
     assert "<response-style" not in json.dumps(fake.calls[0]["messages"], ensure_ascii=False)
 
 

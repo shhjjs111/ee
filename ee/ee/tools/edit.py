@@ -9,10 +9,10 @@ class EditTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "要修改的文件路径"},
-            "old_string": {"type": "string", "description": "要被替换的原文（逐字复制，不含行号前缀）"},
-            "new_string": {"type": "string", "description": "替换成的新文本（必须与 old_string 不同）"},
-            "replace_all": {"type": "boolean", "description": "替换所有匹配处，默认 false"},
+            "path": {"type": "string"},
+            "old_string": {"type": "string", "description": "原文（逐字复制，不含行号前缀）"},
+            "new_string": {"type": "string"},
+            "replace_all": {"type": "boolean"},
         },
         "required": ["path", "old_string", "new_string"],
     }

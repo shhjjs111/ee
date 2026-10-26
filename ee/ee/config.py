@@ -23,6 +23,10 @@ DEFAULTS: dict = {
     "shell": "auto",                 # auto | pwsh | powershell | cmd | bash | gitbash
     "bash_timeout": 120,
     "background_shell": True,
+    # 精简模式：full（默认）| lean（只有 read/write/edit/shell + 短系统提示词）；新会话生效，权限审批不变
+    "profile": "full",
+    "todo": True,                  # todo 计划清单工具
+    "present_plan": True,          # 计划模式的 present_plan 工具（关掉时计划模式用文字给方案）
     "ask_user": True,              # ask_user 提问工具（D4-8）      # shell 工具可后台运行 + shell_output/shell_write/shell_kill（D4-6）
     # 上下文压缩：上下文用量 ≥ threshold × 模型窗口时自动压缩（回合开始时和回合内每步之前检查）
     "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
@@ -38,7 +42,8 @@ DEFAULTS: dict = {
     # 子代理（task 工具）：默认最大步数与上限
     "subagent": {"enabled": True, "max_steps": 30, "max_steps_limit": 100, "max_parallel": 3, "worktree": True},
     # 长期记忆：~/.ee/memory.md + 工作区 .ee/memory.md，会话开始时注入（总大小上限）
-    "memory": {"enabled": True, "workspace": True, "max_bytes": 8192},
+    # inject = 会话开始时注入记忆；tool = 提供 memory 工具（enabled 为总开关）
+    "memory": {"enabled": True, "workspace": True, "max_bytes": 8192, "inject": True, "tool": True},
     # 技能：~/.ee/skills、<项目>/.ee/skills（compat 时兼容 .claude/skills、.agents/skills）；清单总长上限 max_chars
     "skills": {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000},
     # 仓库地图（repo_map 工具，tree-sitter）：auto_inject = 会话开始时把一小份地图固定注入（默认关，省 token）

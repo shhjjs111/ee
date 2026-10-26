@@ -659,7 +659,7 @@ class WebSearchTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "搜索词（简洁，128 字以内；可用 site: \"精确短语\" -排除词 等语法）"},
+            "query": {"type": "string", "description": "搜索词（简短，可用 site:、\"精确短语\"、-排除词）"},
             "max_results": {"type": "integer", "description": "返回条数，默认 8，最多 20"},
         },
         "required": ["query"],
@@ -714,9 +714,9 @@ class WebFetchTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "要打开的网址（http/https）"},
-            "offset": {"type": "integer", "description": "从第几个字符开始返回（续读长页面用），默认 0"},
-            "max_chars": {"type": "integer", "description": "最多返回多少字符，默认 20000"},
+            "url": {"type": "string"},
+            "offset": {"type": "integer", "description": "从第几个字符开始（续读用）"},
+            "max_chars": {"type": "integer", "description": "最多返回字符数，默认 20000"},
         },
         "required": ["url"],
     }
