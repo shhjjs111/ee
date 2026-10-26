@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
 from ee.config import Config, ee_home
+from ee.core import compaction as C
 from ee.core import gitinfo
+from ee.core.instructions import load_instructions
+from ee.core.memory import load_memory
+from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
-from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Error, Notice, PlanUpdate,
-                            ReasoningDelta, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
+from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
+                            ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
                             TurnStart, Usage)
 from ee.core.permissions import MODE_LABEL, Decision, PermissionPolicy
 from ee.core.providers import transforms as T
@@ -27,6 +32,8 @@ from ee.core.store import SessionStore
 from ee.tools import ToolContext, ToolError, ToolResult, ToolState, build_tools
 from ee.tools.shellenv import ShellNotFound, resolve_shell
 from ee.tools.truncate import truncate_output
+
+log = logging.getLogger("ee.session")
 
 LAST_STEP_NOTE = ("[系统提示] 已达到本回合允许的最大步数。请不要再调用任何工具，"
                   "只用文字总结目前的进展、结果、尚未完成的部分和建议的下一步。")
@@ -44,7 +51,7 @@ class Session:
         self._client_factory = client_factory
         self._client = None
         self.spec = config.resolve_model(model)
-        self.tools = build_tools(self.spec.profile)
+        self.tools = build_tools(self.spec.profile, config)
         self.tool_map = {t.name: t for t in self.tools}
         self.prefix: FrozenPrefix | None = None
         self.history: list[dict] = []
@@ -76,9 +83,15 @@ class Session:
         self._task: asyncio.Task | None = None
         self._open_calls: list[str] = []
         self._results: dict[str, str] = {}
+        self._ok: dict[str, bool] = {}
         self._approval_lock = asyncio.Lock()
         self.last_reasoning = ""
         self.running = False
+        self.instruction_sources: list[str] = []   # 本会话加载的 AGENTS.md 路径（界面可显示）
+        self.memory_sources: list[str] = []        # 本会话注入的记忆文件
+        self.guard = LoopGuard()
+        self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
+        self.compactions = 0
 
     # ------------------------------------------------------------ 配置切换
     @property
@@ -92,7 +105,14 @@ class Session:
             elif self._client_factory is not None:
                 self._client = self._client_factory(self.spec)
             else:
-                self._client = ChatClient(self.spec, state_path=self.home / "state" / "quirks.json")
+                self._client = ChatClient(self.spec, state_path=self.home / "state" / "quirks.json",
+                                          network=self.config.data.get("network"))
+        return self._client
+
+    async def ensure_client(self):
+        """在线程里构造客户端（解析系统代理可能查 DNS、建 TLS 上下文较慢），不卡事件循环。"""
+        if self._client is None:
+            await asyncio.to_thread(self.client)
         return self._client
 
     def set_model(self, name: str) -> str:
@@ -100,7 +120,7 @@ class Session:
         same_prefix = (spec.profile.prompt_patch == self.spec.profile.prompt_patch and
                        spec.profile.edit_style == self.spec.profile.edit_style)
         self.spec = spec
-        self.tools = build_tools(spec.profile)
+        self.tools = build_tools(spec.profile, self.config)
         self.tool_map = {t.name: t for t in self.tools}
         self._client = None
         if not same_prefix:
@@ -139,6 +159,9 @@ class Session:
         self.notes.clear()
         self.turns = 0
         self.turn_starts = []
+        self.instruction_sources = []
+        self.memory_sources = []
+        self._fresh_usage = False
         self.store = SessionStore(self.home, enabled=self.store.enabled)
 
     def rewind_last_turn(self) -> str | None:
@@ -211,7 +234,7 @@ class Session:
         self.store.message(msg)
 
     def _add_user(self, text: str) -> None:
-        self.refresh_git()
+        """调用前先 `await asyncio.to_thread(self.refresh_git)`（git 子进程不能在事件循环上跑）。"""
         parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
         appendix = self.updates.build(parts)
         body = text
@@ -219,6 +242,43 @@ class Session:
             body = "\n\n".join(self.notes) + "\n\n" + text
             self.notes = []
         self._append({"role": "user", "content": body + "\n\n" + appendix})
+
+    async def _ensure_instructions_async(self) -> None:
+        if self.history:
+            return
+        cfg = self.config.data.get("agents_md", {}) or {}
+        if cfg.get("enabled", True):
+            ins = await asyncio.to_thread(load_instructions, self.cwd, self.home, int(cfg.get("max_bytes", 32768)))
+            msg = ins.message()
+            if msg is not None and not self.history:
+                self._append(msg)
+                self.instruction_sources = [str(p) for p in ins.sources]
+        if any(m.get("_sub") == "memory" for m in self.history) or any(m.get("_kind") != "agents" for m in self.history):
+            return
+        # 长期记忆：紧跟 AGENTS.md 的固定 user 消息，会话内不再改动（保住前缀缓存）
+        mem = await asyncio.to_thread(load_memory, self.home, self.cwd, self.config.data.get("memory") or {})
+        mmsg = mem.message()
+        if mmsg is not None:
+            self._append(mmsg)
+            self.memory_sources = list(mem.sources)
+
+    def _ensure_instructions(self) -> None:
+        """会话开始（历史为空）时加载 AGENTS.md，作为固定 user 消息放在 system 之后；之后不再改动。"""
+        if self.history:
+            return
+        cfg = self.config.data.get("agents_md", {}) or {}
+        if cfg.get("enabled", True):
+            ins = load_instructions(self.cwd, self.home, int(cfg.get("max_bytes", 32768)))
+            msg = ins.message()
+            if msg is not None:
+                self._append(msg)
+                self.instruction_sources = [str(p) for p in ins.sources]
+        # 长期记忆：紧跟 AGENTS.md 的固定 user 消息，会话内不再改动（保住前缀缓存）
+        mem = load_memory(self.home, self.cwd, self.config.data.get("memory") or {})
+        mmsg = mem.message()
+        if mmsg is not None:
+            self._append(mmsg)
+            self.memory_sources = list(mem.sources)
 
     def _fill_missing(self, why: str) -> None:
         for cid in list(self._open_calls):
@@ -251,7 +311,12 @@ class Session:
         try:
             self.turns += 1
             self.state.new_turn()
+            self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
+            log.info("回合开始：会话 %s 第 %d 回合 模型 %s cwd=%s", self.store.id, self.turns, self.spec.alias, self.cwd)
+            await self._ensure_instructions_async()
+            await self._maybe_auto_compact(emit)
             self.turn_starts.append(len(self.history))
+            await asyncio.to_thread(self.refresh_git)
             self._add_user(text)
             emit(TurnStart(self.turns))
             step = 0
@@ -259,14 +324,17 @@ class Session:
             while True:
                 step += 1
                 last = step >= max_steps
+                if step > 1:
+                    await self._maybe_auto_compact(emit)
                 if last and step > 1:
-                    self._append({"role": "user", "content": LAST_STEP_NOTE})
+                    self._append({"role": "user", "content": LAST_STEP_NOTE, "_kind": "note"})
                 emit(StepStart(step))
                 comp = await self._sample(emit)
                 if comp.content:
                     final = comp.content
                 if not comp.tool_calls:
                     if self.pending and not last:
+                        await asyncio.to_thread(self.refresh_git)
                         self._add_user("\n\n".join(self.pending)); self.pending.clear()
                         continue
                     emit(TurnDone("max_steps" if (last and step > 1) else "completed", final))
@@ -279,13 +347,22 @@ class Session:
                     emit(Notice(f"已达到最大步数 {max_steps}，本回合结束。", "warn"))
                     emit(TurnDone("max_steps", final))
                     return
-                await self._run_tools(comp.tool_calls, emit)
+                note = await self._run_tools(comp.tool_calls, emit)
+                if self.guard.halt:
+                    emit(Notice(self.guard.halt, "warn"))
+                    emit(TurnDone("loop", final))
+                    return
+                if note:
+                    self._append({"role": "user", "content": note, "_kind": "note"})
                 if self.pending:
+                    await asyncio.to_thread(self.refresh_git)
                     self._add_user("\n\n".join(self.pending)); self.pending.clear()
         except asyncio.CancelledError:
+            log.info("回合被中断：会话 %s", self.store.id)
             self._fill_missing(INTERRUPTED)
             emit(TurnDone("interrupted", final))
         except Exception as e:  # noqa: BLE001
+            log.error("回合出错：会话 %s：%s", self.store.id, e, exc_info=True)
             self._fill_missing("执行出错，未完成。")
             emit(Error(_friendly_error(e)))
             emit(TurnDone("error", final))
@@ -295,7 +372,9 @@ class Session:
         messages = [prefix.system] + T.wire_messages(self.history, self.profile)
         comp: Completion | None = None
         text, reasoning = [], []
+        emit(Status(f"正在准备请求 {self.spec.alias}…"))
         try:
+            await self.ensure_client()
             async for kind, val in self.client().stream(messages, prefix.tools):
                 if kind == "text":
                     text.append(val); emit(TextDelta(val))
@@ -303,6 +382,8 @@ class Session:
                     reasoning.append(val); emit(ReasoningDelta(val))
                 elif kind == "notice":
                     emit(Notice(val, "warn"))
+                elif kind == "status":
+                    emit(Status(val))
                 elif kind == "done":
                     comp = val
         except asyncio.CancelledError:
@@ -323,6 +404,8 @@ class Session:
         self._open_calls = [tc["id"] for tc in comp.tool_calls]
         self._results = {}
         self.last_reasoning = comp.reasoning or self.last_reasoning
+        if comp.usage:
+            self._fresh_usage = True
         cost = self.stats.add(comp.usage, self.profile.price)
         u = comp.usage or {}
         emit(Usage(u.get("prompt", 0), u.get("completion", 0), u.get("hit"), cost, self.stats.totals()))
@@ -331,19 +414,37 @@ class Session:
             emit(Notice(f"模型把 {len(comp.tool_calls)} 个工具调用写进了正文，已自动解析执行。"))
         return comp
 
-    async def _run_tools(self, calls: list[dict], emit) -> None:
+    async def _run_tools(self, calls: list[dict], emit) -> str | None:
+        """执行一步的工具调用。返回防死循环要追加给模型的提醒（没有则 None）；需要停回合时设置 guard.halt。"""
         prepared = []
+        sigs: dict[str, str] = {}
+        stopped = False
         for tc in calls:
             name = tc["function"]["name"]
             tool = self.tool_map.get(name)
             if tool is None:
-                prepared.append((tc, None, {}, f"错误：未知工具 {name}。可用工具：{', '.join(self.tool_map)}"))
-                continue
-            args, err = T.parse_args(tc["function"].get("arguments"))
-            if err:
-                prepared.append((tc, tool, {}, f"错误：{err}。请用合法的 JSON 重新调用 {name}。"))
-                continue
-            prepared.append((tc, tool, T.repair_args(args, tool.parameters), None))
+                entry = (tc, None, {}, f"错误：未知工具 {name}。可用工具：{', '.join(self.tool_map)}")
+                sig = signature(name, tc["function"].get("arguments"))
+            else:
+                args, err = T.parse_args(tc["function"].get("arguments"))
+                if err:
+                    entry = (tc, tool, {}, f"错误：{err}。请用合法的 JSON 重新调用 {name}。")
+                    sig = signature(name, tc["function"].get("arguments"))
+                else:
+                    args = T.repair_args(args, tool.parameters)
+                    entry = (tc, tool, args, None)
+                    sig = signature(name, args)
+            sigs[tc["id"]] = sig
+            if stopped:
+                entry = (entry[0], entry[1], entry[2], REPEAT_STOP)
+            else:
+                verdict, n = self.guard.check(sig)
+                if verdict == "stop":
+                    stopped = True
+                    entry = (entry[0], entry[1], entry[2], REPEAT_STOP)
+                elif verdict == "block":
+                    entry = (entry[0], entry[1], entry[2], REPEAT_NOTE.format(n=n, name=name))
+            prepared.append(entry)
         i = 0
         while i < len(prepared):
             tc, tool, args, err = prepared[i]
@@ -360,8 +461,13 @@ class Session:
         for tc in calls:
             cid = tc["id"]
             self._append({"role": "tool", "tool_call_id": cid, "content": self._results.get(cid, INTERRUPTED)})
+        outcomes = [(sigs[tc["id"]], self._ok.get(tc["id"], False)) for tc in calls]
         self._open_calls.clear()
         self._results.clear()
+        self._ok = {}
+        if self.guard.halt:
+            return None
+        return self.guard.end_step(outcomes)
 
     async def _exec_one(self, tc: dict, tool, args: dict, err: str | None, emit) -> None:
         cid = tc["id"]
@@ -374,6 +480,7 @@ class Session:
             res = await self._guarded_run(cid, tool, args, emit)
         out, _ = truncate_output(res.output, self.home / "tool-output", name)
         self._results[cid] = out
+        self._ok[cid] = res.ok
         emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, res.meta))
         if res.meta.get("kind") == "plan":
             emit(PlanUpdate(res.meta.get("items", [])))
@@ -395,7 +502,9 @@ class Session:
                 return ToolResult(msg, ok=False, meta={"denied": True, "by_user": True})
         ctx = ToolContext(cwd=self.cwd, state=self.state, output_dir=self.home / "tool-output", shell=self.shell,
                           emit=lambda s: emit(ToolOutput(cid, s)),
-                          timeout_default=int(self.config.data.get("bash_timeout", 120)))
+                          timeout_default=int(self.config.data.get("bash_timeout", 120)),
+                          extra={"session": self, "emit_event": emit, "call_id": cid, "config": self.config,
+                                 "home": self.home})
         try:
             return await tool.run(args, ctx)
         except ToolError as e:
@@ -426,6 +535,7 @@ class Session:
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         out = []
         comp = None
+        await self.ensure_client()
         async for kind, val in self.client().stream(msgs, None):
             if kind == "text":
                 out.append(val)
@@ -447,12 +557,126 @@ class Session:
         prompt = (f"最近的提交记录：\n{log or '（无）'}\n\n改动：\n{diff[:60000]}")
         return await self.side_complete(load_prompt("commit.md"), prompt), stage_all
 
-    def compact(self) -> str:
-        """M2：压缩（用户边界、保留锚点、摘要用 flash）。M1 占位。"""
-        return "压缩功能在 M2 实现。当前上下文剩余 {:.0%}。".format(self.context_left())
+    # ------------------------------------------------------------ 压缩
+    def context_tokens(self) -> int:
+        """当前上下文大小（token）：优先用服务端返回的上次用量，没有就粗估。"""
+        used = self.stats.last_prompt + self.stats.last_completion
+        if used > 0:
+            return used
+        prefix = self.prefix or self.current_prefix()
+        return (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools)) +
+                C.estimate_messages(self.history))
+
+    def needs_compaction(self) -> bool:
+        cfg = self.config.data.get("compact", {}) or {}
+        if not cfg.get("auto", True) or not self._fresh_usage:
+            return False
+        window = self.profile.context_window
+        if window <= 0:
+            return False
+        return self.context_tokens() >= float(cfg.get("threshold", 0.8)) * window
+
+    async def _maybe_auto_compact(self, emit) -> None:
+        if self.needs_compaction() and any(m.get("_kind") != "agents" for m in self.history):
+            await self._compact(emit, "auto")
+
+    async def compact(self, emit=None) -> dict:
+        """手动压缩（/compact，供 server 调用）。不能在回合运行中调用。
+
+        返回 {ok, message, tokens_before, tokens_after}；成功时 emit 一个 Compacted 事件。
+        """
+        emit = emit or (lambda ev: None)
+        if self.running:
+            return {"ok": False, "message": "正在运行中，等这一回合结束再压缩。", "tokens_before": 0, "tokens_after": 0}
+        self.running = True
+        try:
+            return await self._compact(emit, "manual")
+        finally:
+            self.running = False
+
+    async def _summarize(self, emit) -> tuple[str, dict | None]:
+        """主路：同一前缀 + 完整历史 + 压缩指令（复用缓存）。不调工具。"""
+        prefix = self._ensure_prefix(emit)
+        messages = ([prefix.system] + T.wire_messages(self.history, self.profile) +
+                    [{"role": "user", "content": C.compact_prompt()}])
+        text: list[str] = []
+        comp = None
+        await self.ensure_client()
+        async for kind, val in self.client().stream(messages, prefix.tools):
+            if kind == "text":
+                text.append(val)
+            elif kind == "notice":
+                emit(Notice(val, "warn"))
+            elif kind == "done":
+                comp = val
+        content = (comp.content if comp is not None else "".join(text)).strip()
+        return content, (comp.usage if comp is not None else None)
+
+    async def _summarize_side(self) -> str:
+        """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。"""
+        budget = max(4000, int(self.profile.context_window * 0.5))
+        transcript = C.render_transcript(self.history, budget)
+        return await self.side_complete(C.compact_prompt(), "以下是需要压缩的对话记录：\n\n" + transcript)
+
+    async def _compact(self, emit, reason: str) -> dict:
+        real = [m for m in self.history if m.get("_kind") != "agents"]
+        before = self.context_tokens()
+        if not real:
+            return {"ok": False, "message": "没有可压缩的内容。", "tokens_before": before, "tokens_after": before}
+        summary, usage = "", None
+        try:
+            summary, usage = await self._summarize(emit)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            emit(Notice(f"压缩请求失败（{_friendly_error(e)}），改用精简记录重试。", "warn"))
+        if usage is not None:
+            self.stats.add(usage, self.profile.price)
+        if not summary:
+            try:
+                summary = await self._summarize_side()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                msg = f"压缩失败：{_friendly_error(e)}。上下文没有改动。"
+                emit(Notice(msg, "warn"))
+                self._fresh_usage = False   # 不要每一步都重试
+                return {"ok": False, "message": msg, "tokens_before": before, "tokens_after": before}
+        if not summary:
+            msg = "压缩失败：模型没有返回摘要。上下文没有改动。"
+            emit(Notice(msg, "warn"))
+            self._fresh_usage = False
+            return {"ok": False, "message": msg, "tokens_before": before, "tokens_after": before}
+        cfg = self.config.data.get("compact", {}) or {}
+        await asyncio.to_thread(self.refresh_git)
+        self.updates.reset()     # 摘要消息里补发全量环境信息
+        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
+        appendix = self.updates.build(parts)
+        new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
+                              int(cfg.get("keep_user_tokens", 20000)))
+        self.history = new
+        self.store.append("reset", {"why": "compact"})
+        for m in new:
+            self.store.message(m)
+        self.store.append("compact", {"reason": reason, "tokens_before": before})
+        self.turn_starts = []          # 压缩前的回合无法再回退
+        for rec in self.state.files.values():
+            rec.reads.clear()          # 读过的内容已不在上下文里：下次 read 返回全文
+        prefix = self.prefix or self.current_prefix()
+        after = (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools)) +
+                 C.estimate_messages(new))
+        self.stats.last_prompt, self.stats.last_completion = after, 0
+        self._fresh_usage = False
+        self.compactions += 1
+        text = f"已压缩上下文（约 {before:,} → {after:,} tokens）"
+        emit(Compacted(text, "info", reason=reason, tokens_before=before, tokens_after=after, summary=summary))
+        return {"ok": True, "message": text, "tokens_before": before, "tokens_after": after}
 
 
 def _friendly_error(e: Exception) -> str:
+    from ee.core.providers.openai_chat import ModelError
+    if isinstance(e, ModelError):
+        return str(e)
     status = getattr(e, "status_code", None)
     name = type(e).__name__
     if status == 401:

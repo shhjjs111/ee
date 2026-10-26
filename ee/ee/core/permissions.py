@@ -20,6 +20,7 @@ MODE_LABEL = {"read-only": "只读", "default": "默认", "auto": "全自动"}
 
 READ_TOOLS = {"read", "grep", "glob", "todo"}
 WRITE_TOOLS = {"write", "edit", "apply_patch"}
+NET_TOOLS = {"web_search", "web_fetch"}
 
 
 @dataclass
@@ -309,6 +310,23 @@ class PermissionPolicy:
         if tool in READ_TOOLS:
             subject = str(args.get("path") or args.get("pattern") or "")
             if any(_match_rule(r, tool, subject) for r in self.deny):
+                return Decision("deny", "命中 deny 规则")
+            return Decision("allow")
+        if tool in NET_TOOLS or tool == "task":
+            # 网页搜索/抓取是只读的（只读模式“只能读和搜”也允许）；deny/ask 规则按 url / query 匹配。
+            # task 本身放行：子代理里的每个工具调用各自走权限判断（主会话只读时子代理强制只读）。
+            subject = str(args.get("url") or args.get("query") or args.get("description") or "")
+            if any(_match_rule(r, tool, subject) for r in self.deny):
+                return Decision("deny", "命中 deny 规则")
+            if self.mode != "auto" and any(_match_rule(r, tool, subject) for r in self.ask):
+                return Decision("ask", "命中 ask 规则", prefix=tool)
+            return Decision("allow")
+        if tool == "memory":
+            if args.get("action") in (None, "", "list"):
+                return Decision("allow")
+            if self.mode == "read-only":
+                return Decision("deny", "当前是只读模式，不能修改记忆")
+            if any(_match_rule(r, tool, "") for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
             return Decision("allow")
         # 未知/扩展工具（M2+：web_fetch、task、MCP）：只读模式拒绝，默认模式问

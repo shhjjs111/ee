@@ -21,7 +21,22 @@ DEFAULTS: dict = {
     "max_steps": 50,
     "shell": "auto",                 # auto | pwsh | powershell | cmd | bash | gitbash
     "bash_timeout": 120,
+    # 上下文压缩：上下文用量 ≥ threshold × 模型窗口时自动压缩（回合开始时和回合内每步之前检查）
+    "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
+    # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限
+    "agents_md": {"enabled": True, "max_bytes": 32768},
+    # 防死循环：同调用连续 repeat_limit 次不执行并纠正，repeat_hard 次停止回合；无进展步数提醒/停止
+    "loop_guard": {"repeat_limit": 3, "repeat_hard": 5, "no_progress_steps": 8, "no_progress_hard": 16},
     "permissions": {"mode": "default", "allow": [], "ask": [], "deny": []},
+    # 网页搜索/抓取：search_backend = deepseek | tavily | brave | off；fetch_backend = auto | deepseek | direct | off
+    "web": {"search_backend": "deepseek", "fetch_backend": "auto", "timeout": 20, "max_results": 8,
+            "fetch_max_chars": 20000},
+    # 子代理（task 工具）：默认最大步数与上限
+    "subagent": {"enabled": True, "max_steps": 30, "max_steps_limit": 100},
+    # 长期记忆：~/.ee/memory.md + 工作区 .ee/memory.md，会话开始时注入（总大小上限）
+    "memory": {"enabled": True, "workspace": True, "max_bytes": 8192},
+    # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
+    "network": {"proxy": "system", "connect_timeout": 15, "read_timeout": 90, "retries": 2},
     "providers": {
         "deepseek": {"base_url": "https://api.deepseek.com", "api_key_env": "DEEPSEEK_API_KEY"},
     },

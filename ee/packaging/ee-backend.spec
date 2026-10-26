@@ -13,7 +13,9 @@ datas += collect_data_files("certifi")
 hiddenimports = []
 # openai/httpx/pydantic are found by static analysis + their contrib hooks; only force the
 # packages that import lazily (ee tools/providers, websockets' lazy top-level names).
-for pkg in ("ee", "websockets"):
+# anyio 按名字动态 import 事件循环后端；httpx2/httpcore2 的传输层、truststore 也有按需导入。
+for pkg in ("ee", "websockets", "anyio._backends", "httpx2", "httpcore2", "httpx", "httpcore", "h11",
+            "truststore", "certifi", "openai._utils", "encodings"):
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:

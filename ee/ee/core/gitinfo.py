@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ee.proc import run_capture
+
+log = logging.getLogger("ee.git")
 
 MAX_UNTRACKED_BYTES = 200_000
 
@@ -37,14 +41,11 @@ def _run(args: list[str], cwd: Path, timeout: float = 10) -> tuple[int, str]:
     exe = git_exe()
     if not exe:
         return 127, ""
-    kw = {}
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
-    try:
-        p = subprocess.run([exe, *args], cwd=str(cwd), capture_output=True, timeout=timeout, **kw)
-    except (OSError, subprocess.TimeoutExpired):
+    code, out, _ = run_capture([exe, *args], cwd=cwd, timeout=timeout)
+    if code == 124:
+        log.warning("git %s 超时（%ss），cwd=%s", " ".join(args[:2]), timeout, cwd)
         return 1, ""
-    return p.returncode, p.stdout.decode("utf-8", errors="replace")
+    return code, out.decode("utf-8", errors="replace")
 
 
 def status(cwd: Path) -> GitStatus:
@@ -119,6 +120,5 @@ def commit(cwd: Path, message: str, stage_all: bool) -> tuple[bool, str]:
     exe = git_exe()
     if not exe:
         return False, "找不到 git"
-    p = subprocess.run([exe, "commit", "-F", "-"], cwd=str(cwd), input=message.encode("utf-8"),
-                       capture_output=True, timeout=60)
-    return p.returncode == 0, (p.stdout + p.stderr).decode("utf-8", errors="replace")
+    code, out, err = run_capture([exe, "commit", "-F", "-"], cwd=cwd, input=message.encode("utf-8"), timeout=60)
+    return code == 0, (out + err).decode("utf-8", errors="replace")

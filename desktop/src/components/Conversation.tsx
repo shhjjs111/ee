@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
+import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
 import { useApp } from "../lib/store";
@@ -41,7 +41,7 @@ function renderItem(it: Item, approvals: Map<string, string>) {
   }
 }
 
-function Working({ since, waiting }: { since: number; waiting: boolean }) {
+function Working({ since, waiting, text }: { since: number; waiting: boolean; text?: string }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -49,7 +49,9 @@ function Working({ since, waiting }: { since: number; waiting: boolean }) {
   }, []);
   return (
     <div className="flex items-center gap-2 py-1 text-[13px]">
-      <span className={clsx(waiting ? "text-warn" : "shimmer")}>{waiting ? "等待你的批准" : "正在工作"}</span>
+      <span className={clsx("min-w-0 truncate", waiting ? "text-warn" : "shimmer")} title={!waiting ? text : undefined}>
+        {waiting ? "等待你的批准" : text || "正在工作"}
+      </span>
       <span className="text-faint">{formatDuration(now - since)}</span>
       {!waiting && <span className="text-[11.5px] text-faint">· Esc 停止</span>}
     </div>
@@ -83,8 +85,28 @@ function Header() {
           {d.git.branch}
         </span>
       )}
+      {d?.instructions && d.instructions.length > 0 && (
+        <Tip
+          side="bottom"
+          label={
+            <div className="max-w-[420px]">
+              <div className="mb-1 font-medium">已加载项目说明</div>
+              {d.instructions.map((p) => (
+                <div key={p} className="mono break-all text-[11.5px] opacity-80">
+                  {p}
+                </div>
+              ))}
+            </div>
+          }
+        >
+          <span className="no-drag flex cursor-default items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-faint hover:bg-hover hover:text-muted">
+            <BookText size={12} />
+            AGENTS.md{d.instructions.length > 1 ? ` ×${d.instructions.length}` : ""}
+          </span>
+        </Tip>
+      )}
       <div className="flex-1" />
-      <Tip label={s.rightOpen ? "收起改动面板" : "展开改动面板"} side="bottom">
+      <Tip label={s.rightOpen ? "收起右侧面板" : "展开右侧面板"} side="bottom">
         <Button
           size="icon"
           onClick={() => {
@@ -208,7 +230,7 @@ export function Conversation() {
               <Fragment key={b.item.id}>{renderItem(b.item, approvals)}</Fragment>
             ),
           )}
-          {running && <Working since={since ?? Date.now()} waiting={d.status === "waiting_approval"} />}
+          {running && <Working since={since ?? Date.now()} waiting={d.status === "waiting_approval"} text={d.status_text} />}
         </div>
       </div>
       {!stick && (

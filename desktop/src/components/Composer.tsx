@@ -2,7 +2,7 @@ import clsx from "clsx";
 import { ArrowUp, AtSign, Cpu, File, Shield, ShieldCheck, ShieldOff, Square } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { useApp } from "../lib/store";
-import { Select, Tip } from "./ui";
+import { Select, Spinner, Tip } from "./ui";
 
 const MODES = [
   { value: "read-only", label: "只读", hint: "只能读文件和运行只读命令", icon: <Shield size={14} /> },
@@ -14,14 +14,22 @@ export function modeLabel(m: string) {
   return MODES.find((x) => x.value === m)?.label ?? m;
 }
 
-function ContextRing({ left }: { left: number | null }) {
+function ContextRing({ left, onCompact, compacting }: { left: number | null; onCompact: () => void; compacting: boolean }) {
+  if (compacting) {
+    return (
+      <span className="flex h-7 items-center gap-1.5 px-1.5 text-[12px] text-muted">
+        <Spinner size={12} /> 正在压缩上下文…
+      </span>
+    );
+  }
   if (left === null || left === undefined) return null;
   const used = 1 - left;
   if (used < 0.05) return null; // 用得很少时不显示，免得像加载圈
   const r = 7;
   const c = 2 * Math.PI * r;
   return (
-    <Tip label={`上下文剩余 ${Math.round(left * 100)}%`}>
+    <Tip label={`上下文剩余 ${Math.round(left * 100)}% · 点击压缩（/compact）`}>
+      <button onClick={onCompact} className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-hover">
       <svg width="18" height="18" viewBox="0 0 18 18" className="text-faint">
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
         <circle
@@ -36,6 +44,7 @@ function ContextRing({ left }: { left: number | null }) {
           strokeLinecap="round"
         />
       </svg>
+      </button>
     </Tip>
   );
 }
@@ -103,6 +112,12 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   function submit() {
     const t = text.trim();
     if (!t) return;
+    if (t === "/compact") {
+      setText("");
+      setMention(null);
+      s.compact();
+      return;
+    }
     s.send(t);
     setText("");
     setMention(null);
@@ -224,8 +239,12 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             title="权限模式"
           />
           <div className="flex-1" />
-          <ContextRing left={detail?.context_left ?? null} />
-          {running ? (
+          <ContextRing
+            left={detail?.context_left ?? null}
+            compacting={detail?.status === "compacting"}
+            onCompact={() => s.compact()}
+          />
+          {detail?.status === "compacting" ? null : running ? (
             <Tip label="停止（Esc）">
               <button
                 onClick={() => s.interrupt()}

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -20,11 +21,15 @@ from typing import Callable
 
 from ee.config import load_config
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Error, Notice, PlanUpdate,
-                            ReasoningDelta, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
+                            ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
                             TurnStart, Usage)
+from ee.core.events import SubagentEnd, SubagentStart, SubagentUpdate
 from ee.core.permissions import MODES
+from ee.core.subagent import apply_event as apply_subagent_event
 from ee.core.session import Session
 from ee.core.store import SessionStore, _title
+
+log = logging.getLogger("ee.thread")
 
 UI_OUTPUT_LIMIT = 30_000          # 发给界面的单个工具输出上限（模型侧另有截断规则）
 
@@ -62,6 +67,8 @@ class Thread:
         self.turn_started_at = 0.0
         self.usage: dict = {}
         self.context_left: float | None = None
+        self.compacting = False
+        self.status_text = ""          # 临时状态（正在连接模型…），不落盘
 
     # ------------------------------------------------------------ 内核会话（懒加载）
     @property
@@ -91,6 +98,18 @@ class Thread:
         s.notices.clear()
         return s
 
+    async def ensure_session_async(self) -> Session:
+        """在工作线程里建会话（Session 初始化会跑 git status 等子进程），不阻塞事件循环；并发调用只建一次。"""
+        if self.session is not None:
+            return self.session
+        lock = getattr(self, "_ensure_lock", None)
+        if lock is None:
+            lock = self._ensure_lock = asyncio.Lock()
+        async with lock:
+            if self.session is None:
+                await asyncio.to_thread(self.ensure_session)
+        return self.session
+
     def reload_config(self) -> None:
         if self.session is None or self.session.running:
             return
@@ -111,6 +130,8 @@ class Thread:
 
     @property
     def status(self) -> str:
+        if self.compacting:
+            return "compacting"
         if not self.running:
             return "idle"
         return "waiting_approval" if self.approvals else "running"
@@ -127,7 +148,13 @@ class Thread:
             git = {"is_repo": s.git.is_repo, "branch": s.git.branch, "changed": s.git.changed,
                    "untracked": s.git.untracked}
         return {**self.summary(), "items": self.items, "usage": self.usage, "context_left": self.context_left,
-                "shell": (s.shell.display if s and s.shell else None), "git": git}
+                "shell": (s.shell.display if s and s.shell else None), "git": git,
+                "instructions": self.instructions(), "status_text": self.status_text}
+
+    def instructions(self) -> list[str]:
+        """本会话加载的 AGENTS.md（绝对路径）。"""
+        s = self.session
+        return list(getattr(s, "instruction_sources", None) or []) if s is not None else []
 
     def save_meta(self) -> None:
         self.meta["updated"] = time.time()
@@ -217,11 +244,21 @@ class Thread:
                     reason = ev.reason
                 self._on_event(ev)
         except Exception as e:  # noqa: BLE001
-            self._add({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            log.error("回合异常（会话 %s）", self.id, exc_info=True)
+            self._add({"type": "error", "message": f"内部错误：{type(e).__name__}: {e}"})
         finally:
-            self._finish(reason)
+            try:
+                self._finish(reason)
+            except Exception:  # noqa: BLE001
+                log.error("回合收尾异常（会话 %s）", self.id, exc_info=True)
+                self.notify("turn/completed", {"thread_id": self.id, "reason": "error", "duration_ms": 0,
+                                               "usage": self.usage, "context_left": self.context_left})
 
     def _finish(self, reason: str) -> None:
+        if self.status_text:
+            self.status_text = ""
+            self.notify("turn/status", {"thread_id": self.id, "text": ""})
+        log.info("回合结束（会话 %s）：%s，用时 %.1fs", self.id, reason, time.monotonic() - self.turn_started_at)
         if self.cur_assistant is not None:
             self.cur_assistant["streaming"] = False
             self._update(self.cur_assistant)
@@ -240,7 +277,8 @@ class Thread:
         self._add({"type": "turn_end", "reason": reason, "duration_ms": dur, "usage": dict(self.usage)})
         self.save_meta()
         self.notify("turn/completed", {"thread_id": self.id, "reason": reason, "duration_ms": dur,
-                                       "usage": self.usage, "context_left": self.context_left})
+                                       "usage": self.usage, "context_left": self.context_left,
+                                       "instructions": self.instructions()})
         self.notify("thread/updated", {"thread": {**self.summary(), "status": "idle"}})
 
     def _assistant(self) -> dict:
@@ -250,7 +288,11 @@ class Thread:
         return self.cur_assistant
 
     def _on_event(self, ev) -> None:
-        if isinstance(ev, TurnStart):
+        if isinstance(ev, Status):
+            if ev.text != self.status_text:
+                self.status_text = ev.text
+                self.notify("turn/status", {"thread_id": self.id, "text": ev.text})
+        elif isinstance(ev, TurnStart):
             self.notify("turn/started", {"thread_id": self.id, "turn": ev.turn})
         elif isinstance(ev, StepStart):
             self.cur_assistant = None
@@ -307,6 +349,15 @@ class Thread:
                 self.context_left = round(s.context_left(), 4)
             self.notify("thread/usage", {"thread_id": self.id, "usage": self.usage,
                                          "context_left": self.context_left})
+        elif isinstance(ev, (SubagentStart, SubagentUpdate, SubagentEnd)):
+            # 子代理进度挂在父 task 工具条目的 meta.subagent 上（界面渲染成子代理卡片）
+            it = self._by_id.get(f"tool_{ev.call_id}")
+            if it is not None:
+                meta = dict(it.get("meta") or {})
+                meta["kind"] = "subagent"
+                meta["subagent"] = apply_subagent_event(meta.get("subagent"), ev)
+                it["meta"] = meta
+                self._update(it, persist=False)
         elif isinstance(ev, Notice):
             self._add({"type": "notice", "text": ev.text, "level": ev.level})
         elif isinstance(ev, Error):

@@ -62,11 +62,29 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "bash_timeout": int(data.get("bash_timeout", 120)),
             "permissions": {"mode": (data.get("permissions") or {}).get("mode", "default")},
             "ui": {"theme": (data.get("ui") or {}).get("theme", "system")},
+            "network": _network_out(data.get("network") or {}),
             "providers": providers,
             "models": models,
         },
         "choices": {"shells": SHELL_CHOICES, "modes": MODES, "families": FAMILIES, "themes": THEMES},
     }
+
+
+def _network_out(n: dict) -> dict:
+    proxy = str(n.get("proxy") or "system").strip()
+    mode = proxy.lower() if proxy.lower() in ("system", "direct") else "custom"
+    return {"proxy_mode": mode, "proxy_url": proxy if mode == "custom" else "",
+            "connect_timeout": n.get("connect_timeout", 15), "read_timeout": n.get("read_timeout", 90),
+            "retries": n.get("retries", 2), "system_proxy": _system_proxy()}
+
+
+def _system_proxy() -> str:
+    """当前“跟随系统”会用到的代理（给设置页显示）。"""
+    try:
+        from ee.core.providers.net import plan
+        return plan("https://api.deepseek.com", {"proxy": "system"}).describe
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _num(v):
@@ -105,6 +123,32 @@ def set_settings(new: dict) -> dict:
         if theme not in THEMES:
             raise ValueError(f"未知主题：{theme}")
         out.setdefault("ui", {})["theme"] = theme
+
+    if isinstance(new.get("network"), dict):
+        n = new["network"]
+        net = dict(out.get("network") or {})
+        mode = str(n.get("proxy_mode") or "").strip()
+        if mode:
+            if mode in ("system", "direct"):
+                net["proxy"] = mode
+            elif mode == "custom":
+                url = str(n.get("proxy_url") or "").strip()
+                if not url:
+                    raise ValueError("选了自定义代理，但没有填代理地址（例如 http://127.0.0.1:7890）")
+                if "://" not in url:
+                    url = "http://" + url
+                if url.split("://", 1)[0].lower() not in ("http", "https"):
+                    raise ValueError(f"暂只支持 http/https 代理（Clash、v2rayN 等的 HTTP 端口即可）：{url}")
+                net["proxy"] = url
+            else:
+                raise ValueError(f"未知代理模式：{mode}")
+        for k, lo, hi in (("connect_timeout", 1, 300), ("read_timeout", 5, 3600), ("retries", 0, 10)):
+            v = _num(n.get(k))
+            if v is not None:
+                if not (lo <= v <= hi):
+                    raise ValueError(f"{k} 应在 {lo}–{hi} 之间")
+                net[k] = int(v)
+        out["network"] = net
 
     if "providers" in new:
         old = user.get("providers") or {}

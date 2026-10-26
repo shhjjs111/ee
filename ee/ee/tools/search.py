@@ -8,6 +8,7 @@ import re
 import shutil
 from pathlib import Path
 
+from ee.proc import popen_kwargs
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult, rel
 from ee.tools.truncate import truncate_output
 
@@ -19,7 +20,9 @@ MAX_MATCHES = 300
 
 async def _rg(args: list[str], cwd: Path) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(shutil.which("rg") or "rg", *args, cwd=str(cwd),
-                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                                                stdin=asyncio.subprocess.DEVNULL,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                                                **popen_kwargs())
     out, err = await proc.communicate()
     if proc.returncode not in (0, 1):
         raise ToolError(f"rg 出错：{err.decode('utf-8', 'replace').strip()[:500]}")

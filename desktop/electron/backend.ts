@@ -55,6 +55,16 @@ export class Backend {
     return this.ready;
   }
 
+  /** 追加一行到 backend.log（界面侧的 RPC 失败、重连、自动重启等）。 */
+  appendLog(line: string): void {
+    try {
+      fs.mkdirSync(path.dirname(this.opts.logFile), { recursive: true });
+      fs.appendFile(this.opts.logFile, `${new Date().toISOString()} [ui] ${line.replace(/\s+$/, "")}\n`, () => undefined);
+    } catch {
+      /* ignore */
+    }
+  }
+
   lastError(): string {
     return this.stderrTail.join("");
   }
@@ -75,7 +85,8 @@ export class Backend {
       let settled = false;
       const child = spawn(cmd, args, {
         cwd,
-        env: { ...process.env, ...env, EE_SERVE_TOKEN: token, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+        // EE_LOG_DIR：后端自己的 ee-backend.log 写到同一个 logs 目录（Windows：%APPDATA%\ee\logs）
+        env: { ...process.env, ...env, EE_SERVE_TOKEN: token, EE_LOG_DIR: path.dirname(this.opts.logFile), PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -106,6 +117,7 @@ export class Backend {
         this.stderrTail.push(s);
         if (this.stderrTail.length > 40) this.stderrTail.shift();
       });
+      child.stdin?.on("error", () => undefined); // 后端先退出时写 stdin 会 EPIPE，别让主进程崩
       child.on("error", (err) => {
         if (!settled) {
           settled = true;

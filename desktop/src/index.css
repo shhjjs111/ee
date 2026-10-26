@@ -275,3 +275,49 @@ pre.shiki {
 .fadein {
   animation: fadein 0.18s ease-out;
 }
+
+/* 内置终端 */
+.ee-term-holder {
+  height: 100%;
+  width: 100%;
+}
+.ee-term-box .xterm {
+  height: 100%;
+  padding-top: 2px;
+}
+.ee-term-box .xterm-viewport {
+  background-color: transparent !important;
+}
+.ee-term-box .xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 8px !important;
+}
+
+/* 文件预览：带行号的代码 */
+.file-code pre.shiki {
+  padding: 8px 0;
+  counter-reset: ln;
+  overflow: visible;
+}
+.file-code pre.shiki code {
+  display: block;
+}
+.file-code .line {
+  display: inline-block;
+  min-width: 100%;
+  padding-right: 16px;
+}
+.file-code .line::before {
+  counter-increment: ln;
+  content: counter(ln);
+  display: inline-block;
+  width: var(--ln-w, 3ch);
+  margin-right: 14px;
+  padding-left: 10px;
+  text-align: right;
+  color: var(--fg-faint);
+  opacity: 0.7;
+  user-select: none;
+}
+.file-code .line:hover {
+  background: var(--bg-hover);
+}

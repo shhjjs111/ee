@@ -96,6 +96,12 @@ class Usage(Event):
 
 
 @dataclass
+class Status(Event):
+    """临时状态（“正在连接模型…”），不进历史；空字符串 = 清除。"""
+    text: str
+
+
+@dataclass
 class Notice(Event):
     """提示类消息（缓存漂移警告、降级提示等）。"""
     text: str
@@ -103,8 +109,50 @@ class Notice(Event):
 
 
 @dataclass
+class Compacted(Notice):
+    """上下文已压缩。是 Notice 的子类：只认 Notice 的界面也会显示“已压缩上下文”这条提示。"""
+    reason: str = "auto"            # auto | manual
+    tokens_before: int = 0
+    tokens_after: int = 0
+    summary: str = ""
+
+
+@dataclass
+class SubagentStart(Event):
+    """主代理的 task 工具派生了一个子代理。call_id = 父级 task 工具调用的 id（界面据此把进度挂到那张卡片上）。"""
+    call_id: str
+    agent: str                      # 子代理类型：general / explore / 自定义名
+    description: str = ""
+    model: str = ""
+    mode: str = ""                  # 子代理实际的权限模式
+    max_steps: int = 0
+
+
+@dataclass
+class SubagentUpdate(Event):
+    """子代理进度：kind = step | tool_start | tool_end | text | notice。"""
+    call_id: str
+    kind: str
+    step: int = 0
+    tool: str = ""
+    tool_call_id: str = ""
+    summary: str = ""
+    ok: bool | None = None
+    text: str = ""
+
+
+@dataclass
+class SubagentEnd(Event):
+    call_id: str
+    status: str                     # completed | max_steps | interrupted | error | loop
+    summary: str = ""               # 子代理最终给主代理的报告
+    steps: int = 0
+    usage: dict = field(default_factory=dict)
+
+
+@dataclass
 class TurnDone(Event):
-    reason: str             # completed | max_steps | interrupted | error
+    reason: str             # completed | max_steps | interrupted | error | loop
     text: str = ""
 
 

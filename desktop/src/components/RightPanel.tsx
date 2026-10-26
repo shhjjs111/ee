@@ -1,9 +1,11 @@
 import clsx from "clsx";
 import { ChevronRight, FileCode2, FileDiff, GitBranch, RefreshCw, RotateCcw, SquareTerminal, Undo2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp, type RightTab } from "../lib/store";
 import type { DiffFile, GitReview } from "../types";
 import { DiffView, Stat } from "./DiffView";
+import { FilesPanel } from "./FilesPanel";
+import { TerminalPanel } from "./TerminalPanel";
 import { Button, Spinner, Tip } from "./ui";
 
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -150,27 +152,55 @@ function Review() {
   );
 }
 
-function Stub({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <div className="mb-3 text-faint">{icon}</div>
-      <div className="mb-1 text-[13px] font-medium text-fg">{title}</div>
-      <div className="text-[12.5px] leading-relaxed text-faint">{text}</div>
-    </div>
-  );
-}
-
 const TABS: { id: RightTab; label: string; icon: React.ReactNode }[] = [
   { id: "review", label: "改动", icon: <FileDiff size={14} /> },
   { id: "terminal", label: "终端", icon: <SquareTerminal size={14} /> },
   { id: "files", label: "文件", icon: <FileCode2 size={14} /> },
 ];
 
+const MIN_W = 320;
+const MAX_W = 820;
+
 export function RightPanel() {
   const s = useApp();
+  const [width, setWidth] = useState(() => {
+    const w = Number(localStorage.getItem("ee.rightWidth"));
+    return w >= MIN_W && w <= MAX_W ? w : 400;
+  });
+  const [termMounted, setTermMounted] = useState(false);
+  const drag = useRef<{ x: number; w: number } | null>(null);
+  useEffect(() => {
+    if (s.rightTab === "terminal") setTermMounted(true);
+  }, [s.rightTab]);
   if (!s.rightOpen || s.view !== "chat") return null;
+
+  const onDown = (e: React.PointerEvent) => {
+    drag.current = { x: e.clientX, w: width };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onMove = (e: React.PointerEvent) => {
+    if (!drag.current) return;
+    const max = Math.min(MAX_W, window.innerWidth - 560);
+    setWidth(Math.round(Math.max(MIN_W, Math.min(max, drag.current.w + drag.current.x - e.clientX))));
+  };
+  const onUp = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    localStorage.setItem("ee.rightWidth", String(width));
+  };
+
   return (
-    <aside className="flex w-[400px] shrink-0 flex-col border-l border-line bg-bg">
+    <aside className="relative flex shrink-0 flex-col border-l border-line bg-bg" style={{ width }}>
+      <div
+        className="no-drag absolute -left-[3px] top-0 z-20 h-full w-[6px] cursor-col-resize transition-colors hover:bg-accent/30"
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onDoubleClick={() => {
+          setWidth(400);
+          localStorage.setItem("ee.rightWidth", "400");
+        }}
+      />
       <div className="drag flex h-11 shrink-0 items-center gap-1 border-b border-line pl-2" style={{ paddingRight: "calc(var(--overlay-w) + 8px)" }}>
         {TABS.map((t) => (
           <button
@@ -187,12 +217,12 @@ export function RightPanel() {
         ))}
       </div>
       {s.rightTab === "review" && <Review />}
-      {s.rightTab === "terminal" && (
-        <Stub icon={<SquareTerminal size={28} />} title="内置终端" text="下一个版本（D2）接入 xterm.js，直接在项目目录里开 PowerShell / Git Bash。" />
+      {termMounted && (
+        <div className={clsx("min-h-0 flex-1 flex-col", s.rightTab === "terminal" ? "flex" : "hidden")}>
+          <TerminalPanel />
+        </div>
       )}
-      {s.rightTab === "files" && (
-        <Stub icon={<FileCode2 size={28} />} title="文件预览" text="下一个版本（D2）可以浏览项目文件并高亮预览。" />
-      )}
+      {s.rightTab === "files" && <FilesPanel />}
     </aside>
   );
 }

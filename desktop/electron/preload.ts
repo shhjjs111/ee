@@ -10,6 +10,25 @@ contextBridge.exposeInMainWorld("ee", {
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   setTheme: (t: string) => ipcRenderer.invoke("app:setTheme", t),
   appInfo: () => ipcRenderer.invoke("app:info"),
+  log: (line: string) => ipcRenderer.send("log:write", line),
+  term: {
+    available: () => ipcRenderer.invoke("term:available"),
+    create: (opts: { cwd?: string; shell?: { kind?: string | null; exe?: string | null }; cols?: number; rows?: number }) =>
+      ipcRenderer.invoke("term:create", opts),
+    write: (id: number, data: string) => ipcRenderer.send("term:write", id, data),
+    resize: (id: number, cols: number, rows: number) => ipcRenderer.send("term:resize", id, cols, rows),
+    kill: (id: number) => ipcRenderer.invoke("term:kill", id),
+    onData: (cb: (m: { id: number; data: string }) => void) => {
+      const h = (_e: unknown, m: { id: number; data: string }) => cb(m);
+      ipcRenderer.on("term:data", h);
+      return () => ipcRenderer.removeListener("term:data", h);
+    },
+    onExit: (cb: (m: { id: number; code: number }) => void) => {
+      const h = (_e: unknown, m: { id: number; code: number }) => cb(m);
+      ipcRenderer.on("term:exit", h);
+      return () => ipcRenderer.removeListener("term:exit", h);
+    },
+  },
   onBackendExit: (cb: (info: { code: number | null; tail: string }) => void) => {
     const h = (_e: unknown, info: { code: number | null; tail: string }) => cb(info);
     ipcRenderer.on("backend:exit", h);

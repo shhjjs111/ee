@@ -26,6 +26,9 @@ type State = {
   rightOpen: boolean;
   rightTab: RightTab;
   reviewNonce: number;
+  filePath: string | null; // 文件标签页当前预览的文件（相对工作区；null = 显示文件树）
+  lastFilePath: string | null;
+  fileNonce: number;
   search: string;
   toast: { text: string; kind: "info" | "error" } | null;
 };
@@ -40,7 +43,9 @@ type Actions = {
   removeWorkspace(path: string): Promise<void>;
   send(text: string): Promise<void>;
   interrupt(): Promise<void>;
+  compact(): Promise<void>;
   respond(callId: string, choice: "once" | "always" | "deny", reason?: string): Promise<void>;
+  openFile(path: string): void;
   set(p: Partial<State>): void;
   showToast(text: string, kind?: "info" | "error"): void;
   setTheme(t: Theme): void;
@@ -65,10 +70,21 @@ export const useApp = create<State & Actions>((set, get) => ({
   rightOpen: localStorage.getItem("ee.right") !== "0",
   rightTab: "review",
   reviewNonce: 0,
+  filePath: null,
+  lastFilePath: null,
+  fileNonce: 0,
   search: "",
   toast: null,
 
   set: (p) => set(p),
+
+  openFile(path) {
+    const st = get();
+    const cwd = (st.activeThreadId ? st.details[st.activeThreadId]?.cwd : null) ?? st.activeWorkspace ?? "";
+    const rel = toRelative(path, cwd);
+    localStorage.setItem("ee.right", "1");
+    set((s) => ({ rightOpen: true, rightTab: "files", view: "chat", filePath: rel, lastFilePath: rel, fileNonce: s.fileNonce + 1 }));
+  },
 
   showToast(text, kind = "info") {
     set({ toast: { text, kind } });
@@ -85,9 +101,20 @@ export const useApp = create<State & Actions>((set, get) => ({
 
   async init(rpc) {
     set({ rpc });
+    let wasOpen = false;
     rpc.onState((s) => {
       set({ conn: s });
-      if (s === "open") get().refreshLists().catch(() => undefined);
+      if (s === "open") {
+        get().refreshLists().catch(() => undefined);
+        // 断线重连后：重新拉当前会话，补上断线期间错过的条目
+        const id = get().activeThreadId;
+        if (wasOpen && id) {
+          rpc.call("thread/get", { thread_id: id })
+            .then((r) => useApp.setState((st) => ({ details: { ...st.details, [id]: r.thread } })))
+            .catch(() => undefined);
+        }
+        wasOpen = true;
+      }
     });
     rpc.onNotification((method, p) => onNotification(method, p));
     rpc.connect();
@@ -171,9 +198,50 @@ export const useApp = create<State & Actions>((set, get) => ({
       }
       set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: st.turnStartedAt[id!] ?? Date.now() } }));
       setStatus(id, "running");
+      setStatusText(id, "正在发送…");
       await rpc.call("turn/start", { thread_id: id, text, model, mode });
     } catch (e) {
+      const msg = (e as Error).message;
+      get().showToast(msg, "error");
+      if (id) {
+        // 让对话里也看得到：不再停在“正在工作”
+        setStatus(id, "idle");
+        setStatusText(id, "");
+        useApp.setState((st) => {
+          const d = st.details[id!];
+          if (!d) return {};
+          const err = { id: `local_err_${Date.now()}`, type: "error", message: `发送失败：${msg}`, ts: Date.now() / 1000 } as any;
+          const rest = { ...st.turnStartedAt };
+          delete rest[id!];
+          return { details: { ...st.details, [id!]: { ...d, items: [...d.items, err] } }, turnStartedAt: rest };
+        });
+      }
+    }
+  },
+
+  async compact() {
+    const s = get();
+    const id = s.activeThreadId;
+    const d = id ? s.details[id] : null;
+    if (!id || !d) {
+      s.showToast("还没有对话，不需要压缩");
+      return;
+    }
+    if (d.status !== "idle") {
+      s.showToast("正在运行中，等这一回合结束再压缩", "error");
+      return;
+    }
+    setStatus(id, "compacting");
+    try {
+      const r = await s.rpc!.call("thread/compact", { thread_id: id }, 300000);
+      if (r.context_left !== undefined && r.context_left !== null) {
+        useApp.setState((st) => (st.details[id] ? { details: { ...st.details, [id]: { ...st.details[id], context_left: r.context_left } } } : {}));
+      }
+      get().showToast(r.message || (r.ok ? "已压缩上下文" : "没有压缩"), r.ok ? "info" : "error");
+    } catch (e) {
       get().showToast((e as Error).message, "error");
+    } finally {
+      setStatus(id, "idle");
     }
   },
 
@@ -193,6 +261,10 @@ export const useApp = create<State & Actions>((set, get) => ({
     }
   },
 }));
+
+function setStatusText(id: string, text: string) {
+  useApp.setState((s) => (s.details[id] ? { details: { ...s.details, [id]: { ...s.details[id], status_text: text } } } : {}));
+}
 
 function setStatus(id: string, status: ThreadSummary["status"]) {
   useApp.setState((s) => ({
@@ -242,6 +314,14 @@ function onNotification(method: string, p: any) {
   const d = useApp.getState().details[tid];
   if (!d) return;
   useApp.setState((s) => ({ details: { ...s.details, [tid]: applyItemNotification(d, method, p) } }));
+}
+
+/** 工作区内的绝对路径转成相对路径（统一用 /）；不在工作区里的原样返回，交给后端判断。 */
+export function toRelative(path: string, cwd: string): string {
+  const p = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  const c = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (c && p.toLowerCase().startsWith(c.toLowerCase() + "/")) return p.slice(c.length + 1);
+  return p;
 }
 
 export function applyTheme(t: Theme) {

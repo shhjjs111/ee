@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import sys
@@ -24,9 +25,13 @@ from ee.config import ee_home, load_config
 from ee.core.fileindex import FileIndex
 from ee.core.permissions import MODE_LABEL, MODES
 from ee.core.store import SessionStore
+from ee.server import files as F
 from ee.server import gitops
 from ee.server import settings as S
 from ee.server.threads import Thread
+
+log = logging.getLogger("ee.server")
+SLOW_RPC = 5.0     # 秒：超过就记一条日志
 
 
 class RpcError(Exception):
@@ -53,6 +58,7 @@ class Backend:
             "thread/rename": self.thread_rename,
             "thread/delete": self.thread_delete,
             "thread/undo": self.thread_undo,
+            "thread/compact": self.thread_compact,
             "turn/start": self.turn_start,
             "turn/interrupt": self.turn_interrupt,
             "approval/respond": self.approval_respond,
@@ -63,6 +69,9 @@ class Backend:
             "workspace/open": self.workspace_open,
             "workspace/remove": self.workspace_remove,
             "files/search": self.files_search,
+            "files/tree": self.files_tree,
+            "files/read": self.files_read,
+            "terminal/shell": self.terminal_shell,
             "git/diff": self.git_diff,
             "git/revert_file": self.git_revert_file,
         }
@@ -106,6 +115,14 @@ class Backend:
         self._desktop_file.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------ 线程
+    async def _athread(self, thread_id: str) -> Thread:
+        """取线程；不在内存里时在工作线程里读会话文件（大文件不卡事件循环）。"""
+        t = self.threads.get(thread_id)
+        if t is not None:
+            return t
+        t = await asyncio.to_thread(self._thread, thread_id)
+        return self.threads.setdefault(thread_id, t)
+
     def _thread(self, thread_id: str) -> Thread:
         t = self.threads.get(thread_id)
         if t is not None:
@@ -122,12 +139,17 @@ class Backend:
         self.threads[thread_id] = t
         return t
 
-    def app_info(self) -> dict:
-        cfg = load_config(Path.home())
+    async def app_info(self) -> dict:
+        from ee import log as eelog
+        cfg = await asyncio.to_thread(load_config, Path.home())
         return {"version": __version__, "home": str(self.home), "pid": os.getpid(), "platform": sys.platform,
+                "frozen": bool(getattr(sys, "frozen", False)), "log_file": str(eelog.log_dir() / eelog.LOG_NAME),
                 "default_model": cfg.default_model, "modes": [{"id": m, "label": MODE_LABEL[m]} for m in MODES]}
 
-    def thread_list(self, cwd: str | None = None, query: str | None = None, limit: int = 200) -> dict:
+    async def thread_list(self, cwd: str | None = None, query: str | None = None, limit: int = 200) -> dict:
+        return await asyncio.to_thread(self._thread_list, cwd, query, limit)
+
+    def _thread_list(self, cwd: str | None = None, query: str | None = None, limit: int = 200) -> dict:
         seen: dict[str, dict] = {}
         for t in self.threads.values():
             seen[t.id] = t.summary()
@@ -148,36 +170,43 @@ class Backend:
         out.sort(key=lambda t: t.get("updated") or 0, reverse=True)
         return {"threads": out[:limit]}
 
-    def thread_start(self, cwd: str, model: str | None = None, mode: str | None = None) -> dict:
-        p = Path(cwd).expanduser()
-        if not p.is_dir():
-            raise RpcError(f"目录不存在：{cwd}")
+    async def thread_start(self, cwd: str, model: str | None = None, mode: str | None = None) -> dict:
         if mode and mode not in MODES:
             raise RpcError(f"未知权限模式：{mode}")
-        store = SessionStore(self.home)
-        meta = {"cwd": str(p.resolve()), "model": model or "", "mode": mode or "", "title": "新对话",
-                "created": time.time()}
-        t = Thread(store.id, self.home, self.notify, meta, client_factory=self.client_factory, persist=self.persist)
-        try:
-            t.ensure_session()
-        except ValueError as e:
-            raise RpcError(f"配置错误：{e}")
+
+        def build() -> Thread:   # 工作线程里：目录检查、git status、shell 探测、写会话文件
+            p = Path(cwd).expanduser()
+            if not p.is_dir():
+                raise RpcError(f"目录不存在：{cwd}")
+            store = SessionStore(self.home)
+            meta = {"cwd": str(p.resolve()), "model": model or "", "mode": mode or "", "title": "新对话",
+                    "created": time.time()}
+            t = Thread(store.id, self.home, self.notify, meta, client_factory=self.client_factory,
+                       persist=self.persist)
+            try:
+                t.ensure_session()
+            except ValueError as e:
+                raise RpcError(f"配置错误：{e}")
+            t.save_meta()
+            self._touch_workspace(meta["cwd"])
+            return t
+
+        t = await asyncio.to_thread(build)
         self.threads[t.id] = t
-        t.save_meta()
-        self._touch_workspace(meta["cwd"])
+        log.info("新会话 %s cwd=%s 模型 %s", t.id, t.meta.get("cwd"), t.meta.get("model"))
         self.notify("thread/updated", {"thread": t.summary()})
         return {"thread": t.detail()}
 
-    def thread_get(self, thread_id: str) -> dict:
-        t = self._thread(thread_id)
+    async def thread_get(self, thread_id: str) -> dict:
+        t = await self._athread(thread_id)
         try:
-            t.ensure_session()
+            await t.ensure_session_async()
         except ValueError as e:
             raise RpcError(f"配置错误：{e}")
         return {"thread": t.detail()}
 
-    def thread_rename(self, thread_id: str, title: str) -> dict:
-        t = self._thread(thread_id)
+    async def thread_rename(self, thread_id: str, title: str) -> dict:
+        t = await self._athread(thread_id)
         t.meta["title"] = title.strip() or "新对话"
         t.save_meta()
         self.notify("thread/updated", {"thread": t.summary()})
@@ -193,51 +222,84 @@ class Backend:
         self.notify("thread/deleted", {"thread_id": thread_id})
         return {"ok": True}
 
-    def thread_undo(self, thread_id: str) -> dict:
-        t = self._thread(thread_id)
-        s = t.ensure_session()
+    async def thread_undo(self, thread_id: str) -> dict:
+        t = await self._athread(thread_id)
+        s = await t.ensure_session_async()
         if s.running:
             raise RpcError("运行中不能撤销")
-        restored = s.undo()
+        restored = await asyncio.to_thread(s.undo)
         if restored:
             t._add({"type": "notice", "text": "已撤销上一回合的文件改动：\n" + "\n".join(restored), "level": "info"})
         return {"restored": restored}
 
+    async def thread_compact(self, thread_id: str) -> dict:
+        t = await self._athread(thread_id)
+        if t.running or t.compacting:
+            raise RpcError("正在运行中，等这一回合结束再压缩")
+        try:
+            s = await t.ensure_session_async()
+        except ValueError as e:
+            raise RpcError(f"配置错误：{e}")
+        if s.running:
+            raise RpcError("正在运行中，等这一回合结束再压缩")
+        t.compacting = True
+        self.notify("thread/updated", {"thread": t.summary()})
+        try:
+            res = await s.compact(emit=t._on_event)
+        finally:
+            t.compacting = False
+        t.context_left = round(s.context_left(), 4)
+        if res.get("ok"):
+            t.save_meta()
+        self.notify("thread/usage", {"thread_id": t.id, "usage": t.usage, "context_left": t.context_left})
+        self.notify("thread/updated", {"thread": t.summary()})
+        return {"ok": bool(res.get("ok")), "message": res.get("message", ""),
+                "tokens_before": res.get("tokens_before", 0), "tokens_after": res.get("tokens_after", 0),
+                "context_left": t.context_left}
+
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None) -> dict:
         if not (text or "").strip():
             raise RpcError("消息不能为空")
-        t = self._thread(thread_id)
+        t = await self._athread(thread_id)
+        if t.compacting:
+            raise RpcError("正在压缩上下文，稍等片刻再发送")
         try:
+            await t.ensure_session_async()   # 首次建会话要跑 git 等子进程：放到工作线程
+            log.info("turn/start 会话 %s：%d 字", thread_id, len(text))
             return t.start_turn(text, model=model, mode=mode)
         except ValueError as e:
             raise RpcError(str(e))
 
-    def turn_interrupt(self, thread_id: str) -> dict:
-        t = self._thread(thread_id)
+    async def turn_interrupt(self, thread_id: str) -> dict:
+        t = await self._athread(thread_id)
         return {"interrupted": t.interrupt()}
 
-    def approval_respond(self, thread_id: str, call_id: str, choice: str, reason: str = "") -> dict:
-        t = self._thread(thread_id)
+    async def approval_respond(self, thread_id: str, call_id: str, choice: str, reason: str = "") -> dict:
+        t = await self._athread(thread_id)
         try:
             return t.respond(call_id, choice, reason)
         except ValueError as e:
             raise RpcError(str(e))
 
     # ------------------------------------------------------------ 设置 / 模型
-    def settings_get(self) -> dict:
-        return S.get_settings()
+    async def settings_get(self) -> dict:
+        return await asyncio.to_thread(S.get_settings)
 
-    def settings_set(self, settings: dict) -> dict:
+    async def settings_set(self, settings: dict) -> dict:
         try:
-            res = S.set_settings(settings)
+            res = await asyncio.to_thread(S.set_settings, settings)
         except ValueError as e:
             raise RpcError(str(e))
+        log.info("设置已保存：默认模型 %s", (res.get("settings") or {}).get("default_model"))
         for t in self.threads.values():
             t.reload_config()
         self.notify("settings/changed", res)
         return res
 
-    def models_list(self, cwd: str | None = None) -> dict:
+    async def models_list(self, cwd: str | None = None) -> dict:
+        return await asyncio.to_thread(self._models_list, cwd)
+
+    def _models_list(self, cwd: str | None = None) -> dict:
         cfg = load_config(Path(cwd) if cwd and Path(cwd).is_dir() else Path.home())
         out = []
         for name in cfg.model_names():
@@ -259,25 +321,32 @@ class Backend:
         d["workspaces"] = ws[:50]
         self._save_desktop(d)
 
-    def workspace_list(self) -> dict:
+    async def workspace_list(self) -> dict:
+        return await asyncio.to_thread(self._workspace_list)
+
+    def _workspace_list(self) -> dict:
         ws = self._desktop().get("workspaces", [])
         for w in ws:
             w["exists"] = Path(w["path"]).is_dir()
         return {"workspaces": ws}
 
-    def workspace_open(self, path: str) -> dict:
-        p = Path(path).expanduser()
-        if not p.is_dir():
-            raise RpcError(f"目录不存在：{path}")
-        self._touch_workspace(str(p.resolve()))
-        return self.workspace_list()
+    async def workspace_open(self, path: str) -> dict:
+        def run():
+            p = Path(path).expanduser()
+            if not p.is_dir():
+                raise RpcError(f"目录不存在：{path}")
+            self._touch_workspace(str(p.resolve()))
+            return self._workspace_list()
+        return await asyncio.to_thread(run)
 
-    def workspace_remove(self, path: str) -> dict:
-        d = self._desktop()
-        d["workspaces"] = [w for w in d.get("workspaces", [])
-                           if os.path.normcase(w["path"]) != os.path.normcase(path)]
-        self._save_desktop(d)
-        return self.workspace_list()
+    async def workspace_remove(self, path: str) -> dict:
+        def run():
+            d = self._desktop()
+            d["workspaces"] = [w for w in d.get("workspaces", [])
+                               if os.path.normcase(w["path"]) != os.path.normcase(path)]
+            self._save_desktop(d)
+            return self._workspace_list()
+        return await asyncio.to_thread(run)
 
     async def files_search(self, cwd: str, query: str = "", limit: int = 20) -> dict:
         key = os.path.normcase(os.path.abspath(cwd))
@@ -289,6 +358,37 @@ class Backend:
         else:
             idx = hit[1]
         return {"files": idx.search(query, n=limit)}
+
+    async def files_tree(self, cwd: str, path: str = "", show_ignored: bool = False) -> dict:
+        try:
+            return await asyncio.to_thread(F.tree, cwd, path, show_ignored)
+        except F.FilesError as e:
+            raise RpcError(str(e))
+
+    async def files_read(self, cwd: str, path: str, max_bytes: int = F.MAX_TEXT) -> dict:
+        try:
+            return await asyncio.to_thread(F.read, cwd, path, max_bytes)
+        except F.FilesError as e:
+            raise RpcError(str(e))
+
+    async def terminal_shell(self, cwd: str | None = None) -> dict:
+        return await asyncio.to_thread(self._terminal_shell, cwd)
+
+    def _terminal_shell(self, cwd: str | None = None) -> dict:
+        """内置终端用哪个 shell：和 agent 的 shell 设置一致（auto / pwsh / powershell / git-bash / cmd / bash）。"""
+        from ee.tools.shellenv import ShellNotFound, resolve_shell
+        cfg = load_config(Path(cwd) if cwd and Path(cwd).is_dir() else Path.home())
+        name = cfg.data.get("shell", "auto")
+        notice = None
+        try:
+            sh = resolve_shell(name)
+        except ShellNotFound as e:
+            notice = str(e)
+            try:
+                sh = resolve_shell("auto")
+            except ShellNotFound as e2:
+                return {"setting": name, "kind": None, "exe": None, "display": None, "notice": str(e2)}
+        return {"setting": name, "kind": sh.kind, "exe": sh.exe, "display": sh.display, "notice": notice}
 
     # ------------------------------------------------------------ git
     async def git_diff(self, cwd: str) -> dict:
@@ -321,10 +421,19 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
 
-    def broadcast(method: str, params: dict) -> None:
-        msg = json.dumps({"jsonrpc": "2.0", "method": method, "params": params}, ensure_ascii=False, default=str)
+    loop_thread = threading.get_ident()
+
+    def _put_all(msg: str) -> None:
         for q in list(conns.values()):
             q.put_nowait(msg)
+
+    def broadcast(method: str, params: dict) -> None:
+        # 线程安全：有的 RPC 在工作线程里跑（asyncio.to_thread），通知要切回事件循环再入队
+        msg = json.dumps({"jsonrpc": "2.0", "method": method, "params": params}, ensure_ascii=False, default=str)
+        if threading.get_ident() == loop_thread:
+            _put_all(msg)
+        else:
+            loop.call_soon_threadsafe(_put_all, msg)
 
     backend.listeners.append(broadcast)
 
@@ -364,25 +473,53 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
                                      "error": {"code": -32700, "message": "JSON 解析失败"}}))
             return
         rid = req.get("id")
+        method = req.get("method", "")
+        t0 = time.monotonic()
         try:
-            result = await backend.call(req.get("method", ""), req.get("params"))
+            result = await backend.call(method, req.get("params"))
             out = {"jsonrpc": "2.0", "id": rid, "result": result}
         except RpcError as e:
+            log.warning("RPC %s 失败：%s", method, e)
             out = {"jsonrpc": "2.0", "id": rid, "error": {"code": e.code, "message": str(e)}}
         except Exception as e:  # noqa: BLE001
+            log.error("RPC %s 内部错误", method, exc_info=True)
             out = {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": f"{type(e).__name__}: {e}"}}
+        dt = time.monotonic() - t0
+        if dt >= SLOW_RPC:
+            log.warning("RPC %s 用时 %.1fs（慢）", method, dt)
         if rid is not None:
             q.put_nowait(json.dumps(out, ensure_ascii=False, default=str))
 
     if exit_on_stdin_eof:
+        # 先把 fd 0 换成 NUL，再在私有副本上阻塞读：子进程（git 等）就不会继承这根正被读着的管道。
+        # 实测 Windows 上不这样做，git 子进程会在启动时卡死，事件循环跟着卡死（界面全部转圈）。
+        fd = _detach_stdin()
+
         def watch():
             try:
-                while sys.stdin.buffer.read(1024):
-                    pass
+                if fd is None:
+                    while sys.stdin.buffer.read(1024):
+                        pass
+                else:
+                    while os.read(fd, 1024):
+                        pass
             except Exception:  # noqa: BLE001
                 pass
+            log.info("stdin 已关闭（桌面端退出），后端退出")
             loop.call_soon_threadsafe(lambda: stop.done() or stop.set_result(None))
-        threading.Thread(target=watch, daemon=True).start()
+        threading.Thread(target=watch, name="ee-stdin-eof", daemon=True).start()
+
+    from ee import log as eelog
+    from ee.core.providers import net
+    watchdog = eelog.LoopWatchdog(loop)
+    watchdog.start()
+    try:
+        np = await asyncio.wait_for(asyncio.to_thread(
+            lambda: net.plan("https://api.deepseek.com", load_config(Path.home()).data.get("network"))), 5)
+        log.info("ee serve %s 启动：pid=%s python=%s frozen=%s home=%s；网络：%s", __version__, os.getpid(),
+                 sys.version.split()[0], bool(getattr(sys, "frozen", False)), backend.home, np.describe)
+    except Exception:  # noqa: BLE001
+        log.warning("启动信息收集失败", exc_info=True)
 
     async with ws_serve(handler, host, port, process_request=check, max_size=32 * 2**20,
                         ping_interval=None) as server:
@@ -392,8 +529,28 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         else:
             print("EE_SERVE_READY " + json.dumps({"port": real_port, "pid": os.getpid()}), flush=True)
         await stop
+    watchdog.stop()
     for t in backend.threads.values():
         t.interrupt()
+
+
+def _detach_stdin() -> int | None:
+    """返回原 stdin 的不可继承副本，并把 fd 0（Windows 上连同 STD_INPUT_HANDLE）指向 NUL。失败返回 None。"""
+    try:
+        fd = os.dup(0)              # Python 3.4+：dup 出来的 fd 默认不可继承
+    except OSError:
+        return None
+    try:
+        nul = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(nul, 0)
+        os.close(nul)
+        if sys.platform == "win32":
+            import ctypes
+            import msvcrt
+            ctypes.windll.kernel32.SetStdHandle(-10, msvcrt.get_osfhandle(0))   # STD_INPUT_HANDLE
+    except Exception:  # noqa: BLE001
+        log.warning("替换 stdin 失败（子进程仍有 stdin=DEVNULL 兜底）", exc_info=True)
+    return fd
 
 
 async def _safe_send(ws, msg: str) -> None:

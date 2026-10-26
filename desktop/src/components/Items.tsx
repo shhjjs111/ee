@@ -74,6 +74,36 @@ function Mono({ children }: { children: React.ReactNode }) {
   return <code className="mono rounded bg-soft px-1.5 py-px text-[12px] text-fg">{children}</code>;
 }
 
+/** 可点击的文件路径：在右侧「文件」标签里打开。 */
+export function PathLink({ path, label, className }: { path: string; label?: string; className?: string }) {
+  const openFile = useApp((s) => s.openFile);
+  if (!path) return <span className={className}>{label}</span>;
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      title={`在文件面板中打开 ${path}`}
+      className={clsx(
+        "mono cursor-pointer rounded-sm decoration-faint/60 underline-offset-[3px] hover:text-fg hover:underline",
+        className,
+      )}
+      onClick={(e) => {
+        e.stopPropagation();
+        openFile(path);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.stopPropagation();
+          e.preventDefault();
+          openFile(path);
+        }
+      }}
+    >
+      {label ?? path}
+    </span>
+  );
+}
+
 function OutputBox({ text }: { text: string }) {
   const t = (text || "").replace(/^\s*\n/, "").trimEnd();
   return (
@@ -134,11 +164,12 @@ export function AssistantMessage({ item }: { item: AssistantItem }) {
 }
 
 // ------------------------------------------------------------ 工具
-function exploreLabel(it: ToolItem): { verb: string; target: string; icon: React.ReactNode } {
+function exploreLabel(it: ToolItem): { verb: string; target: string; icon: React.ReactNode; file?: string } {
   const a = it.args || {};
   if (it.name === "read") {
     const k = it.meta?.kind;
-    return { verb: k === "list" ? "列出" : "读取", target: shortPath(String(a.path ?? ""), 3), icon: <FileSearch size={13} /> };
+    const p = String(a.path ?? "");
+    return { verb: k === "list" ? "列出" : "读取", target: shortPath(p, 3), icon: <FileSearch size={13} />, file: k === "list" ? undefined : p };
   }
   if (it.name === "grep") return { verb: "搜索", target: String(a.pattern ?? ""), icon: <FolderSearch size={13} /> };
   if (it.name === "glob") return { verb: "查找", target: String(a.pattern ?? ""), icon: <FolderSearch size={13} /> };
@@ -169,7 +200,11 @@ export function ExploreGroup({ items }: { items: Item[] }) {
             <div key={t.id} className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted">
               <span className="text-faint">{l.icon}</span>
               <span className="shrink-0">{l.verb}</span>
-              <span className="mono truncate text-fg/80">{l.target}</span>
+              {l.file && t.status !== "error" ? (
+                <PathLink path={l.file} label={l.target} className="truncate text-fg/80" />
+              ) : (
+                <span className="mono truncate text-fg/80">{l.target}</span>
+              )}
               {t.status === "error" && <span className="text-danger">失败</span>}
             </div>
           );
@@ -227,7 +262,12 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
         icon={created ? <FilePlus2 size={14} /> : <FilePen size={14} />}
         title={
           <>
-            {verb} <span className="mono text-fg/90">{files.length > 1 ? `${files.length} 个文件` : shortPath(path, 3)}</span>
+            {verb}{" "}
+            {files.length > 1 ? (
+              <span className="mono text-fg/90">{files.length} 个文件</span>
+            ) : (
+              <PathLink path={path} label={shortPath(path, 3)} className="text-fg/90" />
+            )}
           </>
         }
         right={
@@ -241,6 +281,13 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
         open={open}
         onToggle={() => setOpen(!open)}
       >
+        {files.length > 1 && (
+          <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[12.5px] text-muted">
+            {files.map((f) => (
+              <PathLink key={f.path} path={f.path} label={shortPath(f.path, 3)} />
+            ))}
+          </div>
+        )}
         {item.diff ? (
           <div className="overflow-hidden rounded-xl border border-line bg-code">
             <DiffView patch={item.diff} maxHeight={360} />
@@ -409,14 +456,22 @@ export function ErrorRow({ message }: { message: string }) {
 export function TurnEnd({ item }: { item: TurnEndItem }) {
   const u = item.usage || {};
   const reason =
-    item.reason === "interrupted" ? "已停止" : item.reason === "error" ? "出错" : item.reason === "max_steps" ? "达到步数上限" : "完成";
+    item.reason === "interrupted"
+      ? "已停止"
+      : item.reason === "error"
+        ? "出错"
+        : item.reason === "max_steps"
+          ? "达到步数上限"
+          : item.reason === "loop"
+            ? "检测到重复操作，已停止"
+            : "完成";
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
   if (u.hit_rate !== undefined && u.hit_rate !== null) bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%`);
   if (u.cost !== undefined && u.cost !== null) bits.push(`累计 ${u.currency ?? ""}${u.cost.toFixed(4)}`);
   return (
     <div className="flex items-center gap-3 py-1 text-[11.5px] text-faint">
       <div className="h-px flex-1 bg-line" />
-      <span>{bits.join(" · ")}</span>
+      <span className={clsx(item.reason === "loop" && "text-warn")}>{bits.join(" · ")}</span>
       <div className="h-px flex-1 bg-line" />
     </div>
   );

@@ -7,7 +7,7 @@ import { RightPanel } from "./components/RightPanel";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { Button, Spinner } from "./components/ui";
-import { RpcClient } from "./lib/rpc";
+import { RpcClient, rpcLog } from "./lib/rpc";
 import { applyTheme, useApp } from "./lib/store";
 
 type Boot = { state: "loading" } | { state: "error"; message: string } | { state: "ready" };
@@ -26,6 +26,7 @@ export default function App() {
   const view = useApp((s) => s.view);
   const toast = useApp((s) => s.toast);
   const theme = useApp((s) => s.theme);
+  const conn = useApp((s) => s.conn);
 
   const start = async (restart = false) => {
     setBoot({ state: "loading" });
@@ -50,8 +51,33 @@ export default function App() {
     const onMq = () => applyTheme(useApp.getState().theme);
     mq.addEventListener("change", onMq);
     start();
+    // 内核意外退出 / WebSocket 连不回来：自动重启内核（2 分钟内最多 3 次，超过就显示错误页）
+    const restarts: number[] = [];
+    let restarting = false;
+    const autoRestart = async (why: string) => {
+      if (restarting) return;
+      const now = Date.now();
+      while (restarts.length && now - restarts[0] > 120000) restarts.shift();
+      if (restarts.length >= 3) {
+        rpcLog(`自动重启已达上限：${why}`);
+        setBoot({ state: "error", message: `${why}\n已自动重启 3 次仍失败，请查看日志或手动重启。` });
+        return;
+      }
+      restarts.push(now);
+      restarting = true;
+      rpcLog(`自动重启内核：${why}`);
+      useApp.getState().showToast(`${why.split("\n")[0]}，正在自动重启内核…`, "error");
+      try {
+        await start(true);
+      } finally {
+        restarting = false;
+      }
+    };
     const off = window.ee?.onBackendExit((info) => {
-      setBoot({ state: "error", message: `后端意外退出（退出码 ${info.code}）。\n${info.tail}` });
+      autoRestart(`内核意外退出（退出码 ${info.code}）\n${info.tail}`);
+    });
+    const offConn = useApp.subscribe((st, prev) => {
+      if (st.conn === "failed" && prev.conn !== "failed") autoRestart("与内核的连接断开且重连失败");
     });
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
@@ -66,6 +92,7 @@ export default function App() {
     return () => {
       mq.removeEventListener("change", onMq);
       off?.();
+      offConn();
       window.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -102,6 +129,11 @@ export default function App() {
 
   return (
     <TT.Provider>
+      {(conn === "closed" || conn === "connecting") && (
+        <div className="fixed left-1/2 top-2 z-50 -translate-x-1/2 rounded-full border border-warn/40 bg-elev px-3 py-1 text-[12px] text-warn shadow-[var(--shadow)]">
+          与内核的连接断开，正在重连…
+        </div>
+      )}
       <div className="flex h-full overflow-hidden">
         <Sidebar />
         {view === "settings" ? <SettingsPage /> : <Conversation />}

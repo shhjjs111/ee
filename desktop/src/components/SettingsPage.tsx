@@ -2,7 +2,7 @@ import clsx from "clsx";
 import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plus, Server, SlidersHorizontal, Star, Sun, Trash2 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { useApp, type Theme } from "../lib/store";
-import type { ModelSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
+import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
 import { Button, Field, Input, Select, Spinner, Tip } from "./ui";
 
 type Section = "general" | "models" | "about";
@@ -70,6 +70,10 @@ function Segmented<T extends string>({ value, options, onChange }: { value: T; o
       ))}
     </div>
   );
+}
+
+function net(d: Settings): NetworkSettings {
+  return d.network ?? { proxy_mode: "system", proxy_url: "", connect_timeout: 15, read_timeout: 90, retries: 2 };
 }
 
 function num(v: any): string {
@@ -271,13 +275,20 @@ export function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [appInfo, setAppInfo] = useState<{ version: string; logs: string } | null>(null);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadNonce, setLoadNonce] = useState(0);
+
   useEffect(() => {
-    s.rpc?.call("settings/get").then((r: SettingsResponse) => {
-      setResp(r);
-      setDraft(structuredClone(r.settings));
-    });
+    setLoadError(null);
+    s.rpc
+      ?.call("settings/get")
+      .then((r: SettingsResponse) => {
+        setResp(r);
+        setDraft(structuredClone(r.settings));
+      })
+      .catch((e: Error) => setLoadError(e.message));
     window.ee?.appInfo().then(setAppInfo).catch(() => undefined);
-  }, [s.rpc]);
+  }, [s.rpc, loadNonce]);
 
   const dirty = useMemo(() => {
     if (!resp || !draft) return false;
@@ -286,8 +297,22 @@ export function SettingsPage() {
 
   if (!draft || !resp) {
     return (
-      <div className="flex flex-1 items-center justify-center text-muted">
-        <Spinner />
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
+        {loadError ? (
+          <>
+            <div className="max-w-[460px] text-center text-[13px] text-danger">读取设置失败：{loadError}</div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setLoadNonce((n) => n + 1)}>
+                重试
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => s.set({ view: "chat" })}>
+                返回
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Spinner />
+        )}
       </div>
     );
   }
@@ -409,6 +434,38 @@ export function SettingsPage() {
                     side="bottom"
                     className="h-8 min-w-[260px] justify-between border border-line bg-bg px-2.5 text-fg"
                   />
+                </Card>
+                <Card title="网络" desc="模型请求怎么走代理、等多久算超时。连不上或没反应时先看这里。">
+                  <SettingRow label="代理" desc={draft.network?.proxy_mode === "system" ? `当前：${draft.network?.system_proxy || "未检测"}` : "本机地址（127.0.0.1）永远直连"}>
+                    <Segmented
+                      value={draft.network?.proxy_mode ?? "system"}
+                      options={[
+                        { value: "system", label: "跟随系统" },
+                        { value: "direct", label: "直连" },
+                        { value: "custom", label: "自定义" },
+                      ]}
+                      onChange={(v) => up({ network: { ...net(draft), proxy_mode: v } })}
+                    />
+                  </SettingRow>
+                  {draft.network?.proxy_mode === "custom" && (
+                    <SettingRow label="代理地址" desc="HTTP 代理，例如 Clash / v2rayN 的 http://127.0.0.1:7890">
+                      <Input
+                        className="mono w-[260px]"
+                        value={draft.network?.proxy_url ?? ""}
+                        placeholder="http://127.0.0.1:7890"
+                        onChange={(e) => up({ network: { ...net(draft), proxy_url: e.target.value } })}
+                      />
+                    </SettingRow>
+                  )}
+                  <SettingRow label="连接超时（秒）" desc="建立连接（含代理握手、TLS）最长等多久">
+                    <Input className="w-24 text-right" inputMode="numeric" value={num(draft.network?.connect_timeout)} onChange={(e) => up({ network: { ...net(draft), connect_timeout: Number(e.target.value) || 0 } })} />
+                  </SettingRow>
+                  <SettingRow label="读取超时（秒）" desc="多久收不到模型任何数据就判定失败（含等第一个字）">
+                    <Input className="w-24 text-right" inputMode="numeric" value={num(draft.network?.read_timeout)} onChange={(e) => up({ network: { ...net(draft), read_timeout: Number(e.target.value) || 0 } })} />
+                  </SettingRow>
+                  <SettingRow label="失败重试次数" desc="连接失败、超时、429/5xx 时自动重试">
+                    <Input className="w-24 text-right" inputMode="numeric" value={num(draft.network?.retries)} onChange={(e) => up({ network: { ...net(draft), retries: Number(e.target.value) || 0 } })} />
+                  </SettingRow>
                 </Card>
                 <Card title="供应商" desc="接口地址和 key。key 可以直接保存在本机，也可以只填环境变量名。">
                   <div className="space-y-3">

@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 13:20（Asia/Shanghai）
+最后更新：2026-10-26 13:35（Asia/Shanghai）
 
 ## 用户要什么
 - 用户 ee 自用的 AI 编程 Agent，**只要 Windows 桌面端，不要终端版**。UI 照 OpenAI Codex 桌面版（三栏：左项目/对话、中对话、右改动审阅）。
@@ -30,13 +30,15 @@
 - 用户的 `%APPDATA%\ee\logs\backend.log` 只有 3 次正常启动（`EE_SERVE_READY`），没有任何报错/退出 → 后端起来了，卡在启动之后，且出错没写日志。
 - Linux 上源码版跑 `ee/scripts/e2e_ws.py`（拉后端 + 假模型，settings/get→set→workspace/open→thread/start→turn/start“你好”）0.5 秒正常完成 → 问题是 Windows/冻结 exe 特有。
 - **根因已在 Windows CI 上复现（2026-10-26 13:10，分支 repro-win-hang，run 40272706672）**：`--exit-on-stdin-eof` 的线程阻塞读 stdin 管道时，git 子进程（继承了同一根 stdin 管道）在 Windows 上启动即卡死；`subprocess.run(timeout=10)` 超时后 Windows 实现还会无限期 `communicate()` → `thread/start`（同步跑 git status）把事件循环永久卡住 → “你好”没反应、设置转圈，且不会有任何日志。同一脚本 stdin=DEVNULL 或不读 stdin 时 0.1s 正常。复现脚本 `ee/scripts/win_stdin_repro.py`、`ee/scripts/e2e_ws.py`。
-- 修复（进行中，代码在 Hark 工作区，未推送）：`ee/proc.py` 统一子进程（stdin=DEVNULL、超时杀进程树、收尾有超时）；serve 启动时把 fd0 换成 NUL、只在私有副本上读 EOF；所有慢 RPC 挪到 asyncio.to_thread；后端日志 `ee-backend.log` + 事件循环卡顿看门狗；模型请求超时/代理设置/中文错误/“正在连接模型…”状态。
-- 其余排查点：
-  1. AsyncOpenAI 默认 timeout 600s + 自己重试 3 次 → 网络/代理不通时界面几十分钟毫无提示。要加连接/读取超时、立即显示“正在连接模型…”、失败显示清晰中文错误。Windows 上 httpx 会读系统代理（注册表），要可配置（跟随系统/直连/自定义）。
-  2. server 里有同步 subprocess（git 等）在事件循环上执行 → 阻塞 WebSocket，设置 RPC 转圈。全部改 to_thread。
-  3. Electron 端 RPC 无超时、WS 断开不提示 → 加超时、重连、错误显示；后端 stderr 和 Python 端自己的日志都写进 logs。
-  4. 设置保存后默认模型/key 是否真生效。
-  5. PyInstaller 冻结版缺 hidden imports/证书。CI 里加：用打包后的 ee-backend.exe 跑 e2e（假模型 + 黑洞端点测超时）。
+- 修复（已推送 main，等 Windows CI 确认）：
+  - `ee/proc.py:run_capture`：所有短命令（git/rg/taskkill）stdin=DEVNULL、超时杀进程树、收尾有超时；asyncio 子进程也 stdin=DEVNULL。
+  - `ee serve --exit-on-stdin-eof`：启动时 dup 出 stdin 私有副本只在它上面读 EOF，fd0/STD_INPUT_HANDLE 换成 NUL（第三方代码起子进程也不会再继承那根管道）。
+  - server：thread/start、thread/get、turn/start（首次建会话）、settings/*、models/list、workspace/*、thread/list、terminal/shell 全部 asyncio.to_thread；会话里 refresh_git / AGENTS.md 加载 / 模型客户端构造也挪到线程；通知广播线程安全。
+  - 日志：后端 `ee-backend.log`（EE_LOG_DIR → %APPDATA%\ee\logs → ~/.ee/logs），记录 RPC 失败/慢 RPC、回合开始结束、模型请求开始/结束/异常 traceback、代理；事件循环卡住 ≥8s 自动把调用栈写进日志（`ee/log.py` LoopWatchdog）。界面侧 RPC 失败/重连/自动重启写 `backend.log`。
+  - 模型请求（`ee/core/providers/net.py`）：连接 15s / 读取 90s / 重试 2 次（设置可改）；代理 跟随系统/直连/自定义，本机地址永远直连；失败给中文错误（含 base_url、HTTP 状态、走没走代理）；`turn/status` 事件显示“正在连接模型…/已连接，等待模型输出…”。
+  - 桌面端：RPC 默认 20s 超时并显示错误；设置页加载失败显示错误+重试（原来 promise 没 catch → 永远转圈）；发送失败在对话里出错误条目、不再卡“正在工作”；WS 断开顶部提示，重连失败或内核退出自动重启内核（2 分钟内最多 3 次）。
+  - CI：源码后端 e2e、打包 exe `selftest`、打包 exe e2e（假模型）、打包 exe 黑洞端点 e2e（必须在超时内报错）。
+- 已核实没问题：默认模型 `deepseek-flash`（官方当前名，2026-10 文档）→ provider deepseek → 设置页存的 key；settings/set 后已有会话立即用新 key（有测试）。
 - **用户决定（2026-10-26）：不急着出新安装包，先多推进功能，攒一起再出包。**
 
 **D2 进度**
@@ -45,7 +47,7 @@
 - [x] 防死循环 `ee/core/loopguard.py`，TurnDone reason="loop"，UI 显示“检测到重复操作，已停止”。
 - [x] 右栏真终端：Electron main 里 node-pty 1.1.0 + xterm.js，多标签，跟随 shell 设置；node-pty 打包到 resources/node-pty（asar 外），npmRebuild=false；CI 加了 pty smoke 和安装包内 node-pty 检查（待 Windows CI 确认）。
 - [x] 文件树/预览：`files/tree`、`files/read` RPC（限制在工作区内），Shiki 高亮、Markdown 渲染、图片；工具卡片里的路径可点击打开。右栏可拖宽。
-- [~] Windows 无响应 bug 修复（见上）。
+- [x] Windows 无响应 bug 修复（见上；等 Windows CI 全绿后再出包，用户真机待验证）。
 - [~] 网页搜索/抓取（默认 DeepSeek 自家 Search/Fetch API，可插拔，可关闭）、子代理（独立上下文、可只读、审批冒泡到 UI）、记忆（~/.ee/memory.md + 工作区 .ee/memory.md，注入位置稳定以利前缀缓存）。
 - 上面 [x] 的代码在 Hark 工作区已完成，pytest 约 168 个通过、npm run build 通过；会和 bug 修复一起推送到本仓库（若你看到仓库里还没有，说明尚未推送）。
 - 之后：所有功能稳定 → Windows CI 全绿 → 出新安装包给用户。

@@ -140,3 +140,6 @@ ee/
 - [x] ee serve 后端 + 测试；桌面 UI 三栏 + 设置页 + 审批 + 改动审阅
 - [~] 真实 Electron 窗口验证、Windows 打包（PyInstaller + electron-builder + GitHub Actions）
 - [ ] D2：右栏终端（xterm.js + node-pty）、文件预览、/compact、AGENTS.md、防死循环、网页搜索、子代理、记忆
+- [~] D2 网页搜索（内核完成）：ee/ee/tools/web.py（web_search 后端 deepseek|tavily|brave|off，web_fetch auto|deepseek|direct|off，20s 超时，跟随 [network] 代理），配置 [web]，测试 tests/test_web.py（MockTransport）。剩：设置页 UI、搜索结果卡片。
+- [~] D2 子代理（内核完成）：ee/ee/core/subagent.py + ee/ee/tools/agent.py（task 工具，explore/general/自定义 agents/*.md，只读或继承权限、max_steps、model），事件 SubagentStart/Update/End（core/events.py），server 挂到 task 工具条目 meta.subagent（threads.py），审批冒泡 call_id=父/子，中断传递，/undo 共享快照；测试 tests/test_subagent.py。剩：前端子代理卡片、并行多个 task。
+- [~] D2 记忆（内核完成）：ee/ee/core/memory.py + ee/ee/tools/memory.py（add/list/remove，user=~/.ee/memory.md，workspace=<项目>/.ee/memory.md），会话开始注入为 AGENTS.md 后的固定 user 消息（_kind=agents，8KiB 上限，会话内不变），配置 [memory]；测试 tests/test_memory.py。剩：memory/* RPC、设置页开关与编辑。

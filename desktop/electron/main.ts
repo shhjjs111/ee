@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
 import path from "node:path";
 import { Backend } from "./backend";
+import { killAll as killTerminals, registerTerminalIpc, setPtySearchPaths } from "./terminal";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 let win: BrowserWindow | null = null;
@@ -11,6 +12,9 @@ const backend = new Backend({
   appRoot: path.resolve(__dirname, ".."),
   logFile: path.join(app.getPath("logs"), "backend.log"),
 });
+
+setPtySearchPaths(app.isPackaged ? [path.join(process.resourcesPath, "node-pty"), "node-pty"] : ["node-pty"]);
+registerTerminalIpc();
 
 backend.onExit = (code, tail) => {
   win?.webContents.send("backend:exit", { code, tail });
@@ -93,6 +97,9 @@ ipcMain.handle("app:setTheme", (_e, theme: "system" | "dark" | "light") => {
   win?.setBackgroundColor(dark ? "#171717" : "#ffffff");
   return dark;
 });
+ipcMain.on("log:write", (_e, line: string) => {
+  if (typeof line === "string") backend.appendLog(line.slice(0, 4000));
+});
 ipcMain.handle("app:info", () => ({ version: app.getVersion(), logs: app.getPath("logs"), packaged: app.isPackaged }));
 
 if (!app.requestSingleInstanceLock()) {
@@ -116,4 +123,7 @@ if (!app.requestSingleInstanceLock()) {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
-app.on("before-quit", () => backend.stop());
+app.on("before-quit", () => {
+  killTerminals();
+  backend.stop();
+});

@@ -7,6 +7,7 @@ import signal
 import subprocess
 import time
 
+from ee.proc import kill_tree
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
 from ee.tools.truncate import truncate_output
@@ -73,7 +74,7 @@ async def _kill(proc) -> None:
         return
     try:
         if IS_WINDOWS:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            await asyncio.to_thread(kill_tree, proc.pid)   # 不能在事件循环上同步跑 taskkill
         else:
             os.killpg(proc.pid, signal.SIGKILL)
     except Exception:

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
+from ee.proc import run_capture
 from ee.tools.search import SKIP_DIRS
 
 
@@ -20,10 +20,8 @@ class FileIndex:
         rg = shutil.which("rg")
         try:
             if rg:
-                kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, "CREATE_NO_WINDOW") else {}
-                p = subprocess.run([rg, "--files", "--hidden", "-g", "!.git"], cwd=str(self.root), **kw,
-                                   capture_output=True, timeout=10)
-                out = p.stdout.decode("utf-8", "replace").splitlines()[: self.limit]
+                _, raw, _ = run_capture([rg, "--files", "--hidden", "-g", "!.git"], cwd=self.root, timeout=10)
+                out = raw.decode("utf-8", "replace").splitlines()[: self.limit]
             else:
                 for dp, dns, fns in os.walk(self.root):
                     dns[:] = [d for d in dns if d not in SKIP_DIRS and not d.startswith(".")]

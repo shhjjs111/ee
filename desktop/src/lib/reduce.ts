@@ -22,10 +22,19 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
     }
     case "item/removed":
       return { ...t, items: t.items.filter((x) => x.id !== p.item_id) };
+    case "turn/status":
+      return { ...t, status_text: p.text || "" };
     case "thread/usage":
       return { ...t, usage: p.usage, context_left: p.context_left };
     case "turn/completed":
-      return { ...t, status: "idle", usage: p.usage ?? t.usage, context_left: p.context_left ?? t.context_left };
+      return {
+        ...t,
+        status: "idle",
+        status_text: "",
+        usage: p.usage ?? t.usage,
+        context_left: p.context_left ?? t.context_left,
+        instructions: p.instructions ?? t.instructions,
+      };
     default:
       return t;
   }

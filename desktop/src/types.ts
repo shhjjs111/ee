@@ -45,7 +45,7 @@ export type Usage = {
   currency?: string;
 };
 
-export type ThreadStatus = "idle" | "running" | "waiting_approval";
+export type ThreadStatus = "idle" | "running" | "waiting_approval" | "compacting";
 
 export type ThreadSummary = {
   id: string;
@@ -64,6 +64,8 @@ export type ThreadDetail = ThreadSummary & {
   context_left: number | null;
   shell: string | null;
   git: { is_repo: boolean; branch: string; changed: number; untracked: number } | null;
+  instructions?: string[]; // 本会话加载的 AGENTS.md
+  status_text?: string; // 临时状态：正在连接模型… 等（turn/status）
 };
 
 export type Workspace = { path: string; name: string; opened?: number; exists?: boolean };
@@ -115,8 +117,18 @@ export type Settings = {
   bash_timeout: number;
   permissions: { mode: string };
   ui: { theme: "system" | "dark" | "light" };
+  network?: NetworkSettings;
   providers: Record<string, ProviderSettings>;
   models: Record<string, ModelSettings>;
+};
+
+export type NetworkSettings = {
+  proxy_mode: "system" | "direct" | "custom";
+  proxy_url: string;
+  connect_timeout: number;
+  read_timeout: number;
+  retries: number;
+  system_proxy?: string; // 只读：“跟随系统”时实际会用的代理说明
 };
 
 export type SettingsResponse = {
@@ -146,7 +158,39 @@ export type GitReview = {
   deletions?: number;
 };
 
+export type TermCreateResult =
+  | { ok: true; id: number; pid: number; shell: string; kind: string; cwd: string }
+  | { ok: false; error: string };
+
+export interface TermBridge {
+  available(): Promise<{ ok: boolean; error?: string }>;
+  create(opts: { cwd?: string; shell?: { kind?: string | null; exe?: string | null }; cols?: number; rows?: number }): Promise<TermCreateResult>;
+  write(id: number, data: string): void;
+  resize(id: number, cols: number, rows: number): void;
+  kill(id: number): Promise<boolean>;
+  onData(cb: (m: { id: number; data: string }) => void): () => void;
+  onExit(cb: (m: { id: number; code: number }) => void): () => void;
+}
+
+export type TreeEntry = { name: string; path: string; type: "dir" | "file"; size?: number | null; ignored?: boolean };
+
+export type FileContent = {
+  path: string;
+  abs: string;
+  name: string;
+  size: number;
+  kind: "text" | "image" | "binary";
+  text?: string;
+  encoding?: string;
+  truncated?: boolean;
+  lines?: number;
+  mime?: string;
+  data_url?: string;
+  reason?: string;
+};
+
 export interface EeBridge {
+  term?: TermBridge;
   platform: string;
   getBackend(): Promise<{ ok: boolean; port?: number; token?: string; error?: string }>;
   restartBackend(): Promise<{ ok: boolean; port?: number; token?: string; error?: string }>;
@@ -157,6 +201,7 @@ export interface EeBridge {
   setTheme(t: string): Promise<boolean>;
   appInfo(): Promise<{ version: string; logs: string; packaged: boolean }>;
   onBackendExit(cb: (info: { code: number | null; tail: string }) => void): () => void;
+  log?(line: string): void; // 写进 logs/backend.log
 }
 
 declare global {

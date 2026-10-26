@@ -6,13 +6,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from ee.core.providers import net
 from ee.core.providers import transforms as T
+
+log = logging.getLogger("ee.model")
+
+
+class ModelError(RuntimeError):
+    """模型请求最终失败：消息已是给用户看的中文说明。status_code 保留原 HTTP 状态（没有则 None）。"""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass
@@ -67,21 +80,35 @@ class QuirkState:
 
 
 class ChatClient:
-    def __init__(self, spec, client: Any = None, state_path: Path | None = None, retries: int = 3):
+    """注意：不传 client 时构造会解析代理（可能有 DNS 查询）并建 TLS 上下文，别在事件循环上直接构造。"""
+
+    def __init__(self, spec, client: Any = None, state_path: Path | None = None, retries: int | None = None,
+                 network: dict | None = None):
         self.spec = spec
         self.profile = spec.profile
-        self.retries = retries
         self.state = QuirkState(state_path)
         self.key = f"{spec.base_url}|{spec.model}"
+        self.np: net.NetPlan | None = None
         if client is None:
-            from openai import AsyncOpenAI
             key = spec.api_key()
             if not key:
-                raise RuntimeError(f"模型 {spec.alias} 没有可用的 API key：{spec.key_hint()}。请在 设置 → 模型与供应商 里填写。")
-            client = AsyncOpenAI(api_key=key, base_url=spec.base_url or None,
-                                 default_headers=spec.headers or None, max_retries=0)
+                raise ModelError(f"模型 {spec.alias} 没有可用的 API key：{spec.key_hint()}。请在 设置 → 模型与供应商 里填写。")
+            from openai import AsyncOpenAI
+            self.np = net.plan(spec.base_url, network)
+            http, timeout = net.make_http_client(self.np)
+            client = AsyncOpenAI(api_key=key, base_url=spec.base_url or None, default_headers=spec.headers or None,
+                                 max_retries=0, timeout=timeout, http_client=http)
+            log.info("模型客户端 %s：base_url=%s model=%s key=…%s %s；超时 连接 %.0fs / 读取 %.0fs，重试 %d 次",
+                     spec.alias, spec.base_url, spec.model, key[-4:] if len(key) > 8 else "?", self.np.describe,
+                     self.np.connect_timeout, self.np.read_timeout, self.np.retries)
+        self.retries = retries if retries is not None else (self.np.retries if self.np else 3)
         self.client = client
         self.notices: list[str] = []
+
+    def where(self) -> str:
+        host = self.spec.base_url or "默认接口"
+        via = f"，{self.np.describe}" if self.np else ""
+        return f"{host}{via}"
 
     # ------------------------------------------------------------ 请求参数
     def build_params(self, messages: list[dict], tools: list[dict] | None) -> dict:
@@ -109,17 +136,32 @@ class ChatClient:
         while True:
             params = self.build_params(messages, tools)
             emitted = False
+            t0 = time.monotonic()
+            log.info("模型请求开始：%s（%s）messages=%d tools=%d 第 %d 次", self.spec.alias, self.where(), len(messages),
+                     len(tools or []), attempt + 1)
+            yield ("status", f"正在连接模型 {self.spec.alias}（{self.where()}）…" if attempt == 0 else
+                   f"正在重试连接模型 {self.spec.alias}（第 {attempt} 次）…")
             try:
                 async for ev in self._stream_once(params, tools):
-                    if ev[0] in ("text", "reasoning"):
+                    if ev[0] in ("text", "reasoning") and not emitted:
                         emitted = True
+                        yield ("status", "")
+                    if ev[0] == "done":
+                        if not emitted:
+                            yield ("status", "")
+                        c = ev[1]
+                        log.info("模型请求结束：%s 用时 %.1fs finish=%s 文本 %d 字 工具调用 %d 个 usage=%s", self.spec.alias,
+                                 time.monotonic() - t0, c.finish_reason, len(c.content), len(c.tool_calls), c.usage)
                     yield ev
                 return
             except asyncio.CancelledError:
+                log.info("模型请求被取消：%s 用时 %.1fs", self.spec.alias, time.monotonic() - t0)
                 raise
             except Exception as e:  # noqa: BLE001
                 status = getattr(e, "status_code", None)
                 text = _err_text(e)
+                log.warning("模型请求失败：%s 用时 %.1fs status=%s %s", self.spec.alias, time.monotonic() - t0, status,
+                            text[:500], exc_info=True)
                 if status == 400 and degrade_budget > 0:
                     bad = T.unsupported_param(text)
                     if bad:
@@ -135,14 +177,20 @@ class ChatClient:
                 if retryable and not emitted and attempt < self.retries:
                     attempt += 1
                     delay = min(20.0, 1.5 * 2 ** (attempt - 1)) + random.random() * 0.5
-                    yield ("notice", f"请求失败（{status or type(e).__name__}），{delay:.0f}s 后第 {attempt} 次重试")
+                    why = net.describe_error(e, self.spec.base_url, self.spec.model, self.np, text if status else "")
+                    yield ("notice", f"请求失败：{why}\n{delay:.0f}s 后第 {attempt} 次重试")
                     await asyncio.sleep(delay)
                     continue
-                raise
+                if isinstance(e, ModelError):
+                    raise
+                msg = net.describe_error(e, self.spec.base_url, self.spec.model, self.np, text if status else "")
+                log.error("模型请求最终失败：%s", msg)
+                raise ModelError(msg, status) from e
 
     async def _stream_once(self, params: dict, tools: list[dict] | None):
         known = [t["function"]["name"] for t in (tools or [])]
         stream = await self.client.chat.completions.create(**params)
+        yield ("status", "已连接，等待模型输出…")
         comp = Completion()
         calls: list[dict] = []
         splitter = T.ThinkSplitter()  # 所有家族都识别 <think>，MiniMax 等靠它

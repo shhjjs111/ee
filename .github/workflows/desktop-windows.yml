@@ -44,9 +44,17 @@ jobs:
         working-directory: ee
         run: python -m pytest -q
 
+      - name: E2E with source backend (python -m ee serve)
+        timeout-minutes: 5
+        run: python ee/scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
+
       - name: Install desktop deps
         working-directory: desktop
         run: npm ci
+
+      - name: Smoke-test node-pty (ConPTY prebuild, N-API)
+        working-directory: desktop
+        run: node scripts/pty-smoke.cjs
 
       - name: Build renderer + electron main
         working-directory: desktop
@@ -76,11 +84,33 @@ jobs:
           Remove-Item out.txt, err.txt -ErrorAction SilentlyContinue
           if (-not $ok) { throw "backend did not print EE_SERVE_READY" }
 
+      - name: Packaged backend selftest (openai/httpx/certifi/encodings)
+        working-directory: desktop
+        run: resources/backend/ee-backend/ee-backend.exe selftest
+
+      - name: E2E with packaged backend (fake model, stdin pipe + git workspace)
+        timeout-minutes: 5
+        run: python ee/scripts/e2e_ws.py desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
+
+      - name: E2E with packaged backend (black-hole endpoint must time out with an error)
+        timeout-minutes: 5
+        run: python ee/scripts/e2e_ws.py --blackhole desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
+
       - name: Package NSIS installer
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --win --publish never
+
+      - name: Check node-pty is packaged outside asar
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $d = "release/win-unpacked/resources/node-pty"
+          foreach ($f in "lib/index.js", "prebuilds/win32-x64/conpty.node", "prebuilds/win32-x64/pty.node", "prebuilds/win32-x64/conpty/OpenConsole.exe") {
+            if (-not (Test-Path "$d/$f")) { Get-ChildItem -Recurse $d -ErrorAction SilentlyContinue | Select-Object -First 50 FullName; throw "missing $d/$f" }
+          }
+          Write-Host "node-pty packaged OK"
 
       - uses: actions/upload-artifact@v4
         with:
