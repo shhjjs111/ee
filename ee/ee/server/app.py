@@ -87,6 +87,8 @@ class Backend:
         shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
         rules_rpc.register(self.methods, self)         # permissions/list|remove（永久允许规则，D4-8）
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
+        from ee.server import automations as automations_rpc
+        self.automations = automations_rpc.register(self.methods, self)   # automations/*（自动化 D4-10）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -614,8 +616,10 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             ready(real_port)
         else:
             print("EE_SERVE_READY " + json.dumps({"port": real_port, "pid": os.getpid()}), flush=True)
+        backend.automations.start()                    # 自动化调度（D4-10）：错过的启动后补跑一次
         await stop
     watchdog.stop()
+    await backend.automations.stop()
     for t in backend.threads.values():
         t.interrupt()
     try:
