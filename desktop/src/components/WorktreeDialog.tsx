@@ -1,7 +1,7 @@
 // git worktree 管理（D5-1）：列出项目的 ee worktree，新建、在其中开对话、合并回主目录、删除。
 import * as Dialog from "@radix-ui/react-dialog";
 import { GitBranch, GitMerge, Plus, SquarePen, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { relTime } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import type { WorktreeInfo } from "../types";
@@ -18,14 +18,18 @@ export function WorktreeDialog() {
   const [err, setErr] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ wt: WorktreeInfo; branch: boolean; force: boolean } | null>(null);
 
+  const current = useRef(path);
+  current.current = path;
   const load = async () => {
     if (!path) return;
+    const asked = path;
     try {
-      const r = await rpc!.call("worktree/list", { cwd: path }, 60000);
+      const r = await rpc!.call("worktree/list", { cwd: asked }, 60000);
+      if (current.current !== asked) return; // 已切到别的项目：丢弃迟到的旧结果
       setRepo(r.repo);
       setList(r.worktrees);
     } catch (e) {
-      setErr((e as Error).message);
+      if (current.current === asked) setErr((e as Error).message);
     }
   };
   useEffect(() => {
