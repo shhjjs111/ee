@@ -147,6 +147,8 @@ class UsageStats:
     # 每次请求一条：{prompt, completion, hit, reasoning, cost, currency, model}（子代理并入主会话时按条复制，花费不重算）
     records: list = field(default_factory=list)
     by_model: dict = field(default_factory=dict)
+    pruned_tokens: int = 0         # 修剪旧工具输出累计省下的 token（估计，D5-10）
+    prunes: int = 0
 
     def add(self, usage: dict | None, price, model: str = "") -> float | None:
         """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。"""
@@ -214,6 +216,8 @@ class UsageStats:
                "currency": self.currency, "usage_missing": self.usage_missing}
         if self.reasoning_known:
             out["reasoning"] = self.reasoning
+        if self.pruned_tokens:
+            out["pruned"] = self.pruned_tokens
         if self.by_model:
             out["by_model"] = {k: {**v, "cost": v["cost"] if v["cost_known"] else None}
                                for k, v in self.by_model.items()}

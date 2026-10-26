@@ -26,6 +26,9 @@ DEFAULTS: dict = {
     "ask_user": True,              # ask_user 提问工具（D4-8）      # shell 工具可后台运行 + shell_output/shell_write/shell_kill（D4-6）
     # 上下文压缩：上下文用量 ≥ threshold × 模型窗口时自动压缩（回合开始时和回合内每步之前检查）
     "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
+    # 修剪旧工具输出（D5-10）：上下文 ≥ threshold × 窗口（低于压缩阈值）时把较早的大块工具结果换成占位，成批做一次
+    "prune": {"enabled": True, "threshold": 0.6, "keep_turns": 2, "keep_tokens": 40000, "min_tokens": 20000,
+              "min_output_tokens": 300},
     # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限
     "agents_md": {"enabled": True, "max_bytes": 32768},
     # 防死循环：同调用连续 repeat_limit 次不执行并纠正，repeat_hard 次停止回合；无进展步数提醒/停止

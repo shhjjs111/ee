@@ -5,6 +5,7 @@
   meta     线程元数据（cwd / model / mode / title），后写的覆盖先写的
   item     桌面端显示用的条目（用户消息、助手消息、工具卡片、审批……），同 id 后写的覆盖先写的
   prefix / rewind / reset  内核内部记录
+  prune    修剪旧工具输出（D5-10）：把这些下标的 tool 消息换成占位（原 message 记录不动，界面条目另存完整输出）
   truncate 编辑重发（D3-E）：丢掉 seq ≥ from_seq 的已有条目（之后新写的条目照常保留）
 """
 from __future__ import annotations
@@ -70,6 +71,8 @@ class SessionStore:
                 out = []
             elif rec.get("kind") == "rewind":
                 out = out[: int(rec.get("to", len(out)))]
+            elif rec.get("kind") == "prune":
+                _apply_prune(out, rec)
         return out
 
     @staticmethod
@@ -91,6 +94,8 @@ class SessionStore:
                 messages = []
             elif kind == "rewind":
                 messages = messages[: int(rec.get("to", len(messages)))]
+            elif kind == "prune":
+                _apply_prune(messages, rec)
             elif kind == "truncate":
                 cut = int(rec.get("from_seq", 0))
                 items = {k: v for k, v in items.items() if int(v.get("seq", 0)) < cut}
@@ -120,6 +125,11 @@ class SessionStore:
                 "parent_id": meta.get("parent_id"), "source": meta.get("source"),
                 "worktree": meta.get("worktree"),
                 "workspace": (meta.get("worktree") or {}).get("repo") or meta.get("cwd", "")}
+
+
+def _apply_prune(messages: list[dict], rec: dict) -> None:
+    from ee.core.prune import apply
+    apply(messages, list(rec.get("items") or []))
 
 
 def strip_context(text: str) -> str:
