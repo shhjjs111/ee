@@ -135,7 +135,7 @@ def test_errors_and_cache(workspace):
     make_pdf(workspace / "c.pdf", ["v1"])
     t1, _ = extract(workspace / "c.pdf")
     assert extract(workspace / "c.pdf")[0] is t1          # 缓存命中
-    import os, time
+    import os
     make_pdf(workspace / "c.pdf", ["version two"])
     st = os.stat(workspace / "c.pdf")
     os.utime(workspace / "c.pdf", ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))

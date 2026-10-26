@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-from pathlib import Path
 
 from ee.core.store import SessionStore, _title, strip_context
 

@@ -12,7 +12,6 @@ from ee.core.permissions import PermissionPolicy
 from ee.core.providers.openai_chat import ChatClient
 from ee.server.app import Backend, RpcError
 from ee.tools import ToolContext, ToolState
-from ee.tools.read import ReadTool
 from ee.tools.search import GlobTool, GrepTool
 
 

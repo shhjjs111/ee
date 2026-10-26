@@ -215,7 +215,20 @@ def _segment_safe(seg: str) -> bool:
             return True
         return False
     if name == "find":
-        return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-fprint") for a in args)
+        return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf",
+                             "-fls") for a in args)
+    # 白名单命令里能执行外部程序或写文件的参数
+    if name == "rg" and any(a == "--pre" or a.startswith("--pre=") for a in args):
+        return False
+    if name == "sort" and any(a == "-o" or a.startswith("-o") or a.startswith("--output") for a in args):
+        return False
+    if name == "tree" and any(a == "-o" or a.startswith("-o") for a in args):
+        return False
+    if name == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
+        return False  # uniq IN OUT 会写 OUT
+    if name == "git" and any(a in ("-c", "--ext-diff", "-O", "--open-files-in-pager") or a.startswith(
+            ("--config-env", "--exec-path=", "--output", "--open-files-in-pager=", "-O")) for a in args):
+        return False  # -c 注入配置可执行任意命令；--output 写文件；外部 diff / 分页器会执行程序
     if name == "sed":
         return "-i" not in args and not any(a.startswith("-i") for a in args)
     if name not in SAFE_COMMANDS:

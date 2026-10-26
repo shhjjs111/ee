@@ -31,7 +31,7 @@ import asyncio
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 

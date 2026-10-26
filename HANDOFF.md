@@ -1,6 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 20:10（Asia/Shanghai，D4-10 自动化、D5-6 仓库地图合并；pytest 381 过 2 跳过、vitest 27；无未合并并行分支）
+最后更新：2026-10-26 19:15（Asia/Shanghai，全仓审查：修只读白名单 3 类绕过；pytest 382 过 2 跳过、vitest 27；下一步 D5-2）
+
+> **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
 
 > **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；所有并行分支已合并（feat/* 可删）。之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。

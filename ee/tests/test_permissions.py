@@ -97,3 +97,14 @@ def test_prefix_and_session_memory(tmp_path):
     assert p.check("shell", {"command": "git push"}).action == "ask"
     # 强制询问类不受“以后都行”影响
     assert p.check("shell", {"command": "git commit -m a && git reset --hard"}).action == "ask"
+
+
+def test_readonly_whitelist_bypass_flags(tmp_path):
+    """白名单命令里能执行程序 / 写文件的参数不能算只读（2026-10-26 仓库审查补）。"""
+    from ee.core.permissions import PermissionPolicy
+    p = PermissionPolicy(mode="read-only", workspace=tmp_path)
+    for c in ["git diff --output=x", "rg foo --pre rm", "git -c core.pager=rm log", "git diff --ext-diff",
+              "sort -o x a", "uniq a b", "tree -o x", "find . -fprintf x %p", "git grep -O foo"]:
+        assert p.check("shell", {"command": c}).action == "deny", c
+    for c in ["git -C sub status", "git log --oneline -5", "rg -n foo", "sort a", "git diff --stat", "uniq a"]:
+        assert p.check("shell", {"command": c}).action == "allow", c
