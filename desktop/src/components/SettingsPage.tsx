@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plus, Server, SlidersHorizontal, Star, Sun, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Wrench } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { useApp, type Theme } from "../lib/store";
 import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
+import { AgentSettings } from "./AgentSettings";
 import { Button, Field, Input, Select, Spinner, Tip } from "./ui";
 
-type Section = "general" | "models" | "about";
+type Section = "general" | "models" | "tools" | "about";
 
 const SHELL_LABEL: Record<string, string> = {
   auto: "自动（pwsh → Windows PowerShell）",
@@ -341,6 +342,7 @@ export function SettingsPage() {
   const nav: { id: Section; label: string; icon: React.ReactNode }[] = [
     { id: "general", label: "常规", icon: <SlidersHorizontal size={15} /> },
     { id: "models", label: "模型与供应商", icon: <KeyRound size={15} /> },
+    { id: "tools", label: "工具与记忆", icon: <Wrench size={15} /> },
     { id: "about", label: "关于", icon: <Info size={15} /> },
   ];
   const providerNames = Object.keys(draft.providers);
@@ -525,6 +527,8 @@ export function SettingsPage() {
                 </Card>
               </>
             )}
+
+            {section === "tools" && <AgentSettings draft={draft} resp={resp} up={up} />}
 
             {section === "about" && (
               <>

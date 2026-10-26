@@ -118,8 +118,47 @@ export type Settings = {
   permissions: { mode: string };
   ui: { theme: "system" | "dark" | "light" };
   network?: NetworkSettings;
+  web?: WebSettings;
+  subagent?: SubagentSettings;
+  memory?: MemorySettings;
   providers: Record<string, ProviderSettings>;
   models: Record<string, ModelSettings>;
+};
+
+export type WebKeySettings = {
+  api_key?: string | null; // 只在保存时发送；"" = 清除
+  api_key_env?: string;
+  api_key_set?: boolean;
+  api_key_preview?: string;
+  env_present?: boolean;
+};
+export type WebSettings = {
+  search_backend: "deepseek" | "tavily" | "brave" | "off" | string;
+  fetch_backend: "auto" | "deepseek" | "direct" | "off" | string;
+  timeout: number;
+  max_results: number;
+  deepseek_key_available?: boolean;
+  keys: { tavily: WebKeySettings; brave: WebKeySettings };
+};
+export type SubagentSettings = { enabled: boolean; max_steps: number };
+export type MemorySettings = { enabled: boolean; workspace: boolean; max_bytes: number };
+export type MemoryFile = { path: string; exists: boolean; text: string; entries: string[] };
+export type MemoryInfo = { user: MemoryFile; workspace: MemoryFile | null };
+
+/** 子代理进度记录：挂在 task 工具条目的 meta.subagent 上（后端 ee/core/subagent.py apply_event）。 */
+export type SubagentRecord = {
+  agent: string;
+  description: string;
+  model: string;
+  mode: string;
+  max_steps: number;
+  status: "running" | "completed" | "max_steps" | "interrupted" | "error" | "loop" | string;
+  step: number;
+  tools: { id: string; name: string; summary: string; status: string }[];
+  text: string;
+  summary: string;
+  notices?: string[];
+  usage?: Usage & Record<string, any>;
 };
 
 export type NetworkSettings = {
@@ -135,7 +174,7 @@ export type SettingsResponse = {
   path: string;
   project_sources: string[];
   settings: Settings;
-  choices: { shells: string[]; modes: string[]; families: string[]; themes: string[] };
+  choices: { shells: string[]; modes: string[]; families: string[]; themes: string[]; search_backends?: string[]; fetch_backends?: string[] };
 };
 
 export type DiffFile = {

@@ -13,6 +13,8 @@ from ee.config import DEFAULTS, deep_merge, load_user_file, save_user_file, user
 from ee.core.permissions import MODES
 from ee.core.providers.profiles import FAMILY_ORDER, profile_for
 from ee.tools.shellenv import SHELL_CHOICES
+from ee.tools.web import FETCH_BACKENDS, KEY_ENV, SEARCH_BACKENDS
+from ee.tools.web import deepseek_key as web_deepseek_key
 
 THEMES = ["system", "dark", "light"]
 FAMILIES = ["auto", *FAMILY_ORDER, "default"]
@@ -63,11 +65,94 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "permissions": {"mode": (data.get("permissions") or {}).get("mode", "default")},
             "ui": {"theme": (data.get("ui") or {}).get("theme", "system")},
             "network": _network_out(data.get("network") or {}),
+            **_d2_out(data),
             "providers": providers,
             "models": models,
         },
-        "choices": {"shells": SHELL_CHOICES, "modes": MODES, "families": FAMILIES, "themes": THEMES},
+        "choices": {"shells": SHELL_CHOICES, "modes": MODES, "families": FAMILIES, "themes": THEMES,
+                    "search_backends": SEARCH_BACKENDS, "fetch_backends": FETCH_BACKENDS},
     }
+
+
+def _key_out(w: dict, name: str) -> dict:
+    key = str(w.get(f"{name}_api_key") or "")
+    env = str(w.get(f"{name}_api_key_env") or KEY_ENV[name])
+    return {"api_key_set": bool(key), "api_key_preview": _preview(key), "api_key_env": env,
+            "env_present": bool(os.environ.get(env))}
+
+
+def _d2_out(data: dict) -> dict:
+    """网页搜索 / 子代理 / 记忆 三组设置（key 只回传是否已设置和末四位）。"""
+    w = {**DEFAULTS.get("web", {}), **(data.get("web") or {})}
+    sa = {**DEFAULTS.get("subagent", {}), **(data.get("subagent") or {})}
+    mem = {**DEFAULTS.get("memory", {}), **(data.get("memory") or {})}
+    return {
+        "web": {"search_backend": w.get("search_backend", "deepseek"), "fetch_backend": w.get("fetch_backend", "auto"),
+                "timeout": w.get("timeout", 20), "max_results": w.get("max_results", 8),
+                "deepseek_key_available": bool(web_deepseek_key(data)),
+                "keys": {"tavily": _key_out(w, "tavily"), "brave": _key_out(w, "brave")}},
+        "subagent": {"enabled": bool(sa.get("enabled", True)), "max_steps": int(sa.get("max_steps", 30))},
+        "memory": {"enabled": bool(mem.get("enabled", True)), "workspace": bool(mem.get("workspace", True)),
+                   "max_bytes": int(mem.get("max_bytes", 8192))},
+    }
+
+
+def _d2_in(new: dict, out: dict) -> None:
+    if isinstance(new.get("web"), dict):
+        n = new["web"]
+        w = dict(out.get("web") or {})
+        if n.get("search_backend") is not None:
+            if n["search_backend"] not in SEARCH_BACKENDS:
+                raise ValueError(f"未知搜索后端：{n['search_backend']}")
+            w["search_backend"] = n["search_backend"]
+        if n.get("fetch_backend") is not None:
+            if n["fetch_backend"] not in FETCH_BACKENDS:
+                raise ValueError(f"未知抓取方式：{n['fetch_backend']}")
+            w["fetch_backend"] = n["fetch_backend"]
+        for k, lo, hi in (("timeout", 3, 120), ("max_results", 1, 20)):
+            if n.get(k) not in (None, ""):
+                v = int(float(n[k]))
+                if not lo <= v <= hi:
+                    raise ValueError(f"web.{k} 必须在 {lo}～{hi} 之间")
+                w[k] = v
+        for name, kv in (n.get("keys") or {}).items():
+            if name not in KEY_ENV or not isinstance(kv, dict):
+                continue
+            if kv.get("api_key") is not None:          # "" = 清除；None/缺省 = 不变
+                if str(kv["api_key"]).strip():
+                    w[f"{name}_api_key"] = str(kv["api_key"]).strip()
+                else:
+                    w.pop(f"{name}_api_key", None)
+            if kv.get("api_key_env") is not None:
+                env = str(kv["api_key_env"]).strip()
+                if env and env != KEY_ENV[name]:
+                    w[f"{name}_api_key_env"] = env
+                else:
+                    w.pop(f"{name}_api_key_env", None)
+        out["web"] = w
+    if isinstance(new.get("subagent"), dict):
+        n = new["subagent"]
+        sa = dict(out.get("subagent") or {})
+        if n.get("enabled") is not None:
+            sa["enabled"] = bool(n["enabled"])
+        if n.get("max_steps") not in (None, ""):
+            v = int(float(n["max_steps"]))
+            if not 1 <= v <= 100:
+                raise ValueError("子代理最大步数必须在 1～100 之间")
+            sa["max_steps"] = v
+        out["subagent"] = sa
+    if isinstance(new.get("memory"), dict):
+        n = new["memory"]
+        mem = dict(out.get("memory") or {})
+        for k in ("enabled", "workspace"):
+            if n.get(k) is not None:
+                mem[k] = bool(n[k])
+        if n.get("max_bytes") not in (None, ""):
+            v = int(float(n["max_bytes"]))
+            if not 512 <= v <= 65536:
+                raise ValueError("记忆大小上限必须在 512～65536 字节之间")
+            mem["max_bytes"] = v
+        out["memory"] = mem
 
 
 def _network_out(n: dict) -> dict:
@@ -213,5 +298,6 @@ def set_settings(new: dict) -> dict:
     for name, m in (final.get("models") or {}).items():
         if m.get("provider") not in (final.get("providers") or {}):
             raise ValueError(f"模型 {name} 引用了不存在的供应商：{m.get('provider')}")
+    _d2_in(new, out)
     save_user_file(out)
     return get_settings()

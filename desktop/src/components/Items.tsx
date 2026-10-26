@@ -22,6 +22,7 @@ import React, { useState } from "react";
 import { diffStat, formatDuration, shortPath } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import type { ApprovalItem, AssistantItem, Item, PlanItem, ToolItem, TurnEndItem } from "../types";
+import { SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
 import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
@@ -300,6 +301,9 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   }
 
   if (item.name === "todo") return null; // 计划单独渲染
+  if (item.name === "task" || item.meta?.kind === "subagent") return <SubagentCard item={item} />;
+  if (item.name === "web_search") return <WebSearchCard item={item} />;
+  if (item.name === "web_fetch") return <WebFetchCard item={item} />;
 
   return (
     <Row
