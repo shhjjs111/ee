@@ -42,7 +42,8 @@ jobs:
 
       - name: Backend tests
         working-directory: ee
-        run: python -m pytest -q
+        timeout-minutes: 20
+        run: python -m pytest -q -o faulthandler_timeout=150
 
       - name: E2E with source backend (python -m ee serve)
         if: ${{ !cancelled() }}
