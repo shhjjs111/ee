@@ -2,7 +2,7 @@
 
 最后更新：2026-10-26 19:30（Asia/Shanghai，D5-4 Hooks、D5-5 Skills 合并；pytest 343 过 2 跳过、vitest 24；并行分支 feat/d4-10-automations、feat/d5-repomap 进行中）
 
-> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；检查远端分支 feat/d4-10-automations、feat/d5-repomap（并行开发中，测完合并进 main 并在对应项打勾），之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；远端还有两个并行分支未合并：`feat/d4-10-automations`（D4-10 自动化/定时任务）、`feat/d5-repomap`（D5-6 仓库地图，tree-sitter）。它们可能只推了 WIP，看分支最新提交信息里的“已完成/还差”继续做完；合并方法：`git merge --no-ff origin/<分支>`，冲突多在 app.py / settings.py / session.py / tools/__init__.py / SettingsPage.tsx / Sidebar.tsx，两边都是插入式改动，保留双方即可；合并后跑全量 pytest + 两个 tsc + vitest + build，在 HANDOFF 对应项打勾写做法（参考了谁、取了哪点），推 main 看 CI。之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
