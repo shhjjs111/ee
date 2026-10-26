@@ -112,13 +112,17 @@ class EeIgnore:
     def ignored(self, path: Path | str, is_dir: bool | None = None) -> bool:
         if not self.rules:
             return False
-        p = _norm(Path(path))
+        d = is_dir if is_dir is not None else Path(path).is_dir()
+        # 软链接：被忽略的文件/目录本身可能是指向别处的链接，完全解析后的路径就不在规则范围内了。
+        # 所以除了完全解析的路径，还要按“只解析到某一级祖先、其余部分照字面”的各种写法都判一次，任一命中即忽略。
+        return any(self._match(c, d) for c in _candidates(Path(path)))
+
+    def _match(self, p: str, d: bool) -> bool:
         hit = False
         for r in self.rules:
             if p == r.base or not p.startswith(r.base.rstrip("/") + "/"):
                 continue
             rel = p[len(r.base.rstrip("/")) + 1:]
-            d = is_dir if is_dir is not None else Path(path).is_dir()
             if r.regex.match(rel + "/" if d else rel):
                 hit = not r.negate
         return hit
@@ -129,6 +133,29 @@ def _norm(p: Path) -> str:
         p = p.resolve()
     except OSError:
         pass
+    s = os.path.normpath(str(p)).replace("\\", "/")
+    return s.lower() if os.name == "nt" else s
+
+
+def _candidates(path: Path) -> list[str]:
+    full = _norm(path)
+    lexical = Path(os.path.abspath(str(path)))
+    if _fmt(lexical) == full:          # 路径上没有软链接（常见情况）：只判一次
+        return [full]
+    out = [full]
+    parts = lexical.parts
+    for i in range(len(parts) - 1, 0, -1):
+        try:
+            head = Path(*parts[:i]).resolve()
+        except OSError:
+            continue
+        c = _fmt(head.joinpath(*parts[i:]))
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def _fmt(p: Path) -> str:
     s = os.path.normpath(str(p)).replace("\\", "/")
     return s.lower() if os.name == "nt" else s
 

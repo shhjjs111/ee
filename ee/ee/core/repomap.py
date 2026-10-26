@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import stat
 import threading
 import time
 from collections import Counter, defaultdict
@@ -487,8 +488,13 @@ class RepoMap:
                 p = self.root / r
                 try:
                     s = p.stat()
+                    # 只解析项目内的普通文件：FIFO/设备会让读取一直阻塞；指向项目外的软链接不属于这个仓库
+                    ok = stat.S_ISREG(s.st_mode) and _inside(p, self.root)
                 except OSError:
-                    self.files.pop(r, None)
+                    ok = False
+                if not ok:
+                    if self.files.pop(r, None) is not None:
+                        self._dirty = True
                     continue
                 old = self.files.get(r)
                 if old is not None and old.mtime_ns == s.st_mtime_ns and old.size == s.st_size:
@@ -581,10 +587,12 @@ class RepoMap:
 
     # ---- 输出
     def render(self, max_tokens: int, focus: list[str] | None = None, subdir: str = "",
-               max_files: int = 3000, time_limit: float = 20.0) -> tuple[str, dict]:
+               max_files: int = 3000, time_limit: float = 20.0, ignore=None) -> tuple[str, dict]:
         st = self.refresh(max_files=max_files, time_limit=time_limit)
         ffiles, fidents = self._split_focus(focus or [])
         ranked = self.ranked_defs(ffiles, fidents)
+        if ignore is not None:      # 工作目录（低于地图根）自己的 .eeignore
+            ranked = [x for x in ranked if not ignore.ignored(self.root / x[1], False)]
         sub = subdir.strip("/").replace("\\", "/") if subdir else ""
         if sub and sub != ".":
             ranked = [x for x in ranked if x[1] == sub or x[1].startswith(sub + "/")]
@@ -704,6 +712,14 @@ def _pagerank(nodes: list[str], edges: dict, personal: set[str], damping: float 
     return {n: rank[i] for n, i in idx.items()}
 
 
+def _inside(p: Path, root: Path) -> bool:
+    try:
+        Path(os.path.realpath(p)).relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _looks_minified(src: bytes) -> bool:
     if len(src) < 20000:
         return False
@@ -787,8 +803,17 @@ def build_map(cwd: Path, home: Path, max_tokens: int, focus: list[str] | None = 
     if root is None:
         return "", {"unavailable": "工作目录是用户主目录或磁盘根目录，范围太大，不生成仓库地图"}
     rm = for_root(root, home)
+    # 地图根是 git 根，可能在工作目录之上；list_files 只加载根及以上的 .eeignore，工作目录里的那份要另外过滤
+    ignore = None
+    if Path(cwd).resolve() != root:
+        try:
+            from ee.core.eeignore import for_dir
+            ig = for_dir(Path(cwd))
+            ignore = None if ig.empty else ig
+        except Exception:  # noqa: BLE001
+            ignore = None
     text, info = rm.render(max_tokens, focus=focus, subdir=subdir, max_files=int(cfg.get("max_files", 3000)),
-                           time_limit=float(cfg.get("time_limit", 20.0)))
+                           time_limit=float(cfg.get("time_limit", 20.0)), ignore=ignore)
     info["root"] = str(root)
     return text, info
 

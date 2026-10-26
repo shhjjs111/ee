@@ -43,6 +43,8 @@ def extract(path: Path, pages: str | None = None, sheet: str | int | None = None
     kind = DOC_EXTS.get(ext)
     if kind is None:
         raise DocError(f"不是支持的文档格式：{ext}")
+    if not path.is_file():   # FIFO / 设备文件：解析库打开它会一直阻塞
+        raise DocError(f"{path} 不是普通文件，不能读取")
     st = path.stat()
     key = (str(path), st.st_mtime_ns, st.st_size, str(pages or ""), str(sheet if sheet is not None else ""))
     hit = _CACHE.get(key)

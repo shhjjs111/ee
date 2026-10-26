@@ -200,10 +200,86 @@ NETWORK_COMMANDS = {"curl", "wget", "invoke-webrequest", "iwr", "invoke-restmeth
                     "nc", "ncat", "telnet", "ftp", "rsync"}
 
 
+_NULL_TARGET = re.compile(r"(/dev/null|\$null|nul)", re.I)
+# sed 只认这些“只读”写法：可选地址 + p/d/q/=/l/n/N 等，或 s 命令（标志里不能有 w / e）
+_SED_ADDR = r"(?:\d+(?:~\d+)?|\$|/(?:[^/\\]|\\.)*/I?)"
+_SED_CMD = re.compile(
+    rf"\s*(?:{_SED_ADDR}(?:\s*,\s*(?:{_SED_ADDR}|[+~]\d+))?)?\s*!?\s*"
+    r"(?:[pdqQ=lnNgGhHxDPz]|s(?P<d>[^\\\n\sA-Za-z0-9])(?:(?!(?P=d))[^\\]|\\.)*(?P=d)(?:(?!(?P=d))[^\\]|\\.)*(?P=d)[gpiImM0-9]*)?\s*")
+_SED_FLAGS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-u",
+              "--unbuffered", "-z", "--null-data", "--posix", "--debug", "--sandbox"}
+# pytest 会写文件/删目录的参数（--basetemp 会先清空该目录）
+_PYTEST_WRITE_OPTS = ("--basetemp", "--junitxml", "--junit-xml", "--result-log", "--resultlog", "--log-file",
+                      "--report-log", "--html", "-o", "--override-ini", "-p", "--rootdir", "--confcutdir")
+
+
+def _redirects_safe(seg: str) -> bool:
+    """每个写重定向（> >> 1> 2> &> *>）的目标都必须是空设备；>&1 这种合并输出不算写文件。"""
+    for m in re.finditer(r">+(?!&)\s*([^\s;|&<>]*)", seg):
+        if not _NULL_TARGET.fullmatch(m.group(1).strip("'\"")):
+            return False
+    return True
+
+
+def _has_code_syntax(seg: str, git: bool) -> bool:
+    """引号外的 ( ) { }：PowerShell 的 (表达式)、@(…)、{脚本块}、@{…}，bash 的 <(…) 进程替换，都会执行命令。"""
+    quote = None
+    i = 0
+    while i < len(seg):
+        c = seg[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"':
+                i += 1
+        elif c in ("'", '"'):
+            quote = c
+        elif c in "(){}":
+            if git and c == "{":         # git 的 HEAD@{1} / @{u}：只允许 @{简单内容}
+                m = re.match(r"\{[\w.:-]*\}", seg[i:])
+                if i > 0 and seg[i - 1] == "@" and m:
+                    i += m.end()
+                    continue
+            return True
+        i += 1
+    return False
+
+
+def _sed_safe(args: list[str]) -> bool:
+    scripts: list[str] = []
+    rest = list(args)
+    while rest:
+        a = rest.pop(0)
+        if a in ("-e", "--expression") and rest:
+            scripts.append(rest.pop(0))
+        elif a.startswith("--expression="):
+            scripts.append(a.split("=", 1)[1])
+        elif a.startswith("-") and a != "-":
+            if a.startswith("-i") or a.startswith("--in-place"):
+                return False
+            if a not in _SED_FLAGS and not re.fullmatch(r"-[nErsuz]+", a):
+                return False             # -f 脚本文件、-l 等其他参数：不判断，按需要确认处理
+        else:
+            if not scripts:
+                scripts.append(a)
+            # 其余是输入文件
+    if "--sandbox" in args:
+        return True
+    for sc in scripts:
+        for part in re.split(r"[;\n]", sc):
+            if not _SED_CMD.fullmatch(part):
+                return False
+    return True
+
+
 def _segment_safe(seg: str) -> bool:
-    if re.search(r"(^|[^0-9&])>{1,2}(?!&)", seg) and not re.search(r">\s*(/dev/null|\$null|nul)\b", seg, re.I):
+    if not _redirects_safe(seg):
         return False  # 重定向写文件
+    if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*=", seg):
+        return False  # 前置环境变量（GIT_CONFIG_*、GIT_EXTERNAL_DIFF、LESSOPEN…）能让白名单命令执行任意程序
     t = tokens(seg)
+    if t and _has_code_syntax(seg, _cmd_name(t[0]) == "git"):
+        return False
     if not t:
         return True
     name = _cmd_name(t[0])
@@ -213,7 +289,9 @@ def _segment_safe(seg: str) -> bool:
         if args and args[0] in _VERSION_FLAGS:
             return True
         if name in ("python", "python3", "py") and args[:2] == ["-m", "pytest"]:
-            return True
+            return _pytest_safe(args[2:])
+        return False
+    if name in ("pytest", "py.test") and not _pytest_safe(args):
         return False
     if name == "find":
         return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf",
@@ -230,8 +308,10 @@ def _segment_safe(seg: str) -> bool:
     if name == "git" and any(a in ("-c", "--ext-diff", "-O", "--open-files-in-pager") or a.startswith(
             ("--config-env", "--exec-path=", "--output", "--open-files-in-pager=", "-O")) for a in args):
         return False  # -c 注入配置可执行任意命令；--output 写文件；外部 diff / 分页器会执行程序
+    if name == "sort" and any(a.startswith("--compress-program") for a in args):
+        return False  # sort 会执行压缩程序
     if name == "sed":
-        return "-i" not in args and not any(a.startswith("-i") for a in args)
+        return _sed_safe(args)
     if name not in SAFE_COMMANDS:
         return False
     subs = SAFE_COMMANDS[name]
@@ -266,6 +346,15 @@ def _segment_safe(seg: str) -> bool:
     return True
 
 
+def _pytest_safe(args: list[str]) -> bool:
+    for a in args:
+        if any(a == o or a.startswith(o + "=") for o in _PYTEST_WRITE_OPTS):
+            return False
+        if re.fullmatch(r"-[op]\S+", a):     # -oKEY=VAL / -pPLUGIN 连写
+            return False
+    return True
+
+
 def command_prefix(seg: str) -> str:
     """用于“以后 `<前缀>` 开头的命令都不问”：命令名 + 子命令（如 git commit、npm run）。"""
     t = tokens(seg)
@@ -278,6 +367,10 @@ def command_prefix(seg: str) -> str:
     if _cmd_name(name) in ("python", "python3", "py") and len(t) > 2 and t[1] == "-m":
         return f"{name} -m {t[2]}"
     return name
+
+
+def _clean_path(p: str) -> str:
+    return p.strip().strip('"').strip("'")
 
 
 def _match_rule(rule: str, tool: str, subject: str) -> bool:
@@ -426,10 +519,14 @@ class PermissionPolicy:
 
     # ---- 写文件
     def _paths(self, tool: str, args: dict) -> list[str]:
+        # 与工具实际解析路径的方式一致（ToolContext.resolve 去首尾空白和引号；apply_patch 解析时也 strip），
+        # 否则 ' /abs' 或 '"/abs"' 在这里被当成工作区内的相对路径，工具却写到了工作区外。
         if tool == "apply_patch":
-            patch = args.get("patch") or ""
-            return re.findall(r"^\*\*\* (?:Add File|Delete File|Update File|Move to): (.+)$", patch, re.M)
-        return [str(args.get("path") or "")]
+            patch = (args.get("patch") or args.get("input") or "").replace("\r\n", "\n")
+            raw = re.findall(r"^\*\*\* (?:Add File|Delete File|Update File|Move to): (.+)$", patch, re.M)
+        else:
+            raw = [str(args.get("path") or "")]
+        return [_clean_path(p) for p in raw]
 
     def _check_write(self, tool: str, args: dict) -> Decision:
         paths = self._paths(tool, args)
