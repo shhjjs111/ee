@@ -2,6 +2,8 @@
 
 最后更新：2026-10-26 16:25（Asia/Shanghai，D4-2 CI 全绿；D4-3 Plan 模式完成，等 Windows CI；下一步 D4-4 会话全文搜索）
 
+> **接手第一步（2026-10-26 16:12）**：查 492e91b 的 Windows Actions 结果（失败就先修）；然后做 D4-4 会话全文搜索（SQLite FTS5 索引会话条目、store.append 增量写、RPC thread/search 返回片段、左栏搜索框接全文搜索；目标见 research/parity-audit.md）。先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
 ## 用户要什么
