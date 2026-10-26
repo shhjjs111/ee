@@ -34,3 +34,14 @@
 - server/branch.py：thread/fork、thread/edit_resend。store 新增 truncate {from_seq} 记录（SessionStore.load 处理），历史截断用已有 rewind。
 - 撤销：state.snapshots 每回合一层（仅内存），_turn 开头记层号，从被编辑回合倒序恢复；无快照提示不可撤销。turn_starts 压缩后清空、重启不恢复，需注意。
 - 分叉复制该消息之前历史与附件目录，meta 记 parent_id，新会话输入框预填该消息；左栏分叉图标；thread_delete 连同 sessions/<id>/ 目录删除。
+
+## F. API key 安全存储（方案已定，未实现）
+- 各家：Codex 凭据存储 File(默认 auth.json 0600)/Keyring/Auto/Ephemeral，Windows 用凭据管理器；OpenCode auth.json 明文 0600；Claude Code macOS Keychain，其他平台 0600 文件，env 优先。
+- ee/ee/core/secrets.py：Windows 用 ctypes 调 CredWriteW/CredReadW/CredDeleteW（GENERIC，目标名 ee/provider/<名>，无需 keyring 包）；不可用时回退 ~/.ee/credentials.json（Windows DPAPI CryptProtectData 加密，其他平台 0600 并在 UI 警告）；Linux/mac 有 keyring 用 keyring。配置 [secrets] store=auto|keyring|file。
+- config.toml 只存 api_key_ref；覆盖 providers.*.api_key 与 web.tavily/brave/exa/deepseek_api_key（tools/web.py）。优先级改为 环境变量 > 凭据存储 > 旧明文（现在 config.py ModelSpec.api_key() 与 web.py backend_key/deepseek_key 顺序相反）。
+- settings/get 只返回来源(env/store/plain)+••••末4位+存储后端说明，绝不回传明文。
+- 迁移在 cli.py serve 启动处；不得生成含明文的 .bak（save_user_file 会原样备份，要改），抹掉已有 .bak 里的明文；日志只记“已迁移 N 个”。
+- 脱敏 redact()：log.py Filter、store.py SessionStore.append、session._friendly_error、net.describe_error、app.py RPC 错误；规则=已知 key 值 + sk-… / Bearer … 正则。
+- 前端：SettingsPage.tsx ProviderEditor（约84–150行）、AgentSettings.tsx KeyInput（约71行）改为状态/来源/替换/删除，说明“保存在 Windows 凭据管理器”；types.ts 加 source。
+- 需改的旧测试：test_server.py:184–197、test_robustness.py:225–240、test_server_d2.py:32–43、test_web.py:36/96/100。conftest 加 autouse 内存后端；cli selftest --secrets + workflow 用打包 exe 跑。
+- 未覆盖：bash 输出里的 key（echo $DEEPSEEK_API_KEY）会进模型上下文。
