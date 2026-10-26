@@ -11,3 +11,10 @@ edit_style = "apply_patch"
 prompt_patch = "gpt"
 empty_assistant_content = "null"
 quirks = []
+# 普通 GPT 不支持推理强度；o 系列 / gpt-5 系在下方 variants 里打开
+
+# o 系列 / gpt-5 系推理模型：reasoning_effort = low / medium / high
+[[variants]]
+match = ["re:(^|/)o[1-9]", "gpt-5"]
+reasoning = true
+effort_param = "reasoning_effort"

@@ -15,6 +15,11 @@ edit_style = "edit"
 prompt_patch = "deepseek"
 empty_assistant_content = "empty"
 quirks = ["dsml_tool_calls", "json_tool_calls"]
+# 推理强度：思考默认开启、默认强度 high；服务端只区分 low / high / max（medium 映射到 high）。
+# ee 的 低 / 中 / 高 → low / high / max；关闭思考 → extra_body {"thinking": {"type": "disabled"}}
+effort_param = "reasoning_effort"
+thinking_param = "thinking_type"
+effort_values = { low = "low", medium = "high", high = "max" }
 
 [price]
 currency = "¥"

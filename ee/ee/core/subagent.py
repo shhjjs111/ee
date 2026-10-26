@@ -231,7 +231,9 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     steps = max(1, min(limit, int(steps)))
 
     read_only = is_read_only(parent, args, adef)
-    model = str(args.get("model") or adef.model or "").strip() or parent.spec.alias
+    # 模型：调用时指定 > 子代理定义 > 只读子代理用 roles.explore（D5-9）> 主会话的模型
+    model = str(args.get("model") or adef.model or "").strip() or \
+        ((parent.config.role_model("explore") or "") if read_only else "") or parent.spec.alias
     use_wt = (not read_only) and (getattr(parent, "_subagent_plan", None) or {}).get(call_id) == "worktree"
     mode_label = "read-only" if read_only else parent.policy.mode
 
@@ -283,6 +285,12 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             child.bg = parent.bg                       # 后台命令归主会话管（子代理结束不杀，主会话里也能看到）
             child.disk_enabled = False                 # 磁盘快照由主会话的回合前后统一抓（含子代理的改动）
             child.hooks_role = "subagent"              # Hooks：子代理只跑 PreToolUse / PostToolUse / Notification
+            child.budget = parent.budget               # 花费上限：与主会话共用（并行子代理同时到线只问一次）
+            child.budget_owner = False
+            child.budget_root = parent.budget_root or parent
+            child.style = "default"                    # 子代理的输出给主代理看，不套回答风格
+            if child.spec.alias == parent.spec.alias:
+                child.effort = parent.effort           # 同模型沿用主会话当前的推理强度
             child._mcp_done = True                     # 子代理不自己连 MCP：沿用父会话已连好的工具
             if adef.tools:
                 keep = set(adef.tools)
@@ -378,7 +386,8 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
         sem.release()
     ok = reason in ("completed", "max_steps")
     note = {"completed": "", "max_steps": f"（子代理用完了 {steps} 步上限，报告可能不完整）",
-            "loop": "（子代理陷入重复调用被停止）", "error": "（子代理出错结束）"}.get(reason, "")
+            "loop": "（子代理陷入重复调用被停止）", "error": "（子代理出错结束）",
+            "budget": "（子代理因达到花费上限停止）"}.get(reason, "")
     out = (f'<task_result agent="{kind}" status="{reason}" steps="{step}">\n{final.strip()}\n</task_result>' +
            (f"\n{note}" if note else "") + (f"\n{wt_note}" if wt_note else ""))
     return out, ok, rec
@@ -413,9 +422,9 @@ def _merge_usage(parent, child, merged: list | None = None) -> None:
     merged = merged if merged is not None else [0, 0]
     st, cs = parent.stats, child.stats
     lp, lc = st.last_prompt, st.last_completion
-    for p, c, h in cs.history[merged[0]:]:
-        st.add({"prompt": p, "completion": c, "hit": h}, child.profile.price)
-    merged[0] = len(cs.history)
+    for r in cs.records[merged[0]:]:
+        st.add_record(r)            # 按条复制：花费是子代理当时按它实际用的模型单价算好的
+    merged[0] = len(cs.records)
     miss = cs.usage_missing - merged[1]
     if miss > 0:
         st.requests += miss

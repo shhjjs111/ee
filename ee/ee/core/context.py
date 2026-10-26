@@ -24,14 +24,18 @@ def load_prompt(rel_path: str) -> str:
     return f.read_text(encoding="utf-8").strip()
 
 
-def system_prompt(profile) -> str:
+def system_prompt(profile, style_segment: str = "") -> str:
+    """style_segment：回答风格段（core/styles.py），附在最末尾；默认风格为空，system 与没有风格时逐字节相同。"""
     base = load_prompt("system/base.md")
     patch_name = getattr(profile, "prompt_patch", "default") or "default"
     try:
         patch = load_prompt(f"system/{patch_name}.md")
     except (FileNotFoundError, OSError):
         patch = load_prompt("system/default.md")
-    return base + "\n\n" + patch + "\n"
+    text = base + "\n\n" + patch + "\n"
+    if style_segment:
+        text += "\n" + style_segment.strip() + "\n"
+    return text
 
 
 def prefix_hash(system: dict, tools: list[dict]) -> str:
@@ -132,34 +136,66 @@ class UsageStats:
     completion: int = 0
     hit: int = 0
     hit_known_prompt: int = 0      # 返回了命中字段的那些请求的 prompt 合计
+    reasoning: int = 0             # 推理 token（包含在 completion 里；服务端给了才有）
+    reasoning_known: bool = False
     cost: float = 0.0
     cost_known: bool = True
     last_prompt: int = 0
     last_completion: int = 0
     usage_missing: int = 0
     currency: str = "¥"
-    history: list = field(default_factory=list)
+    # 每次请求一条：{prompt, completion, hit, reasoning, cost, currency, model}（子代理并入主会话时按条复制，花费不重算）
+    records: list = field(default_factory=list)
+    by_model: dict = field(default_factory=dict)
 
-    def add(self, usage: dict | None, price) -> float | None:
-        self.requests += 1
+    def add(self, usage: dict | None, price, model: str = "") -> float | None:
+        """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。"""
         if not usage:
+            self.requests += 1
             self.usage_missing += 1
             return None
-        p, c, h = usage["prompt"], usage["completion"], usage.get("hit")
+        cost = price.cost(usage["prompt"], usage["completion"], usage.get("hit")) if price is not None else None
+        self.add_record({"prompt": usage["prompt"], "completion": usage["completion"], "hit": usage.get("hit"),
+                         "reasoning": usage.get("reasoning"), "cost": cost,
+                         "currency": getattr(price, "currency", "¥") if price is not None else "¥", "model": model})
+        return cost
+
+    def add_record(self, r: dict) -> None:
+        self.requests += 1
+        p, c, h = int(r["prompt"]), int(r["completion"]), r.get("hit")
         self.prompt += p
         self.completion += c
         self.last_prompt, self.last_completion = p, c
         if h is not None:
             self.hit += h
             self.hit_known_prompt += p
-        cost = price.cost(p, c, h) if price is not None else None
+        if r.get("reasoning") is not None:
+            self.reasoning += int(r["reasoning"])
+            self.reasoning_known = True
+        cost = r.get("cost")
         if cost is None:
             self.cost_known = False
         else:
             self.cost += cost
-            self.currency = price.currency
-        self.history.append((p, c, h))
-        return cost
+            self.currency = r.get("currency") or self.currency
+        m = r.get("model") or ""
+        if m:
+            b = self.by_model.setdefault(m, {"requests": 0, "prompt": 0, "completion": 0, "reasoning": 0, "cost": 0.0,
+                                              "currency": r.get("currency") or "¥", "cost_known": True})
+            b["requests"] += 1
+            b["prompt"] += p
+            b["completion"] += c
+            b["reasoning"] += int(r.get("reasoning") or 0)
+            if cost is None:
+                b["cost_known"] = False
+            else:
+                b["cost"] += cost
+        self.records.append(dict(r))
+
+    def spent(self, currency: str) -> float:
+        """某币种的已知花费合计（预算判断用）。"""
+        return sum(float(r["cost"]) for r in self.records
+                   if r.get("cost") is not None and (r.get("currency") or "¥") == currency)
 
     @property
     def hit_rate(self) -> float | None:
@@ -173,6 +209,14 @@ class UsageStats:
         return min(1.0, (self.last_prompt + self.last_completion) / window)
 
     def totals(self) -> dict:
-        return {"requests": self.requests, "prompt": self.prompt, "completion": self.completion,
-                "hit": self.hit, "hit_rate": self.hit_rate, "cost": self.cost if self.cost_known else None,
-                "currency": self.currency, "usage_missing": self.usage_missing}
+        out = {"requests": self.requests, "prompt": self.prompt, "completion": self.completion,
+               "hit": self.hit, "hit_rate": self.hit_rate, "cost": self.cost if self.cost_known else None,
+               "currency": self.currency, "usage_missing": self.usage_missing}
+        if self.reasoning_known:
+            out["reasoning"] = self.reasoning
+        if self.by_model:
+            out["by_model"] = {k: {**v, "cost": v["cost"] if v["cost_known"] else None}
+                               for k, v in self.by_model.items()}
+            for v in out["by_model"].values():
+                v.pop("cost_known", None)
+        return out

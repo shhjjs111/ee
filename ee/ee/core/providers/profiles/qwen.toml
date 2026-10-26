@@ -10,3 +10,4 @@ edit_style = "edit"
 prompt_patch = "qwen"
 empty_assistant_content = "empty"
 quirks = ["xml_tool_calls", "json_tool_calls"]
+thinking_param = "enable_thinking"

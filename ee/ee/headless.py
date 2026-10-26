@@ -19,7 +19,7 @@
 ask_user 提问工具在 exec 下关闭（配置 ask_user=false）。
 
 退出码：0 完成；1 出错（模型/网络/配置错误、会话不存在等）；2 参数错误（没有提示词等）；
-  3 到达步数上限；4 防死循环停下；130 被 Ctrl+C 中断。
+  3 到达步数上限；4 防死循环停下；5 达到花费上限（[budget]，无人值守时一律停止）；130 被 Ctrl+C 中断。
 Ctrl+C：第一次优雅中断当前回合（已产生的历史会保存），第二次立即退出。
 结束时（无论成败）结束本次启动的所有后台命令、关闭 MCP 连接。
 """
@@ -42,8 +42,9 @@ from ee.core.events import (ApprovalRequest, AssistantMessage, PlanUpdate, Subag
 from ee.core.permissions import MODE_LABEL, MODES
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_MAX_STEPS, EXIT_LOOP, EXIT_INTERRUPTED = 0, 1, 2, 3, 4, 130
+EXIT_BUDGET = 5
 EXIT_CODES = {"completed": EXIT_OK, "error": EXIT_ERROR, "max_steps": EXIT_MAX_STEPS, "loop": EXIT_LOOP,
-              "interrupted": EXIT_INTERRUPTED}
+              "interrupted": EXIT_INTERRUPTED, "budget": EXIT_BUDGET}
 
 # --json 时的事件类型（每行一个对象，都有 "type"）：
 EVENT_TYPES = (
@@ -60,7 +61,7 @@ EVENT_TYPES = (
     "notice",           # {text, level}
     "usage",            # {prompt_tokens, completion_tokens, cache_hit, cost, totals}
     "error",            # {message}
-    "turn_done",        # {reason, text, session_id, duration_ms, usage, exit_code}  最后一行
+    "turn_done",        # {reason, text, session_id, duration_ms, usage, exit_code, stop_reason?}  最后一行
 )
 
 JSON_OUTPUT_LIMIT = 4000          # JSON 里单个工具输出 / diff 的上限（首尾各留一半）
@@ -152,6 +153,7 @@ def unattended_configure(max_steps: int | None = None, allow=(), deny=()) -> Cal
     def configure(cfg) -> None:
         d = cfg.data
         d["ask_user"] = False                          # 没人回答问题
+        d["budget"] = {**(d.get("budget") or {}), "unattended": True}   # 花费到上限直接停（没人能点“继续”）
         if max_steps:
             d["max_steps"] = max(1, int(max_steps))
         if allow or deny:
@@ -358,12 +360,16 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
             pass
     text = th.final_text or _last_text(th)
     code = EXIT_CODES.get(reason, EXIT_ERROR)
+    extra = {}
+    stop_reason = getattr(s.budget, "stop_reason", None) if reason == "budget" else None
+    if stop_reason:
+        extra["stop_reason"] = stop_reason
     printer.event("turn_done", reason=reason, text=text, session_id=th.id,
-                  duration_ms=int((time.monotonic() - t0) * 1000), usage=th.usage, exit_code=code)
+                  duration_ms=int((time.monotonic() - t0) * 1000), usage=th.usage, exit_code=code, **extra)
     if reason != "completed":
         label = {"error": "出错", "max_steps": "到达步数上限", "loop": "检测到重复操作，已停止",
-                 "interrupted": "已中断"}.get(reason, reason)
-        printer.progress(f"[结束] {label}（退出码 {code}）")
+                 "interrupted": "已中断", "budget": "达到花费上限，已停止"}.get(reason, reason)
+        printer.progress(f"[结束] {label}（退出码 {code}）" + (f"：{stop_reason}" if stop_reason else ""))
     printer.progress(f"会话 id：{th.id}" + ("" if args.no_persist else f"（续接：ee exec --resume {th.id} \"…\"）"))
     return code, text
 

@@ -41,6 +41,16 @@ def _clip(s: str, n: int = UI_OUTPUT_LIMIT) -> str:
     return s[:half] + f"\n\n…（界面省略了中间 {len(s) - n} 个字符）…\n\n" + s[-half:]
 
 
+def clean_title(t: str) -> str:
+    """模型给的标题：取第一行、去引号/句号/“标题：”前缀，最多 40 字。"""
+    t = (t or "").strip().splitlines()[0].strip() if (t or "").strip() else ""
+    for p in ("标题：", "标题:", "Title:", "title:"):
+        if t.startswith(p):
+            t = t[len(p):].strip()
+    t = t.strip("\"'“”‘’《》`*#。.！!").strip()
+    return t[:40]
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
@@ -103,6 +113,21 @@ class Thread:
                         for it in self.items if it.get("type") == "user" and it.get("tree")]
         self.meta["model"] = s.spec.alias
         self.meta["mode"] = s.policy.mode
+        # D5-9：会话级推理强度 / 回答风格（存在 meta 里，重启后照旧）；重启前已花的钱计入会话上限
+        if "effort" in self.meta:
+            try:
+                s.set_effort(self.meta.get("effort") or "", remember=False)
+            except ValueError:
+                pass
+        if self.meta.get("style"):
+            try:
+                s.set_style(self.meta["style"])
+            except ValueError:
+                pass
+        last = next((it for it in reversed(self.items) if it.get("type") == "turn_end"), None)
+        u = (last or {}).get("usage") or {}
+        if u.get("cost"):
+            s.spent_before = {str(u.get("currency") or "¥"): float(u["cost"])}
         s.bg.on_change = lambda info: self.notify("shell/updated", {"thread_id": self.id, "proc": info})
         self.session = s
         for n in s.notices:
@@ -154,6 +179,9 @@ class Thread:
                 "created": self.meta.get("created"), "updated": self.meta.get("updated"), "status": self.status,
                 "parent_id": self.meta.get("parent_id"), "source": self.meta.get("source"),
                 "worktree": self.meta.get("worktree"),          # D5-1：在 worktree 里的对话 {path, branch, repo, name}
+                "effort": self.session.effort if self.session else self.meta.get("effort", ""),   # D5-9
+                "effort_support": self.session.effort_support() if self.session else None,
+                "style": self.session.style if self.session else (self.meta.get("style") or "default"),
                 "workspace": (self.meta.get("worktree") or {}).get("repo") or self.meta.get("cwd", "")}
 
     def detail(self) -> dict:
@@ -203,9 +231,25 @@ class Thread:
         self.notify("item/delta", {"thread_id": self.id, "item_id": it["id"], "field": field, "delta": text})
 
     # ------------------------------------------------------------ 回合
+    def set_options(self, effort=None, style: str | None = None) -> dict:
+        """会话级选项（D5-9）：推理强度（同时按模型记住）、回答风格。None = 不变。"""
+        s = self.ensure_session()
+        msgs = []
+        if effort is not None and effort != s.effort:
+            msgs.append(s.set_effort(effort))
+            self.meta["effort"] = s.effort
+        if style is not None and style != s.style:
+            msgs.append(s.set_style(style))
+            self.meta["style"] = s.style
+        if msgs:
+            self.save_meta()
+            self.notify("thread/updated", {"thread": self.summary()})
+        return {"effort": s.effort, "style": s.style, "effort_support": s.effort_support(), "messages": msgs}
+
     def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
                    images: list[str] | None = None, attachments: list[dict] | None = None,
-                   display: str | None = None, readonly: bool = False, kind: str | None = None) -> dict:
+                   display: str | None = None, readonly: bool = False, kind: str | None = None,
+                   effort=None, style: str | None = None) -> dict:
         """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。
         display：界面上显示的用户消息（模型收到的仍是 text，例如 /review 拼好的长提示）；
         readonly：这一回合临时只读，回合结束恢复原模式（/review）；kind：用户条目的类型标记（review）。"""
@@ -220,6 +264,8 @@ class Thread:
         if mode and mode != s.policy.mode:
             s.set_mode(mode)
             self.meta["mode"] = mode
+        if effort is not None or style is not None:
+            self.set_options(effort, style)
         user_item = {"type": "user", "text": display or text}
         if kind:
             user_item["kind"] = kind
@@ -237,6 +283,7 @@ class Thread:
         if readonly and s.policy.mode != "read-only":
             self._restore_mode = s.policy.mode
             s.set_mode("read-only")
+        s._turn_role = "review" if kind == "review" else None      # 审查回合按 roles.review 取模型（D5-9）
         self.notify("thread/updated", {"thread": self.summary()})
         self.task = asyncio.create_task(self._consume(text, images))
         self.notify("thread/updated", {"thread": self.summary()})
@@ -304,6 +351,7 @@ class Thread:
             if restore:
                 self._restore_mode = None
                 s.set_mode(restore)
+            s._turn_role = None
             try:
                 self._finish(reason)
             except Exception:  # noqa: BLE001
@@ -337,6 +385,47 @@ class Thread:
                                        "usage": self.usage, "context_left": self.context_left,
                                        "instructions": self.instructions()})
         self.notify("thread/updated", {"thread": {**self.summary(), "status": "idle"}})
+        if reason == "completed":
+            self._maybe_ai_title()
+
+    # ------------------------------------------------------------ 模型生成标题（D5-9，roles.title）
+    def _maybe_ai_title(self) -> None:
+        s = self.session
+        if s is None or self.meta.get("title_ai_done") or self.meta.get("source") in ("exec", "automation"):
+            return
+        if not bool((s.config.data.get("title") or {}).get("ai", False)):
+            return
+        users = [it for it in self.items if it.get("type") == "user"]
+        if len(users) != 1:
+            return
+        reply = next((it.get("text") or "" for it in reversed(self.items) if it.get("type") == "assistant"), "")
+        self.meta["title_ai_done"] = True
+        first = str(users[0].get("text") or "")
+        old = self.meta.get("title")
+        try:
+            self._title_task = asyncio.get_running_loop().create_task(self._ai_title(first, reply, old))
+        except RuntimeError:
+            pass
+
+    async def _ai_title(self, first: str, reply: str, old: str | None) -> None:
+        s = self.session
+        try:
+            from ee.core.context import load_prompt
+            prompt = f"用户的第一条消息：\n{first[:2000]}\n\n助手的回答开头：\n{reply[:800]}"
+            title = await asyncio.wait_for(s.side_complete(load_prompt("title.md"), prompt, role="title"), 30)
+        except Exception as e:  # noqa: BLE001
+            log.info("生成标题失败（会话 %s）：%s", self.id, e)
+            return
+        title = clean_title(title)
+        if not title or self.meta.get("title") != old:      # 生成期间被改过名就不覆盖
+            return
+        self.meta["title"] = title
+        self.save_meta()
+        u = s.stats.totals()
+        if u.get("cost") is not None:
+            self.usage = dict(u)
+            self.notify("thread/usage", {"thread_id": self.id, "usage": self.usage, "context_left": self.context_left})
+        self.notify("thread/updated", {"thread": self.summary()})
 
     def _mark_turn_start(self, tree: str | None = None) -> None:
         """给本回合的用户条目记下它在历史里的位置和文件快照层号（编辑重发 / 分叉用，D3-E）。"""

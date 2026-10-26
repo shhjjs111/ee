@@ -31,7 +31,7 @@ ee = "ee.cli:main"
 include = ["ee*"]
 
 [tool.setuptools.package-data]
-"ee" = ["prompts/*.md", "prompts/system/*.md", "prompts/tools/*.md", "core/providers/profiles/*.toml", "core/builtin_prompts/*.md"]
+"ee" = ["prompts/*.md", "prompts/system/*.md", "prompts/tools/*.md", "prompts/styles/*.md", "core/providers/profiles/*.toml", "core/builtin_prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

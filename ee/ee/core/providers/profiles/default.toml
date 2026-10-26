@@ -11,4 +11,6 @@ edit_style = "edit"             # edit | apply_patch
 prompt_patch = "default"
 empty_assistant_content = "empty"   # empty("") | null
 quirks = []
+effort_param = ""                # 推理强度参数名：reasoning_effort（顶层）或其它名字（放 extra_body）；"" = 不支持
+thinking_param = ""              # 关闭思考的写法：thinking_type | enable_thinking | ""
 # [price] 单位：每百万 token；不填 = 未知，状态栏显示 ¥?

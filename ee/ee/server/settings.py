@@ -11,7 +11,8 @@ from __future__ import annotations
 import copy
 import os
 
-from ee.config import DEFAULTS, deep_merge, load_user_file, save_user_file, user_config_path
+from ee.config import DEFAULTS, ROLES, deep_merge, load_user_file, normalize_roles, save_user_file, user_config_path
+from ee.core import reasoning as RZ
 from ee.core import secrets
 from ee.core.migrate import CURRENT_VERSION
 from ee.core.permissions import MODES
@@ -21,6 +22,7 @@ from ee.tools.web import FETCH_BACKENDS, KEY_ENV, SEARCH_BACKENDS
 from ee.tools.web import deepseek_key as web_deepseek_key
 
 THEMES = ["system", "dark", "light"]
+BUDGET_ACTIONS = ["warn", "pause"]
 NOTIFY_MODES = ["never", "unfocused", "always"]
 FAMILIES = ["auto", *FAMILY_ORDER, "default"]
 MODEL_KEYS = {"provider", "model", "family", "context_window", "price", "vision"}
@@ -32,7 +34,7 @@ def _preview(key: str) -> str:
 
 
 def effective() -> dict:
-    return deep_merge(DEFAULTS, load_user_file())
+    return deep_merge(DEFAULTS, normalize_roles(load_user_file()))
 
 
 def get_settings(project_sources: list[str] | None = None) -> dict:
@@ -79,13 +81,89 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             **_d2_out(data),
             "mcp": _mcp_out(data),
             "hooks": _hooks_out(data),
+            **_answer_out(data),
             "secrets": _secrets_out(),
             "providers": providers,
             "models": models,
         },
         "choices": {"shells": SHELL_CHOICES, "modes": MODES, "families": FAMILIES, "themes": THEMES,
-                    "notify_modes": NOTIFY_MODES, "search_backends": SEARCH_BACKENDS, "fetch_backends": FETCH_BACKENDS},
+                    "notify_modes": NOTIFY_MODES, "search_backends": SEARCH_BACKENDS, "fetch_backends": FETCH_BACKENDS,
+                    "efforts": list(RZ.LEVELS), "roles": list(ROLES), "budget_actions": list(BUDGET_ACTIONS),
+                    "styles": _styles_choices()},
     }
+
+
+# ------------------------------------------------------------------ 回答与花费（D5-9）
+
+def _styles_choices() -> list[dict]:
+    from ee.config import ee_home
+    from ee.core import styles as ST
+    return [x.summary() for x in ST.available(ee_home())]
+
+
+def _answer_out(data: dict) -> dict:
+    from ee.core.budget import settings as budget_settings
+    b = budget_settings(data)
+    b.pop("unattended", None)
+    roles = data.get("roles") or {}
+    return {
+        "reasoning": {"effort": RZ.normalize((data.get("reasoning") or {}).get("effort")) or ""},
+        "roles": {r: str(roles.get(r) or "") for r in ROLES},
+        "title": {"ai": bool((data.get("title") or {}).get("ai", False))},
+        "style": {"default": str((data.get("style") or {}).get("default") or "default")},
+        "budget": b,
+    }
+
+
+def _answer_in(new: dict, out: dict, final_models: dict) -> None:
+    from ee.config import ee_home
+    from ee.core import styles as ST
+    if isinstance(new.get("reasoning"), dict) and "effort" in new["reasoning"]:
+        lv = RZ.normalize(new["reasoning"]["effort"])
+        if lv is None:
+            raise ValueError(f"未知推理强度：{new['reasoning']['effort']}")
+        out.setdefault("reasoning", {})["effort"] = lv
+    if isinstance(new.get("roles"), dict):
+        roles = dict(out.get("roles") or {})
+        for r, v in new["roles"].items():
+            if r not in ROLES:
+                raise ValueError(f"未知用途：{r}")
+            v = str(v or "").strip()
+            if v and v not in final_models:
+                raise ValueError(f"用途「{r}」选的模型 {v} 不在模型列表里")
+            roles[r] = v
+        out["roles"] = roles
+        if isinstance(out.get("models"), dict):
+            out["models"].pop("roles", None)       # 旧写法 [models.roles] 已并进 [roles]
+    if isinstance(new.get("title"), dict) and new["title"].get("ai") is not None:
+        out.setdefault("title", {})["ai"] = bool(new["title"]["ai"])
+    if isinstance(new.get("style"), dict) and new["style"].get("default") is not None:
+        sid = str(new["style"]["default"] or "default").strip() or "default"
+        if not ST.exists(ee_home(), sid):
+            raise ValueError(f"没有这个回答风格：{sid}")
+        out.setdefault("style", {})["default"] = sid
+    if isinstance(new.get("budget"), dict):
+        n = new["budget"]
+        b = dict(out.get("budget") or {})
+        for k in ("session", "daily", "monthly"):
+            if k in n:
+                v = _num(n.get(k))
+                v = 0 if v is None else v
+                if v < 0 or v > 1_000_000:
+                    raise ValueError("花费上限必须在 0～1000000 之间（0 = 不限）")
+                b[k] = v
+        if n.get("action") is not None:
+            if n["action"] not in BUDGET_ACTIONS:
+                raise ValueError(f"未知的超限处理方式：{n['action']}")
+            b["action"] = n["action"]
+        if n.get("warn_ratio") not in (None, ""):
+            r = float(n["warn_ratio"])
+            if not 0.1 <= r <= 0.99:
+                raise ValueError("提醒比例必须在 0.1～0.99 之间")
+            b["warn_ratio"] = r
+        if n.get("currency") not in (None, ""):
+            b["currency"] = str(n["currency"]).strip()[:4]
+        out["budget"] = b
 
 
 def _ui_out(ui: dict) -> dict:
@@ -340,7 +418,7 @@ def _num(v):
 
 def set_settings(new: dict) -> dict:
     """new 的结构同 get_settings()['settings']；缺的键保持不变。返回新的 get_settings()。"""
-    user = load_user_file()
+    user = normalize_roles(load_user_file())
     out = copy.deepcopy(user)
     merged_before = effective()
     deletes: list[str] = []          # 校验全部通过后才从凭据存储删除的 key
@@ -472,6 +550,7 @@ def set_settings(new: dict) -> dict:
     _d2_in(new, out, deletes)
     _mcp_in(new, out)
     _hooks_in(new, out)
+    _answer_in(new, out, final.get("models") or {})
     out["config_version"] = CURRENT_VERSION
     # 校验都过了：先删要清除的，再把新填的 key 存进凭据存储（config.toml 里不留明文）
     for d in dict.fromkeys(deletes):

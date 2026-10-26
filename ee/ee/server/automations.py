@@ -520,6 +520,8 @@ class Automations:
             status = (last or {}).get("reason") or "error"
             from ee.headless import _last_text
             text = th.final_text or _last_text(th)
+            if status == "budget" and th.session is not None and th.session.budget.stop_reason:
+                note = (note + " " if note else "") + th.session.budget.stop_reason    # 超出花费上限：原因写进运行记录
             if status == "error" and not text:
                 err = next((it for it in reversed(th.items) if it.get("type") == "error"), None)
                 text = (err or {}).get("message") or "出错了"

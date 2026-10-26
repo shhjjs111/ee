@@ -23,6 +23,9 @@ from ee.core.instructions import load_instructions
 from ee.core.memory import load_memory
 from ee.core.repomap import startup_message as repo_map_message
 from ee.core import parallel
+from ee.core import reasoning as RZ
+from ee.core import styles as ST
+from ee.core.budget import BudgetGuard
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
@@ -115,6 +118,18 @@ class Session:
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
         self.compactions = 0
+        # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
+        self.effort = RZ.resolve(config.data, self.home, self.spec.alias)
+        sdef = str((config.data.get("style") or {}).get("default") or "default")
+        self.style = sdef if ST.exists(self.home, sdef) else "default"
+        self._prefix_style: str | None = None      # 冻结进 system 的风格
+        self._style_switched = False               # 会话中途切换过风格（之后用 <context-update> 子块说明当前风格）
+        self._turn_role: str | None = None         # 本回合按哪个用途取模型（review）；计划模式自动用 plan
+        self._role_clients: dict = {}
+        self.budget = BudgetGuard(config.data, self.home)
+        self.budget_owner = True                   # 子代理共用主会话的 BudgetGuard，不负责回合重置
+        self.budget_root = None                    # 子代理：主会话（会话花费按主会话合计算）
+        self.spent_before: dict[str, float] = {}   # 重启前这个会话已花的钱（按币种），会话上限要算上
         # MCP（D3-A）：首次冻结前缀前连接服务器，工具追加在工具表末尾，会话内不变
         self.mcp_enabled = True
         self.mcp_tools: list = []
@@ -155,11 +170,123 @@ class Session:
         if not same_prefix:
             self.prefix = None
         self.updates.reset()
+        self.effort = RZ.resolve(self.config.data, self.home, spec.alias)
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"
                 "换模型后服务端缓存会从零开始。")
 
     def set_mode(self, mode: str) -> None:
         self.policy.set_mode(mode)
+
+    # ------------------------------------------------------------ D5-9：推理强度 / 回答风格 / 按用途分模型
+    def set_effort(self, level, remember: bool = True) -> str:
+        """切换本会话的推理强度；remember 时同时按模型记住（下次用这个模型默认就是它）。"""
+        lv = RZ.normalize(level)
+        if lv is None:
+            raise ValueError(f"未知推理强度：{level}（可选 默认 / 低 / 中 / 高 / 关闭思考）")
+        self.effort = lv
+        if remember:
+            try:
+                RZ.remember(self.home, self.spec.alias, lv)
+            except OSError:
+                pass
+        eff = RZ.effective(self.profile, lv)
+        note = "" if eff == lv else "（当前模型不支持这个档位，请求里不会发送）"
+        return f"推理强度：{RZ.LABEL[lv]}{note}"
+
+    def effort_support(self) -> dict:
+        return RZ.support(self.profile)
+
+    def set_style(self, sid: str) -> str:
+        sid = (sid or "default").strip() or "default"
+        if not ST.exists(self.home, sid):
+            raise ValueError(f"没有这个回答风格：{sid}")
+        self.style = sid
+        return f"回答风格：{ST.get(self.home, sid).label}"
+
+    def _style_part(self) -> str | None:
+        """会话中途切换过风格时，挂在用户消息尾部的风格子块（未冻结前缀时风格直接进 system）。"""
+        if self.prefix is None or self._prefix_style is None:
+            return None
+        if self.style != self._prefix_style:
+            self._style_switched = True
+        if not self._style_switched:
+            return None
+        return ST.switch_part(ST.get(self.home, self.style))
+
+    def _env_parts(self) -> dict:
+        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
+        sp = self._style_part()
+        if sp:
+            parts["style"] = sp
+        return parts
+
+    def active_role(self) -> str | None:
+        """本次主循环请求的用途：/review 回合 → review；计划模式 → plan；否则主模型。"""
+        return self._turn_role or ("plan" if self.policy.mode == "plan" else None)
+
+    def role_spec(self, role: str | None):
+        """某个用途实际用的模型（没配 / 配错 → 主模型）。"""
+        name = self.config.role_model(role) if role else None
+        if not name or name == self.spec.alias:
+            return self.spec
+        try:
+            return self.config.resolve_model(name)
+        except ValueError:
+            return self.spec
+
+    def role_client(self, spec):
+        if spec.alias == self.spec.alias:
+            return self.client()
+        c = self._role_clients.get(spec.alias)
+        if c is None:
+            if self._client_override is not None:
+                c = ChatClient(spec, client=self._client_override)
+            elif self._client_factory is not None:
+                c = self._client_factory(spec)
+            else:
+                c = ChatClient(spec, state_path=self.home / "state" / "quirks.json",
+                               network=self.config.data.get("network"))
+            self._role_clients[spec.alias] = c
+        return c
+
+    async def ensure_role_client(self, spec):
+        if spec.alias == self.spec.alias:
+            return await self.ensure_client()
+        if spec.alias not in self._role_clients:
+            await asyncio.to_thread(self.role_client, spec)
+        return self._role_clients[spec.alias]
+
+    def effort_for(self, spec) -> str:
+        if spec.alias == self.spec.alias:
+            return self.effort
+        return RZ.resolve(self.config.data, self.home, spec.alias)
+
+    async def _charge(self, usage: dict | None, spec) -> float | None:
+        """记一次请求的用量：按这次实际用的模型的单价计价，计入会话统计和每日/每月账本。"""
+        cost = self.stats.add(usage, spec.profile.price, spec.alias)
+        if cost:
+            await asyncio.to_thread(self.budget.record, cost, spec.profile.price.currency)
+        return cost
+
+    def session_spent(self, currency: str) -> float:
+        root = self.budget_root or self
+        return float(root.spent_before.get(currency, 0.0)) + root.stats.spent(currency)
+
+    async def _budget_check(self, emit) -> str | None:
+        g = self.budget
+        if not g.active:
+            return None
+
+        async def ask(scope: str, text: str) -> str:
+            import uuid as _u
+            fut = asyncio.get_running_loop().create_future()
+            detail = ("继续这一回合：本回合内不再询问；本会话不再询问：直到关闭这个对话；停止：结束本回合。"
+                      "上限在 设置 → 回答与花费 里修改。")
+            emit(ApprovalRequest(f"budget_{_u.uuid4().hex[:8]}", "budget", text, detail, "", fut, force=True))
+            dec = await fut
+            return {"once": "once", "always": "always", "forever": "always"}.get(dec.choice, "deny")
+
+        return await g.check(self.session_spent, lambda t: emit(Notice(t, "warn")), ask)
 
     def set_shell(self, name: str) -> str:
         sh = resolve_shell(name)   # 找不到会抛 ShellNotFound
@@ -427,10 +554,14 @@ class Session:
 
     # ------------------------------------------------------------ 前缀
     def current_prefix(self) -> FrozenPrefix:
-        return FrozenPrefix.freeze(system_prompt(self.profile), [t.schema() for t in self.tools])
+        style = self._prefix_style if (self.prefix is not None and self._prefix_style is not None) else self.style
+        seg = ST.system_segment(ST.get(self.home, style))
+        return FrozenPrefix.freeze(system_prompt(self.profile, seg), [t.schema() for t in self.tools])
 
     def _ensure_prefix(self, emit) -> FrozenPrefix:
         if self.prefix is None:
+            self._prefix_style = self.style          # 风格段随 system 冻结；之后切换走 <context-update>
+            self._style_switched = False
             self.prefix = self.current_prefix()
             self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model})
             return self.prefix
@@ -449,8 +580,7 @@ class Session:
     def _add_user(self, text: str, images: list[str] | None = None) -> None:
         """调用前先 `await asyncio.to_thread(self.refresh_git)`（git 子进程不能在事件循环上跑）。
         images：附件图片的绝对路径（D3-D），记在消息的 _images 上，发送时由 wire_messages 处理。"""
-        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
-        appendix = self.updates.build(parts)
+        appendix = self.updates.build(self._env_parts())
         body = text
         if self.notes:
             body = "\n\n".join(self.notes) + "\n\n" + text
@@ -587,6 +717,9 @@ class Session:
             self._hook_stop = None
             self.state.new_turn()
             self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
+            if self.budget_owner:
+                self.budget.reload(self.config.data)
+                self.budget.new_turn()
             log.info("回合开始：会话 %s 第 %d 回合 模型 %s cwd=%s", self.store.id, self.turns, self.spec.alias, self.cwd)
             await self._ensure_instructions_async()
             await self._attach_mcp(emit)
@@ -615,6 +748,11 @@ class Session:
                     await self._maybe_auto_compact(emit)
                 if last and step > 1:
                     self._append({"role": "user", "content": LAST_STEP_NOTE, "_kind": "note"})
+                stop = await self._budget_check(emit)        # D5-9：花费上限
+                if stop:
+                    emit(Notice(stop, "warn"))
+                    emit(TurnDone("budget", final))
+                    return
                 emit(StepStart(step))
                 comp = await self._sample(emit)
                 if comp.content:
@@ -668,13 +806,14 @@ class Session:
 
     async def _sample(self, emit) -> Completion:
         prefix = self._ensure_prefix(emit)
-        messages = [prefix.system] + T.wire_messages(self.history, self.profile)
+        spec = self.role_spec(self.active_role())     # 计划模式 / 审查回合可配不同模型（D5-9）
+        messages = [prefix.system] + T.wire_messages(self.history, spec.profile)
         comp: Completion | None = None
         text, reasoning = [], []
-        emit(Status(f"正在准备请求 {self.spec.alias}…"))
+        emit(Status(f"正在准备请求 {spec.alias}…"))
         try:
-            await self.ensure_client()
-            async for kind, val in self.client().stream(messages, prefix.tools):
+            client = await self.ensure_role_client(spec)
+            async for kind, val in client.stream(messages, prefix.tools, effort=self.effort_for(spec)):
                 if kind == "text":
                     text.append(val); emit(TextDelta(val))
                 elif kind == "reasoning":
@@ -705,7 +844,7 @@ class Session:
         self.last_reasoning = comp.reasoning or self.last_reasoning
         if comp.usage:
             self._fresh_usage = True
-        cost = self.stats.add(comp.usage, self.profile.price)
+        cost = await self._charge(comp.usage, spec)
         u = comp.usage or {}
         emit(Usage(u.get("prompt", 0), u.get("completion", 0), u.get("hit"), cost, self.stats.totals()))
         emit(AssistantMessage(comp.content, comp.reasoning))
@@ -894,18 +1033,21 @@ class Session:
             return await fut
 
     # ------------------------------------------------------------ 侧路请求（不碰主会话）
-    async def side_complete(self, system: str, user: str) -> str:
+    async def side_complete(self, system: str, user: str, role: str | None = None) -> str:
+        """侧路请求（不进历史）。role：按用途取模型（title / compact / commit），花费按那个模型的单价记。
+        不带主会话的推理强度（换了模型的参数不一定被支持）。"""
+        spec = self.role_spec(role)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         out = []
         comp = None
-        await self.ensure_client()
-        async for kind, val in self.client().stream(msgs, None):
+        client = await self.ensure_role_client(spec)
+        async for kind, val in client.stream(msgs, None):
             if kind == "text":
                 out.append(val)
             elif kind == "done":
                 comp = val
         if comp is not None:
-            self.stats.add(comp.usage, self.profile.price)
+            await self._charge(comp.usage, spec)
             return comp.content.strip()
         return "".join(out).strip()
 
@@ -918,7 +1060,7 @@ class Session:
             raise ToolError("没有可提交的改动")
         log = await asyncio.to_thread(gitinfo.recent_log, self.cwd)
         prompt = (f"最近的提交记录：\n{log or '（无）'}\n\n改动：\n{diff[:60000]}")
-        return await self.side_complete(load_prompt("commit.md"), prompt), stage_all
+        return await self.side_complete(load_prompt("commit.md"), prompt, role="commit"), stage_all
 
     # ------------------------------------------------------------ 压缩
     def context_tokens(self) -> int:
@@ -957,15 +1099,19 @@ class Session:
         finally:
             self.running = False
 
-    async def _summarize(self, emit) -> tuple[str, dict | None]:
-        """主路：同一前缀 + 完整历史 + 压缩指令（复用缓存）。不调工具。"""
+    async def _summarize(self, emit) -> tuple[str, dict | None, object]:
+        """主路：同一前缀 + 完整历史 + 压缩指令（同模型时复用缓存）。不调工具。
+        配了 roles.compact 时交给那个模型（历史放不进它的窗口就抛错，走侧路精简记录）。"""
         prefix = self._ensure_prefix(emit)
-        messages = ([prefix.system] + T.wire_messages(self.history, self.profile) +
+        spec = self.role_spec("compact")
+        messages = ([prefix.system] + T.wire_messages(self.history, spec.profile) +
                     [{"role": "user", "content": C.compact_prompt()}])
+        if spec.alias != self.spec.alias and C.estimate_messages(messages) > 0.85 * spec.profile.context_window:
+            raise RuntimeError(f"历史放不进压缩模型 {spec.alias} 的上下文窗口")
         text: list[str] = []
         comp = None
-        await self.ensure_client()
-        async for kind, val in self.client().stream(messages, prefix.tools):
+        client = await self.ensure_role_client(spec)
+        async for kind, val in client.stream(messages, prefix.tools):
             if kind == "text":
                 text.append(val)
             elif kind == "notice":
@@ -973,28 +1119,29 @@ class Session:
             elif kind == "done":
                 comp = val
         content = (comp.content if comp is not None else "".join(text)).strip()
-        return content, (comp.usage if comp is not None else None)
+        return content, (comp.usage if comp is not None else None), spec
 
     async def _summarize_side(self) -> str:
         """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。"""
-        budget = max(4000, int(self.profile.context_window * 0.5))
+        budget = max(4000, int(min(self.profile.context_window, self.role_spec("compact").profile.context_window) * 0.5))
         transcript = C.render_transcript(self.history, budget)
-        return await self.side_complete(C.compact_prompt(), "以下是需要压缩的对话记录：\n\n" + transcript)
+        return await self.side_complete(C.compact_prompt(), "以下是需要压缩的对话记录：\n\n" + transcript,
+                                        role="compact")
 
     async def _compact(self, emit, reason: str) -> dict:
         real = [m for m in self.history if m.get("_kind") != "agents"]
         before = self.context_tokens()
         if not real:
             return {"ok": False, "message": "没有可压缩的内容。", "tokens_before": before, "tokens_after": before}
-        summary, usage = "", None
+        summary, usage, used_spec = "", None, self.spec
         try:
-            summary, usage = await self._summarize(emit)
+            summary, usage, used_spec = await self._summarize(emit)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
             emit(Notice(f"压缩请求失败（{_friendly_error(e)}），改用精简记录重试。", "warn"))
         if usage is not None:
-            self.stats.add(usage, self.profile.price)
+            await self._charge(usage, used_spec)
         if not summary:
             try:
                 summary = await self._summarize_side()
@@ -1013,8 +1160,7 @@ class Session:
         cfg = self.config.data.get("compact", {}) or {}
         await asyncio.to_thread(self.refresh_git)
         self.updates.reset()     # 摘要消息里补发全量环境信息
-        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
-        appendix = self.updates.build(parts)
+        appendix = self.updates.build(self._env_parts())
         new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
                               int(cfg.get("keep_user_tokens", 20000)))
         self.history = new

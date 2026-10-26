@@ -51,7 +51,19 @@ def parse_usage(u: Any) -> dict | None:
             hit = g(det, "cached_tokens")
     if hit is None:
         hit = g(u, "cached_tokens")
-    return {"prompt": int(prompt), "completion": int(completion), "hit": None if hit is None else int(hit)}
+    reasoning = None                     # 推理 token（包含在 completion 里），服务端给了才有
+    det = g(u, "completion_tokens_details")
+    if det is not None:
+        reasoning = g(det, "reasoning_tokens")
+    if reasoning is None:
+        reasoning = g(u, "reasoning_tokens")
+    out = {"prompt": int(prompt), "completion": int(completion), "hit": None if hit is None else int(hit)}
+    if reasoning is not None:
+        try:
+            out["reasoning"] = int(reasoning)
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 class QuirkState:
@@ -111,7 +123,10 @@ class ChatClient:
         return f"{host}{via}"
 
     # ------------------------------------------------------------ 请求参数
-    def build_params(self, messages: list[dict], tools: list[dict] | None) -> dict:
+    def build_params(self, messages: list[dict], tools: list[dict] | None, effort: str = "",
+                     strip_reasoning: bool = False) -> dict:
+        """effort：推理强度档位（见 core/reasoning.py）；strip_reasoning：本次不发推理相关参数（400 后的试探重试）。"""
+        from ee.core import reasoning as R
         st = self.state.get(self.key)
         p: dict = {"model": self.spec.model, "messages": messages, "stream": True}
         if not st.get("no_stream_options"):
@@ -126,15 +141,31 @@ class ChatClient:
             p["temperature"] = self.profile.temperature
         if self.profile.extra_body:
             p["extra_body"] = dict(self.profile.extra_body)
+        top, body = R.request_params(self.profile, effort or "",
+                                     strip_effort=strip_reasoning or bool(st.get("no_reasoning_effort")),
+                                     strip_thinking=strip_reasoning or bool(st.get("no_thinking")))
+        p.update(top)
+        if body:
+            p["extra_body"] = {**p.get("extra_body", {}), **body}
         return p
 
+    @staticmethod
+    def has_reasoning_params(p: dict) -> bool:
+        eb = p.get("extra_body") or {}
+        return "reasoning_effort" in p or "thinking" in eb or "enable_thinking" in eb or any(
+            k.endswith("effort") for k in eb)
+
     # ------------------------------------------------------------ 流式调用
-    async def stream(self, messages: list[dict], tools: list[dict] | None) -> AsyncIterator[tuple[str, Any]]:
-        """产出 ("text", s) / ("reasoning", s) / ("notice", s) / ("done", Completion)。"""
+    async def stream(self, messages: list[dict], tools: list[dict] | None,
+                     effort: str = "") -> AsyncIterator[tuple[str, Any]]:
+        """产出 ("text", s) / ("reasoning", s) / ("notice", s) / ("done", Completion)。
+        effort：推理强度档位；服务端不认时（400）去掉推理参数重试一次，成功就记住这个模型不支持。"""
         attempt = 0
         degrade_budget = 4
+        strip_reasoning = False
         while True:
-            params = self.build_params(messages, tools)
+            params = self.build_params(messages, tools, effort, strip_reasoning)
+            sent_reasoning = self.has_reasoning_params(params)
             emitted = False
             t0 = time.monotonic()
             log.info("模型请求开始：%s（%s）messages=%d tools=%d 第 %d 次", self.spec.alias, self.where(), len(messages),
@@ -150,6 +181,14 @@ class ChatClient:
                         if not emitted:
                             yield ("status", "")
                         c = ev[1]
+                        if strip_reasoning:         # 去掉推理参数后成功：记住，以后不再发
+                            st = self.state.get(self.key)
+                            if effort == "off":
+                                st["no_thinking"] = True
+                            else:
+                                st["no_reasoning_effort"] = True
+                            self.state.save()
+                            yield ("notice", f"模型 {self.spec.alias} 不接受推理强度参数，已去掉并记住（以后不再发送）")
                         log.info("模型请求结束：%s 用时 %.1fs finish=%s 文本 %d 字 工具调用 %d 个 usage=%s", self.spec.alias,
                                  time.monotonic() - t0, c.finish_reason, len(c.content), len(c.tool_calls), c.usage)
                     yield ev
@@ -167,10 +206,17 @@ class ChatClient:
                     if bad:
                         degrade_budget -= 1
                         flag = {"stream_options": "no_stream_options", "parallel_tool_calls": "no_parallel_tool_calls",
-                                "max_tokens": "no_max_tokens", "temperature": "no_temperature"}.get(bad, f"no_{bad}")
+                                "max_tokens": "no_max_tokens", "temperature": "no_temperature",
+                                "enable_thinking": "no_thinking"}.get(bad, f"no_{bad}")
                         self.state.get(self.key)[flag] = True
                         self.state.save()
                         yield ("notice", f"服务端不支持参数 {bad}，已自动降级并记住")
+                        continue
+                    if sent_reasoning and not strip_reasoning and not emitted:
+                        # 说不清是哪个参数的 400：先去掉推理参数试一次（成功才记住）
+                        strip_reasoning = True
+                        degrade_budget -= 1
+                        yield ("notice", "服务端拒绝了这次请求，先去掉推理强度参数重试一次")
                         continue
                 retryable = status in (408, 409, 429) or (status is not None and status >= 500) or \
                     type(e).__name__ in ("APIConnectionError", "APITimeoutError")

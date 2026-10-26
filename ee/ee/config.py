@@ -44,6 +44,16 @@ DEFAULTS: dict = {
     # 仓库地图（repo_map 工具，tree-sitter）：auto_inject = 会话开始时把一小份地图固定注入（默认关，省 token）
     "repo_map": {"enabled": True, "auto_inject": False, "max_tokens": 1536, "inject_tokens": 1024,
                  "max_files": 3000, "time_limit": 20},
+    # 推理强度（D5-9）：全局默认档位 "" | low | medium | high | off（会话里可切换，按模型记住）
+    "reasoning": {"effort": ""},
+    # 按用途分模型（D5-9）：留空 = 跟随主模型。旧写法 [models.roles] 读取时会并进来
+    "roles": {"title": "", "compact": "", "explore": "", "plan": "", "review": "", "commit": ""},
+    # 用模型生成对话标题（用 roles.title 的模型；关掉则取第一条消息开头）
+    "title": {"ai": False},
+    # 回答风格（D5-9）：default | concise | explain | tutor | ~/.ee/styles/<名>.md
+    "style": {"default": "default"},
+    # 花费上限（D5-9）：0 = 不限；action = warn（仅提醒）| pause（暂停并询问）；currency 跟单价币种
+    "budget": {"session": 0, "daily": 0, "monthly": 0, "action": "warn", "warn_ratio": 0.8, "currency": "¥"},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     "network": {"proxy": "system", "connect_timeout": 15, "read_timeout": 90, "retries": 2},
     "providers": {
@@ -69,6 +79,24 @@ def deep_merge(base: dict, over: dict) -> dict:
         else:
             out[k] = copy.deepcopy(v)
     return out
+
+
+ROLES = ("title", "compact", "explore", "plan", "review", "commit")
+ROLE_LABEL = {"title": "对话标题", "compact": "上下文压缩", "explore": "只读子代理（explore）", "plan": "计划模式",
+              "review": "代码审查", "commit": "提交信息"}
+
+
+def normalize_roles(data: dict) -> dict:
+    """[models.roles]（旧写法）并进顶层 [roles]，并从模型表里拿掉，免得被当成一个模型。原地修改并返回。"""
+    models = data.get("models")
+    if isinstance(models, dict) and isinstance(models.get("roles"), dict) and "provider" not in models["roles"]:
+        legacy = models.pop("roles")
+        roles = dict(data.get("roles") or {})
+        for k, v in legacy.items():
+            if not str(roles.get(k) or "").strip():
+                roles[k] = v
+        data["roles"] = roles
+    return data
 
 
 @dataclass
@@ -126,6 +154,16 @@ class Config:
 
     def model_names(self) -> list[str]:
         return list(self.data.get("models", {}).keys())
+
+    def role_model(self, role: str) -> str | None:
+        """某个用途配置的模型名；没配、配了不存在的模型都返回 None（跟随主模型）。"""
+        name = str((self.data.get("roles") or {}).get(role) or "").strip()
+        if not name:
+            return None
+        providers = self.data.get("providers") or {}
+        if name in self.data.get("models", {}) or ("/" in name and name.split("/", 1)[0] in providers):
+            return name
+        return None
 
     def resolve_model(self, name: str | None = None) -> ModelSpec:
         name = name or self.default_model
@@ -305,6 +343,6 @@ def load_config(cwd: Path | None = None) -> Config:
             else:
                 with open(p, "rb") as f:
                     layer = tomllib.load(f)
-            data = deep_merge(data, layer)
+            data = deep_merge(data, normalize_roles(dict(layer)))
             sources.append(p)
     return Config(data=data, cwd=cwd, sources=sources)

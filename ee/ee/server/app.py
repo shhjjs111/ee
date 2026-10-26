@@ -21,6 +21,8 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from ee import __version__
+from ee.core import reasoning as RZ
+from ee.config import ROLES
 from ee.config import ee_home, load_config
 from ee.core.fileindex import FileIndex
 from ee.core.permissions import MODE_LABEL, MODES
@@ -90,6 +92,8 @@ class Backend:
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
+        from ee.server import answer_rpc
+        answer_rpc.register(self.methods, self)        # thread/options、styles/list、budget/status、reasoning/*（D5-9）
         from ee.server import automations as automations_rpc
         self.automations = automations_rpc.register(self.methods, self)   # automations/*（自动化 D4-10）
 
@@ -333,7 +337,7 @@ class Backend:
                 "context_left": t.context_left}
 
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
-                         attachments: list | None = None) -> dict:
+                         attachments: list | None = None, effort: str | None = None, style: str | None = None) -> dict:
         if not (text or "").strip() and not attachments:
             raise RpcError("消息不能为空")
         text = text or ""
@@ -349,7 +353,8 @@ class Backend:
                 from ee.core.attachments import save_all
                 images, meta = await asyncio.to_thread(save_all, self.home, thread_id, list(attachments))
             log.info("turn/start 会话 %s：%d 字，%d 张图片", thread_id, len(text), len(images))
-            return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images, attachments=meta)
+            return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images, attachments=meta,
+                                effort=effort, style=style)
         except ValueError as e:
             raise RpcError(str(e))
 
@@ -400,9 +405,12 @@ class Backend:
             out.append({"name": name, "provider": spec.provider, "model": spec.model,
                         "family": spec.profile.family, "context_window": spec.profile.context_window,
                         "reasoning": spec.profile.reasoning, "vision": spec.profile.vision,
+                        "effort_support": RZ.support(spec.profile),           # D5-9：{effort, off}
+                        "effort_values": dict(spec.profile.effort_values or {}),
                         "has_key": bool(spec.api_key()),
                         "price": vars(spec.profile.price)})
-        return {"models": out, "default": cfg.default_model}
+        return {"models": out, "default": cfg.default_model,
+                "roles": {r: (cfg.data.get("roles") or {}).get(r, "") for r in ROLES}}
 
     # ------------------------------------------------------------ 工作区
     def _touch_workspace(self, path: str) -> None:
