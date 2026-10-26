@@ -1,5 +1,5 @@
 // 纯函数：把后端通知应用到线程详情上（便于单测）。
-import type { Item, ThreadDetail } from "../types";
+import type { Item, ThreadDetail, ToolItem } from "../types";
 
 export function applyItemNotification(t: ThreadDetail, method: string, p: any): ThreadDetail {
   switch (method) {
@@ -42,7 +42,26 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
 
 export type Block =
   | { kind: "item"; item: Item }
-  | { kind: "explore"; id: string; items: Item[] };
+  | { kind: "explore"; id: string; items: Item[] }
+  | { kind: "agents"; id: string; items: ToolItem[] };
+
+/** task 工具条目（子代理卡片）。 */
+export function isSubagent(it: Item): it is ToolItem {
+  return it.type === "tool" && (it.name === "task" || it.meta?.kind === "subagent");
+}
+
+/** 子代理条目的状态：queued / running / completed / …（记录优先，没有就看工具条目）。 */
+export function subagentStatus(it: ToolItem): string {
+  const rec = it.meta?.subagent;
+  const st: string | undefined = rec?.status;
+  if (st) {
+    // 记录还停在“运行/排队”但工具条目已经结束（被中断、内核重启）：以工具条目为准
+    if ((st === "running" || st === "queued") && it.status !== "running") return it.status === "ok" ? "completed" : "interrupted";
+    return st;
+  }
+  if (it.status === "running") return "running";
+  return it.status === "ok" ? "completed" : it.status;
+}
 
 const EXPLORE_TOOLS = new Set(["read", "grep", "glob"]);
 
@@ -57,6 +76,21 @@ export function isExplore(it: Item): boolean {
 export function groupBlocks(items: Item[]): Block[] {
   const out: Block[] = [];
   for (const it of items) {
+    if (isSubagent(it)) {
+      // 连续的子代理（同一步并行派出的）合成一组，组头显示几个在跑
+      const last = out[out.length - 1];
+      if (last && last.kind === "agents") {
+        last.items.push(it);
+        continue;
+      }
+      const prev = out[out.length - 1];
+      if (prev && prev.kind === "item" && isSubagent(prev.item)) {
+        out[out.length - 1] = { kind: "agents", id: `ag_${prev.item.id}`, items: [prev.item, it] };
+        continue;
+      }
+      out.push({ kind: "item", item: it });
+      continue;
+    }
     if (isExplore(it)) {
       const last = out[out.length - 1];
       if (last && last.kind === "explore") {

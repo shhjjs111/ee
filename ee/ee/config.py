@@ -36,7 +36,7 @@ DEFAULTS: dict = {
     "web": {"search_backend": "exa", "search_fallback": ["duckduckgo"], "fetch_backend": "direct", "timeout": 20,
             "max_results": 8, "fetch_max_chars": 20000},
     # 子代理（task 工具）：默认最大步数与上限
-    "subagent": {"enabled": True, "max_steps": 30, "max_steps_limit": 100},
+    "subagent": {"enabled": True, "max_steps": 30, "max_steps_limit": 100, "max_parallel": 3, "worktree": True},
     # 长期记忆：~/.ee/memory.md + 工作区 .ee/memory.md，会话开始时注入（总大小上限）
     "memory": {"enabled": True, "workspace": True, "max_bytes": 8192},
     # 技能：~/.ee/skills、<项目>/.ee/skills（compat 时兼容 .claude/skills、.agents/skills）；清单总长上限 max_chars

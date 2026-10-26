@@ -210,7 +210,7 @@ function SkillsCard({ draft, up, cwd }: { draft: Settings; up: (p: Partial<Setti
 export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: SettingsResponse; up: (p: Partial<Settings>) => void }) {
   const s = useApp();
   const web = { ...DEFAULT_WEB, ...(draft.web ?? {}) };
-  const sub = draft.subagent ?? { enabled: true, max_steps: 30 };
+  const sub = { max_parallel: 3, worktree: true, ...(draft.subagent ?? { enabled: true, max_steps: 30 }) };
   const mem = draft.memory ?? { enabled: true, workspace: true, max_bytes: 8192 };
   const setWeb = (p: Partial<WebSettings>) => up({ web: { ...web, ...p } });
   const backends = resp.choices.search_backends ?? ["exa", "duckduckgo", "deepseek", "tavily", "brave", "off"];
@@ -314,12 +314,18 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
         </Row>
       </Card>
 
-      <Card title="子代理" desc="模型可以用 task 工具派生子代理处理独立的子任务（只读探索或继承当前权限），只把最终报告交回来。">
+      <Card title="子代理" desc="模型可以用 task 工具派生子代理处理独立的子任务（只读探索或继承当前权限），只把最终报告交回来。只读的子代理可以同时跑多个。">
         <Row label="启用子代理">
           <Toggle on={sub.enabled} onChange={(v) => up({ subagent: { ...sub, enabled: v } })} />
         </Row>
         <Row label="默认最大步数" desc="子代理最多连续调用工具的轮数（1～100），模型也可以单次指定">
           <Input className="w-24 text-right" inputMode="numeric" value={sub.max_steps} onChange={(e) => up({ subagent: { ...sub, max_steps: Number(e.target.value) || 0 } })} />
+        </Row>
+        <Row label="同时运行数" desc="同一步里最多几个子代理一起跑（1～8），多出来的排队">
+          <Input className="w-24 text-right" inputMode="numeric" value={sub.max_parallel} onChange={(e) => up({ subagent: { ...sub, max_parallel: Number(e.target.value) || 0 } })} />
+        </Row>
+        <Row label="写型子代理用 worktree 并行" desc="多个会改文件的子代理各自在独立的 git 分支和目录里同时干活，结束后由你决定是否合并；关闭或不是 git 仓库时按顺序在主目录执行">
+          <Toggle on={sub.worktree} onChange={(v) => up({ subagent: { ...sub, worktree: v } })} />
         </Row>
       </Card>
 

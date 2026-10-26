@@ -235,7 +235,7 @@ def _make_thread_class():
             elif isinstance(ev, ApprovalRequest):
                 decision, reason = auto_approve(self, ev, self.approve)
                 p.event("approval", call_id=ev.call_id, tool=ev.tool, title=ev.title, decision=decision,
-                        reason=reason)
+                        reason=reason, **({"source": ev.source} if ev.source else {}))
                 p.progress(f"[审批] {'自动批准' if decision == 'approved' else '自动拒绝'}：{ev.title}")
             elif isinstance(ev, PlanUpdate):
                 p.event("plan", items=ev.items)

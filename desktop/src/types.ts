@@ -28,7 +28,10 @@ export type ApprovalItem = ItemBase & {
   status: ApprovalStatus;
   reason?: string;
   rule?: string; // 选「本项目以后都允许」时写入的永久规则（D4-8）；空 = 不能永久允许
+  source?: ApprovalSource; // 子代理发出的审批：来自哪个子代理（D5-2）
 };
+/** 审批来源：并行子代理时界面据此标明是哪个子代理要的（D5-2）。 */
+export type ApprovalSource = { call_id: string; agent: string; description: string };
 // ask_user 提问（D4-8）
 export type QuestionItem = ItemBase & {
   type: "question";
@@ -213,7 +216,7 @@ export type McpServerStatus = {
   server_info?: { name?: string; version?: string } | null;
 };
 export type McpListResponse = { enabled: boolean; servers: McpServerStatus[]; errors: string[]; project_json: string | null };
-export type SubagentSettings = { enabled: boolean; max_steps: number };
+export type SubagentSettings = { enabled: boolean; max_steps: number; max_parallel?: number; worktree?: boolean };
 export type MemorySettings = { enabled: boolean; workspace: boolean; max_bytes: number };
 /** [skills]：总开关、兼容 .claude/.agents 目录、禁用的技能名、清单长度上限（D5-5）。 */
 export type SkillsSettings = { enabled: boolean; compat: boolean; disabled: string[]; max_chars: number };
@@ -221,19 +224,33 @@ export type MemoryFile = { path: string; exists: boolean; text: string; entries:
 export type MemoryInfo = { user: MemoryFile; workspace: MemoryFile | null };
 
 /** 子代理进度记录：挂在 task 工具条目的 meta.subagent 上（后端 ee/core/subagent.py apply_event）。 */
+export type SubagentWorktree = {
+  path: string;
+  branch: string;
+  base?: string;
+  synced_dirty?: boolean;
+  files?: { path: string; additions: number; deletions: number; binary?: boolean }[];
+  file_count?: number;
+  additions?: number;
+  deletions?: number;
+  commits?: string[];
+  removed?: boolean;
+};
 export type SubagentRecord = {
+  id?: string;
   agent: string;
   description: string;
   model: string;
   mode: string;
   max_steps: number;
-  status: "running" | "completed" | "max_steps" | "interrupted" | "error" | "loop" | string;
+  status: "queued" | "running" | "completed" | "max_steps" | "interrupted" | "error" | "loop" | string;
   step: number;
   tools: { id: string; name: string; summary: string; status: string }[];
   text: string;
   summary: string;
   notices?: string[];
   usage?: Usage & Record<string, any>;
+  worktree?: SubagentWorktree; // 写型子代理在独立 git worktree 里并行时（D5-2）
 };
 
 export type NetworkSettings = {

@@ -6,7 +6,7 @@ from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 class TaskTool(Tool):
     name = "task"
-    read_only = False      # 子代理可能改文件：多个 task 调用按顺序执行
+    read_only = False      # 是否可并发按每次调用判断：见 access()
     parameters = {
         "type": "object",
         "properties": {
@@ -17,9 +17,17 @@ class TaskTool(Tool):
                      "description": "权限：inherit 与主会话相同（默认）；read-only 只读"},
             "max_steps": {"type": "integer", "description": "最多步数，默认用设置里的子代理步数"},
             "model": {"type": "string", "description": "可选：子代理用的模型名，默认与主会话相同"},
+            "isolation": {"type": "string", "enum": ["auto", "worktree", "none"],
+                          "description": "会改文件的子代理在哪里干活：auto（默认：同一步有多个时各进独立 git worktree 并行）/ "
+                                         "worktree（放进独立 worktree）/ none（在主目录按顺序）"},
         },
         "required": ["description", "prompt"],
     }
+
+    def access(self, args: dict, session) -> str:
+        """只读子代理可与其它只读调用并发；写型子代理独占（进 worktree 的由 session 改为不排队）。"""
+        from ee.core.subagent import access
+        return access(session, args)
 
     def summary(self, args: dict) -> str:
         return f"Task {args.get('description', '')}".strip()

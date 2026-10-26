@@ -12,6 +12,13 @@
 - /undo：子代理改文件的快照记进主会话当前回合的快照层，主会话 /undo 能一起撤销。
 - 事件：SubagentStart / SubagentUpdate / SubagentEnd（core/events.py）；apply_event() 把它们归并成界面用的记录，
   server 端把记录挂在父 task 工具条目的 meta.subagent 上。
+- 并行（D5-2）：同一步里的多个 task 由 session 的读写闸门调度（core/parallel.py）：
+  只读子代理（explore、mode=read-only、主会话只读、只有只读工具的自定义子代理）一起跑；
+  写型子代理：同一步有两个以上（或显式 isolation=worktree）且是 git 仓库、[subagent].worktree 开着时，
+  各自在独立 git worktree（分支 ee/agent-…，带上主目录未提交的改动作为基线提交）里并行，结束后把改动
+  提交在自己的分支上，向主代理汇报分支和改动统计，由用户或主代理决定是否合并；否则原地按顺序执行。
+  同时运行的子代理数受 [subagent].max_parallel 限制（默认 3），超出的排队（界面显示“排队中”）。
+- 只读 / 计划模式下：显式要 worktree 写的子代理直接拒绝；其它子代理一律只读运行。
 """
 from __future__ import annotations
 
@@ -23,10 +30,12 @@ from pathlib import Path
 from ee.core.agents import AgentDef, load_agents
 from ee.core.events import (ApprovalRequest, AssistantMessage, Error, Notice, StepStart, SubagentEnd, SubagentStart,
                             SubagentUpdate, ToolEnd, ToolStart, TurnDone, Usage)
-from ee.core.permissions import PermissionPolicy
+from ee.core import parallel
+from ee.core.permissions import READONLY_MODES, PermissionPolicy
 from ee.tools.base import ToolState
 
-DEFAULT_SUBAGENT = {"enabled": True, "max_steps": 30, "max_steps_limit": 100}
+DEFAULT_SUBAGENT = {"enabled": True, "max_steps": 30, "max_steps_limit": 100, "max_parallel": 3, "worktree": True}
+MAX_PARALLEL_LIMIT = 8
 MAX_TOOL_ROWS = 200          # 界面记录里最多保留多少条工具行
 
 BUILTIN: dict[str, AgentDef] = {
@@ -45,7 +54,79 @@ PREAMBLE = ("[子代理任务] 你是主代理派生出来的子代理，在独�
 
 
 def subagent_config(data: dict | None) -> dict:
-    return {**DEFAULT_SUBAGENT, **((data or {}).get("subagent") or {})}
+    sc = {**DEFAULT_SUBAGENT, **((data or {}).get("subagent") or {})}
+    try:
+        sc["max_parallel"] = max(1, min(MAX_PARALLEL_LIMIT, int(sc.get("max_parallel") or 1)))
+    except (TypeError, ValueError):
+        sc["max_parallel"] = DEFAULT_SUBAGENT["max_parallel"]
+    sc["worktree"] = bool(sc.get("worktree", True))
+    return sc
+
+
+# ------------------------------------------------------------------ 并行调度（D5-2）
+
+_RO_ALIASES = ("read-only", "readonly", "read_only")
+
+
+def _iso(args: dict) -> str:
+    v = str(args.get("isolation") or "auto").strip().lower()
+    return v if v in ("auto", "worktree", "none") else "auto"
+
+
+def is_read_only(parent, args: dict, adef: AgentDef | None = None) -> bool:
+    """这个 task 调用派出的子代理会不会是只读的。"""
+    kind = str(args.get("agent") or "general").strip() or "general"
+    if adef is None:
+        adef = agent_defs(parent.home, parent.cwd).get(kind)
+    want = str(args.get("mode") or "").strip().lower()
+    if want in _RO_ALIASES or parent.policy.mode in READONLY_MODES or kind == "explore":
+        return True
+    if adef is not None and adef.tools and kind not in BUILTIN:
+        tm = parent.tool_map
+        return all(t in tm and getattr(tm[t], "read_only", False) for t in adef.tools if t in tm)
+    return False
+
+
+def access(parent, args: dict) -> str:
+    """task 调用的访问类型：只读子代理 read（可并发），写型子代理 write（独占、按顺序）。"""
+    kind = str(args.get("agent") or "general").strip() or "general"
+    adef = agent_defs(parent.home, parent.cwd).get(kind)
+    if adef is None or not str(args.get("prompt") or "").strip():
+        return parallel.READ               # 马上报错，不碰任何东西
+    if parent.policy.mode in READONLY_MODES and _iso(args) == "worktree":
+        return parallel.READ               # 会被拒绝
+    return parallel.READ if is_read_only(parent, args, adef) else parallel.WRITE
+
+
+async def plan_step(parent, prepared: list, kinds: list[str], emit) -> dict[str, str]:
+    """决定本步每个写型 task 是进独立 worktree 并行，还是原地按顺序。返回 {call_id: "worktree" | "inplace"}。"""
+    writes = [p for p, k in zip(prepared, kinds) if p[1] is not None and p[1].name == "task" and p[3] is None
+              and k == parallel.WRITE]
+    if not writes:
+        return {}
+    sc = subagent_config(parent.config.data)
+    want = [p for p in writes if _iso(p[2]) == "worktree" or (_iso(p[2]) == "auto" and len(writes) >= 2)]
+    plan = {p[0]["id"]: "inplace" for p in writes}
+    if not want:
+        return plan
+    why = ""
+    if not sc["worktree"]:
+        why = "设置里关闭了子代理 worktree（[subagent] worktree = false）"
+    else:
+        try:
+            from ee.core import worktree as wt
+            ok, why = await asyncio.to_thread(wt.agent_eligible, parent.cwd)
+            if ok:
+                why = ""
+        except Exception as e:  # noqa: BLE001
+            why = str(e)
+    if why:
+        if len(writes) >= 2:
+            emit(Notice(f"{len(writes)} 个会改文件的子代理将按顺序执行（无法用独立 worktree 并行：{why}）。", "info"))
+        return plan
+    for p in want:
+        plan[p[0]["id"]] = "worktree"
+    return plan
 
 
 def agent_defs(home: Path, cwd: Path) -> dict[str, AgentDef]:
@@ -60,9 +141,12 @@ def agent_defs(home: Path, cwd: Path) -> dict[str, AgentDef]:
 # ------------------------------------------------------------------ 界面记录（纯函数，server 端也用）
 
 def new_record(ev: SubagentStart) -> dict:
-    return {"agent": ev.agent, "description": ev.description, "model": ev.model, "mode": ev.mode,
-            "max_steps": ev.max_steps, "status": "running", "step": 0, "tools": [], "text": "", "summary": "",
-            "notices": [], "usage": {}}
+    rec = {"id": ev.call_id, "agent": ev.agent, "description": ev.description, "model": ev.model, "mode": ev.mode,
+           "max_steps": ev.max_steps, "status": ev.status or "running", "step": 0, "tools": [], "text": "",
+           "summary": "", "notices": [], "usage": {}}
+    if ev.worktree:
+        rec["worktree"] = dict(ev.worktree)
+    return rec
 
 
 def apply_event(rec: dict | None, ev) -> dict:
@@ -89,6 +173,10 @@ def apply_event(rec: dict | None, ev) -> dict:
             rec["text"] = ev.text
         elif ev.kind == "notice":
             rec.setdefault("notices", []).append(ev.text)
+        elif ev.kind == "usage":
+            rec["usage"] = dict(ev.usage)
+        elif ev.kind == "worktree":
+            rec["worktree"] = {**(rec.get("worktree") or {}), **ev.data}
     elif isinstance(ev, SubagentEnd):
         rec["status"] = ev.status
         rec["summary"] = ev.summary
@@ -133,16 +221,19 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     if not task:
         raise ValueError("prompt（子任务说明）不能为空")
     desc = _clip(str(args.get("description") or task.splitlines()[0]), 80)
+    if parent.policy.mode in READONLY_MODES and _iso(args) == "worktree":
+        raise ValueError(f"当前是{'计划' if parent.policy.mode == 'plan' else '只读'}模式，不能派会改文件的子代理"
+                         "（isolation=worktree）。需要改文件请先让用户批准切换到默认或全自动模式；只读调研用 agent=explore。")
 
     limit = max(1, int(sc.get("max_steps_limit") or 100))
     steps = args.get("max_steps") or (adef.max_steps if kind not in BUILTIN and adef.max_steps else None) \
         or sc.get("max_steps") or 30
     steps = max(1, min(limit, int(steps)))
 
-    want = str(args.get("mode") or "").strip().lower()
-    read_only = (want in ("read-only", "readonly", "read_only") or parent.policy.mode in ("read-only", "plan")
-                 or kind == "explore")
+    read_only = is_read_only(parent, args, adef)
     model = str(args.get("model") or adef.model or "").strip() or parent.spec.alias
+    use_wt = (not read_only) and (getattr(parent, "_subagent_plan", None) or {}).get(call_id) == "worktree"
+    mode_label = "read-only" if read_only else parent.policy.mode
 
     data = copy.deepcopy(parent.config.data)
     data["max_steps"] = steps
@@ -150,94 +241,163 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     data["ask_user"] = False                                 # 子代理不向用户提问
     cfg = copy.copy(parent.config)
     cfg.data = data
+    source = {"call_id": call_id, "agent": kind, "description": desc}
 
-    def build() -> Session:
-        child = Session(cfg, model=model, cwd=parent.cwd, mode="read-only" if read_only else parent.policy.mode,
-                        client=parent._client_override, client_factory=parent._client_factory, persist=False,
-                        home=parent.home, shell=parent.shell_name)
-        if not read_only:
-            child.policy = parent.policy           # 继承：同一模式 + 共享“以后都行”
-        else:
-            p = parent.policy
-            child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),
-                                            ask=list(p.ask), deny=list(p.deny))
-        child.state = _SharedSnapshots(parent.state)
-        child.bg = parent.bg                       # 后台命令归主会话管（子代理结束不杀，主会话里也能看到）
-        child.disk_enabled = False                 # 磁盘快照由主会话的回合前后统一抓（含子代理的改动）
-        child.hooks_role = "subagent"              # Hooks：子代理只跑 PreToolUse / PostToolUse / Notification
-        child._mcp_done = True                     # 子代理不自己连 MCP：沿用父会话已连好的工具
-        if adef.tools:
-            keep = set(adef.tools)
-            child.tools = [t for t in child.tools if t.name in keep]
-            child.tool_map = {t.name: t for t in child.tools}
-        else:
-            child.mcp_tools = list(parent.mcp_tools)
-            child._install_mcp()
-        if child.spec.alias == parent.spec.alias and parent._client is not None:
-            child._client = parent._client          # 同模型直接复用客户端（含已学到的怪癖降级）
-        else:
-            child.client()                          # 可能解析代理/建 TLS：放在线程里
-        return child
-
+    sem = getattr(parent, "_subagent_sem", None) or asyncio.Semaphore(sc["max_parallel"])
+    queued = sem.locked()
+    if queued:                # 名额满了：先在界面上显示“排队中”
+        emit(SubagentStart(call_id, kind, desc, model, mode_label, steps, status="queued"))
     try:
-        child = await asyncio.to_thread(build)
-    except Exception as e:  # noqa: BLE001
-        raise ValueError(f"无法启动子代理（模型 {model}）：{e}") from None
-
-    start = SubagentStart(call_id, kind, desc, child.spec.alias, child.policy.mode, steps)
-    rec = new_record(start)
-    emit(start)
-
-    def up(ev) -> None:
-        nonlocal rec
-        rec = apply_event(rec, ev)
-        emit(ev)
-
-    text = PREAMBLE + (f"\n\n[子代理角色：{adef.name}] {adef.prompt}" if adef.prompt else "") + \
-        f"\n\n## 子任务\n{task}"
-    reason, final, step, errors = "error", "", 0, []
-    gen = child.run_turn(text)
-    try:
-        async for ev in gen:
-            if isinstance(ev, ApprovalRequest):
-                emit(replace(ev, call_id=f"{call_id}/{ev.call_id}", title=f"[子代理 {kind}] {ev.title}"))
-            elif isinstance(ev, StepStart):
-                step = ev.step
-                up(SubagentUpdate(call_id, "step", step=ev.step))
-            elif isinstance(ev, ToolStart):
-                up(SubagentUpdate(call_id, "tool_start", tool=ev.name, tool_call_id=ev.call_id, summary=ev.summary))
-            elif isinstance(ev, ToolEnd):
-                up(SubagentUpdate(call_id, "tool_end", tool=ev.name, tool_call_id=ev.call_id, summary=ev.summary,
-                                  ok=ev.ok))
-            elif isinstance(ev, AssistantMessage):
-                if ev.text:
-                    up(SubagentUpdate(call_id, "text", text=_clip(ev.text, 600)))
-            elif isinstance(ev, Notice):
-                up(SubagentUpdate(call_id, "notice", text=ev.text))
-            elif isinstance(ev, Error):
-                errors.append(ev.message)
-                up(SubagentUpdate(call_id, "notice", text=ev.message))
-            elif isinstance(ev, Usage):
-                pass
-            elif isinstance(ev, TurnDone):
-                reason, final = ev.reason, ev.text or ""
+        await sem.acquire()
     except asyncio.CancelledError:
-        await _close(gen)
-        _merge_usage(parent, child)
-        up(SubagentEnd(call_id, "interrupted", final, step, child.stats.totals()))
+        if queued:
+            emit(SubagentEnd(call_id, "interrupted", "", 0, {}))
         raise
-    await _close(gen)
-    _merge_usage(parent, child)
-    usage = child.stats.totals()
-    if not final.strip():
-        final = ("（子代理没有给出文字报告" + (f"：{errors[-1]}" if errors else "") + "）")
-    up(SubagentEnd(call_id, reason, final, step, usage))
+    try:
+        wt_info = None
+        if use_wt:
+            from ee.core import worktree as wt
+            try:
+                wt_info = await asyncio.to_thread(wt.create_for_agent, parent.cwd, desc, parent.home)
+            except Exception as e:  # noqa: BLE001
+                raise ValueError(f"无法为子代理建立独立 worktree：{e}。可以让它不并行（isolation=none）再试。") from None
+        child_cwd = Path(wt_info["cwd"]) if wt_info else parent.cwd
+
+        def build() -> Session:
+            child = Session(cfg, model=model, cwd=child_cwd, mode="read-only" if read_only else parent.policy.mode,
+                            client=parent._client_override, client_factory=parent._client_factory, persist=False,
+                            home=parent.home, shell=parent.shell_name)
+            p = parent.policy
+            if read_only:
+                child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),
+                                                ask=list(p.ask), deny=list(p.deny))
+            elif wt_info:
+                # 工作区换成 worktree；会话内“以后都行”与主会话共享（同一个集合对象）
+                child.policy = PermissionPolicy(mode=p.mode, workspace=child_cwd, allow=list(p.allow),
+                                                ask=list(p.ask), deny=list(p.deny),
+                                                session_prefixes=p.session_prefixes, session_tools=p.session_tools)
+            else:
+                child.policy = p                   # 继承：同一模式 + 共享“以后都行”
+            if not wt_info:
+                child.state = _SharedSnapshots(parent.state)   # 改动记进主会话当前回合，主会话 /undo 一起撤
+            child.bg = parent.bg                       # 后台命令归主会话管（子代理结束不杀，主会话里也能看到）
+            child.disk_enabled = False                 # 磁盘快照由主会话的回合前后统一抓（含子代理的改动）
+            child.hooks_role = "subagent"              # Hooks：子代理只跑 PreToolUse / PostToolUse / Notification
+            child._mcp_done = True                     # 子代理不自己连 MCP：沿用父会话已连好的工具
+            if adef.tools:
+                keep = set(adef.tools)
+                child.tools = [t for t in child.tools if t.name in keep]
+                child.tool_map = {t.name: t for t in child.tools}
+            else:
+                child.mcp_tools = list(parent.mcp_tools)
+                child._install_mcp()
+            if child.spec.alias == parent.spec.alias and parent._client is not None:
+                child._client = parent._client          # 同模型直接复用客户端（含已学到的怪癖降级）
+            else:
+                child.client()                          # 可能解析代理/建 TLS：放在线程里
+            return child
+
+        try:
+            child = await asyncio.to_thread(build)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"无法启动子代理（模型 {model}）：{e}") from None
+
+        wt_pub = ({"path": wt_info["path"], "branch": wt_info["branch"], "base": wt_info["agent_base"],
+                   "synced_dirty": wt_info.get("synced_dirty", False)} if wt_info else {})
+        start = SubagentStart(call_id, kind, desc, child.spec.alias, child.policy.mode, steps, worktree=wt_pub)
+        rec = new_record(start)
+        emit(start)
+
+        def up(ev) -> None:
+            nonlocal rec
+            rec = apply_event(rec, ev)
+            emit(ev)
+
+        merged = [0, 0]      # 已并入主会话统计的 (history 条数, 缺用量的请求数)
+
+        def merge_usage() -> None:
+            _merge_usage(parent, child, merged)
+            up(SubagentUpdate(call_id, "usage", usage=child.stats.totals(), totals=parent.stats.totals()))
+
+        text = PREAMBLE + (f"\n\n[子代理角色：{adef.name}] {adef.prompt}" if adef.prompt else "")
+        if wt_info:
+            text += ("\n\n[工作目录] 你在一个独立的 git worktree 里工作（分支 " + wt_info["branch"] + "），"
+                     "与主目录隔离：其他子代理可能同时在改主目录或别的 worktree。只在当前目录里改文件，不要切换分支、"
+                     "不要 push、不要合并；结束时不用自己提交，ee 会把改动提交在这个分支上交给主代理。")
+        text += f"\n\n## 子任务\n{task}"
+        reason, final, step, errors = "error", "", 0, []
+        gen = child.run_turn(text)
+        try:
+            async for ev in gen:
+                if isinstance(ev, ApprovalRequest):
+                    emit(replace(ev, call_id=f"{call_id}/{ev.call_id}", title=f"[子代理 {kind}] {ev.title}",
+                                 source=source))
+                elif isinstance(ev, StepStart):
+                    step = ev.step
+                    up(SubagentUpdate(call_id, "step", step=ev.step))
+                elif isinstance(ev, ToolStart):
+                    up(SubagentUpdate(call_id, "tool_start", tool=ev.name, tool_call_id=ev.call_id,
+                                      summary=ev.summary))
+                elif isinstance(ev, ToolEnd):
+                    up(SubagentUpdate(call_id, "tool_end", tool=ev.name, tool_call_id=ev.call_id,
+                                      summary=ev.summary, ok=ev.ok))
+                elif isinstance(ev, AssistantMessage):
+                    if ev.text:
+                        up(SubagentUpdate(call_id, "text", text=_clip(ev.text, 600)))
+                elif isinstance(ev, Notice):
+                    up(SubagentUpdate(call_id, "notice", text=ev.text))
+                elif isinstance(ev, Error):
+                    errors.append(ev.message)
+                    up(SubagentUpdate(call_id, "notice", text=ev.message))
+                elif isinstance(ev, Usage):
+                    merge_usage()
+                elif isinstance(ev, TurnDone):
+                    reason, final = ev.reason, ev.text or ""
+        except asyncio.CancelledError:
+            await _close(gen)
+            _merge_usage(parent, child, merged)
+            up(SubagentEnd(call_id, "interrupted", final, step, child.stats.totals()))
+            raise
+        await _close(gen)
+        _merge_usage(parent, child, merged)
+        usage = child.stats.totals()
+        if not final.strip():
+            final = ("（子代理没有给出文字报告" + (f"：{errors[-1]}" if errors else "") + "）")
+        wt_note = ""
+        if wt_info:
+            from ee.core import worktree as wt
+            try:
+                summ = await asyncio.to_thread(wt.finish_agent, wt_info, f"ee：子代理「{desc}」的改动", parent.home)
+                up(SubagentUpdate(call_id, "worktree", data=summ))
+                wt_note = worktree_note(summ)
+            except Exception as e:  # noqa: BLE001
+                wt_note = f"[worktree] 收尾失败：{e}。改动留在 {wt_info['path']}（分支 {wt_info['branch']}）。"
+                up(SubagentUpdate(call_id, "notice", text=wt_note))
+        up(SubagentEnd(call_id, reason, final, step, usage))
+    finally:
+        sem.release()
     ok = reason in ("completed", "max_steps")
     note = {"completed": "", "max_steps": f"（子代理用完了 {steps} 步上限，报告可能不完整）",
             "loop": "（子代理陷入重复调用被停止）", "error": "（子代理出错结束）"}.get(reason, "")
     out = (f'<task_result agent="{kind}" status="{reason}" steps="{step}">\n{final.strip()}\n</task_result>' +
-           (f"\n{note}" if note else ""))
+           (f"\n{note}" if note else "") + (f"\n{wt_note}" if wt_note else ""))
     return out, ok, rec
+
+
+def worktree_note(summ: dict) -> str:
+    """写型子代理在 worktree 里的结果，给主代理看的说明。"""
+    if summ.get("removed") or not summ.get("files"):
+        return "[worktree] 子代理没有改任何文件，临时 worktree 和分支已删除。"
+    lines = [f"[worktree] 子代理的改动在独立分支 {summ['branch']} 上（目录 {summ['path']}），没有进入主目录："
+             f"{summ['file_count']} 个文件 +{summ['additions']} -{summ['deletions']}"]
+    for f in summ["files"][:30]:
+        lines.append(f"  {f['path']}" + (" (二进制)" if f.get("binary") else f" (+{f['additions']} -{f['deletions']})"))
+    if summ["file_count"] > 30:
+        lines.append(f"  …共 {summ['file_count']} 个文件")
+    lines.append(f"查看：git diff {summ['base'][:12]} {summ['branch']}。是否合并由用户决定（项目菜单「Worktree…」可合并或删除）；"
+                 f"用户同意后也可以在主目录运行 git merge --no-ff {summ['branch']}，"
+                 f"或只取这些改动：git cherry-pick --no-commit {summ['base'][:12]}..{summ['branch']}。")
+    return "\n".join(lines)
 
 
 async def _close(gen) -> None:
@@ -247,12 +407,18 @@ async def _close(gen) -> None:
         pass
 
 
-def _merge_usage(parent, child) -> None:
-    """子代理的 token 和花费计入主会话统计，但不动主会话的“上次上下文大小”（压缩判断用）。"""
-    st = parent.stats
+def _merge_usage(parent, child, merged: list | None = None) -> None:
+    """子代理的 token 和花费增量计入主会话统计（可多次调用，merged 记已并入的位置），
+    但不动主会话的“上次上下文大小”（压缩判断用）。"""
+    merged = merged if merged is not None else [0, 0]
+    st, cs = parent.stats, child.stats
     lp, lc = st.last_prompt, st.last_completion
-    for p, c, h in child.stats.history:
+    for p, c, h in cs.history[merged[0]:]:
         st.add({"prompt": p, "completion": c, "hit": h}, child.profile.price)
-    st.requests += child.stats.usage_missing
-    st.usage_missing += child.stats.usage_missing
+    merged[0] = len(cs.history)
+    miss = cs.usage_missing - merged[1]
+    if miss > 0:
+        st.requests += miss
+        st.usage_missing += miss
+        merged[1] = cs.usage_missing
     st.last_prompt, st.last_completion = lp, lc

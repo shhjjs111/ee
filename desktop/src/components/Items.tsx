@@ -6,6 +6,7 @@ import {
   Pencil,
   AlertTriangle,
   Ban,
+  Bot,
   Brain,
   Check,
   ChevronRight,
@@ -527,6 +528,18 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
       <div className="flex items-center gap-2 border-b border-line px-4 py-2.5 text-[13px] font-medium">
         <ShieldAlert size={15} className="text-warn" />
         需要你的批准
+        {item.source && (
+          <span
+            className="ml-auto flex min-w-0 items-center gap-1 rounded-md bg-soft px-1.5 py-0.5 text-[11.5px] font-normal text-muted"
+            title={`子代理 ${item.source.agent}：${item.source.description}`}
+            data-testid="approval-source"
+          >
+            <Bot size={12} className="shrink-0" />
+            <span className="truncate">
+              来自子代理 {item.source.agent} · {item.source.description}
+            </span>
+          </span>
+        )}
       </div>
       <div className="px-4 py-3">
         <div className="mb-2 text-[13px] text-fg">{item.title.replace(/^运行命令：.*/s, "运行命令")}</div>

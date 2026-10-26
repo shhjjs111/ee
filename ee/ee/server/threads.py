@@ -430,7 +430,8 @@ class Thread:
             from ee.core.rules import rule_from_decision
             it = self._add({"type": "approval", "call_id": ev.call_id, "tool": ev.tool, "title": ev.title,
                             "detail": _clip(ev.detail or "", 20000), "prefix": ev.prefix, "status": "pending",
-                            "rule": rule_from_decision(ev.tool, ev.prefix) or ""})
+                            "rule": rule_from_decision(ev.tool, ev.prefix) or "",
+                            **({"source": dict(ev.source)} if ev.source else {})})
             if ev.future is not None:
                 self.approvals[ev.call_id] = (ev.future, it)
             self.notify("thread/updated", {"thread": self.summary()})
@@ -456,6 +457,11 @@ class Thread:
                 meta["subagent"] = apply_subagent_event(meta.get("subagent"), ev)
                 it["meta"] = meta
                 self._update(it, persist=False)
+            if isinstance(ev, SubagentUpdate) and ev.kind == "usage" and ev.totals:
+                # 子代理的用量实时并入主会话（D5-2：并行子代理跑的时候顶部花费也在涨）
+                self.usage = dict(ev.totals)
+                self.notify("thread/usage", {"thread_id": self.id, "usage": self.usage,
+                                             "context_left": self.context_left})
         elif isinstance(ev, Notice):
             self._add({"type": "notice", "text": ev.text, "level": ev.level})
         elif isinstance(ev, Error):

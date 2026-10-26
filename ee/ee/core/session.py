@@ -22,6 +22,7 @@ from ee.core import hooks
 from ee.core.instructions import load_instructions
 from ee.core.memory import load_memory
 from ee.core.repomap import startup_message as repo_map_message
+from ee.core import parallel
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
@@ -103,6 +104,8 @@ class Session:
         self._ok: dict[str, bool] = {}
         self._hook_stop: str | None = None      # Hook 输出 continue=false 时的原因：本步工具跑完后结束回合
         self._approval_lock = asyncio.Lock()
+        self._subagent_plan: dict[str, str] = {}   # 本步每个 task 调用的隔离方式（D5-2）：worktree / inplace
+        self._subagent_sem: asyncio.Semaphore | None = None   # 本步子代理并发上限
         self.last_reasoning = ""
         self.running = False
         self.instruction_sources: list[str] = []   # 本会话加载的 AGENTS.md 路径（界面可显示）
@@ -741,19 +744,7 @@ class Session:
                 elif verdict == "block":
                     entry = (entry[0], entry[1], entry[2], REPEAT_NOTE.format(n=n, name=name))
             prepared.append(entry)
-        i = 0
-        while i < len(prepared):
-            tc, tool, args, err = prepared[i]
-            if tool is not None and tool.read_only and err is None:
-                j = i
-                while j < len(prepared) and prepared[j][1] is not None and prepared[j][1].read_only \
-                        and prepared[j][3] is None:
-                    j += 1
-                await asyncio.gather(*(self._exec_one(*p, emit) for p in prepared[i:j]))
-                i = j
-            else:
-                await self._exec_one(tc, tool, args, err, emit)
-                i += 1
+        await self._dispatch(prepared, emit)
         for tc in calls:
             cid = tc["id"]
             self._append({"role": "tool", "tool_call_id": cid, "content": self._results.get(cid, INTERRUPTED)})
@@ -764,6 +755,57 @@ class Session:
         if self.guard.halt:
             return None
         return self.guard.end_step(outcomes)
+
+    def _access(self, tool, args: dict, err: str | None) -> str:
+        """调用的访问类型（D5-2）：read 可并发 / write 独占且保序 / free 不过闸门。"""
+        if tool is None or err is not None:
+            return parallel.READ          # 直接回错误，不碰任何东西
+        fn = getattr(tool, "access", None)
+        if fn is not None:
+            try:
+                return fn(args, self)
+            except Exception:  # noqa: BLE001
+                return parallel.WRITE
+        return parallel.READ if tool.read_only else parallel.WRITE
+
+    async def _dispatch(self, prepared: list, emit) -> None:
+        """一步里的调用同时派发，按读写闸门并发/排队；单个调用出错不影响其它调用；取消传给所有调用。"""
+        from ee.core import subagent as _sub
+        kinds = [self._access(p[1], p[2], p[3]) for p in prepared]
+        self._subagent_plan = await _sub.plan_step(self, prepared, kinds, emit)
+        for i, p in enumerate(prepared):
+            iso = self._subagent_plan.get(p[0]["id"])
+            if iso == "worktree":
+                kinds[i] = parallel.FREE
+        sc = _sub.subagent_config(self.config.data)
+        self._subagent_sem = asyncio.Semaphore(max(1, int(sc.get("max_parallel") or 1)))
+        gate = parallel.RWGate()
+
+        async def one(p, kind):
+            tc = p[0]
+            try:
+                async with gate.hold(kind):
+                    await self._exec_one(*p, emit)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001  某个调用出了意外：只记它自己的结果
+                log.error("工具调用异常：%s", tc["function"]["name"], exc_info=True)
+                cid = tc["id"]
+                if cid not in self._results:
+                    msg = f"工具内部错误：{type(e).__name__}: {e}"
+                    self._results[cid] = msg
+                    self._ok[cid] = False
+                    emit(ToolEnd(cid, tc["function"]["name"], False, msg))
+
+        tasks = [asyncio.ensure_future(one(p, k)) for p, k in zip(prepared, kinds)]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def _exec_one(self, tc: dict, tool, args: dict, err: str | None, emit) -> None:
         cid = tc["id"]

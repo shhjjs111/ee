@@ -4,6 +4,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import type { Item } from "../types";
+import { SubagentGroup } from "./AgentItems";
 import { Composer } from "./Composer";
 import {
   ApprovalCard,
@@ -229,6 +230,8 @@ export function Conversation() {
           {blocks.map((b) =>
             b.kind === "explore" ? (
               <ExploreGroup key={b.id} items={b.items} />
+            ) : b.kind === "agents" ? (
+              <SubagentGroup key={b.id} items={b.items} />
             ) : (
               <Fragment key={b.item.id}>{renderItem(b.item, approvals)}</Fragment>
             ),

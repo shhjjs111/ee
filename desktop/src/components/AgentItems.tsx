@@ -1,7 +1,8 @@
 // 子代理卡片、网页搜索/抓取卡片、技能卡片（task / web_search / web_fetch / skill 工具条目的专用渲染）。
 import clsx from "clsx";
-import { Ban, BookOpen, Bot, Check, ChevronRight, Circle, Globe, Search, X } from "lucide-react";
+import { Ban, BookOpen, Bot, Check, ChevronRight, Circle, Clock, GitBranch, Globe, Search, X } from "lucide-react";
 import React, { useState } from "react";
+import { subagentStatus } from "../lib/reduce";
 import type { SubagentRecord, ToolItem } from "../types";
 import { Markdown } from "./Markdown";
 import { Spinner } from "./ui";
@@ -53,6 +54,7 @@ function host(url: string): string {
 }
 
 const SUB_STATUS: Record<string, string> = {
+  queued: "排队中",
   running: "进行中",
   completed: "已完成",
   max_steps: "步数用完",
@@ -69,30 +71,77 @@ function StepIcon({ status }: { status: string }) {
   return <Circle size={10} className="text-faint" />;
 }
 
+function tokens(n: number): string {
+  return n >= 10000 ? `${(n / 1000).toFixed(0)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+function usageText(u?: Record<string, any>): string {
+  if (!u || !u.requests) return "";
+  const bits = [`${tokens((u.prompt ?? 0) + (u.completion ?? 0))} token`];
+  if (u.cost !== undefined && u.cost !== null) bits.push(`${u.currency ?? ""}${Number(u.cost).toFixed(4)}`);
+  return bits.join(" · ");
+}
+
+function WorktreeInfo({ wt, running }: { wt: NonNullable<SubagentRecord["worktree"]>; running: boolean }) {
+  const files = wt.files ?? [];
+  return (
+    <div className="rounded-lg border border-line bg-soft px-2.5 py-1.5 text-[12px] text-muted">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <GitBranch size={12} className="shrink-0 text-faint" />
+        <span className="mono truncate text-fg/80" title={wt.path}>
+          {wt.branch}
+        </span>
+        <span className="shrink-0 text-faint">
+          {running
+            ? "独立 worktree，改动不进主目录"
+            : wt.removed
+              ? "没有改动，已删除"
+              : `${wt.file_count ?? files.length} 个文件 +${wt.additions ?? 0} -${wt.deletions ?? 0}`}
+        </span>
+      </div>
+      {!running && !wt.removed && files.length > 0 && (
+        <div className="mt-1 space-y-0.5 pl-[18px]">
+          {files.slice(0, 12).map((f) => (
+            <div key={f.path} className="flex min-w-0 gap-2">
+              <span className="mono truncate">{f.path}</span>
+              <span className="shrink-0 text-faint">{f.binary ? "二进制" : `+${f.additions} -${f.deletions}`}</span>
+            </div>
+          ))}
+          {files.length > 12 && <div className="text-faint">…共 {files.length} 个文件</div>}
+          <div className="text-faint">可在项目菜单「Worktree…」里查看、合并或删除</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SubagentCard({ item }: { item: ToolItem }) {
   const rec: SubagentRecord | undefined = item.meta?.subagent;
-  const running = item.status === "running" || rec?.status === "running";
+  const status = subagentStatus(item);
+  const running = status === "running";
+  const queued = status === "queued";
   const [open, setOpen] = useState(false);
   const desc = rec?.description || String(item.args?.description ?? "子任务");
   const agent = rec?.agent || String(item.args?.agent ?? "general");
-  const status = rec?.status ?? (item.status === "running" ? "running" : item.status === "ok" ? "completed" : item.status);
-  const failed = !running && !["completed", "max_steps"].includes(status);
+  const failed = !running && !queued && !["completed", "max_steps"].includes(status);
   const tools = rec?.tools ?? [];
   const isOpen = open || (running && tools.length > 0);
+  const usage = usageText(rec?.usage);
   return (
-    <div className="fadein">
+    <div className="fadein" data-testid="subagent-card">
       <Head
-        icon={<Bot size={14} />}
+        icon={queued ? <Clock size={14} /> : <Bot size={14} />}
         title={
           <>
-            {running ? "子代理正在" : "子代理"}
+            {running ? "子代理正在" : queued ? "子代理等待" : "子代理"}
             <span className="ml-1 text-fg/90">{desc}</span>
           </>
         }
         right={
           <span className={clsx("shrink-0 text-[12px]", failed ? "text-danger" : "text-faint")}>
             {agent}
-            {rec?.mode === "read-only" ? " · 只读" : ""} · {SUB_STATUS[status] ?? status}
+            {rec?.mode === "read-only" ? " · 只读" : ""}
+            {rec?.worktree ? " · worktree" : ""} · {SUB_STATUS[status] ?? status}
             {rec?.step ? ` · ${rec.step}${rec.max_steps ? `/${rec.max_steps}` : ""} 步` : ""}
           </span>
         }
@@ -103,6 +152,7 @@ export function SubagentCard({ item }: { item: ToolItem }) {
       />
       {isOpen && (
         <div className="mb-2 ml-6 mt-1 space-y-2 border-l-2 border-line pl-3">
+          {rec?.worktree && <WorktreeInfo wt={rec.worktree} running={running || queued} />}
           {tools.length > 0 && (
             <div className="space-y-0.5">
               {tools.slice(-30).map((t) => (
@@ -117,15 +167,48 @@ export function SubagentCard({ item }: { item: ToolItem }) {
             </div>
           )}
           {running && rec?.text && <div className="line-clamp-3 text-[12.5px] text-muted">{rec.text}</div>}
-          {!running && (rec?.summary || item.output) && (
+          {!running && !queued && (rec?.summary || item.output) && (
             <div className="rounded-xl border border-line bg-soft px-3 py-2 text-[13px]">
               <div className="mb-1 text-[12px] text-faint">子代理的报告（交给主代理）</div>
               <Markdown text={rec?.summary || item.output} />
             </div>
           )}
-          {rec?.model && <div className="text-[11.5px] text-faint">模型 {rec.model}</div>}
+          {(rec?.model || usage) && (
+            <div className="text-[11.5px] text-faint">
+              {rec?.model ? `模型 ${rec.model}` : ""}
+              {rec?.model && usage ? " · " : ""}
+              {usage}
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 同一步并行派出的多个子代理：组头显示总数和各状态数，下面每个子代理一张卡片（D5-2）。 */
+export function SubagentGroup({ items }: { items: ToolItem[] }) {
+  const counts: Record<string, number> = {};
+  for (const it of items) {
+    const st = subagentStatus(it);
+    counts[st] = (counts[st] ?? 0) + 1;
+  }
+  const active = (counts.running ?? 0) + (counts.queued ?? 0);
+  const parts = Object.entries(counts).map(([k, n]) => `${n} 个${SUB_STATUS[k] ?? k}`);
+  return (
+    <div className="fadein" data-testid="subagent-group">
+      <div className="flex items-center gap-2 py-0.5 text-[12.5px] text-faint">
+        <Bot size={13} />
+        <span className={clsx(active > 0 && "shimmer")}>
+          {active > 0 ? `${items.length} 个子代理并行` : `${items.length} 个子代理`}
+        </span>
+        <span>· {parts.join("，")}</span>
+      </div>
+      <div className="space-y-0.5 border-l-2 border-line/60 pl-2">
+        {items.map((it) => (
+          <SubagentCard key={it.id} item={it} />
+        ))}
+      </div>
     </div>
   );
 }

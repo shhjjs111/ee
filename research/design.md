@@ -141,7 +141,7 @@ ee/
 - [x] 真实 Electron 窗口验证、Windows 打包（PyInstaller + electron-builder + GitHub Actions）
 - [x] D2：右栏终端（xterm.js + node-pty）、文件预览、/compact、AGENTS.md、防死循环、网页搜索、子代理、记忆（Windows CI 全绿）
 - [x] D2 网页搜索（2026-10-26）：ee/ee/tools/web.py（web_search 后端 exa（默认，免费无 key，Exa 公共 MCP 端点 https://mcp.exa.ai/mcp，同 OpenCode）|duckduckgo（免费，抓 html.duckduckgo.com）|deepseek（付费，2026-11-01 起 $0.75/千次）|tavily|brave|off；主后端出错按 search_fallback（默认 ["duckduckgo"]）回退，全失败才报错；web_fetch 默认 direct（免费直连），可选 auto|deepseek|off，DeepSeek Fetch 失败自动直连；HTML→markdown 文本、截断可 offset 续读；默认 20s 超时；代理跟随 [network]），配置 [web]，设置页「工具与记忆」，界面搜索结果/抓取卡片（desktop/src/components/AgentItems.tsx），测试 tests/test_web.py（MockTransport，无真实请求）。Exa 已对真实服务实测（2026-10-26）；DuckDuckGo 解析只用 mock 验证（沙箱 IP 被 DDG 限流返回 202）。未做：Brave 接口没对真实服务验证、真实 DeepSeek Search 未实测。
-- [x] D2 子代理（2026-10-26）：ee/ee/core/subagent.py + ee/ee/tools/agent.py（task 工具：explore 只读 / general 继承权限 / 自定义 agents/*.md；max_steps、model 可选；不嵌套），事件 SubagentStart/Update/End（core/events.py），server 挂到 task 条目 meta.subagent（threads.py），审批冒泡 call_id=父/子，中断传递，/undo 共享快照，用量并入主会话；界面子代理卡片；测试 tests/test_subagent.py。剩：多个 task 并行（现在按顺序）、fork 式子代理（复制父前缀复用缓存）、git worktree 隔离。
+- [x] D2 子代理（2026-10-26）：ee/ee/core/subagent.py + ee/ee/tools/agent.py（task 工具：explore 只读 / general 继承权限 / 自定义 agents/*.md；max_steps、model 可选；不嵌套），事件 SubagentStart/Update/End（core/events.py），server 挂到 task 条目 meta.subagent（threads.py），审批冒泡 call_id=父/子，中断传递，/undo 共享快照，用量并入主会话；界面子代理卡片；测试 tests/test_subagent.py。剩：fork 式子代理（复制父前缀复用缓存）。多个 task 并行与 worktree 隔离已在 D5-2 完成。
 - [x] D2 记忆（2026-10-26）：ee/ee/core/memory.py + ee/ee/tools/memory.py（add/list/remove；user=~/.ee/memory.md，workspace=<项目根>/.ee/memory.md），新会话开始时注入为 AGENTS.md 后的固定 user 消息（_kind=agents，压缩保留，8KiB 上限，会话内不变），配置 [memory]，RPC memory/get|add|remove|save（server/memory_rpc.py），设置页开关 + 文本编辑；测试 tests/test_memory.py、tests/test_server_d2.py。剩：主题文件按需读（§9 的 MEMORY.md 索引方案未做，现在是单文件）。
 - [x] D3-C 配置迁移 + 单价（2026-10-26）：ee/ee/core/migrate.py 版本链（config_version，缺省=1），load_user_file/load_config 读前迁移，逐键 write_setting 写回保留注释，原文件备份 config.toml.pre-v2.bak；v2：web.search_backend "deepseek"→"exa"、fetch_backend "auto"→"direct"；settings/set 写出时带 config_version，所以之后用户主动选 deepseek 不会被改回。设置页加「出错时改用」(web.search_fallback)。Profile 加 variants（按模型名覆盖），deepseek-v4-pro 单价 0.30/9/27 元每百万。测试 tests/test_migrate.py。
 - [x] D3-B 斜杠命令与自定义提示（2026-10-26）：core/prompts.py + server/prompts_rpc.py，前端 lib/slash.ts + SlashMenu；内置 /init。
@@ -160,6 +160,7 @@ ee/
 - [x] D4-9 headless exec（2026-10-26：ee/headless.py，`ee exec [--json] [--resume|--last]`；详见 HANDOFF.md）
 - [x] D5-1 git worktree（2026-10-26：core/worktree.py、worktree/* RPC、thread/start worktree、WorktreeDialog；详见 HANDOFF.md）
 - [x] D5-4 Hooks（core/hooks.py、hooks/* RPC、HooksSettings）、D5-5 Skills（core/skills.py、tools/skill.py、skills/* RPC）（2026-10-26；详见 HANDOFF.md）
+- [x] D5-2 子代理并行（2026-10-26：core/parallel.py FIFO 读写闸门，一步内调用同时派发、只读并发、写独占保序、结果按原顺序回填；只读子代理并发，[subagent] max_parallel 默认 3、超出排队；同一步多个写型子代理在 git 仓库里各进独立 worktree（带主目录未提交改动作基线）并行，结束提交到 ee/agent-* 分支并汇报改动，否则按顺序；审批带来源、用量实时并入；界面子代理组卡片；详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）
 - 2026-10-26：D5-6 仓库地图（tree-sitter 定义/引用图排名，repo_map 只读工具，可选会话开始注入）合并。
 - 2026-10-26：D4-10 自动化 v1（ee serve 内调度，cron/每天/间隔，收件箱与通知）合并。

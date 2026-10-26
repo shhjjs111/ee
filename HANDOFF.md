@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 20:45（Asia/Shanghai，全仓审查第三轮：分 4 块并行审完剩余模块，修 34 个 bug；pytest 465 过 2 跳过；Windows CI 首轮暴露快照恢复 pathspec 按 glob 匹配，已加 --literal-pathspecs；第二轮暴露“建会话期间删自动化”仍推送运行记录，已修；下一步 D5-2）
+最后更新：2026-10-26 21:20（Asia/Shanghai，D5-2 子代理并行完成：FIFO 读写闸门、只读子代理并发、写型子代理进独立 worktree 并行；pytest 483 过 2 跳过、vitest 36 过；下一步 D5-9）
 
 > **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。第二轮（19:25）：Hook 的 PreToolUse 返回 allow 会跳过危险命令的强制确认（force），已修（hooks.py adjust_decision，测试 test_hook_allow_does_not_skip_forced_ask）；已核实：永久允许规则对 `git push && curl|sh`、`git push; rm` 这类复合命令不会放行；项目 hooks 信任按路径+内容指纹、超时杀进程树、退出码 2 拦截正确；automations.json 与规则文件原子写；read-only/plan 下后台 shell、shell_write 被拒。待查（低风险）：ToolStart 显示的是 Hook 改写前的参数；PostToolUse/Stop 忽略 continue:false；Windows 取消 hook 时 taskkill 同步阻塞最多 10 秒；cron 边界、worktree 删除、bgproc 编码、repomap/docread 异常、前端四个新页面尚未逐行审。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
 
@@ -11,7 +11,7 @@
 > - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
 > - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
-> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；所有并行分支已合并（feat/* 可删）。之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 21:20）**：确认最新 Windows CI 绿（D5-2 的提交）。下一步 D5-9：回答风格（讲解/作业辅导）、按用途分模型（`[models.roles]` compact/title/explore/plan/review）、推理强度、预算告警；之后 D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话（依赖 D5-2 已就绪）。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -189,9 +189,23 @@
    - 已知/后续：管理入口在左栏自动化页而非设置页；只在 ee 运行（含托盘）时调度，无开机自启；一次运行一个回合；worktree 模式分支不自动清理；无会话内 /loop、RRULE（D5-3）；启动补跑早于桌面端连上时那条通知会漏（角标/收件箱正常）；真机 Windows 通知与托盘调度待验证。
 
 **D5 — 并行与扩展**
-1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
+1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
 
 **D5 进度**
+
+- [x] D5-2 ★子代理并行（2026-10-26 21:20）
+  - 参考了谁、取了哪点：一步内所有工具调用同时派发、每个调用按“能否并行”拿共享读写锁的读锁或写锁、tokio RwLock 先到先得（写不会被后来的读饿死，读写读不会被重排）、结果按原顺序收集、中断时给每个未完成调用补“已中断”结果取自 Codex `tools/parallel.rs`；子代理并发上限（Codex `agents.max_threads` 默认 6，超出排队而不是报错）取自 Codex multi_agents，ee 默认 3（DeepSeek 并发和花费更敏感）；每个 task 调用就是一个独立子会话、审批按子会话区分、同一步多个 task 直接并发取自 OpenCode 的 task 工具；只读子代理放心并行、每个子代理单独统计 token/花费并实时汇总到任务总花费、界面逐个显示进度取自 Cline 的 use_subagents；写型并行“每个任务一个 worktree、结束后人决定合并”取自 Cline Kanban / Codex 桌面版的 worktree 线程。没取：OpenCode 让写型子代理直接在同一目录并发（会互相踩文件），Codex 的 spawn/wait 异步模型（留给 D6-1 指挥会话）。
+  - 做法（后端）：
+    - `core/parallel.py` `RWGate`：FIFO 公平异步读写锁，三类访问 read（可并发）/ write（独占、保序）/ free（不过闸门）；等待中被取消会让出队列。`Session._dispatch` 取代原来“连续只读分组 gather”：一步里所有调用 `ensure_future` 同时派发，闸门在 PreToolUse 之前获取（写类调用的 Hook、ToolStart 也按顺序）；单个调用抛意外异常只记它自己的错误结果；取消时 cancel 所有子任务再等它们收尾；结果仍按调用顺序回填历史。工具可定义 `access(args, session)` 动态决定访问类型（默认看 read_only）。
+    - `core/subagent.py`：`access()` 判定 task 调用：explore / mode=read-only / 主会话只读或计划 / 只有只读工具的自定义子代理 → read（并发）；其余 → write。`plan_step()`：同一步有 ≥2 个写型 task（或显式 `isolation=worktree`）且 `[subagent] worktree=true`、是 git 仓库且有提交 → 这些 task 走 worktree 并改为 free；否则原地按顺序并出提示“N 个会改文件的子代理将按顺序执行（原因）”。单个写型 task 仍原地执行（与以前一致，/undo 能撤）。并发名额 `asyncio.Semaphore([subagent].max_parallel)`（默认 3，1～8），名额满时先发 `SubagentStart(status="queued")`，排队中被中断也会发 `SubagentEnd(interrupted)`。
+    - 写型 worktree（`core/worktree.py` 新增 `agent_eligible` / `create_for_agent` / `finish_agent`）：基于当前 HEAD 建 `ee/agent-<时间>-<随机>` worktree（复用 D5-1 的 create，登记在 index.json，Worktree 对话框里能看到）；把主目录相对 HEAD 的未提交改动（`git diff HEAD --binary` 用 `apply --cached` + `checkout-index` 应用，绕开 Windows 换行转换；未跟踪文件直接复制）做成“基线提交”，子代理在它之上干活；子代理 cwd 对应主目录里的子目录；权限换成以 worktree 为工作区的新策略、会话内“以后都行”与主会话共享；不共享主会话快照（主会话 /undo 不碰 worktree）。结束时把改动提交到分支、按基线统计 numstat 和提交列表，一点没改就自动删 worktree 和分支；`<task_result>` 后追加 `[worktree]` 段（分支、目录、文件 +/-、查看/合并命令），提示主代理合并前先问用户。git 操作用进程内锁串行，避免并行建 worktree 时的 ref/config 锁冲突。
+    - 只读/计划模式：`isolation=worktree` 的 task 直接拒绝（提示切模式或用 explore）；其它子代理照旧强制只读（写操作被权限层拒）。
+    - 审批：`ApprovalRequest.source = {call_id, agent, description}`，call_id 仍是 `父/子`，并行时每个子代理一张审批卡、互不串台；threads 审批条目带 `source`，headless JSONL 的 approval 也带。
+    - 用量：子代理每次 Usage 增量并入主会话统计（`_merge_usage` 可多次调用），发 `SubagentUpdate(kind="usage", usage=子代理, totals=主会话)`，threads 据此推 `thread/usage`，顶部花费实时涨；记录里有每个子代理自己的用量。loopguard 每个子会话各自一份，事件都带父 task 的 call_id（threads 挂到 `tool_<call_id>` 条目的 meta.subagent，记录新增 `id`、`worktree`）。
+    - 配置/设置：`[subagent] max_parallel = 3`、`worktree = true`；settings/get|set 读写并校验（1～8）。task 工具新参数 `isolation: auto|worktree|none`，工具说明里写了并行规则。
+  - 前端：`lib/reduce.ts` 连续的 task 条目合成 `agents` 块、`subagentStatus()`（记录停在运行/排队但条目已结束时以条目为准）；`SubagentGroup`（组头“N 个子代理并行 · 2 个进行中，1 个排队中”）+ `SubagentCard` 增加排队状态、worktree 分支与改动文件列表、模型与 token/花费；审批卡片右上角“来自子代理 X · 描述”；设置「工具与记忆 → 子代理」加“同时运行数”“写型子代理用 worktree 并行”。
+  - 测试：`tests/test_subagent_parallel.py` 17 个（闸门 FIFO 顺序与取消、普通工具读并发/写独占/结果顺序、同一步读写读看到写入、3 个只读子代理确实重叠且结果按序、上限 2 时峰值 2 且 2 个排队、中断传到运行中和排队中的子代理、一个子代理请求失败不影响另一个、每个调用都跑 PreToolUse、两个写型子代理在 worktree 里并行且主目录不变、分支里带基线、无改动自动删、非 git 退回串行、单个写型原地、read-only/plan 拒绝 worktree 子代理、两个审批同时挂起可区分来源、服务端两张卡片同时 running 与 thread/usage、设置读写）；`AgentItems.test.tsx` 2 个 + reduce.test 1 个。pytest 483 过 2 跳过，vitest 36 过，tsc 两份、vite build 通过。
+  - 已知限制：worktree 子代理不加载项目 Hooks（信任按路径登记，worktree 路径不同）且 MCP 服务器仍以主目录为工作目录；分支里带的“基线提交”意味着主目录有未提交改动时直接 `git merge` 会要求先提交（Worktree 对话框合并要求主目录干净），只取子代理改动可用 `git cherry-pick --no-commit <基线>..<分支>`（报告里给了命令）；被中断的 worktree 子代理不自动提交、目录保留待用户处理；写型子代理之间看不到彼此改动，改同一文件需人工合并；普通只读工具没有并发上限（一步里模型给多少就并发多少，和以前一样）；并行子代理的 PreToolUse Hook 也是并发执行的，写全局状态的 Hook 脚本需自己加锁。
 
 - **D5-6 仓库地图**（合并自 feat/d5-repomap）
   - 参考：tree-sitter 定义 → 引用图 PageRank → token 预算内二分裁剪 → 按 mtime 缓存、名字加权降权取自 Aider repomap，各语言定义查询由其 tags 查询改写；按需工具、可只看子目录取自 Cline list_code_definition_names；只给签名行取自 Continue；默认不往前缀塞地图取自 Codex/OpenCode 靠工具探索的思路（省 token、保缓存）。

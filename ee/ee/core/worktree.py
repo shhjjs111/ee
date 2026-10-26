@@ -301,3 +301,143 @@ def merge(path: Path | str, squash: bool = False, home: Path | None = None) -> d
             _git(["reset", "--merge"], root, timeout=60, check=False)
         raise WorktreeError(f"合并有冲突，已取消合并、主目录保持原样。可以在 worktree 里先合并主分支解决冲突再试。\n{e}")
     return {"merged": result, "autosaved": saved, "branch": info["branch"], "repo": str(root)}
+
+
+# ------------------------------------------------------------------ 写型子代理用（D5-2）
+
+AGENT_LOCK = threading.Lock()     # 同一进程里并行子代理建/收 worktree 时串行跑 git（避免 ref/config 锁冲突）
+
+
+def agent_eligible(cwd: Path | str) -> tuple[bool, str]:
+    """能不能给写型子代理建独立 worktree。返回 (能否, 不能的原因)。"""
+    if not gitinfo.git_exe():
+        return False, "没有安装 Git"
+    top = _git(["rev-parse", "--show-toplevel"], cwd, timeout=10, check=False).strip()
+    if not top:
+        return False, "不是 git 仓库"
+    if not _git(["rev-parse", "--verify", "-q", "HEAD"], cwd, timeout=10, check=False).strip():
+        return False, "仓库还没有任何提交"
+    return True, ""
+
+
+def _sync_dirty(src_top: Path, dst: Path) -> str | None:
+    """把主目录相对 HEAD 的未提交改动（含未跟踪、不含被忽略的文件）带进新 worktree 并提交成一个基线提交。
+
+    补丁只应用到索引再检出（--cached + checkout），绕开 Windows 换行转换导致的“补丁对不上工作区”。
+    返回基线提交 sha；没有未提交改动返回 None。
+    """
+    import tempfile
+    exe = gitinfo.git_exe() or "git"
+    code, patch, err = run_capture([exe, "-c", "core.quotepath=false", "diff", "HEAD", "--binary", "--no-color",
+                                    "--no-ext-diff", "--no-renames", "--ignore-submodules"], cwd=src_top, timeout=120)
+    if code != 0:
+        raise WorktreeError("读取主目录未提交改动失败：" + (err or b"").decode("utf-8", "replace")[:500])
+    untracked = [x for x in _git(["ls-files", "--others", "--exclude-standard", "-z"], src_top, timeout=60,
+                                 check=False).split("\0") if x]
+    if not patch.strip() and not untracked:
+        return None
+    if patch.strip():
+        fd, tmp = tempfile.mkstemp(suffix=".patch")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(patch)
+            _git(["apply", "--cached", "--binary", "--whitespace=nowarn", tmp.replace("\\", "/")], dst, timeout=120)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        _git(["checkout-index", "-a", "-f"], dst, timeout=120)
+        # 补丁删掉的文件：索引里已没有、工作区还在（新 worktree 里此时唯一的未跟踪文件就是它们）→ 删掉
+        for rel in [x for x in _git(["ls-files", "--others", "--exclude-standard", "-z"], dst, timeout=60,
+                                    check=False).split("\0") if x]:
+            try:
+                (dst / rel).unlink()
+            except OSError:
+                pass
+    total = 0
+    for rel in untracked:
+        src = src_top / rel
+        if not src.is_file():
+            continue
+        total += src.stat().st_size
+        if total > MAX_INCLUDE_BYTES:
+            break
+        d = dst / rel
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, d)
+    _git(["add", "-A"], dst, timeout=120)
+    if not _dirty(dst):
+        return None
+    _git([*_ident(dst), "commit", "--no-verify", "-q", "-m", "ee：同步主目录未提交的改动（子代理基线）"], dst, timeout=120)
+    return _git(["rev-parse", "HEAD"], dst, timeout=10).strip()
+
+
+def create_for_agent(cwd: Path | str, label: str = "", home: Path | None = None) -> dict:
+    """给写型子代理建 worktree：基于 cwd 当前 HEAD，并带上主目录的未提交改动（作为基线提交）。
+
+    返回的 info 额外带 `agent_base`（子代理改动的起点：有基线提交就是它，否则同 base）和 `cwd`（对应的子目录）。
+    """
+    cwd = Path(cwd).resolve()
+    top = Path(_git(["rev-parse", "--show-toplevel"], cwd, timeout=10).strip()).resolve()
+    head = _git(["rev-parse", "HEAD"], cwd, timeout=10).strip()
+    slug = _slug(label)[:20].strip("-.")
+    name = "agent-" + (slug + "-" if slug and slug.isascii() else "") + _auto_name()
+    with AGENT_LOCK:
+        info = create(cwd, name=name, base=head, home=home)
+        p = Path(info["path"])
+        try:
+            baseline = _sync_dirty(top, p)
+        except Exception as e:  # noqa: BLE001  同步失败：删掉这个 worktree，调用方退回串行
+            try:
+                remove(p, delete_branch=True, force=True, home=home)
+            except Exception:  # noqa: BLE001
+                pass
+            raise WorktreeError(f"把主目录未提交的改动带进 worktree 失败：{e}") from None
+    try:
+        rel = cwd.relative_to(top)
+    except ValueError:
+        rel = Path()
+    info["agent_base"] = baseline or info["base"]
+    info["synced_dirty"] = bool(baseline)
+    info["cwd"] = str(p / rel)
+    with _LOCK:
+        items = _load(home)
+        for x in items:
+            if _norm(x["path"]) == _norm(p):
+                x["agent_base"] = info["agent_base"]
+                x["agent"] = True
+        _save(items, home)
+    return info
+
+
+def finish_agent(info: dict, message: str, home: Path | None = None) -> dict:
+    """子代理结束：把它的改动提交在自己的分支上，统计相对起点的改动；一点改动都没有就删掉 worktree 和分支。"""
+    p = Path(info["path"])
+    base = info.get("agent_base") or info["base"]
+    with AGENT_LOCK:
+        if p.is_dir():
+            _autosave(p, message)
+        files = []
+        out = _git(["diff", "--numstat", "-z", "--no-renames", f"{base}..HEAD"], p, timeout=60, check=False) \
+            if p.is_dir() else ""
+        parts = [x for x in out.split("\0") if x]
+        for rec in parts:
+            bits = rec.split("\t", 2)
+            if len(bits) == 3:
+                a, d, path = bits
+                files.append({"path": path.strip(), "additions": int(a) if a.isdigit() else 0,
+                              "deletions": int(d) if d.isdigit() else 0, "binary": a == "-"})
+        log = _git(["log", "--format=%h %s", f"{base}..HEAD"], p, timeout=30, check=False).strip() if p.is_dir() else ""
+        commits = [x for x in log.splitlines() if x.strip()]
+        removed = False
+        if not files:
+            try:
+                remove(p, delete_branch=True, force=True, home=home)
+                removed = True
+            except Exception:  # noqa: BLE001
+                removed = False
+    return {"path": str(p), "branch": info["branch"], "base": base, "files": files[:200],
+            "file_count": len(files), "additions": sum(f["additions"] for f in files),
+            "deletions": sum(f["deletions"] for f in files), "commits": commits[:20], "removed": removed,
+            "synced_dirty": bool(info.get("synced_dirty"))}

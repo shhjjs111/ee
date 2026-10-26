@@ -126,7 +126,8 @@ def _d2_out(data: dict) -> dict:
                 "timeout": w.get("timeout", 20), "max_results": w.get("max_results", 8),
                 "deepseek_key_available": bool(web_deepseek_key(data)),
                 "keys": {"tavily": _key_out(w, "tavily"), "brave": _key_out(w, "brave")}},
-        "subagent": {"enabled": bool(sa.get("enabled", True)), "max_steps": int(sa.get("max_steps", 30))},
+        "subagent": {"enabled": bool(sa.get("enabled", True)), "max_steps": int(sa.get("max_steps", 30)),
+                     "max_parallel": int(sa.get("max_parallel", 3) or 3), "worktree": bool(sa.get("worktree", True))},
         "memory": {"enabled": bool(mem.get("enabled", True)), "workspace": bool(mem.get("workspace", True)),
                    "max_bytes": int(mem.get("max_bytes", 8192))},
         "skills": _skills_out(data),
@@ -212,6 +213,13 @@ def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
             if not 1 <= v <= 100:
                 raise ValueError("子代理最大步数必须在 1～100 之间")
             sa["max_steps"] = v
+        if n.get("max_parallel") not in (None, ""):
+            v = int(float(n["max_parallel"]))
+            if not 1 <= v <= 8:
+                raise ValueError("子代理同时运行数必须在 1～8 之间")
+            sa["max_parallel"] = v
+        if n.get("worktree") is not None:
+            sa["worktree"] = bool(n["worktree"])
         out["subagent"] = sa
     if isinstance(new.get("memory"), dict):
         n = new["memory"]

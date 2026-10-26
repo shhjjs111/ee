@@ -75,6 +75,7 @@ class ApprovalRequest(Event):
     prefix: str = ""        # “以后都行”选项要记住的前缀（bash 命令前缀或工具名）
     future: asyncio.Future | None = None
     force: bool = False     # 危险操作的强制询问（全自动模式下也问；ee exec --approve auto 也不自动批）
+    source: dict = field(default_factory=dict)   # 来自子代理时：{call_id, agent, description}（D5-2，界面标明来源）
 
 
 @dataclass
@@ -138,11 +139,13 @@ class SubagentStart(Event):
     model: str = ""
     mode: str = ""                  # 子代理实际的权限模式
     max_steps: int = 0
+    status: str = "running"         # running | queued（并发名额已满，排队等待，D5-2）
+    worktree: dict = field(default_factory=dict)   # 在独立 git worktree 里写时：{path, branch, base}
 
 
 @dataclass
 class SubagentUpdate(Event):
-    """子代理进度：kind = step | tool_start | tool_end | text | notice。"""
+    """子代理进度：kind = step | tool_start | tool_end | text | notice | usage | worktree。"""
     call_id: str
     kind: str
     step: int = 0
@@ -151,6 +154,9 @@ class SubagentUpdate(Event):
     summary: str = ""
     ok: bool | None = None
     text: str = ""
+    usage: dict = field(default_factory=dict)     # kind=usage：这个子代理到目前的用量
+    totals: dict = field(default_factory=dict)    # kind=usage：主会话（含所有子代理）到目前的总用量
+    data: dict = field(default_factory=dict)      # kind=worktree：分支、改动文件统计
 
 
 @dataclass
