@@ -11,7 +11,7 @@
 > - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
 > - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
-> **并行进行中（2026-10-26 23:15）**：5 个分支开发中，未合并：`feat/pi-lean`（A1/A2/A7/A8 精简模式、工具描述压缩、开关、前缀预算测试、真实对比脚本 eval_profiles.py）、`feat/pi-system-md`（A4 SYSTEM.md/APPEND_SYSTEM.md + A10 错误分类）、`feat/pi-edit`（A3 edit 多处/最接近候选/Unicode 归一）、`feat/pi-queue`（A5 插话/追加两条队列）、`feat/d5-10`（修剪旧工具输出 + fork 子代理）。沙箱无 DeepSeek key：新功能默认关、可选开，真实对比留到打包时用户用 key 跑 eval_profiles.py 再决定默认。接手时看各分支最新提交信息（WIP 写了已完成/还差），做完后逐个合并、全量测试、在此打勾。
+> **并行进行中（2026-10-26 23:15）**：4 个分支开发中（A3 edit 已合并），未合并：`feat/pi-lean`（A1/A2/A7/A8 精简模式、工具描述压缩、开关、前缀预算测试、真实对比脚本 eval_profiles.py）、`feat/pi-system-md`（A4 SYSTEM.md/APPEND_SYSTEM.md + A10 错误分类）、`feat/pi-queue`（A5 插话/追加两条队列）、`feat/d5-10`（修剪旧工具输出 + fork 子代理）。沙箱无 DeepSeek key：新功能默认关、可选开，真实对比留到打包时用户用 key 跑 eval_profiles.py 再决定默认。接手时看各分支最新提交信息（WIP 写了已完成/还差），做完后逐个合并、全量测试、在此打勾。
 
 > **接手第一步（2026-10-26 22:58 更新）**：先确认最新 Windows CI 绿（最新提交 b41f6a5「回答风格只留默认/简洁」，推送时 CI 还在跑；上一个 488233b 已绿）。用户原则：Pi 只作参考、不强行适配，没实用价值的功能宁可不要（已删内置「讲解」「作业辅导」风格）；平时不催用户真机测试，攒齐功能后统一打包测。**下一步：按 `research/pi.md` 落地 Pi 借鉴项，第一批 = 精简模式、工具描述压缩、edit 改进、SYSTEM.md / APPEND_SYSTEM.md、两条消息队列**。用户决定：自动压缩保持 80% 阈值，不加 128k 上限。每一项都必须用 DeepSeek 真实任务实测（对比改前改后的成功率 / token / 花费），不好用就不合入。之后再按路线做 D5-10（修剪旧工具输出 + fork 式子代理）、D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话。D5-9 遗留待做见「D5 进度 · D5-9 · 剩余待做」。**用户决定（22:48）：暂不出安装包，先攒功能；Windows 真机手测（含 D5-9 新界面、真实 DeepSeek key 的推理强度/关闭思考）统一放到功能差不多后打包时一起做。**
 > （旧）**接手第一步（2026-10-26 21:20）**：确认最新 Windows CI 绿（D5-2 的提交）。下一步 D5-9：回答风格（讲解/作业辅导）、按用途分模型（`[models.roles]` compact/title/explore/plan/review）、推理强度、预算告警；之后 D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话（依赖 D5-2 已就绪）。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
@@ -195,6 +195,12 @@
 1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. 修剪旧工具输出、fork 式子代理
 
 **D5 进度**
+
+- **Pi A3 edit 改进**（合并自 feat/pi-edit，2026-10-26 23:30）
+  - 参考：Pi 的 edit 取三点：`edits[]` 一次多处且都对照原文件匹配、查重叠；参数容错；Unicode 符号归一后模糊匹配。“找不到给最接近原文”“不唯一列行号”是 ee 自加。
+  - 做法：`fileops.parse_edits` 容错（数组/JSON 字符串/单对象，旧顶层 old_string/new_string/replace_all 与 oldText 等仍认；schema 只列 path+edits）。`fileops.apply_edits` 每处走容错链：精确 → 去行尾空白 → 符号归一 → 逐行 trim → 缩进无关 → 首尾锚点；查重叠；任一失败整体不写并列出所有出错的 edits[i]。符号归一：弯引号、破折号、特殊空格、零宽、NFKC，映射回原文位置，未改行保留原符号。找不到时 difflib 给“最接近第 L1-L2 行（相似度、首个不一致行）”+ ≤15 行带行号原文（3 万行约 0.2 秒，放线程）；不唯一给各处行号。同一步写已由 `parallel.RWGate` 串行，另加按路径进程内锁 `fileops.path_lock`。编码：CRLF/BOM 保持；GBK 写回仍 GBK（edit 新内容 GBK 表示不了则报错，write/apply_patch 改存 UTF-8）；认不出编码 edit 拒绝。
+  - 测试：`tests/test_edit_multi.py` 27 个；合并后 pytest 563 过 2 跳过。
+  - 已知：组合字符不互相匹配；连续破折号不合并；最接近窗口行数固定等于 old 行数；路径锁仅进程内；edit.md 里“返回附带 diff”的不实描述由 feat/pi-lean 修；**DeepSeek 真实任务前后对比未做（沙箱无 key），打包时用 eval_profiles.py 验证，若 DeepSeek 对 edits 数组不适应再回退 schema**。
 
 - [x] D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限（2026-10-26 22:45）
   - 参考了谁、取了哪点：
