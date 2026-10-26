@@ -18,17 +18,18 @@ def test_user_and_project_prompts(ee_home, workspace):
     sub = workspace / "pkg"
     sub.mkdir()
     (ee_home / "prompts").mkdir()
-    (ee_home / "prompts" / "review.md").write_text(
+    (ee_home / "prompts" / "audit.md").write_text(
         "---\ndescription: 代码审查\nargument-hint: <文件>\n---\n请审查 $ARGUMENTS 的代码。\n", encoding="utf-8")
     (ee_home / "prompts" / "explain.md").write_text("# 解释代码\n解释一下这段代码", encoding="utf-8")
     (ee_home / "prompts" / "bad name.md").write_text("x", encoding="utf-8")
     (ee_home / "prompts" / "compact.md").write_text("不能覆盖内置命令", encoding="utf-8")
+    (ee_home / "prompts" / "review.md").write_text("/review 是内置命令，也不能覆盖", encoding="utf-8")
     pd = workspace / ".ee" / "prompts"
     pd.mkdir(parents=True)
-    (pd / "review.md").write_text("项目版审查：$ARGUMENTS\r\n", encoding="utf-8")
+    (pd / "audit.md").write_text("项目版审查：$ARGUMENTS\r\n", encoding="utf-8")
     ps = P.load_prompts(ee_home, sub)          # 从子目录也能找到项目根
-    assert set(ps) == {"init", "review", "explain"}
-    assert ps["review"].source == "project" and P.expand(ps["review"], "a.py") == "项目版审查：a.py"
+    assert set(ps) == {"init", "audit", "explain"}
+    assert ps["audit"].source == "project" and P.expand(ps["audit"], "a.py") == "项目版审查：a.py"
     assert ps["explain"].description == "解释代码"
     assert P.expand(ps["explain"], "foo()") == "# 解释代码\n解释一下这段代码\n\nfoo()"
     assert P.expand(ps["explain"]) == "# 解释代码\n解释一下这段代码"

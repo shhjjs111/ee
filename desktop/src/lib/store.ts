@@ -35,7 +35,10 @@ type State = {
   settingsSection: SettingsSection | null;
   composerDraft: { text: string; nonce: number } | null; // 让输入框预填（分叉后） // 打开设置页时要跳到的分区（斜杠命令用），读取后清空
   toast: { text: string; kind: "info" | "error" } | null;
+  dialog: { kind: "review"; instructions?: string } | { kind: "commit" } | null; // /review、/commit 弹窗
 };
+
+export type ReviewParams = { kind: "uncommitted" | "branch" | "commit" | "custom"; ref?: string; instructions?: string };
 
 type Actions = {
   init(rpc: RpcClient): Promise<void>;
@@ -46,6 +49,7 @@ type Actions = {
   addWorkspace(path: string): Promise<void>;
   removeWorkspace(path: string): Promise<void>;
   send(text: string, attachments?: Attachment[]): Promise<boolean>;
+  startReview(p: ReviewParams): Promise<boolean>;
   interrupt(): Promise<void>;
   compact(): Promise<void>;
   undo(): Promise<void>;
@@ -85,6 +89,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   settingsSection: null,
   composerDraft: null,
   toast: null,
+  dialog: null,
 
   set: (p) => set(p),
 
@@ -228,6 +233,41 @@ export const useApp = create<State & Actions>((set, get) => ({
           return { details: { ...st.details, [id!]: { ...d, items: [...d.items, err] } }, turnStartedAt: rest };
         });
       }
+      return false;
+    }
+  },
+
+  async startReview(p) {
+    const s = get();
+    const rpc = s.rpc!;
+    let id = s.activeThreadId;
+    const model = s.draftModel || undefined;
+    try {
+      const cur = id ? s.details[id]?.status : undefined;
+      if (cur && cur !== "idle") {
+        s.showToast("ee 正在工作，等这一回合结束再开始审查", "error");
+        return false;
+      }
+      if (!id) {
+        if (!s.activeWorkspace) {
+          s.showToast("先在左侧选择或添加一个项目文件夹", "error");
+          return false;
+        }
+        const r = await rpc.call("thread/start", { cwd: s.activeWorkspace, model, mode: s.draftMode });
+        const t = r.thread as ThreadDetail;
+        id = t.id;
+        set((st) => ({
+          details: { ...st.details, [t.id]: t },
+          activeThreadId: t.id,
+          threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
+        }));
+      }
+      await rpc.call("review/start", { thread_id: id, kind: p.kind, ref: p.ref ?? "", instructions: p.instructions ?? "", model });
+      set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: st.turnStartedAt[id!] ?? Date.now() } }));
+      setStatus(id, "running");
+      return true;
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
       return false;
     }
   },

@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronRight, FileCode2, FileDiff, GitBranch, RefreshCw, RotateCcw, SquareTerminal, Undo2 } from "lucide-react";
+import { ChevronRight, FileCode2, FileDiff, GitBranch, GitCommitHorizontal, RefreshCw, RotateCcw, SearchCheck, SquareTerminal, Undo2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp, type RightTab } from "../lib/store";
 import type { DiffFile, GitReview } from "../types";
@@ -125,6 +125,20 @@ function Review() {
               <Undo2 size={14} />
             </Button>
           </Tip>
+        )}
+        {data?.is_repo && data.files.length > 0 && (
+          <>
+            <Tip label="审查这些改动（/review）">
+              <Button size="icon-sm" onClick={() => s.set({ dialog: { kind: "review" } })}>
+                <SearchCheck size={14} />
+              </Button>
+            </Tip>
+            <Tip label="提交（模型写提交信息，确认后 git commit）">
+              <Button size="icon-sm" onClick={() => s.set({ dialog: { kind: "commit" } })} disabled={!!d && d.status !== "idle"}>
+                <GitCommitHorizontal size={14} />
+              </Button>
+            </Tip>
+          </>
         )}
         <Tip label="刷新">
           <Button size="icon-sm" onClick={load}>

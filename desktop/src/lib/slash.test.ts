@@ -20,14 +20,17 @@ describe("slash", () => {
   it("lists commands by prefix, prompts after builtins, no duplicates", () => {
     const all = slashItems("/", prompts, models)!;
     expect(all.map((i) => i.key)).toEqual([
-      "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:memory", "builtin:mcp",
-      "prompt:init", "prompt:review",
+      "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:memory",
+      "builtin:review", "builtin:commit", "builtin:mcp",
+      "prompt:init",
     ]);
     const m = slashItems("/mo", prompts, models)!;
     expect(m.map((i) => i.key)).toEqual(["builtin:model", "builtin:mode", "builtin:memory"]);
     expect(m[0].action).toEqual({ fill: "/model " });
     expect(slashItems("/comp", prompts, models)![0].action).toEqual({ run: "/compact" });
-    expect(slashItems("/rev", prompts, models)![0]).toMatchObject({ badge: "我的", action: { fill: "/review " } });
+    // 同名自定义提示被内置 /review 盖住
+    expect(slashItems("/rev", prompts, models)!.map((i) => i.key)).toEqual(["builtin:review"]);
+    expect(slashItems("/commit", prompts, models)![0].action).toEqual({ run: "/commit" });
   });
 
   it("second level options for model and mode", () => {

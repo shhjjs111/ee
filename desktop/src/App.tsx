@@ -4,6 +4,7 @@ import { AlertTriangle, RotateCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Conversation } from "./components/Conversation";
 import { RightPanel } from "./components/RightPanel";
+import { Dialogs } from "./components/ReviewDialogs";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { Button, Spinner } from "./components/ui";
@@ -139,6 +140,7 @@ export default function App() {
         {view === "settings" ? <SettingsPage /> : <Conversation />}
         <RightPanel />
       </div>
+      <Dialogs />
       {toast && (
         <div
           className={clsx(

@@ -221,6 +221,14 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         clearInput();
         s.openSettings("mcp");
         return true;
+      case "review":
+        clearInput();
+        s.set({ dialog: { kind: "review", instructions: args } });
+        return true;
+      case "commit":
+        clearInput();
+        s.set({ dialog: { kind: "commit" } });
+        return true;
     }
     if (!prompts.some((x) => x.name === name)) {
       // 可能还没拉到列表：再问一次后端

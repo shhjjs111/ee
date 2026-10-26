@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import {
+  SearchCheck,
   GitFork,
   Pencil,
   AlertTriangle,
@@ -21,8 +22,10 @@ import {
   X,
   Plug,
 } from "lucide-react";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { diffStat, formatDuration, shortPath } from "../lib/reduce";
+import { splitReview } from "../lib/review";
+import { ReviewCard } from "./ReviewDialogs";
 import { useApp } from "../lib/store";
 import type { ApprovalItem, AssistantItem, Item, PlanItem, ToolItem, TurnEndItem, UserItem } from "../types";
 import { SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
@@ -136,7 +139,7 @@ export function UserMessage({ item }: { item: UserItem }) {
   const [busy, setBusy] = useState(false);
   const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
   const idle = !d || d.status === "idle";
-  const canBranch = typeof item.hist === "number" && !item.queued;
+  const canBranch = typeof item.hist === "number" && !item.queued && item.kind !== "review";
 
   if (editing) {
     const send = async () => {
@@ -191,6 +194,7 @@ export function UserMessage({ item }: { item: UserItem }) {
         </div>
       )}
       <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
+        {item.kind === "review" && <SearchCheck size={14} className="mr-1.5 inline-block align-[-2px] text-muted" />}
         {item.text}
         {item.queued && <div className="mt-1 text-[11.5px] text-faint">已排队，当前步骤结束后送入</div>}
       </div>
@@ -224,6 +228,7 @@ export function UserMessage({ item }: { item: UserItem }) {
 export function AssistantMessage({ item }: { item: AssistantItem }) {
   const [open, setOpen] = useState(false);
   const thinkingOnly = !item.text && !!item.reasoning;
+  const { body, result: review } = useMemo(() => splitReview(item.text || ""), [item.text]);
   return (
     <div className="fadein space-y-1">
       {item.reasoning && (
@@ -239,11 +244,12 @@ export function AssistantMessage({ item }: { item: AssistantItem }) {
           </div>
         </Row>
       )}
-      {item.text && (
+      {body && (
         <div className={clsx(item.streaming && "stream-caret-wrap")}>
-          <Markdown text={item.text} />
+          <Markdown text={body} />
         </div>
       )}
+      {review && !item.streaming && <ReviewCard result={review} />}
     </div>
   );
 }

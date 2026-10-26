@@ -21,7 +21,7 @@ from ee.core.instructions import project_root
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_BYTES = 64 * 1024
 # 界面自己处理的命令，不能被自定义提示覆盖
-RESERVED = {"compact", "new", "undo", "model", "mode", "memory", "mcp", "help"}
+RESERVED = {"compact", "new", "undo", "model", "mode", "memory", "mcp", "help", "review", "commit"}
 
 
 @dataclass

@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:45（Asia/Shanghai，D4-1 完成；CI 曾因并行读工具计时测试在 Windows 上把回合前后磁盘快照耗时算进去而失败，已改为只量工具阶段；下一步 D4-2 /review 与 /commit）
+最后更新：2026-10-26 16:05（Asia/Shanghai，D4-2 /review 与 /commit 完成，等 Windows CI；下一步 D4-3 Plan 模式）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -116,7 +116,12 @@
    - threads：用户条目记 `tree`、`tree_after`、`undone`（及 `snap_epoch`）；重启时从条目重建 `turn_trees`。app `thread/undo` 撤销后 `mark_undone`。branch `edit_resend` 有 tree 优先磁盘恢复，否则旧内存快照；修复：旧内存快照层号只在同一进程（`snap_epoch` 相同）才用，之前重启后层号 0 会误报“已恢复”。
    - 配置：`[snapshot] disk = false` 可关闭（回退内存快照）。测试 `tests/test_snapshot.py`（7 个：增删改/中文路径、CRLF 字节、.gitignore 与大文件、非 git 默认排除、用户目录不可用、shell 改动可撤销且重启后可用不重复、用户手改的其他文件不受影响），`test_branch.py` 改为重启后也能恢复 + 新增关闭磁盘快照的回退用例；pytest 260 通过 2 跳过。
    - 已知/后续：影子仓库不自动 gc（gc.auto=0），长期使用会变大，D5 检查点时间线时加清理；大仓库每回合 `add -A` 有开销（同 OpenCode）；/undo 后层号错位的旧问题在磁盘模式下不再存在，内存回退模式仍有；暂无设置页开关（只能改 config.toml）。
-2. [ ] ★/review 代码审查命令 + /commit（改动审阅栏「提交」按钮：模型写提交信息，用户确认后 git commit）
+2. [x] ★/review 代码审查命令 + /commit（2026-10-26 16:05）
+   - 参考了谁、取了哪点：审查对象四选一（未提交 / 相对基准分支取 merge-base / 某提交 / 自定义要求）、P0–P3 分级、“只报这次改动引入的、可证明、作者会改的问题”的评审标准、末尾结构化 JSON（overall + findings 带文件行号和把握度）取自 Codex 的 review；审查在主会话里跑（审完可直接说“修掉”）、命令可带额外要求取自 OpenCode / Claude Code 的 /review；“修复选中的问题”按钮取自 Cursor Bugbot 的一键修思路；提交信息“有暂存只提交暂存、否则全部暂存”、跟随仓库最近提交风格取自 Aider 的 /commit；改动面板里生成→可编辑→确认提交的流程取自 Cline/VS Code 的源代码管理面板。
+   - 后端：`core/review.py`（targets 列分支/最近 20 个提交/推荐基准 origin/HEAD→main/master；collect 取 diff，ref 校验防参数注入；build_prompt 拼评审标准 + diff，超 80k 字符截断并让模型自己用 git 看剩余；parse_findings 解析 ```ee-review 块）；`prompts/review.md` 评审标准、`prompts/commit.md` 提交信息要求；`server/review_rpc.py`：`review/targets`、`review/start`（回合强制只读，结束恢复原模式；界面显示 “/review 未提交的改动：要求”，模型收到完整提示；用户条目 kind=review，不能编辑重发/分叉）、`git/commit_message`（有会话用会话的模型，否则临时建会话）、`git/commit`。threads.start_turn 新增 display/readonly/kind 参数。/review、/commit 加入保留名，自定义提示不能覆盖。
+   - 前端：`components/ReviewDialogs.tsx`（审查弹窗：四种对象 + 分支/提交下拉 + 额外要求；提交弹窗：自动生成、可改、重新生成、Ctrl+Enter 提交、显示要提交的文件；ReviewCard：总评 + P0–P3 列表、点路径打开文件、展开说明、勾选后“修复选中的 N 个”按当前权限模式发给模型）；`lib/review.ts` 解析/拆块/修复消息（流式中未闭合的块也隐藏）；斜杠菜单加 /review [要求]、/commit；改动审阅栏加「审查」「提交」两个按钮。
+   - 测试：`tests/test_review.py` 6 个（对象与 diff、错误、解析、只读回合拦写且恢复模式、生成并提交、只提交暂存）；`src/lib/review.test.ts` 4 个；pytest 266 通过 2 跳过，vitest 17 通过。
+   - 已知/后续：审查提示（含 diff）进入主会话历史，占上下文（靠自动压缩）；PR 审查（gh pr diff）未做；审查进行中插入的消息也在只读下执行。
 3. [ ] ★Plan 模式：只读出方案 → 点「按此执行」切到默认/全自动继续
 4. [ ] ★会话全文搜索：sqlite FTS5 索引条目文本，store.append 增量写；RPC thread/search 返回命中片段；左栏搜索框改走它
 5. [ ] 桌面通知 + 托盘常驻：回合完成 / 需要审批时 Windows 通知（从不 / 窗口不在前台 / 总是）；关窗后托盘常驻（自动化前置）

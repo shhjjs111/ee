@@ -27,7 +27,9 @@ export const BUILTIN: SlashCommand[] = [
   { name: "model", description: "切换模型", argHint: "<模型名>", takesArgs: true, kind: "builtin" },
   { name: "mode", description: "切换权限模式", argHint: "只读 | 默认 | 全自动", takesArgs: true, kind: "builtin" },
   { name: "memory", description: "记住一句话（不带文字则打开记忆设置）", argHint: "[要记住的话]", takesArgs: true, kind: "builtin" },
-  { name: "mcp", description: "管理 MCP 服务器（D3-A 开发中）", takesArgs: false, kind: "builtin" },
+  { name: "review", description: "代码审查：未提交的改动、相对分支、某个提交或按要求（只读）", argHint: "[额外要求]", takesArgs: true, kind: "builtin" },
+  { name: "commit", description: "让模型根据改动写提交信息，确认后 git commit", takesArgs: false, kind: "builtin" },
+  { name: "mcp", description: "管理 MCP 服务器", takesArgs: false, kind: "builtin" },
 ];
 
 export const MODE_OPTIONS = [

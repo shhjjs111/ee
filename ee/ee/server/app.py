@@ -28,7 +28,7 @@ from ee.core.secrets import redact
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc
+from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -81,6 +81,7 @@ class Backend:
         prompts_rpc.register(self.methods, self.home)  # prompts/list|expand
         branch.register(self.methods, self)            # thread/fork|edit_resend
         mcp_rpc.register(self.methods, self)           # mcp/list|test
+        review_rpc.register(self.methods, self)        # review/targets|start, git/commit_message|commit
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:

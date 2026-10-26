@@ -3,7 +3,7 @@
 export type ItemBase = { id: string; ts?: number; seq?: number };
 
 export type AttachmentMeta = { id: string; name: string; mime: string; size: number; thumb?: string };
-export type UserItem = ItemBase & { type: "user"; text: string; queued?: boolean; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
+export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review"; queued?: boolean; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
 export type AssistantItem = ItemBase & { type: "assistant"; text: string; reasoning: string; streaming?: boolean };
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 export type ToolItem = ItemBase & {

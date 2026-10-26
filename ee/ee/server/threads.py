@@ -197,18 +197,25 @@ class Thread:
 
     # ------------------------------------------------------------ 回合
     def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
-                   images: list[str] | None = None, attachments: list[dict] | None = None) -> dict:
-        """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。"""
+                   images: list[str] | None = None, attachments: list[dict] | None = None,
+                   display: str | None = None, readonly: bool = False, kind: str | None = None) -> dict:
+        """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。
+        display：界面上显示的用户消息（模型收到的仍是 text，例如 /review 拼好的长提示）；
+        readonly：这一回合临时只读，回合结束恢复原模式（/review）；kind：用户条目的类型标记（review）。"""
         s = self.ensure_session()
         if images and self.running:
             raise ValueError("ee 正在工作，等这一回合结束再发图片")
+        if (readonly or display) and self.running:
+            raise ValueError("ee 正在工作，等这一回合结束再开始审查")
         if model and model != s.spec.alias:
             s.set_model(model)
             self.meta["model"] = s.spec.alias
         if mode and mode != s.policy.mode:
             s.set_mode(mode)
             self.meta["mode"] = mode
-        user_item = {"type": "user", "text": text}
+        user_item = {"type": "user", "text": display or text}
+        if kind:
+            user_item["kind"] = kind
         if attachments:
             user_item["attachments"] = attachments
         user = self._add(user_item)
@@ -218,8 +225,11 @@ class Thread:
             self._update(user)
             return {"queued": True, "item_id": user["id"]}
         if not any(it.get("type") == "user" for it in self.items[:-1]) or self.meta.get("title") in (None, "", "新对话"):
-            self.meta["title"] = _title(text)
+            self.meta["title"] = _title(display or text)
         self.save_meta()
+        if readonly and s.policy.mode != "read-only":
+            self._restore_mode = s.policy.mode
+            s.set_mode("read-only")
         self.notify("thread/updated", {"thread": self.summary()})
         self.task = asyncio.create_task(self._consume(text, images))
         self.notify("thread/updated", {"thread": self.summary()})
@@ -264,6 +274,10 @@ class Thread:
             log.error("回合异常（会话 %s）", self.id, exc_info=True)
             self._add({"type": "error", "message": f"内部错误：{type(e).__name__}: {e}"})
         finally:
+            restore = getattr(self, "_restore_mode", None)
+            if restore:
+                self._restore_mode = None
+                s.set_mode(restore)
             try:
                 self._finish(reason)
             except Exception:  # noqa: BLE001
