@@ -97,8 +97,9 @@
 
 ## D4 计划（D3 完成后按顺序做，用户 2026-10-26 看过建议）
 1. 磁盘快照：参考 OpenCode 的影子 git 仓库 / Codex ghost commit / Cline checkpoints，每回合前后快照工作区（含 shell 改的文件），重启后仍能 /undo 和编辑重发恢复文件；顺便解决 /undo 后层号错位。
-2. Windows 沙箱：参考 Codex Windows sandbox（restricted token + ACL），全自动模式下命令只能写工作区、可选禁网。
-3. 子代理并行 + git worktree 隔离。
-4. LSP 诊断：改文件后把类型/语法错误回给模型（参考 OpenCode）。
-5. Hooks：改文件后格式化、回合结束通知等（借 Claude Code 思路）。
-6. Plan 模式；/review 代码审查命令；仓库地图（参考 Aider repo map）；会话全文搜索。
+2. 自动化 / 定时任务（用户 2026-10-26 点名要，参照 Codex 桌面版 Automations）：在某个项目上按 cron/间隔/每天几点跑一段提示词；后端调度器（ee serve 内，持久化到 ~/.ee/automations.json），每次运行新建一个会话、默认只读或在 git worktree 里跑，结果进左栏「自动化」收件箱并发 Windows 通知；Electron 关窗后托盘常驻继续调度；错过的运行开机后补一次。设置页增删改、立即运行、运行历史。
+3. Windows 沙箱：参考 Codex Windows sandbox（restricted token + ACL），全自动模式下命令只能写工作区、可选禁网。
+4. 子代理并行 + git worktree 隔离。
+5. LSP 诊断：改文件后把类型/语法错误回给模型（参考 OpenCode）。
+6. Hooks：改文件后格式化、回合结束通知等（借 Claude Code 思路）。
+7. Plan 模式；/review 代码审查命令；仓库地图（参考 Aider repo map）；会话全文搜索。
