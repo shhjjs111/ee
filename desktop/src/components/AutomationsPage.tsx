@@ -134,20 +134,32 @@ function EditDialog() {
   const [d, setD] = useState<Partial<Automation> | null>(null);
   const [preview, setPreview] = useState<{ ok: boolean; error: string; next_runs: number[] } | null>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setD(editing ? { ...editing } : null), [editing]);
+  const [timeErr, setTimeErr] = useState(false); // 每天的时间输入框里是不合法的值（不会被保存）
+  useEffect(() => {
+    setD(editing ? { ...editing } : null);
+    setPreview(null); // 不沿用上一次打开时的预览
+    setTimeErr(false);
+  }, [editing]);
   const sched = d?.schedule;
   useEffect(() => {
     if (!sched || !rpc) return;
+    let live = true; // 调度又变了 / 弹窗关了：丢弃旧请求晚到的结果
     const t = setTimeout(() => {
-      rpc.call("automations/preview", { schedule: sched }).then(setPreview).catch(() => setPreview(null));
+      rpc.call("automations/preview", { schedule: sched }).then((r) => live && setPreview(r)).catch(() => live && setPreview(null));
     }, 250);
-    return () => clearTimeout(t);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
   }, [JSON.stringify(sched), rpc]);
   if (!d) return null;
   const up = (p: Partial<Automation>) => setD({ ...d, ...p });
   const kind = d.schedule?.kind ?? "daily";
-  const setKind = (k: Schedule["kind"]) =>
+  const setKind = (k: Schedule["kind"]) => {
+    if (k === d.schedule?.kind) return; // 点当前类型不重置（否则时间框还显示旧文字，实际已被改回 09:00）
+    setTimeErr(false);
     up({ schedule: k === "interval" ? { kind: "interval", minutes: 60 } : k === "daily" ? { kind: "daily", time: "09:00", weekdays: [] } : { kind: "cron", expr: "0 9 * * 1-5" } });
+  };
   const daily = d.schedule?.kind === "daily" ? d.schedule : null;
   const wsOptions = workspaces.map((w) => ({ value: w.path, label: w.name, hint: w.path }));
   if (d.cwd && !workspaces.some((w) => w.path === d.cwd)) wsOptions.unshift({ value: d.cwd, label: base(d.cwd), hint: d.cwd });
@@ -190,7 +202,8 @@ function EditDialog() {
               )}
               {daily && (
                 <div className="space-y-2">
-                  <Input className="w-28" defaultValue={daily.time} key={d.id ?? "new"} onChange={(e) => { const t = parseHHMM(e.target.value); if (t) up({ schedule: { ...daily, time: t } }); }} />
+                  <Input className="w-28" defaultValue={daily.time} key={d.id ?? "new"} onChange={(e) => { const t = parseHHMM(e.target.value); setTimeErr(!t); if (t) up({ schedule: { ...daily, time: t } }); }} />
+                  {timeErr && <div className="text-[11.5px] text-danger">时间要写成 HH:MM（00:00–23:59），例如 09:00</div>}
                   <div className="flex flex-wrap gap-1">
                     {[1, 2, 3, 4, 5, 6, 0].map((w) => {
                       const on = daily.weekdays.includes(w);
@@ -238,7 +251,7 @@ function EditDialog() {
           </div>
           <div className="mt-3 flex items-center justify-end gap-2">
             <Button onClick={() => set({ editing: null })}>取消</Button>
-            <Button variant="primary" disabled={busy} onClick={async () => { setBusy(true); await save(d); setBusy(false); }}>
+            <Button variant="primary" disabled={busy || (!!daily && timeErr)} onClick={async () => { setBusy(true); await save(d); setBusy(false); }}>
               {busy && <Spinner size={12} />} {d.id ? "保存" : "创建"}
             </Button>
           </div>
