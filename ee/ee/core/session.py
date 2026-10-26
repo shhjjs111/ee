@@ -25,6 +25,7 @@ from ee.core.repomap import startup_message as repo_map_message
 from ee.core import parallel
 from ee.core import reasoning as RZ
 from ee.core import styles as ST
+from ee.core import sysprompt as SP
 from ee.core.budget import BudgetGuard
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
@@ -113,6 +114,7 @@ class Session:
         self.running = False
         self.instruction_sources: list[str] = []   # 本会话加载的 AGENTS.md 路径（界面可显示）
         self.memory_sources: list[str] = []        # 本会话注入的记忆文件
+        self._sys_src: SP.SystemSources | None = None   # 本会话的 SYSTEM.md / APPEND_SYSTEM.md（开始时解析一次后冻结）
         self.skill_names: list[str] = []           # 本会话清单里列出的技能（D5-5）
         self._skills_cat = None
         self.guard = LoopGuard()
@@ -556,7 +558,14 @@ class Session:
     def current_prefix(self) -> FrozenPrefix:
         style = self._prefix_style if (self.prefix is not None and self._prefix_style is not None) else self.style
         seg = ST.system_segment(ST.get(self.home, style))
-        return FrozenPrefix.freeze(system_prompt(self.profile, seg), [t.schema() for t in self.tools])
+        return FrozenPrefix.freeze(system_prompt(self.profile, seg, self.system_sources()),
+                                   [t.schema() for t in self.tools])
+
+    def system_sources(self) -> SP.SystemSources:
+        """自定义系统提示词来源：会话里第一次用到时解析，之后不变（改文件 / 信任从新对话生效）。"""
+        if self._sys_src is None:
+            self._sys_src = SP.resolve(self.cwd, self.home, self.config.data)
+        return self._sys_src
 
     def _ensure_prefix(self, emit) -> FrozenPrefix:
         if self.prefix is None:
@@ -564,6 +573,9 @@ class Session:
             self._style_switched = False
             self.prefix = self.current_prefix()
             self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model})
+            if getattr(self, "hooks_role", "main") != "subagent":
+                for text, level in self.system_sources().notices():
+                    emit(Notice(text, level))
             return self.prefix
         if not self.prefix.verify():
             emit(Notice("冻结前缀的内容被改动了（sha256 不符），缓存会失效。", "warn"))
@@ -591,6 +603,8 @@ class Session:
         self._append(msg)
 
     async def _ensure_instructions_async(self) -> None:
+        if self._sys_src is None and self.prefix is None:   # 文件读取放到线程里，别卡事件循环
+            self._sys_src = await asyncio.to_thread(SP.resolve, self.cwd, self.home, self.config.data)
         if self.history:
             return
         cfg = self.config.data.get("agents_md", {}) or {}
