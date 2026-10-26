@@ -118,6 +118,17 @@ def find_project_json(cwd: Path | None) -> Path | None:
     return None
 
 
+def _user_allowed() -> set[str]:
+    """允许过的项目服务器只从用户配置 ~/.ee/config.toml 读：项目 .ee/config.toml 会被合并进 config.data，
+    不能让项目自己给自己授权。"""
+    try:
+        from ee.config import load_user_file
+        m = (load_user_file() or {}).get("mcp") or {}
+        return set(str(x) for x in (m.get("allowed_project") or []))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def load_servers(data: dict, cwd: Path | None) -> tuple[list[ServerConfig], list[str]]:
     """返回 (服务器列表, 出错说明)。项目服务器未被允许时 enabled=False（界面可一键允许）。"""
     m = mcp_settings(data)
@@ -131,7 +142,7 @@ def load_servers(data: dict, cwd: Path | None) -> tuple[list[ServerConfig], list
             except (OSError, ValueError) as e:
                 errors.append(f"读取 {pj} 失败：{e}")
                 servers = {}
-            allowed = set(m.get("allowed_project") or [])
+            allowed = _user_allowed()
             for name, d in servers.items():
                 try:
                     sc = parse_server(str(name), d, source="project")

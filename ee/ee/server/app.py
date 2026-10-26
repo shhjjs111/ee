@@ -29,7 +29,7 @@ from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
 from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, rules_rpc, shell_rpc, worktree_rpc
-from ee.server import skills_rpc
+from ee.server import hooks_rpc, skills_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -89,6 +89,7 @@ class Backend:
         rules_rpc.register(self.methods, self)         # permissions/list|remove（永久允许规则，D4-8）
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
+        hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:

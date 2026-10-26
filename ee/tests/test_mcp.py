@@ -57,7 +57,12 @@ def test_config_parse_and_project(tmp_path, monkeypatch):
     by = {s.name: s for s in servers}
     assert by["fs"].command == "user-fs" and by["fs"].source == "user"
     assert by["p"].source == "project" and by["p"].enabled is False         # 未允许
+    # 项目配置合并进 data 的 allowed_project 不算数（项目不能给自己授权）
     data["mcp"]["allowed_project"] = [by["p"].allow_id]
+    assert {s.name: s for s in load_servers(data, ws)[0]}["p"].enabled is False
+    # 只有用户配置 ~/.ee/config.toml 里允许过才启用
+    import ee.mcp.config as mc
+    monkeypatch.setattr(mc, "_user_allowed", lambda: {by["p"].allow_id})
     by = {s.name: s for s in load_servers(data, ws)[0]}
     assert by["p"].enabled is True
 

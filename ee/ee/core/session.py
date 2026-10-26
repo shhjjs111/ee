@@ -18,6 +18,7 @@ from typing import AsyncIterator, Callable
 from ee.config import Config, ee_home
 from ee.core import compaction as C
 from ee.core import gitinfo
+from ee.core import hooks
 from ee.core.instructions import load_instructions
 from ee.core.memory import load_memory
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
@@ -577,6 +578,9 @@ class Session:
             await self._ensure_instructions_async()
             await self._attach_mcp(emit)
             await self._maybe_auto_compact(emit)
+            if await hooks.on_turn_start(self, text, emit):   # D5-4 Hooks：SessionStart / UserPromptSubmit 拦截
+                emit(TurnDone("blocked", ""))
+                return
             self.turn_starts.append(len(self.history))
             await asyncio.to_thread(self.refresh_git)
             for sname, snote in await asyncio.to_thread(self.skill_mention_notes, text):   # 显式调用技能（D5-5）
@@ -606,6 +610,8 @@ class Session:
                     if self.pending and not last:
                         await asyncio.to_thread(self.refresh_git)
                         self._add_user("\n\n".join(self.pending)); self.pending.clear()
+                        continue
+                    if not last and await hooks.on_stop(self, final, emit):   # D5-4 Hooks：Stop 要求继续
                         continue
                     emit(TurnDone("max_steps" if (last and step > 1) else "completed", final))
                     return
@@ -753,6 +759,7 @@ class Session:
             res = ToolResult(err, ok=False, summary=summary)
         else:
             res = await self._guarded_run(cid, tool, args, emit)
+            res = await hooks.post_tool_use(self, cid, tool, args, res, emit)   # D5-4 Hooks
         out, _ = truncate_output(res.output, self.home / "tool-output", name)
         self._results[cid] = out
         self._ok[cid] = res.ok
@@ -763,8 +770,13 @@ class Session:
             self._end_turn = True
 
     async def _guarded_run(self, cid: str, tool, args: dict, emit) -> ToolResult:
+        pre = await hooks.pre_tool_use(self, cid, tool, args, emit)   # D5-4 Hooks：可拦截 / 改参数 / 免审批
+        if pre.result is not None:
+            return pre.result
+        args = pre.args
         d: Decision = self.policy.check(tool.name, args, info={"read_only": bool(getattr(tool, "read_only", False)),
                                                               "trusted": bool(getattr(tool, "trusted", False))})
+        d = hooks.adjust_decision(d, pre)
         if d.action == "deny":
             return ToolResult(f"被权限规则拒绝，未执行：{d.reason}", ok=False, meta={"denied": True})
         if d.action == "ask":
@@ -814,6 +826,7 @@ class Session:
                 title, detail = "应用补丁", args.get("patch", "")
             else:
                 title, detail = f"使用工具 {tool.name}", json.dumps(args, ensure_ascii=False)[:2000]
+            hooks.notify(self, "permission_prompt", title, emit)   # D5-4 Hooks：Notification（不等待）
             fut = asyncio.get_running_loop().create_future()
             emit(ApprovalRequest(cid, tool.name, title, detail, d.prefix, fut, force=d.force))
             return await fut

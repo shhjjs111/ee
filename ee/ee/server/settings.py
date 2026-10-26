@@ -78,6 +78,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "network": _network_out(data.get("network") or {}),
             **_d2_out(data),
             "mcp": _mcp_out(data),
+            "hooks": _hooks_out(data),
             "secrets": _secrets_out(),
             "providers": providers,
             "models": models,
@@ -292,6 +293,16 @@ def _mcp_in(new: dict, out: dict) -> None:
     out["mcp"] = m
 
 
+def _hooks_out(data: dict) -> dict:
+    from ee.core.hooks import settings_out
+    return settings_out(data)
+
+
+def _hooks_in(new: dict, out: dict) -> None:
+    from ee.core.hooks import settings_in
+    settings_in(new, out)
+
+
 def _network_out(n: dict) -> dict:
     proxy = str(n.get("proxy") or "system").strip()
     mode = proxy.lower() if proxy.lower() in ("system", "direct") else "custom"
@@ -452,6 +463,7 @@ def set_settings(new: dict) -> dict:
             raise ValueError(f"模型 {name} 引用了不存在的供应商：{m.get('provider')}")
     _d2_in(new, out, deletes)
     _mcp_in(new, out)
+    _hooks_in(new, out)
     out["config_version"] = CURRENT_VERSION
     # 校验都过了：先删要清除的，再把新填的 key 存进凭据存储（config.toml 里不留明文）
     for d in dict.fromkeys(deletes):

@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 19:00（Asia/Shanghai，D5-1 worktree 完成；D4-9 exec 已合并；并行分支 feat/d5-skills、feat/d5-hooks、feat/d5-repomap 进行中）
+最后更新：2026-10-26 19:30（Asia/Shanghai，D5-4 Hooks、D5-5 Skills 合并；pytest 343 过 2 跳过、vitest 24；并行分支 feat/d4-10-automations、feat/d5-repomap 进行中）
 
-> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；检查远端分支 feat/d4-9-exec、feat/d5-skills、feat/d5-hooks（并行开发中，各自测完后合并进 main 并在下面对应项打勾），然后做 D4-10 自动化。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；检查远端分支 feat/d4-10-automations、feat/d5-repomap（并行开发中，测完合并进 main 并在对应项打勾），之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -175,7 +175,7 @@
 10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）
 
 **D5 — 并行与扩展**
-1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. ★Hooks（6 个核心事件，退出码 2 拦截，信任表复用 MCP） 5. Skills（SKILL.md，兼容 .claude/.agents） 6. ★仓库地图（tree-sitter tags） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
+1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. ★仓库地图（tree-sitter tags） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
 
 **D5 进度**
 - [x] D5-1 git worktree 管理（2026-10-26 19:00）
@@ -184,6 +184,20 @@
   - 前端：新对话时输入框工具栏「本地 / 新 worktree」切换；左栏 worktree 里的对话归到主仓库下并显示分支图标；项目「…」菜单「Worktree…」打开 `components/WorktreeDialog.tsx`（新建、在这里新对话、合并 / 压成一份、删除（可选删分支、强制））。
   - 测试 `tests/test_worktree.py` 5 个（建/include 复制/重名、列表状态与 worktree 内反查、diff、脏主目录拒绝合并、合并、删分支；删除自动保存与未合并保护；冲突自动 abort；squash 与非 git 仓库；thread/start worktree 全流程）；pytest 300 通过 2 跳过。
   - 已知/后续：worktree 的审阅面板显示的是相对 HEAD 的未提交改动（合并前想看全部改动用 worktree/diff，界面暂未接）；没有“移回本地”（handoff）；index.json 不会自动清理被手动删掉的目录（列表里显示“目录已不存在”，可删除）。
+
+- [x] D5-4 ★Hooks（2026-10-26，并行分支 feat/d5-hooks 合并）
+  - 参考了谁、取了哪点：事件名、stdin JSON 字段（hook_event_name/tool_name/tool_input/tool_response/prompt/stop_hook_active）、退出码 0 继续 / 2 拦截并把 stderr 回给模型、JSON 输出 decision/reason/additionalContext/permissionDecision/updatedInput/continue、`A|B` 与正则 matcher 借 Claude Code 思路（字段尽量兼容，现成脚本基本能直接用）；同一事件多个 hook 并行、结果合并、命令可写数组直接运行取自 Codex；超时杀进程树、出错只提示不中断取自 Cline；Stop 每回合最多连续继续 3 次、项目 hooks 按“路径 sha8:内容 sha8”允许（内容变了要重新允许、项目文件不能给自己授权）是 ee 自己的组合。
+  - 后端 `core/hooks.py`：用户级 `~/.ee/config.toml` 的 `[hooks] enabled/allowed_project` + `[[hooks.<事件>]]`（matcher、command（字符串经 shell / 数组直接运行）、shell、timeout 1–600 默认 60、enabled、name；也认嵌套写法）；项目级 `<项目>/.ee/hooks.toml` 与 `.ee/config.toml` 的 hooks（cwd 往上到 git 根）；用户级与允许列表只从用户文件读。事件：SessionStart（startup/resume/clear/compact）、UserPromptSubmit（拦截时消息不进历史，TurnDone reason=blocked）、PreToolUse（在权限检查前；拦截 / allow 免审批但 deny 规则仍生效 / ask 强制审批 / updatedInput 改参数）、PostToolUse（原因与上下文追加到工具结果）、Stop（要求继续）、Notification（需要审批时后台运行不等待）。环境变量 EE_PROJECT_DIR/EE_SESSION_ID/EE_HOOK_EVENT/EE_HOOK_SOURCE；异常退出码/超时/启动失败在对话里出“Hook · 事件 · 名字”提示。子代理只跑 Pre/PostToolUse/Notification。`config.dump_toml` 支持表数组（设置页保存不写坏 `[[hooks.X]]`）。RPC `hooks/list|test`；settings 读写 hooks。
+  - 前端：设置页新增「Hooks」分区 `components/HooksSettings.tsx`（总开关、我的 Hooks 按事件增删改与测试运行、项目 Hooks 允许/撤销、配置问题、写法说明）；`lib/hooks.ts`；回合结束条目显示“消息被 Hook 拦截”。
+  - 顺带修复（合并时）：MCP 项目服务器的允许列表改为只从用户配置读（之前项目 `.ee/config.toml` 能写 `mcp.allowed_project` 给自己授权），test_mcp 锁住。
+  - 测试：`tests/test_hooks.py` 22 个 + `lib/hooks.test.ts` 3 个。
+  - 已知/后续：运行中排队插入的消息不触发 UserPromptSubmit；被拦截回合不弹桌面通知；只有 command 型，没有 http/prompt 型与 PreCompact/SessionEnd/SubagentStop；设置页保存会丢 config.toml 注释；项目 hooks 允许后要先保存才能测试。
+- [x] D5-5 Skills（2026-10-26，并行分支 feat/d5-skills 合并）
+  - 参考了谁、取了哪点：技能清单固定注入上下文 + 总长度预算（默认 8000 字符，超了先缩短说明再省略并注明）、使用规则（点名或任务匹配就用、相对路径相对技能目录、优先跑现成脚本）、`$名字` 显式调用把全文附进消息、`.agents/skills` 目录取自 Codex；专门的 `skill` 工具返回正文 + 目录 + 文件列表、兼容 `.claude/skills`、按技能名 deny 取自 OpenCode；SKILL.md frontmatter 约定与渐进式披露借 Claude Code 思路。选 skill 工具而不是让模型直接 read：能识别禁用、工作区外路径不用额外判断、顺带给文件列表、界面有专门卡片（清单里仍写路径，子代理可用 read）。
+  - 后端 `core/skills.py`：目录优先级（低→高）`~/.agents/skills`、`~/.claude/skills` ← `~/.ee/skills` ← 项目根到 cwd 每层的 `.agents/.claude/.ee/skills`（越深越优先，同层 .ee 优先；同名覆盖记 shadows；软链接去重）；自写 YAML 子集解析 frontmatter；不合格的技能不加载并列给界面；清单作为固定 user 消息放在 AGENTS.md 与记忆之后、会话内不变（保前缀缓存）；`/名字`（开头）与 `$名字` 显式调用把全文作备注附进这条消息。`tools/skill.py` 只读，`[skills] enabled` 决定是否提供；中途新建的技能可加载但不进当前清单。配置 `[skills] enabled/compat/disabled/max_chars`；RPC `skills/list|read|dir`；子代理也有清单和工具。
+  - 前端：斜杠菜单列出技能（徽标「技能」）；设置「工具与记忆」技能卡片（总开关、兼容开关、逐个启用、覆盖提示、加载错误、打开技能目录）；工具卡片“加载了技能 X”。
+  - 测试：`tests/test_skills.py` 10 个 + slash.test 1 个。
+  - 已知/后续：只发现一层 `<名>/SKILL.md`；输入框没有 `$` 自动补全；项目技能没有信任确认（只是说明文字，执行脚本仍过 shell 审批）；frontmatter 扩展字段（allowed-tools 等）忽略；改启用状态要新对话才生效。
 
 **D6 — 编排与深度理解**
 1. ★指挥会话：threads_list / thread_create（可指定分支，自动建 worktree）/ thread_send / thread_status / thread_wait；跨会话审批冒泡；左栏树形从属；指挥会话里每个子会话一张进度卡片 2. ★LSP 诊断回灌（pyright、typescript-language-server 先行）+ LSP 工具 3. best-of-n、本地 ↔ worktree 交接 4. Goal 模式、/side 侧聊 5. 自动审批审查员 6. 命令面板 / 快捷键自定义、活动视图、会话归档置顶、导出 7. 自动记忆提取（待用户确认） 8. 自动更新、GBK 解码回退、PAC 代理、PR 工作流、lint/test 循环

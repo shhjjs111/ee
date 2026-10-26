@@ -164,6 +164,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
         child.state = _SharedSnapshots(parent.state)
         child.bg = parent.bg                       # 后台命令归主会话管（子代理结束不杀，主会话里也能看到）
         child.disk_enabled = False                 # 磁盘快照由主会话的回合前后统一抓（含子代理的改动）
+        child.hooks_role = "subagent"              # Hooks：子代理只跑 PreToolUse / PostToolUse / Notification
         child._mcp_done = True                     # 子代理不自己连 MCP：沿用父会话已连好的工具
         if adef.tools:
             keep = set(adef.tools)

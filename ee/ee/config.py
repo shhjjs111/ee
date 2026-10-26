@@ -228,16 +228,24 @@ def _toml_key(k: str) -> str:
 
 
 def dump_toml(data: dict) -> str:
-    """最小 TOML 序列化：标量/数组写成 key = value，dict 写成 [表]（递归）。够 config.toml 用。"""
+    """最小 TOML 序列化：标量/数组写成 key = value，dict 写成 [表]（递归），dict 列表写成 [[表数组]]。够 config.toml 用。"""
     out: list[str] = []
 
-    def scalar(v) -> bool:
-        return not isinstance(v, dict) and v is not None
+    def aot(v) -> bool:            # 表数组 [[a.b]]（如 hooks 的 [[hooks.PreToolUse]]）
+        return isinstance(v, list) and bool(v) and all(isinstance(x, dict) for x in v)
 
-    def emit(table: dict, path: list[str]) -> None:
+    def scalar(v) -> bool:
+        return not isinstance(v, dict) and v is not None and not aot(v)
+
+    def emit(table: dict, path: list[str], header: bool = False) -> None:
         simple = [(k, v) for k, v in table.items() if scalar(v)]
         subs = [(k, v) for k, v in table.items() if isinstance(v, dict)]
-        if path and (simple or not subs):
+        arrays = [(k, v) for k, v in table.items() if aot(v)]
+        if header:
+            if out:
+                out.append("")
+            out.append("[[" + ".".join(_toml_key(p) for p in path) + "]]")
+        elif path and (simple or not (subs or arrays)):
             if out:
                 out.append("")
             out.append("[" + ".".join(_toml_key(p) for p in path) + "]")
@@ -245,6 +253,9 @@ def dump_toml(data: dict) -> str:
             out.append(f"{_toml_key(k)} = {_toml_value(v)}")
         for k, v in subs:
             emit(v, path + [k])
+        for k, v in arrays:
+            for item in v:
+                emit(item, path + [k], header=True)
 
     emit(data, [])
     return "\n".join(out) + "\n"

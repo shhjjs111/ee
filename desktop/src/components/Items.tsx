@@ -701,7 +701,9 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
           ? "达到步数上限"
           : item.reason === "loop"
             ? "检测到重复操作，已停止"
-            : "完成";
+            : item.reason === "blocked"
+              ? "消息被 Hook 拦截"
+              : "完成";
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
   if (u.hit_rate !== undefined && u.hit_rate !== null) bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%`);
   if (u.cost !== undefined && u.cost !== null) bits.push(`累计 ${u.currency ?? ""}${u.cost.toFixed(4)}`);
