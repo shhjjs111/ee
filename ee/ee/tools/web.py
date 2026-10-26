@@ -15,7 +15,7 @@ DeepSeek Search/Fetch 复用 providers.deepseek 的 key（设置页保存的 api
        → {results: [{title, url, snippet, summary, content, site_name, date, rerank_score, authority}]}
   POST https://api.deepseek.com/v1/tools/fetch   {url} → {title, content(markdown)}
   鉴权 Authorization: Bearer <DeepSeek API Key>；按成功请求计费，各 $0.75/千次。
-Exa（2026-10-26 实测，OpenCode websearch 同款公共 MCP 端点，无需 key；有 EXA_API_KEY 时附在 ?exaApiKey=）：
+Exa（2026-10-26 实测，公共 MCP 端点，无需 key；有 EXA_API_KEY 时附在 ?exaApiKey=）：
   POST https://mcp.exa.ai/mcp  accept: application/json, text/event-stream
        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_search_exa",
         "arguments":{"query","numResults","type":"auto","livecrawl":"fallback"}}}

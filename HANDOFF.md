@@ -92,7 +92,7 @@
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
 
 ## 借鉴其他 agent 的原则（用户 2026-10-26 授权）
-- 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说私人学习使用，代码里不用逐处注明出处；仓库根目录维护一份 THIRD_PARTY_NOTICES.md 列出用过的项目和许可即可（安装包分发时 MIT/Apache 需要）。
+- 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说仅自己学习使用：代码、文档里都不写出处，也不要第三方声明文件（用户 2026-10-26 明确要求清理已有的）。
 - Claude Code、Cursor 等闭源产品只借思路，不抄代码。
 
 ## D4 计划（D3 完成后按顺序做，用户 2026-10-26 看过建议）

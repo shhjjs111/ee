@@ -1,4 +1,4 @@
-"""子代理（Codex/Claude Code 的 task 做法）：主代理派生一个独立上下文的子会话执行子任务，只把最终报告交回主代理。
+"""子代理（task 工具）：主代理派生一个独立上下文的子会话执行子任务，只把最终报告交回主代理。
 
 - 独立上下文：子会话有自己的 history（同样加载 AGENTS.md 和记忆），看不到主代理的对话。
 - 权限：mode=read-only 时子代理只读；mode=inherit（默认）时与主会话共用同一个 PermissionPolicy（同一模式、

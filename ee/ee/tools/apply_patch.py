@@ -1,4 +1,4 @@
-"""apply_patch（GPT 家族专用）：Codex 的 *** Begin Patch 格式，参数是 JSON 字符串 {"patch": "..."}。
+"""apply_patch（GPT 家族专用）：*** Begin Patch 格式，参数是 JSON 字符串 {"patch": "..."}。
 
 定位上下文逐级放宽：精确 → 忽略行尾空白 → 忽略首尾空白（同 codex seek_sequence）。
 底层复用 fileops 的读写（保留换行/BOM）与快照。

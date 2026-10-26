@@ -1,4 +1,4 @@
-"""AGENTS.md 自动加载（Codex agents_md 做法）。
+"""AGENTS.md 自动加载。
 
 来源（按顺序拼接，越靠后越具体、优先级越高）：
 1. 用户级：~/.ee/AGENTS.md（没有则 ~/.ee/CLAUDE.md）

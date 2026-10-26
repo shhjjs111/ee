@@ -53,7 +53,7 @@ export function isExplore(it: Item): boolean {
   return EXPLORE_TOOLS.has(it.name);
 }
 
-/** 把连续的读/搜工具合并成一张“已浏览 N 个文件”卡片（Codex 的做法）。 */
+/** 把连续的读/搜工具合并成一张“已浏览 N 个文件”卡片。 */
 export function groupBlocks(items: Item[]): Block[] {
   const out: Block[] = [];
   for (const it of items) {
