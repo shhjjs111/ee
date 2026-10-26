@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:40（Asia/Shanghai，D4-1 磁盘快照完成，等 Windows CI；下一步 D4-2 /review 与 /commit）
+最后更新：2026-10-26 15:45（Asia/Shanghai，D4-1 完成；CI 曾因并行读工具计时测试在 Windows 上把回合前后磁盘快照耗时算进去而失败，已改为只量工具阶段；下一步 D4-2 /review 与 /commit）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -101,7 +101,7 @@
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
 
 ## 借鉴其他 agent 的原则（用户 2026-10-26 授权）
-- 用户 2026-10-26 15:24/15:29 明确：功能先参考大厂（OpenCode、Codex 等开源实现）当前源码的成熟做法，拿来后按 ee 的架构适配（Python 后端、JSON-RPC、Windows、条目持久化等），不要原样照搬，也不要另起炉灶。
+- 用户 2026-10-26 15:24/15:29 明确：功能先参考大厂（OpenCode、Codex 等开源实现）当前源码的成熟做法，拿来后按 ee 的架构适配（Python 后端、JSON-RPC、Windows、条目持久化等），不要原样照搬，也不要另起炉灶。能直接抄的直接抄，不适配的改到适配（15:31）。目标是集百家之长（15:34）：每个功能先对比几家（OpenCode、Codex、Cline、Aider、Goose、Continue 等开源实现，闭源的 Claude Code、Cursor 只借思路）各自怎么做，取最好的那家或组合各家优点，再适配 ee；在 HANDOFF 该项下写一句“参考了谁、取了哪点”。
 - 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说仅自己学习使用：代码、文档里都不写出处，也不要第三方声明文件（用户 2026-10-26 明确要求清理已有的）。
 - Claude Code、Cursor 等闭源产品只借思路，不抄代码。
 

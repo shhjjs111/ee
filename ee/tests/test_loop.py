@@ -82,14 +82,17 @@ def test_errors_fed_back(ee_home, workspace):
 
 def test_parallel_readonly_tools(ee_home, workspace, monkeypatch):
     from ee.tools.read import ReadTool
-    active = {"now": 0, "max": 0}
+    active = {"now": 0, "max": 0, "t0": None, "t1": 0.0}
     orig = ReadTool.run
 
     async def slow_run(self, args, ctx):
+        if active["t0"] is None:
+            active["t0"] = time.monotonic()
         active["now"] += 1
         active["max"] = max(active["max"], active["now"])
         await asyncio.sleep(0.2)
         active["now"] -= 1
+        active["t1"] = time.monotonic()
         return await orig(self, args, ctx)
 
     monkeypatch.setattr(ReadTool, "run", slow_run)
@@ -99,10 +102,10 @@ def test_parallel_readonly_tools(ee_home, workspace, monkeypatch):
     for i, n in enumerate("abc"):
         calls += tool_chunks(i, f"c{i}", "read", {"path": f"{n}.txt"})
     s, fake = make_session(workspace, [calls + finish("tool_calls"), text_chunks("ok") + finish("stop")])
-    t0 = time.monotonic()
     run(collect(s, "读三个"))
     assert active["max"] == 3
-    assert time.monotonic() - t0 < 0.55
+    # 只量工具阶段（回合前后的磁盘快照在 Windows 上要几百毫秒，不算进来）；串行至少 0.6 秒
+    assert active["t1"] - active["t0"] < 0.5
     # 输出顺序与调用顺序一致
     assert [m["tool_call_id"] for m in tool_msgs(s)] == ["c0", "c1", "c2"]
 
