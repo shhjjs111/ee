@@ -1,7 +1,7 @@
 """线程 = 一个 Session + 显示用条目（items）。把内核事件翻译成 item/started|delta|updated 通知。
 
 条目类型（与桌面端 src/types.ts 一致）：
-  user        {text}
+  user        {text, queued?, queue?: steer|follow}（queued = 运行中排队、还没送入；送入后去掉 queued、保留 queue 作标签）
   assistant   {text, reasoning, streaming}
   tool        {call_id, name, args, summary, status: running|ok|error|denied|interrupted, output, diff, meta}
   approval    {call_id, tool, title, detail, prefix, status: pending|once|always|deny|cancelled}
@@ -23,7 +23,8 @@ from ee.config import load_config
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Error, Notice, PlanUpdate,
                             ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
                             TurnStart, Usage)
-from ee.core.events import QuestionRequest, SubagentEnd, SubagentStart, SubagentUpdate
+from ee.core.events import QuestionRequest, QueueDelivered, QueueReturned, SubagentEnd, SubagentStart, SubagentUpdate
+from ee.core import queue as Q
 from ee.core.permissions import MODES
 from ee.core.subagent import apply_event as apply_subagent_event
 from ee.core.session import Session
@@ -65,6 +66,9 @@ class Thread:
         self.notify = notify
         self.meta = dict(meta)
         self.items: list[dict] = list(items or [])
+        for it in self.items:          # 排队条目只在送入后才落盘；旧版本落盘的 queued 标记其实都已送入
+            if it.get("type") == "user":
+                it.pop("queued", None)
         self._by_id = {it["id"]: it for it in self.items}
         self._seq = max([int(it.get("seq", 0)) for it in self.items] + [len(self.items)]) + 1
         self.client_factory = client_factory
@@ -249,10 +253,11 @@ class Thread:
     def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
                    images: list[str] | None = None, attachments: list[dict] | None = None,
                    display: str | None = None, readonly: bool = False, kind: str | None = None,
-                   effort=None, style: str | None = None) -> dict:
+                   effort=None, style: str | None = None, queue: str | None = None) -> dict:
         """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。
         display：界面上显示的用户消息（模型收到的仍是 text，例如 /review 拼好的长提示）；
-        readonly：这一回合临时只读，回合结束恢复原模式（/review）；kind：用户条目的类型标记（review）。"""
+        readonly：这一回合临时只读，回合结束恢复原模式（/review）；kind：用户条目的类型标记（review）。
+        queue：运行中发送时排进哪条队列：steer 插话（默认）/ follow 完成后追加；空闲时忽略。"""
         s = self.ensure_session()
         if images and self.running:
             raise ValueError("ee 正在工作，等这一回合结束再发图片")
@@ -271,12 +276,15 @@ class Thread:
             user_item["kind"] = kind
         if attachments:
             user_item["attachments"] = attachments
-        user = self._add(user_item)
         if self.running:
-            s.queue_input(text)
-            user["queued"] = True
-            self._update(user)
-            return {"queued": True, "item_id": user["id"]}
+            if queue not in (None, "", *Q.KINDS):
+                raise ValueError(f"未知的排队类型：{queue}")
+            qkind = queue or Q.STEER
+            user_item.update(queued=True, queue=qkind)
+            user = self._add(user_item, persist=False)      # 送入时才落盘（撤回 / 退回的不留痕）
+            s.queue_input(text, qkind, qid=user["id"])
+            return {"queued": True, "item_id": user["id"], "queue": qkind}
+        user = self._add(user_item)
         if not any(it.get("type") == "user" for it in self.items[:-1]) or self.meta.get("title") in (None, "", "新对话"):
             self.meta["title"] = _title(display or text)
         self.save_meta()
@@ -293,6 +301,22 @@ class Thread:
         if self.session is None:
             return False
         return self.session.interrupt()
+
+    def withdraw(self, item_id: str) -> dict:
+        """撤回还没送入的排队消息，返回原文（界面放回输入框）。"""
+        s = self.session
+        q = s.withdraw_input(item_id) if s is not None else None
+        if q is None:
+            raise ValueError("这条消息已经送给 ee 了（或已退回），不能撤回")
+        self._drop_item(item_id)
+        return {"ok": True, "text": q.text, "queue": q.kind}
+
+    def _drop_item(self, item_id: str) -> dict | None:
+        it = self._by_id.pop(item_id, None)
+        if it is not None and it in self.items:
+            self.items.remove(it)
+            self.notify("item/removed", {"thread_id": self.id, "item_id": item_id})
+        return it
 
     def answer(self, call_id: str, answer: str) -> dict:
         """回答 ask_user 的提问（D4-8）。"""
@@ -434,7 +458,9 @@ class Thread:
             return
         for it in reversed(self.items):
             if it.get("type") == "user":
-                if not it.get("queued") and "hist" not in it:
+                if it.get("queued"):           # 还在排队的不是本回合的开头
+                    continue
+                if "hist" not in it:
                     it["hist"] = s.turn_starts[-1]
                     it["snap"] = len(s.state.snapshots) - 1
                     it["snap_epoch"] = s.snap_epoch
@@ -551,6 +577,18 @@ class Thread:
                 self.usage = dict(ev.totals)
                 self.notify("thread/usage", {"thread_id": self.id, "usage": self.usage,
                                              "context_left": self.context_left})
+        elif isinstance(ev, QueueDelivered):
+            # 排队消息送入：挪到当前位置（重新编号）并落盘
+            for qid in ev.ids:
+                it = self._drop_item(qid)
+                if it is not None:
+                    it.pop("queued", None)
+                    it["queue"] = ev.kind
+                    self._add(it)
+        elif isinstance(ev, QueueReturned):
+            for q in ev.items:
+                self._drop_item(q["id"])
+            self.notify("turn/queue_returned", {"thread_id": self.id, "items": ev.items})
         elif isinstance(ev, Notice):
             self._add({"type": "notice", "text": ev.text, "level": ev.level})
         elif isinstance(ev, Error):

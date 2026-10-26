@@ -4,7 +4,8 @@
 - 安全上限 max_steps；到最后一步追加“只用文字总结，不再调工具”。
 - 只读工具同一步并行；写操作按顺序。每个 tool_call_id 必有输出（中断写“用户中断”）。工具错误原样回喂。
 - interrupt()：取消当前流/工具，保留已产生的历史，可继续对话。
-- queue_input()：运行中继续打字，当前步结束后作为新 user 消息送入。
+- queue_input()：运行中继续打字。插话（steer）在当前步结束后送入；待追加（follow）在回合本该结束时送入；
+  回合结束时没送入的退回界面（core/queue.py）。
 界面只通过 run_turn() 产出的事件流与内核交互。
 """
 from __future__ import annotations
@@ -23,14 +24,15 @@ from ee.core.instructions import load_instructions
 from ee.core.memory import load_memory
 from ee.core.repomap import startup_message as repo_map_message
 from ee.core import parallel
+from ee.core import queue as Q
 from ee.core import reasoning as RZ
 from ee.core import styles as ST
 from ee.core.budget import BudgetGuard
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
-                            ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
-                            TurnStart, Usage)
+                            QueueDelivered, QueueReturned, ReasoningDelta, Status, StepStart, TextDelta, ToolEnd,
+                            ToolOutput, ToolStart, TurnDone, TurnStart, Usage)
 from ee.core.permissions import MODE_LABEL, Decision, PermissionPolicy
 from ee.core.providers import transforms as T
 from ee.core.providers.openai_chat import ChatClient, Completion
@@ -89,7 +91,7 @@ class Session:
                 self.shell = None
         self.git = gitinfo.status(self.cwd)
         self.gh = gitinfo.gh_exe() is not None
-        self.pending: list[str] = []
+        self.queue = Q.InputQueue()          # 运行中排队的用户消息（插话 / 待追加）
         self.notes: list[str] = []           # 例如用户 !命令 的输出，随下一条消息发给模型
         self.turns = 0
         self.turn_starts: list[int] = []     # 每个回合首条 user 消息在 history 里的位置（回退用）
@@ -293,8 +295,31 @@ class Session:
         self.shell, self.shell_name = sh, name
         return f"shell 已切换为 {sh.display}（{sh.exe}）。下一条消息会以增量环境信息告诉模型。"
 
-    def queue_input(self, text: str) -> None:
-        self.pending.append(text)
+    @property
+    def pending(self) -> list[str]:
+        """排队中的消息原文（按到达顺序，只读）。"""
+        return self.queue.texts()
+
+    def queue_input(self, text: str, kind: str = Q.STEER, qid: str | None = None) -> str:
+        """运行中排队一条用户消息，返回它的 id（撤回用）。kind：steer 插话 / follow 完成后追加。"""
+        return self.queue.add(text, kind, qid).id
+
+    def withdraw_input(self, qid: str):
+        """撤回还没送入的排队消息；已送入或不存在返回 None。"""
+        return self.queue.withdraw(qid)
+
+    async def _deliver(self, kind: str, emit) -> bool:
+        """把 kind 类排队消息送进历史（按 one/all），送了返回 True。"""
+        if not self.queue.has(kind):
+            return False
+        await asyncio.to_thread(self.refresh_git)
+        modes = Q.mode_settings(self.config.data)      # 取出到写入历史之间没有挂起点：中断不会丢消息
+        items = self.queue.take(kind, modes["steering_mode" if kind == Q.STEER else "follow_up_mode"])
+        if not items:     # 等 git 时被撤回了
+            return False
+        self._add_user(Q.join(items))
+        emit(QueueDelivered([q.id for q in items], kind))
+        return True
 
     def add_note(self, text: str) -> None:
         self.notes.append(text)
@@ -311,7 +336,7 @@ class Session:
         self.state = ToolState()
         self.updates.reset()
         self.stats = UsageStats()
-        self.pending.clear()
+        self.queue.clear()
         self.notes.clear()
         self.turns = 0
         self.turn_starts = []
@@ -351,7 +376,7 @@ class Session:
         self.history = self.history[:i]
         self.turn_starts = [x for x in self.turn_starts if x < i]
         self.updates.reset()
-        self.pending.clear()
+        self.queue.clear()
         self.notes.clear()
         self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
         self.store.append("rewind", {"to": i})
@@ -698,6 +723,8 @@ class Session:
                     except Exception:  # noqa: BLE001
                         ev.tree_after = None
                     self.turn_trees[-1]["after"] = ev.tree_after
+                if isinstance(ev, TurnDone) and self.queue:   # 没送入的排队消息退回界面（之后没有挂起点，不会再有人排进来）
+                    yield QueueReturned([q.to_dict() for q in self.queue.drain()])
                 yield ev
                 if isinstance(ev, TurnDone):
                     break
@@ -758,9 +785,8 @@ class Session:
                 if comp.content:
                     final = comp.content
                 if not comp.tool_calls:
-                    if self.pending and not last:
-                        await asyncio.to_thread(self.refresh_git)
-                        self._add_user("\n\n".join(self.pending)); self.pending.clear()
+                    # 插话先送；没有插话时送待追加（回合本该结束，在 Stop Hook 之前）
+                    if not last and (await self._deliver(Q.STEER, emit) or await self._deliver(Q.FOLLOW, emit)):
                         continue
                     if not last and await hooks.on_stop(self, final, emit):   # D5-4 Hooks：Stop 要求继续
                         continue
@@ -781,7 +807,7 @@ class Session:
                     emit(Notice(f"Hook 要求结束本回合：{why}", "warn"))
                     emit(TurnDone("completed", final))
                     return
-                if self._end_turn and not self.pending:   # present_plan：方案已提交，等用户批准
+                if self._end_turn and not self.queue.has(Q.STEER):   # present_plan：方案已提交，等用户批准（待追加的退回）
                     self._end_turn = False
                     emit(TurnDone("completed", final))
                     return
@@ -791,9 +817,7 @@ class Session:
                     return
                 if note:
                     self._append({"role": "user", "content": note, "_kind": "note"})
-                if self.pending:
-                    await asyncio.to_thread(self.refresh_git)
-                    self._add_user("\n\n".join(self.pending)); self.pending.clear()
+                await self._deliver(Q.STEER, emit)
         except asyncio.CancelledError:
             log.info("回合被中断：会话 %s", self.store.id)
             self._fill_missing(INTERRUPTED)
