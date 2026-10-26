@@ -34,6 +34,7 @@ import { SkillCard, SubagentCard, WebFetchCard, WebSearchCard } from "./AgentIte
 import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
+import { DELIVERED_LABEL } from "../lib/queue";
 
 // ------------------------------------------------------------ 通用折叠行
 function Row({
@@ -198,7 +199,7 @@ export function UserMessage({ item }: { item: UserItem }) {
       <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
         {item.kind === "review" && <SearchCheck size={14} className="mr-1.5 inline-block align-[-2px] text-muted" />}
         {item.text}
-        {item.queued && <div className="mt-1 text-[11.5px] text-faint">已排队，当前步骤结束后送入</div>}
+        {item.queue && !item.queued && <div className="mt-1 text-[11.5px] text-faint">{DELIVERED_LABEL[item.queue]}</div>}
       </div>
       {canBranch && idle && (
         <div className="mt-1 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">

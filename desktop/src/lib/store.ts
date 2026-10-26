@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { approvalNotice, turnCompletedNotice } from "./notify";
 import type { BgProc, ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
+import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
 
@@ -41,6 +42,7 @@ type State = {
   fileNonce: number;
   search: string;
   settingsSection: SettingsSection | null;
+  returnedDraft: { threadId: string; texts: string[]; nonce: number } | null; // 中断 / 撤回退回的排队消息，放回输入框
   composerDraft: { text: string; nonce: number } | null; // 让输入框预填（分叉后） // 打开设置页时要跳到的分区（斜杠命令用），读取后清空
   toast: { text: string; kind: "info" | "error" } | null;
   dialog: { kind: "review"; instructions?: string } | { kind: "commit" } | null; // /review、/commit 弹窗
@@ -56,7 +58,9 @@ type Actions = {
   newThread(cwd?: string | null): void;
   addWorkspace(path: string): Promise<void>;
   removeWorkspace(path: string): Promise<void>;
-  send(text: string, attachments?: Attachment[]): Promise<boolean>;
+  /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
+  send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
+  withdrawQueued(itemId: string): Promise<void>;
   startReview(p: ReviewParams): Promise<boolean>;
   interrupt(): Promise<void>;
   compact(): Promise<void>;
@@ -106,6 +110,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   search: "",
   settingsSection: null,
   composerDraft: null,
+  returnedDraft: null,
   toast: null,
   dialog: null,
 
@@ -213,12 +218,13 @@ export const useApp = create<State & Actions>((set, get) => ({
     set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
   },
 
-  async send(text, attachments) {
+  async send(text, attachments, queue) {
     const s = get();
     const rpc = s.rpc!;
     let id = s.activeThreadId;
     const model = s.draftModel || undefined;
     const mode = s.draftMode;
+    let queuing = false;
     try {
       if (!id) {
         if (!s.activeWorkspace) {
@@ -235,18 +241,26 @@ export const useApp = create<State & Actions>((set, get) => ({
           threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
         }));
       }
-      set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: st.turnStartedAt[id!] ?? Date.now() } }));
-      setStatus(id, "running");
-      setStatusText(id, "正在发送…");
+      queuing = !!queue && (get().details[id]?.status ?? "idle") !== "idle";
+      if (!queuing) {
+        set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: st.turnStartedAt[id!] ?? Date.now() } }));
+        setStatus(id, "running");
+        setStatusText(id, "正在发送…");
+      }
       const atts = attachments?.length ? attachments.map((a) => ({ name: a.name, data: a.data, thumb: a.thumb })) : undefined;
       const effort = s.activeThreadId ? undefined : (s.draftEffort ?? undefined);
       const style = s.activeThreadId ? undefined : (s.draftStyle ?? undefined);
       if (!s.activeThreadId) set({ draftEffort: null, draftStyle: null });
-      await rpc.call("turn/start", { thread_id: id, text, model, mode, attachments: atts, effort, style }, atts ? 120000 : undefined);
+      await rpc.call("turn/start", { thread_id: id, text, model, mode, attachments: atts, effort, style, queue }, atts ? 120000 : undefined);
       return true;
     } catch (e) {
       const msg = (e as Error).message;
       get().showToast(msg, "error");
+      if (id && queuing) {
+        // 排队失败：回合还在跑，不动状态，把文字放回输入框
+        set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+        return false;
+      }
       if (id) {
         // 让对话里也看得到：不再停在“正在工作”
         setStatus(id, "idle");
@@ -422,6 +436,17 @@ export const useApp = create<State & Actions>((set, get) => ({
     set({ view: "settings", settingsSection: section ?? null });
   },
 
+  async withdrawQueued(itemId) {
+    const id = get().activeThreadId;
+    if (!id) return;
+    try {
+      const r = await get().rpc!.call("turn/withdraw", { thread_id: id, item_id: itemId });
+      set({ returnedDraft: { threadId: id, texts: [r.text ?? ""], nonce: Date.now() } });
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+    }
+  },
+
   async interrupt() {
     const id = get().activeThreadId;
     if (!id) return;
@@ -504,6 +529,13 @@ function onNotification(method: string, p: any) {
     const ss = (p as any)?.settings;
     if (ss) useApp.setState({ defaultEffort: ss.reasoning?.effort ?? "", defaultStyle: ss.style?.default ?? "default" });
     return;
+  }
+  if (method === "turn/queue_returned") {
+    const texts = ((p.items ?? []) as { text: string }[]).map((x) => x.text);
+    if (texts.length) {
+      const prev = st.returnedDraft && st.returnedDraft.threadId === p.thread_id ? st.returnedDraft.texts : [];
+      useApp.setState({ returnedDraft: { threadId: p.thread_id, texts: [...prev, ...texts], nonce: Date.now() } });
+    }
   }
   if (method === "turn/started") {
     useApp.setState((s) => ({ turnStartedAt: { ...s.turnStartedAt, [p.thread_id]: s.turnStartedAt[p.thread_id] ?? Date.now() } }));

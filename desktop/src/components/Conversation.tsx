@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
+import { splitQueued } from "../lib/queue";
 import { useApp } from "../lib/store";
 import type { Item } from "../types";
 import { SubagentGroup } from "./AgentItems";
@@ -190,7 +191,7 @@ export function Conversation() {
   const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
   const scroller = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
-  const blocks = useMemo(() => groupBlocks(d?.items ?? []), [d?.items]);
+  const blocks = useMemo(() => groupBlocks(splitQueued(d?.items ?? []).visible), [d?.items]); // 排队中的显示在输入框上方
   const approvals = useMemo(() => {
     const m = new Map<string, string>();
     for (const it of d?.items ?? []) if (it.type === "approval") m.set(it.call_id, it.status);

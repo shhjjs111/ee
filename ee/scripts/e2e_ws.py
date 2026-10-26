@@ -130,6 +130,24 @@ async def main(cmd, hole=False):
                 log("!!! 回合没有正常完成", done[0], errs); ok = False
             await rpc("settings/get")
             await rpc("thread/get", {"thread_id": tid})
+            if not hole and ok:
+                # 运行中排队：插话 / 待追加可撤回；中断时没送入的通过 turn/queue_returned 退回
+                notes.clear()
+                await rpc("turn/start", {"thread_id": tid, "text": "第二轮"})
+                r1 = await rpc("turn/start", {"thread_id": tid, "text": "撤回我"})
+                w = await rpc("turn/withdraw", {"thread_id": tid, "item_id": (r1 or {}).get("item_id")})
+                r2 = await rpc("turn/start", {"thread_id": tid, "text": "完成后再说一句", "queue": "follow"})
+                await rpc("turn/interrupt", {"thread_id": tid})
+                for _ in range(300):
+                    if any(n["method"] == "turn/completed" for n in notes): break
+                    await asyncio.sleep(0.1)
+                back = [n["params"]["items"] for n in notes if n["method"] == "turn/queue_returned"]
+                if not (r1 or {}).get("queued") or (w or {}).get("text") != "撤回我":
+                    log("!!! 排队 / 撤回不对", r1, w); ok = False
+                elif (r2 or {}).get("queue") != "follow" or not back or back[0][0].get("text") != "完成后再说一句":
+                    log("!!! 中断后没有退回待追加的消息", r2, back); ok = False
+                else:
+                    log("排队 / 撤回 / 中断退回 正常")
         except Exception as e:
             log("!!! 失败", repr(e)); ok = False
         rt.cancel()

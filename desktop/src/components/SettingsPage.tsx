@@ -472,6 +472,26 @@ export function SettingsPage() {
                   <SettingRow label="命令超时（秒）" desc="单条命令的默认超时">
                     <Input className="w-24 text-right" inputMode="numeric" value={draft.bash_timeout} onChange={(e) => up({ bash_timeout: Number(e.target.value) || 0 })} />
                   </SettingRow>
+                  <SettingRow label="运行中插话的送入方式" desc="ee 工作时按 Enter 发的消息在当前步骤结束后送入：攒下的几条合成一条一起送，或每次只送最早的一条">
+                    <Segmented<"one" | "all">
+                      value={draft.queue?.steering_mode ?? "all"}
+                      onChange={(v) => up({ queue: { steering_mode: v, follow_up_mode: draft.queue?.follow_up_mode ?? "one" } })}
+                      options={[
+                        { value: "all", label: "一起送" },
+                        { value: "one", label: "逐条" },
+                      ]}
+                    />
+                  </SettingRow>
+                  <SettingRow label="完成后追加的送入方式" desc="Ctrl+Enter 排队的消息等这一轮做完再送：逐条（一件做完再做下一件），或合成一条一起送">
+                    <Segmented<"one" | "all">
+                      value={draft.queue?.follow_up_mode ?? "one"}
+                      onChange={(v) => up({ queue: { steering_mode: draft.queue?.steering_mode ?? "all", follow_up_mode: v } })}
+                      options={[
+                        { value: "one", label: "逐条" },
+                        { value: "all", label: "一起送" },
+                      ]}
+                    />
+                  </SettingRow>
                 </Card>
               </>
             )}
