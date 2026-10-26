@@ -97,8 +97,10 @@ class Thread:
         if model and model not in cfg.model_names() and "/" not in model:
             model = None
         mode = self.meta.get("mode") if self.meta.get("mode") in MODES else None
+        # 精简模式（profile）跟着对话走：记在 meta 里，设置页切换只影响新对话；功能上线前的旧对话按 full
+        agent = self.meta.get("profile") or ("full" if self._pending_messages else None)
         s = Session(cfg, model=model, cwd=self.cwd, mode=mode, client_factory=self.client_factory,
-                    persist=self.persist, home=self.home)
+                    persist=self.persist, home=self.home, agent=agent)
         s.store = SessionStore(self.home, session_id=self.id, enabled=self.persist)
         if self._pending_messages:
             s.history = list(self._pending_messages)
@@ -113,6 +115,7 @@ class Thread:
                         for it in self.items if it.get("type") == "user" and it.get("tree")]
         self.meta["model"] = s.spec.alias
         self.meta["mode"] = s.policy.mode
+        self.meta["profile"] = s.agent_profile
         # D5-9：会话级推理强度 / 回答风格（存在 meta 里，重启后照旧）；重启前已花的钱计入会话上限
         if "effort" in self.meta:
             try:

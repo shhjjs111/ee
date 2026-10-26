@@ -247,10 +247,32 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   };
 
   const selCls = "h-8 min-w-[220px] justify-between border border-line bg-bg px-2.5 text-fg";
+  const lean = draft.profile === "lean";
   return (
     <>
       <h2 className="mb-1 text-[20px] font-semibold tracking-tight text-fg">工具与记忆</h2>
       <p className="mb-5 text-[13px] text-muted">这些开关决定新对话里模型能用哪些工具；已经开始的对话保持原样（为了不破坏前缀缓存）。</p>
+      <Card title="模式" desc="精简模式只给模型 read / write / edit / shell 四个工具和一份很短的系统提示词，固定开销约少八成；权限审批、Hooks 完全不变。只对新对话生效。">
+        <Row label="工具模式" desc={lean ? "精简：下面的工具开关在精简模式下不生效" : "完整：按下面的开关提供工具"}>
+          <Select
+            value={lean ? "lean" : "full"}
+            options={[
+              { value: "full", label: "完整（默认）" },
+              { value: "lean", label: "精简" },
+            ]}
+            onChange={(v) => up({ profile: v === "lean" ? "lean" : "full" })}
+            side="bottom"
+            align="end"
+            className={selCls}
+          />
+        </Row>
+        <Row label="任务清单（todo）" desc="多步任务时模型用清单列计划、标进度">
+          <Toggle on={draft.todo ?? true} onChange={(v) => up({ todo: v })} />
+        </Row>
+        <Row label="计划提交（present_plan）" desc="计划模式下用它提交方案等你批准；关闭后计划模式直接用文字给方案">
+          <Toggle on={draft.present_plan ?? true} onChange={(v) => up({ present_plan: v })} />
+        </Row>
+      </Card>
       <Card title="网页搜索" desc="web_search 搜索网页、web_fetch 打开网页。每个请求最多等待下面的超时时间，代理跟随「模型与供应商 → 网络」。">
         <Row label="搜索后端" desc={SEARCH_LABEL[web.search_backend]?.[1]}>
           <Select
@@ -330,8 +352,14 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
       </Card>
 
       <Card title="记忆" desc="长期记忆在每次新对话开始时读入；你可以让 ee “记住…”，也可以直接在这里编辑。每条一行，以 - 开头。">
-        <Row label="启用记忆" desc="关闭后不读入记忆，也不提供 memory 工具">
+        <Row label="启用记忆" desc="总开关：关闭后不读入记忆，也不提供 memory 工具">
           <Toggle on={mem.enabled} onChange={(v) => up({ memory: { ...mem, enabled: v } })} />
+        </Row>
+        <Row label="新对话读入记忆" desc="对话开始时把记忆放进上下文">
+          <Toggle on={mem.inject ?? true} onChange={(v) => up({ memory: { ...mem, inject: v } })} />
+        </Row>
+        <Row label="memory 工具" desc="让模型按你的要求增删记忆（精简模式下不提供）">
+          <Toggle on={mem.tool ?? true} onChange={(v) => up({ memory: { ...mem, tool: v } })} />
         </Row>
         <Row label="工作区记忆" desc="额外读入项目目录下的 .ee/memory.md">
           <Toggle on={mem.workspace} onChange={(v) => up({ memory: { ...mem, workspace: v } })} />

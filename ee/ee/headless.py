@@ -48,7 +48,7 @@ EXIT_CODES = {"completed": EXIT_OK, "error": EXIT_ERROR, "max_steps": EXIT_MAX_S
 
 # --json 时的事件类型（每行一个对象，都有 "type"）：
 EVENT_TYPES = (
-    "session",          # {id, cwd, model, mode, resumed, persist}           第一行
+    "session",          # {id, cwd, model, mode, resumed, persist, profile}  第一行
     "turn_start",       # {turn}
     "assistant_delta",  # {text}                                              仅 --stream
     "assistant",        # {text, reasoning?}                                  每步一条（完整文本）
@@ -99,6 +99,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                    help="追加 allow 规则（同 config.toml permissions.allow 的写法，如 'shell(git status*)'），可多次")
     p.add_argument("--deny", action="append", default=[], metavar="规则", help="追加 deny 规则，可多次")
     p.add_argument("--max-steps", type=int, metavar="N", help="本回合最多几步（默认用配置 max_steps）")
+    p.add_argument("--profile", choices=["full", "lean"],
+                   help="新会话用完整模式还是精简模式（默认用配置 profile；续接时沿用会话原来的）")
     p.add_argument("--json", action="store_true", help="stdout 输出 JSONL 事件流")
     p.add_argument("--stream", action="store_true", help="--json 时额外输出 assistant_delta 流式片段")
     p.add_argument("-o", "--output-last-message", metavar="文件", help="把最终回答写进这个文件（UTF-8）")
@@ -146,7 +148,7 @@ class Printer:
 
 
 # ------------------------------------------------------------------ 无人值守的公共部分（ee exec 与自动化 D4-10 共用）
-def unattended_configure(max_steps: int | None = None, allow=(), deny=()) -> Callable:
+def unattended_configure(max_steps: int | None = None, allow=(), deny=(), profile: str | None = None) -> Callable:
     """建会话前改配置：关掉 ask_user（没人回答）、可选步数上限、追加 allow/deny 规则。"""
     allow, deny = list(allow or []), list(deny or [])
 
@@ -156,6 +158,8 @@ def unattended_configure(max_steps: int | None = None, allow=(), deny=()) -> Cal
         d["budget"] = {**(d.get("budget") or {}), "unattended": True}   # 花费到上限直接停（没人能点“继续”）
         if max_steps:
             d["max_steps"] = max(1, int(max_steps))
+        if profile:
+            d["profile"] = profile
         if allow or deny:
             perms = dict(d.get("permissions") or {})
             perms["allow"] = list(perms.get("allow") or []) + allow
@@ -301,7 +305,7 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
 
     cls = _make_thread_class()
 
-    configure = unattended_configure(args.max_steps, args.allow, args.deny)
+    configure = unattended_configure(args.max_steps, args.allow, args.deny, getattr(args, "profile", None))
     kw = dict(client_factory=client_factory, persist=not args.no_persist, configure=configure)
     resumed = bool(args.resume or args.last)
     if resumed:
@@ -332,7 +336,7 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
             raise ExecError(f"模型不可用：{e}")
         th.meta["model"] = s.spec.alias
     printer.event("session", id=th.id, cwd=th.meta["cwd"], model=s.spec.alias, mode=args.mode,
-                  resumed=resumed, persist=not args.no_persist)
+                  resumed=resumed, persist=not args.no_persist, profile=s.agent_profile)
     printer.progress(f"ee exec · 会话 {th.id}{'（续接）' if resumed else ''} · {s.spec.alias} · "
                      f"{MODE_LABEL.get(args.mode, args.mode)}模式 · {th.meta['cwd']}")
 
