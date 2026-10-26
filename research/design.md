@@ -139,7 +139,7 @@ ee/
 ### 状态（2026-10-26）
 - [x] ee serve 后端 + 测试；桌面 UI 三栏 + 设置页 + 审批 + 改动审阅
 - [~] 真实 Electron 窗口验证、Windows 打包（PyInstaller + electron-builder + GitHub Actions）
-- [ ] D2：右栏终端（xterm.js + node-pty）、文件预览、/compact、AGENTS.md、防死循环、网页搜索、子代理、记忆
-- [~] D2 网页搜索（内核完成）：ee/ee/tools/web.py（web_search 后端 deepseek|tavily|brave|off，web_fetch auto|deepseek|direct|off，20s 超时，跟随 [network] 代理），配置 [web]，测试 tests/test_web.py（MockTransport）。剩：设置页 UI、搜索结果卡片。
-- [~] D2 子代理（内核完成）：ee/ee/core/subagent.py + ee/ee/tools/agent.py（task 工具，explore/general/自定义 agents/*.md，只读或继承权限、max_steps、model），事件 SubagentStart/Update/End（core/events.py），server 挂到 task 工具条目 meta.subagent（threads.py），审批冒泡 call_id=父/子，中断传递，/undo 共享快照；测试 tests/test_subagent.py。剩：前端子代理卡片、并行多个 task。
-- [~] D2 记忆（内核完成）：ee/ee/core/memory.py + ee/ee/tools/memory.py（add/list/remove，user=~/.ee/memory.md，workspace=<项目>/.ee/memory.md），会话开始注入为 AGENTS.md 后的固定 user 消息（_kind=agents，8KiB 上限，会话内不变），配置 [memory]；测试 tests/test_memory.py。剩：memory/* RPC、设置页开关与编辑。
+- [ ] D2：右栏终端（xterm.js + node-pty）、文件预览、/compact、AGENTS.md、防死循环（网页搜索、子代理、记忆已完成，见下三行）
+- [x] D2 网页搜索（2026-10-26）：ee/ee/tools/web.py（web_search 后端 deepseek|tavily|brave|off；web_fetch auto|deepseek|direct|off，DeepSeek Fetch 失败自动直连；HTML→markdown 文本、截断可 offset 续读；默认 20s 超时；代理跟随 [network]），配置 [web]，设置页「工具与记忆」，界面搜索结果/抓取卡片（desktop/src/components/AgentItems.tsx），测试 tests/test_web.py（MockTransport，无真实请求）。未做：Brave 接口没对真实服务验证、真实 DeepSeek Search 未实测。
+- [x] D2 子代理（2026-10-26）：ee/ee/core/subagent.py + ee/ee/tools/agent.py（task 工具：explore 只读 / general 继承权限 / 自定义 agents/*.md；max_steps、model 可选；不嵌套），事件 SubagentStart/Update/End（core/events.py），server 挂到 task 条目 meta.subagent（threads.py），审批冒泡 call_id=父/子，中断传递，/undo 共享快照，用量并入主会话；界面子代理卡片；测试 tests/test_subagent.py。剩：多个 task 并行（现在按顺序）、fork 式子代理（复制父前缀复用缓存）、git worktree 隔离。
+- [x] D2 记忆（2026-10-26）：ee/ee/core/memory.py + ee/ee/tools/memory.py（add/list/remove；user=~/.ee/memory.md，workspace=<项目根>/.ee/memory.md），新会话开始时注入为 AGENTS.md 后的固定 user 消息（_kind=agents，压缩保留，8KiB 上限，会话内不变），配置 [memory]，RPC memory/get|add|remove|save（server/memory_rpc.py），设置页开关 + 文本编辑；测试 tests/test_memory.py、tests/test_server_d2.py。剩：主题文件按需读（§9 的 MEMORY.md 索引方案未做，现在是单文件）。

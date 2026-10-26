@@ -108,7 +108,9 @@ def test_connection_refused_error_message():
             pass
     with pytest.raises(ModelError) as ei:
         asyncio.run(go())
-    assert "连不上模型服务" in str(ei.value) and "base_url" not in str(ei.value)
+    # Linux 立刻 ECONNREFUSED；Windows 对拒绝连接会重试 SYN 约 2 秒，表现为连接超时
+    msg = str(ei.value)
+    assert ("连不上模型服务" in msg or "连接超时" in msg) and f"127.0.0.1:{port}" in msg
 
 
 def test_http_status_error_message():

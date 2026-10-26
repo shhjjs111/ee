@@ -6,6 +6,7 @@
   timeout = 20                  # 秒，每个网络请求的总超时
   max_results = 8               # 搜索默认返回条数
   fetch_max_chars = 20000       # 抓取结果默认最多返回多少字符
+  deepseek_base_url = ""         # 可选：Search/Fetch 的接口根地址（默认 https://api.deepseek.com）
   tavily_api_key / brave_api_key  # 设置页保存的 key；没有就读环境变量 TAVILY_API_KEY / BRAVE_API_KEY
 DeepSeek Search/Fetch 复用 providers.deepseek 的 key（设置页保存的 api_key 或环境变量 DEEPSEEK_API_KEY）。
 接口（2026-10-26 核对 https://api-docs.deepseek.com/guides/search）：
@@ -65,6 +66,9 @@ def deepseek_key(data: dict | None) -> str:
 
 
 def deepseek_base(data: dict | None) -> str:
+    override = str(((data or {}).get("web") or {}).get("deepseek_base_url") or "").rstrip("/")
+    if override:
+        return override[:-3] if override.endswith("/v1") else override
     p = ((data or {}).get("providers") or {}).get("deepseek") or {}
     base = str(p.get("base_url") or "https://api.deepseek.com").rstrip("/")
     if base.endswith("/v1"):

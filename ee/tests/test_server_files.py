@@ -19,7 +19,7 @@ def call(b, method, **params):
 
 def make_tree(ws):
     (ws / "src").mkdir()
-    (ws / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (ws / "src" / "calc.py").write_bytes(b"def add(a, b):\n    return a + b\n")
     (ws / "src" / "util").mkdir()
     (ws / "README.md").write_text("# 标题\n\n正文\n", encoding="utf-8")
     (ws / "logo.png").write_bytes(PNG)
@@ -83,7 +83,7 @@ def test_read_kinds(ee_home, workspace):
 
 
 def test_read_truncates_and_decodes(ee_home, workspace):
-    (workspace / "big.txt").write_text("ab\n" * 200_000, encoding="utf-8")
+    (workspace / "big.txt").write_bytes(b"ab\n" * 200_000)   # write_text 在 Windows 上会写成 \r\n
     (workspace / "crlf.txt").write_bytes(b"a\r\nb\r\n")
     (workspace / "bom.txt").write_bytes(b"\xef\xbb\xbfhello")
     (workspace / "gbk.txt").write_bytes("中文内容".encode("gbk"))

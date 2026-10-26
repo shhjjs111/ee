@@ -45,28 +45,34 @@ jobs:
         run: python -m pytest -q
 
       - name: E2E with source backend (python -m ee serve)
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: python ee/scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
 
       - name: Install desktop deps
+        if: ${{ !cancelled() }}
         working-directory: desktop
         run: npm ci
 
       - name: Smoke-test node-pty (ConPTY prebuild, N-API)
+        if: ${{ !cancelled() }}
         working-directory: desktop
         run: node scripts/pty-smoke.cjs
 
       - name: Build renderer + electron main
+        if: ${{ !cancelled() }}
         working-directory: desktop
         run: npm run build
 
       - name: Build backend (PyInstaller onedir)
+        if: ${{ !cancelled() }}
         working-directory: desktop
         env:
           EE_PYTHON: python
         run: node scripts/build-backend.mjs
 
       - name: Smoke-test packaged backend
+        if: ${{ !cancelled() }}
         working-directory: desktop
         shell: pwsh
         run: |
@@ -85,24 +91,29 @@ jobs:
           if (-not $ok) { throw "backend did not print EE_SERVE_READY" }
 
       - name: Packaged backend selftest (openai/httpx/certifi/encodings)
+        if: ${{ !cancelled() }}
         working-directory: desktop
         run: resources/backend/ee-backend/ee-backend.exe selftest
 
       - name: E2E with packaged backend (fake model, stdin pipe + git workspace)
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: python ee/scripts/e2e_ws.py desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
 
       - name: E2E with packaged backend (black-hole endpoint must time out with an error)
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: python ee/scripts/e2e_ws.py --blackhole desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
 
       - name: Package NSIS installer
+        if: ${{ !cancelled() }}
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --win --publish never
 
       - name: Check node-pty is packaged outside asar
+        if: ${{ !cancelled() }}
         working-directory: desktop
         shell: pwsh
         run: |
@@ -113,6 +124,7 @@ jobs:
           Write-Host "node-pty packaged OK"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: ee-windows-installer
           path: desktop/release/*.exe
