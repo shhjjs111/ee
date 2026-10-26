@@ -97,11 +97,26 @@
 - 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说仅自己学习使用：代码、文档里都不写出处，也不要第三方声明文件（用户 2026-10-26 明确要求清理已有的）。
 - Claude Code、Cursor 等闭源产品只借思路，不抄代码。
 
-## D4 计划（D3 完成后按顺序做，用户 2026-10-26 看过建议）
-1. 磁盘快照：参考 OpenCode 的影子 git 仓库 / Codex ghost commit / Cline checkpoints，每回合前后快照工作区（含 shell 改的文件），重启后仍能 /undo 和编辑重发恢复文件；顺便解决 /undo 后层号错位。
-2. 自动化 / 定时任务（用户 2026-10-26 点名要，参照 Codex 桌面版 Automations）：在某个项目上按 cron/间隔/每天几点跑一段提示词；后端调度器（ee serve 内，持久化到 ~/.ee/automations.json），每次运行新建一个会话、默认只读或在 git worktree 里跑，结果进左栏「自动化」收件箱并发 Windows 通知；Electron 关窗后托盘常驻继续调度；错过的运行开机后补一次。设置页增删改、立即运行、运行历史。
-3. Windows 沙箱：参考 Codex Windows sandbox（restricted token + ACL），全自动模式下命令只能写工作区、可选禁网。
-4. 子代理并行 + git worktree 隔离 + 指挥会话（用户 2026-10-26 点名要，Codex 有）：给模型加会话控制工具 `threads_list` / `thread_create`（可指定分支，自动建 git worktree）/ `thread_send`（给别的会话发指令，复用 Thread.start_turn）/ `thread_status`（读状态和最后回复）/ `thread_wait`；跨会话审批冒泡到指挥会话或各自会话；界面左栏显示从属关系，指挥会话里每个子会话一张进度卡片，可点进去看。
-5. LSP 诊断：改文件后把类型/语法错误回给模型（参考 OpenCode）。
-6. Hooks：改文件后格式化、回合结束通知等（借 Claude Code 思路）。
-7. Plan 模式；/review 代码审查命令；仓库地图（参考 Aider repo map）；会话全文搜索。
+## D4–D6 路线（2026-10-26 15:20 按 research/parity-audit.md 功能对标审计重排；★=用户点名或原计划项）
+原则：价值/成本比优先，先做地基（通知+托盘、磁盘快照、headless 执行器、worktree）。与原 D4 顺序的差异：LSP 后移到 D6；/review、Plan 模式、会话搜索提前到 D4。各项可参考的开源实现路径见审计 (b) 节。
+
+**D4 — 地基 + 小而高价值**（按顺序）
+1. [ ] 系统通知 + 托盘常驻（Electron；通知三档设置）
+2. [ ] ★磁盘快照：影子 git 仓库替换内存快照，每回合前后快照（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复；修 /undo 后层号错位
+3. [ ] ★/review 代码审查 + /commit
+4. [ ] ★Plan 模式（只出方案 → 「按此执行」）
+5. [ ] ★会话全文搜索（sqlite FTS5）
+6. [ ] PDF / Word / Excel 读取（pypdf / python-docx / openpyxl）
+7. [ ] 后台命令 + shell_output / kill 工具
+8. [ ] 永久允许规则 + ask_user 提问工具 + .eeignore
+9. [ ] headless `ee exec --json`（自动化执行器的基础）
+10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史
+
+**D5 — 并行与扩展**
+1. ★git worktree 管理（.worktreeinclude、删除前快照） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. ★Hooks（6 个核心事件，退出码 2 拦截，信任表复用 MCP） 5. Skills（SKILL.md，兼容 .claude/.agents） 6. ★仓库地图（tree-sitter tags） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
+
+**D6 — 编排与深度理解**
+1. ★指挥会话：threads_list / thread_create（可指定分支，自动建 worktree）/ thread_send / thread_status / thread_wait；跨会话审批冒泡；左栏树形从属；指挥会话里每个子会话一张进度卡片 2. ★LSP 诊断回灌（pyright、typescript-language-server 先行）+ LSP 工具 3. best-of-n、本地 ↔ worktree 交接 4. Goal 模式、/side 侧聊 5. 自动审批审查员 6. 命令面板 / 快捷键自定义、活动视图、会话归档置顶、导出 7. 自动记忆提取（待用户确认） 8. 自动更新、GBK 解码回退、PAC 代理、PR 工作流、lint/test 循环
+- 后置不做：插件包、浏览器（经 MCP 即可）、语音、自定义工具、WSL、云任务、向量索引。
+
+关键依赖：通知+托盘 → 自动化；磁盘快照 → 自动化 / worktree / 时间线 / 编辑重发可靠恢复；headless exec → 自动化；worktree → 并行写型子代理 → 指挥会话 / best-of-n；Windows 沙箱 → 放心全自动 + 无人值守自动化。
