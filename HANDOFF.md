@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:20（Asia/Shanghai，D3-F 完成；修 Windows 上 .pre-v3.bak 换行翻倍；下一步 D4-1 磁盘快照）
+最后更新：2026-10-26 15:28（Asia/Shanghai，D3-F 完成且 Windows CI 绿（55908ef）；D4-1 磁盘快照进行中）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -101,6 +101,7 @@
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
 
 ## 借鉴其他 agent 的原则（用户 2026-10-26 授权）
+- 用户 2026-10-26 15:24 明确：功能做法直接照抄大厂（OpenCode、Codex 等开源实现）的设计，不要自己另起炉灶；先查对方当前源码再动手。
 - 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说仅自己学习使用：代码、文档里都不写出处，也不要第三方声明文件（用户 2026-10-26 明确要求清理已有的）。
 - Claude Code、Cursor 等闭源产品只借思路，不抄代码。
 
@@ -108,7 +109,9 @@
 对照审计 research/parity-audit.md：95 项，已有 23、部分 19、缺 53，每项有价值/难度/实现要点/参考实现路径。用户要求：磁盘快照仍排第一；/review、/commit、Plan 模式、会话搜索这些小活前移；加入桌面通知+托盘、后台长命令、PDF/Word/Excel 读取；LSP 推到 D6。
 
 **D4 — 地基 + 小而高价值**（按顺序）
-1. [ ] ★磁盘快照：影子 git 仓库替换内存快照，每回合前后快照工作区（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复文件；修 /undo 后层号错位
+1. [~] ★磁盘快照：影子 git 仓库替换内存快照，每回合前后快照工作区（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复文件；修 /undo 后层号错位
+   - 进行中（2026-10-26 15:28 开始）。做法照抄 OpenCode 的 snapshot：独立 git 目录 `~/.ee/snapshot/<工作区路径哈希>`，work-tree 指向工作区（不碰项目自己的 .git），回合开始 `add -A` + `write-tree` 得到 tree 哈希，回合结束再取一次；/undo = 把「该回合前后 tree 的差异文件」恢复成回合前版本（树里没有的删除），编辑重发 = 把该消息及之后各回合改过的文件恢复到该消息前的 tree。tree 哈希记在用户条目（tree / tree_after / undone）里，重启后照样能用。未跟踪的大于 2MB 文件不收；遵守项目 .gitignore；非 git 项目额外排除 node_modules/.venv 等。没装 git 或抓取失败时回退原来的内存快照。
+   - 文件：`ee/ee/core/snapshot.py`（新）、session.py（turn_trees、undo/回退走磁盘）、events.py（TurnStart.tree、TurnDone.tree_after）、server/threads.py、server/branch.py、app.py thread_undo。
 2. [ ] ★/review 代码审查命令 + /commit（改动审阅栏「提交」按钮：模型写提交信息，用户确认后 git commit）
 3. [ ] ★Plan 模式：只读出方案 → 点「按此执行」切到默认/全自动继续
 4. [ ] ★会话全文搜索：sqlite FTS5 索引条目文本，store.append 增量写；RPC thread/search 返回命中片段；左栏搜索框改走它
