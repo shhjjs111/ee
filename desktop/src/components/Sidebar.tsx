@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { relTime } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import type { ThreadSummary } from "../types";
@@ -97,12 +97,40 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
   const q = s.search.trim().toLowerCase();
+  // 全文搜索（D4-4）：输入停顿 250ms 后查后端索引；标题命中或内容命中都显示，内容命中附片段
+  const [hits, setHits] = useState<Record<string, string>>({});
+  const [searchBusy, setSearchBusy] = useState(false);
+  useEffect(() => {
+    if (!q || !s.rpc) {
+      setHits({});
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(async () => {
+      setSearchBusy(true);
+      try {
+        const r = await s.rpc!.call("thread/search", { query: q, limit: 100 });
+        if (!live) return;
+        const m: Record<string, string> = {};
+        for (const x of r.results ?? []) m[x.thread.id] = x.hits?.find((h: any) => h.kind !== "title")?.snippet ?? "";
+        setHits(m);
+      } catch {
+        if (live) setHits({});
+      } finally {
+        if (live) setSearchBusy(false);
+      }
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [q, s.rpc]);
 
   const groups = useMemo(() => {
     const map = new Map<string, { path: string; name: string; threads: ThreadSummary[] }>();
     for (const w of s.workspaces) map.set(norm(w.path), { path: w.path, name: w.name, threads: [] });
     for (const t of s.threads) {
-      if (q && !t.title.toLowerCase().includes(q)) continue;
+      if (q && !t.title.toLowerCase().includes(q) && !(t.id in hits)) continue;
       const k = norm(t.cwd || "");
       if (!map.has(k)) {
         const name = (t.cwd || "其他").replace(/\\/g, "/").split("/").filter(Boolean).pop() || t.cwd;
@@ -111,7 +139,7 @@ export function Sidebar() {
       map.get(k)!.threads.push(t);
     }
     return [...map.values()].filter((g) => !q || g.threads.length);
-  }, [s.workspaces, s.threads, q]);
+  }, [s.workspaces, s.threads, q, hits]);
 
   const pickFolder = async () => {
     const p = window.ee ? await window.ee.openFolder() : window.prompt("项目文件夹路径");
@@ -143,9 +171,10 @@ export function Sidebar() {
               value={s.search}
               onChange={(e) => s.set({ search: e.target.value })}
               onKeyDown={(e) => e.key === "Escape" && (s.set({ search: "" }), setSearching(false))}
-              placeholder="搜索对话"
+              placeholder="搜索对话标题和内容"
               className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
             />
+            {searchBusy && <Spinner />}
             <button onClick={() => (s.set({ search: "" }), setSearching(false))} className="text-faint hover:text-fg">
               <X size={13} />
             </button>
@@ -224,7 +253,18 @@ export function Sidebar() {
               {!isCollapsed && (
                 <div className="space-y-px">
                   {g.threads.slice(0, 50).map((t) => (
-                    <ThreadRow key={t.id} t={t} active={t.id === s.activeThreadId && s.view === "chat"} />
+                    <div key={t.id}>
+                      <ThreadRow t={t} active={t.id === s.activeThreadId && s.view === "chat"} />
+                      {q && hits[t.id] && (
+                        <div
+                          className="cursor-default truncate pb-1 pl-7 pr-2 text-[11.5px] text-faint hover:text-muted"
+                          title={hits[t.id]}
+                          onClick={() => s.openThread(t.id)}
+                        >
+                          {hits[t.id]}
+                        </div>
+                      )}
+                    </div>
                   ))}
                   {g.threads.length === 0 && <div className="py-1 pl-7 text-[12px] text-faint">暂无对话</div>}
                 </div>

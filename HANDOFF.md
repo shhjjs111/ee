@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 16:25（Asia/Shanghai，D4-2 CI 全绿；D4-3 Plan 模式完成且 Windows CI 全绿；下一步 D4-4 会话全文搜索）
+最后更新：2026-10-26 16:45（Asia/Shanghai，D4-4 会话全文搜索完成，等 Windows CI；下一步 D4-5 桌面通知 + 托盘）
 
-> **接手第一步（2026-10-26 16:12）**：D4-3（87a2349）Windows CI 已全绿（run 40289660681，之后只改了文档，未触发 CI）；直接做 D4-4 会话全文搜索（SQLite FTS5 索引会话条目、store.append 增量写、RPC thread/search 返回片段、左栏搜索框接全文搜索；目标见 research/parity-audit.md）。先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 16:45）**：查最新提交的 Windows Actions（D4-4，失败就先修）；然后做 D4-5 桌面通知 + 托盘常驻。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -130,7 +130,13 @@
    - 前端：模式下拉加“计划”，输入框 Shift+Tab 轮换 默认→全自动→计划→只读；`/plan [任务]` 切到计划模式（带任务就直接发）；`/mode 计划`；PlanProposalCard（方案 markdown + 「按此执行（默认模式）」「按此执行（全自动）」，之后有新消息就显示“已处理”）；设置页默认模式可选计划。
    - 测试：`tests/test_plan.py` 3 个（权限、完整流程：写被拒→提交方案后不再请求模型→批准切默认后能写且模型看到模式变化、非计划模式报错继续）；pytest 269 通过 2 跳过，vitest 17 通过。
    - 已知/后续：方案不单独存文件（在会话里）；ask_user 结构化提问留到 D4-8。
-4. [ ] ★会话全文搜索：sqlite FTS5 索引条目文本，store.append 增量写；RPC thread/search 返回命中片段；左栏搜索框改走它
+4. [x] ★会话全文搜索（2026-10-26 16:45）：左栏搜索同时匹配标题和对话内容，内容命中在会话下显示片段
+   - 参考了谁、取了哪点：持久化的会话索引 + 按会话文件增量更新的思路取自 Codex（rollout 搜索与 session index）；命中会话下直接显示匹配片段取自 Cline 任务历史搜索的展示方式；中文用 SQLite FTS5 trigram 分词（不用装分词器），两字以下退回 LIKE，是 ee 自己的组合。OpenCode/Continue/Aider/Goose 只有标题或无内容搜索，没取。
+   - 与原计划的偏差：没在 store.append 热路径里写库，改为搜索前按会话文件 mtime+size 增量重建变化的会话——每次流式写条目都不碰 SQLite，编辑重发截断/覆盖/外部删除都天然正确；个人用量下重建单个会话是毫秒级。
+   - 后端：`core/search_index.py`（~/.ee/index/search.db；docs 表一条目一行：用户消息、助手回复、工具摘要+输出(截 2 万字)、会话标题；files 表记 mtime/size；FTS5 不可用时退回普通表 + LIKE；snippet 取命中处前后 36 字）；RPC `thread/search{query, cwd?, limit?}` → `{results: [{thread, hits: [{item_id, kind, seq, snippet}]}]}`，按 bm25 排序，每会话最多 3 条；`thread/delete` 同步删索引。
+   - 前端：Sidebar 搜索框停顿 250ms 调 thread/search，标题命中或内容命中都列出，内容命中的会话下显示一行片段（点击打开会话），搜索中显示转圈。
+   - 测试：`tests/test_search.py` 3 个（建索引/不变不重建/英文 FTS/中文 trigram/两字 LIKE/工具输出/追加增量/截断后不命中/删除移除、snippet、RPC 含 cwd 过滤与删除）；pytest 272 通过 2 跳过，vitest 17 通过。
+   - 已知/后续：点片段只打开会话，还不会滚动定位到命中条目（item_id 已返回，可后续做）；搜索结果不高亮关键词。
 5. [ ] 桌面通知 + 托盘常驻：回合完成 / 需要审批时 Windows 通知（从不 / 窗口不在前台 / 总是）；关窗后托盘常驻（自动化前置）
 6. [ ] 后台长命令：bash 工具可后台启动（dev server、watch、长测试），返回进程会话 id；新工具 shell_output（读增量输出）、shell_write（写 stdin，支持交互程序）、shell_kill；回合结束不杀，会话关闭时杀进程树；UI 列出后台命令
 7. [ ] PDF / Word / Excel 读取：read 工具按扩展名分派 pypdf / python-docx / openpyxl，带页码/表名；打包 spec 加依赖
