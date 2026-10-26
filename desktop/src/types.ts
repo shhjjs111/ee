@@ -314,3 +314,19 @@ declare global {
     ee?: EeBridge;
   }
 }
+
+// 后台命令（D4-6，后端 ee/core/bgproc.py BgProc.info()）
+export type BgProc = {
+  id: string;
+  command: string;
+  cwd: string;
+  status: "running" | "exited" | "killed" | "failed" | string;
+  exit_code: number | null;
+  pid: number | null;
+  started: number;
+  ended: number | null;
+  duration: number;
+  output_chars: number;
+  unread: number;
+  log_path: string;
+};

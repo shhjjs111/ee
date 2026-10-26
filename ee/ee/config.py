@@ -22,6 +22,7 @@ DEFAULTS: dict = {
     "max_steps": 50,
     "shell": "auto",                 # auto | pwsh | powershell | cmd | bash | gitbash
     "bash_timeout": 120,
+    "background_shell": True,      # shell 工具可后台运行 + shell_output/shell_write/shell_kill（D4-6）
     # 上下文压缩：上下文用量 ≥ threshold × 模型窗口时自动压缩（回合开始时和回合内每步之前检查）
     "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
     # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限

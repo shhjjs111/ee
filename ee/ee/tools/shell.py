@@ -97,6 +97,7 @@ class ShellTool(Tool):
             "timeout": {"type": "integer", "description": f"超时秒数，默认 120，最大 {MAX_TIMEOUT}"},
             "workdir": {"type": "string", "description": "在哪个目录执行，默认工作目录。优先用这个参数而不是 cd"},
             "description": {"type": "string", "description": "5-10 个字说明这条命令做什么"},
+            "background": {"type": "boolean", "description": "true = 后台运行（dev server、watch、长测试、交互程序），立即返回后台命令 id，之后用 shell_output 看输出、shell_write 输入、shell_kill 结束"},
         },
         "required": ["command"],
     }
@@ -113,6 +114,8 @@ class ShellTool(Tool):
         cwd = ctx.resolve(args["workdir"]) if args.get("workdir") else ctx.cwd
         if not cwd.is_dir():
             raise ToolError(f"workdir 不存在：{cwd}")
+        if args.get("background"):
+            return await run_background(command, shell, cwd, ctx)
         t0 = time.monotonic()
         try:
             code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit)
@@ -127,3 +130,35 @@ class ShellTool(Tool):
                           meta={"kind": "shell", "command": command, "exit": code, "timed_out": timed_out,
                                 "truncated": truncated, "output": out[-4000:]})
 
+
+
+BG_YIELD = 3.0      # 后台启动后先等这么久收集开头输出（很快结束的命令直接拿到结果）
+
+
+async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) -> ToolResult:
+    sess = ctx.extra.get("session")
+    mgr = getattr(sess, "bg", None)
+    if mgr is None:
+        raise ToolError("当前会话不支持后台命令")
+    try:
+        p = await mgr.start(command, shell, cwd, child_env())
+    except FileNotFoundError as e:
+        raise ToolError(f"无法启动 {shell.display}：{e}")
+    except RuntimeError as e:
+        raise ToolError(str(e))
+    await mgr.wait_output(p, BG_YIELD)
+    if p.running:   # 开头的输出多等一会儿收齐（例如 dev server 打印地址）
+        await asyncio.sleep(0.2)
+    text, notes = mgr.read_new(p)
+    if text:
+        ctx.emit(text)
+    head = f"[后台命令 {p.id} · pid {p.pid}]"
+    if p.running:
+        state = (f"\n[仍在运行。用 shell_output(id=\"{p.id}\") 看后续输出，shell_write 输入，shell_kill 结束；"
+                 f"完整日志：{p.log_path}]")
+    else:
+        state = f"\n[已结束 · exit {p.exit_code}]"
+    body = text.rstrip("\n") or "（暂无输出）"
+    return ToolResult(f"{head}\n{body}{state}", ok=(p.running or p.exit_code == 0), summary=f"Started {command}",
+                      meta={"kind": "shell", "command": command, "background": True, "bg_id": p.id,
+                            "exit": p.exit_code, "running": p.running, "output": text[-4000:]})

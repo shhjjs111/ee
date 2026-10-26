@@ -99,6 +99,7 @@ class Thread:
                         for it in self.items if it.get("type") == "user" and it.get("tree")]
         self.meta["model"] = s.spec.alias
         self.meta["mode"] = s.policy.mode
+        s.bg.on_change = lambda info: self.notify("shell/updated", {"thread_id": self.id, "proc": info})
         self.session = s
         for n in s.notices:
             self._add({"type": "notice", "text": n, "level": "warn"}, persist=False)

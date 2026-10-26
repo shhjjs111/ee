@@ -58,6 +58,9 @@ class Session:
         self.updates = ContextUpdates()
         self.stats = UsageStats()
         self.state = ToolState()
+        from ee.core.bgproc import BgManager
+        import uuid as _uuid
+        self.bg = BgManager(self.home / "tool-output", owner=_uuid.uuid4().hex[:8])   # 后台命令（D4-6）
         perms = config.permissions
         self.policy = PermissionPolicy(mode=mode or perms.get("mode", "default"), workspace=self.cwd,
                                        allow=list(perms.get("allow", [])), ask=list(perms.get("ask", [])),
@@ -736,7 +739,7 @@ class Session:
     async def _ask(self, cid: str, tool, args: dict, d: Decision, emit) -> ApprovalDecision:
         async with self._approval_lock:
             if tool.name == "shell":
-                title = f"运行命令：{args.get('command', '')}"
+                title = f"{'后台运行' if args.get('background') else '运行'}命令：{args.get('command', '')}"
                 detail = args.get("command", "")
             elif tool.name in ("write", "edit"):
                 title = f"{'写入' if tool.name == 'write' else '编辑'}文件：{args.get('path', '')}"

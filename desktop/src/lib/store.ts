@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { approvalNotice, turnCompletedNotice } from "./notify";
-import type { ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
+import type { BgProc, ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
 import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
@@ -22,6 +22,7 @@ type State = {
   activeThreadId: string | null;
   activeWorkspace: string | null;
   turnStartedAt: Record<string, number>;
+  bgProcs: Record<string, BgProc[]>; // 每个会话的后台命令（D4-6）
   models: ModelInfo[];
   defaultModel: string;
   draftModel: string | null;
@@ -76,6 +77,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   activeThreadId: null,
   activeWorkspace: localStorage.getItem("ee.workspace"),
   turnStartedAt: {},
+  bgProcs: {},
   models: [],
   defaultModel: "",
   draftModel: null,
@@ -168,6 +170,9 @@ export const useApp = create<State & Actions>((set, get) => ({
       const t = r.thread as ThreadDetail;
       set((s) => ({ details: { ...s.details, [id]: t }, activeWorkspace: t.cwd }));
       localStorage.setItem("ee.workspace", t.cwd);
+      rpc.call("shell/list", { thread_id: id })
+        .then((r) => set((s) => ({ bgProcs: { ...s.bgProcs, [id]: r.procs as BgProc[] } })))
+        .catch(() => undefined);
     } catch (e) {
       get().showToast((e as Error).message, "error");
     }
@@ -423,6 +428,15 @@ function onNotification(method: string, p: any) {
       threads: s.threads.filter((x) => x.id !== p.thread_id),
       activeThreadId: s.activeThreadId === p.thread_id ? null : s.activeThreadId,
     }));
+    return;
+  }
+  if (method === "shell/updated") {
+    const proc = p.proc as BgProc;
+    useApp.setState((s) => {
+      const cur = s.bgProcs[p.thread_id] ?? [];
+      const next = cur.some((x) => x.id === proc.id) ? cur.map((x) => (x.id === proc.id ? proc : x)) : [...cur, proc];
+      return { bgProcs: { ...s.bgProcs, [p.thread_id]: next } };
+    });
     return;
   }
   if (method === "settings/changed") {

@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { BgCommands } from "./BgCommands";
 import { ArrowUp, AtSign, Cpu, File, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
@@ -526,6 +527,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             title="权限模式"
           />
           <div className="flex-1" />
+          <BgCommands threadId={s.activeThreadId} />
           <ContextRing
             left={detail?.context_left ?? null}
             compacting={detail?.status === "compacting"}

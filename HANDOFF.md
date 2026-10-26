@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 17:10（Asia/Shanghai，D4-5 桌面通知 + 托盘完成，待 Windows CI；下一步 D4-6 后台长命令）
+最后更新：2026-10-26 17:40（Asia/Shanghai，D4-6 后台长命令完成；下一步 D4-7 PDF/Word/Excel 读取）
 
-> **接手第一步（2026-10-26 17:10）**：D4-5 已推送，先确认 Windows CI 绿（失败就修）；然后做 D4-6 后台长命令。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 17:40）**：D4-5、D4-6 已推送，先确认最新 Windows CI 绿（失败就修）；然后做 D4-7 PDF/Word/Excel 读取。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -144,7 +144,12 @@
    - 前端：`src/lib/notify.ts` 纯函数（turn/completed → 完成/出错/防死循环/到最大步数，用户中断不通知；thread/updated 状态变成 waiting_approval 时通知一次；正文取最后一条助手回复去 markdown 的开头，出错取错误信息）+ `notify.test.ts`；store 在收到事件时调 `window.ee.notify`，启动和保存设置时 `pushDesktopPrefs` 把设置交给主进程；App 监听点通知打开会话、托盘菜单动作，并把进行中/等审批的会话数报给托盘提示。设置页「常规 → 通知与后台」三项；`Toggle` 挪到 ui.tsx 共用。
    - Electron：`electron/tray.ts`（setAppUserModelId=com.ee.desktop 让 Windows 通知可用；托盘图标 resources/icon.ico；按设置和窗口焦点决定弹不弹；点通知 show+focus 并发 `app:openThread`；需要审批且不在前台时 flashFrame，聚焦时停；close_to_tray 时 × 改为 hide，第一次提示一次；托盘「退出」/before-quit 才真正退出并杀终端和后端）。main.ts 接入，second-instance 也能把隐藏的窗口拉出来；package.json extraResources 把 build/icon.ico、icon.png 带进 resources。
    - 已知/后续：没有托盘区的 Linux 桌面上关窗照常退出；通知点击后只打开会话，不定位到审批条目；托盘图标暂不随状态变色（D5 可加角标）；真机 Windows 通知效果待用户验证（CI 无法看到弹窗）。
-6. [ ] 后台长命令：bash 工具可后台启动（dev server、watch、长测试），返回进程会话 id；新工具 shell_output（读增量输出）、shell_write（写 stdin，支持交互程序）、shell_kill；回合结束不杀，会话关闭时杀进程树；UI 列出后台命令
+6. [x] 后台长命令（2026-10-26 17:40）：shell 工具 `background=true` 后台启动（dev server、watch、长测试、交互程序），返回后台命令 id；新工具 shell_output / shell_write / shell_kill；回合结束不杀，删除会话 / 内核退出时杀进程树；UI 列出后台命令
+   - 参考了谁、取了哪点：`background` 参数 + 读增量输出（BashOutput 的“自上次读取以来的新输出”、可选正则 filter）+ 结束工具取自 Claude Code（run_in_background / BashOutput / KillShell）的思路；启动后先等几秒收集开头输出（很快结束的命令直接拿到结果）、写 stdin 后等一会儿收集回应、按会话 id 管进程取自 Codex 的 unified exec（exec_command yield_time + write_stdin）；“回合结束不杀、会话结束才杀”取自 Codex；界面上列出后台进程可看输出 / 停止取自 Cline 的“命令仍在运行，继续”与 VS Code 终端列表。OpenCode/Aider/Goose 没有后台进程管理，没取。
+   - 后端：`ee/core/bgproc.py`（BgManager 每会话一个，子代理共用父会话的；stdin 独立管道、stdout+stderr 合并、增量 UTF-8 解码；内存环形缓冲 40 万字符 + 完整日志 `~/.ee/tool-output/bg-<会话随机名>-<id>.log`；模型已读游标；每会话最多 8 个同时运行；Windows CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW + taskkill /T，POSIX 新进程组 + killpg；PowerShell 临时 .ps1 在进程结束后删；atexit 兜底杀）。`tools/shell.py` 加 `background` 参数（先等 3 秒收集开头输出）；`tools/bgshell.py`：shell_output{id, wait≤120, filter}、shell_write{id, input, close_stdin, wait=2}、shell_kill{id}。工具表顺序：present_plan 之后、apply_patch 之前（配置 `background_shell = false` 可关）。权限：后台启动走 shell 同一套命令规则（审批标题写“后台运行命令”）；shell_output/shell_kill 一律允许（只能碰 ee 自己启动的）；shell_write 只读/计划模式拒绝，其余允许（启动时已批准，同 Codex）。thread 把启动/退出推 `shell/updated` 通知；RPC `shell/list|read|kill`（server/shell_rpc.py）；thread/delete 与 serve 退出时结束后台命令。
+   - 前端：输入框工具栏「后台 N」按钮（`components/BgCommands.tsx`）：列出本会话后台命令（状态、运行时长），「输出」弹窗看最后 6 万字符（运行中每 1.5 秒刷新，显示完整日志路径），「停止」结束进程树；store `bgProcs`（打开会话时 shell/list，之后跟 shell/updated）。工具卡片：后台启动显示「后台运行 <命令> b1」，shell_output/write/kill 显示「查看了/输入到/结束了后台命令 b1」。
+   - 测试：`tests/test_bgshell.py` 6 个（生命周期：开头输出/等待/写 stdin/正则过滤/退出码/日志文件/已结束不能写/未知 id；很快结束的命令；kill 与 close；权限；工具注册与开关；server：回合结束后仍在跑、shell/list|read|kill、删除会话清理）；pytest 280 通过 2 跳过，vitest 20、tsc、vite build 通过。
+   - 已知/后续：后台命令是管道不是伪终端（交互程序可能缓冲输出，提示词里让模型 Python 用 -u）；内核重启后后台命令不会恢复（内核退出时已全部结束）；子代理启动的后台命令归主会话，子代理结束不杀；还没做“前台命令超时自动转后台”。
 7. [ ] PDF / Word / Excel 读取：read 工具按扩展名分派 pypdf / python-docx / openpyxl，带页码/表名；打包 spec 加依赖
 8. [ ] 永久允许规则（审批“以后都允许”写进配置）+ ask_user 提问工具 + .eeignore
 9. [ ] headless `ee exec --json`（自动化执行器的基础）

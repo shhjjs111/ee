@@ -20,6 +20,10 @@ def build_tools(profile, config=None) -> list[Tool]:
     from ee.tools.plan import PresentPlanTool
     tools: list[Tool] = [ReadTool(), WriteTool(), EditTool(), ShellTool(), GrepTool(), GlobTool(), TodoTool(),
                          PresentPlanTool()]
+    data0 = getattr(config, "data", config) or {}
+    if data0.get("background_shell", True):
+        from ee.tools.bgshell import ShellKillTool, ShellOutputTool, ShellWriteTool
+        tools += [ShellOutputTool(), ShellWriteTool(), ShellKillTool()]
     if getattr(profile, "edit_style", "edit") == "apply_patch":
         tools.append(ApplyPatchTool())
     if config is None:

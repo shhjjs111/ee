@@ -316,6 +316,16 @@ class PermissionPolicy:
             if any(_match_rule(r, tool, subject) for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
             return Decision("allow")
+        if tool in ("shell_output", "shell_kill"):
+            # 只能看 / 结束 ee 自己启动的后台命令（D4-6）
+            return Decision("allow")
+        if tool == "shell_write":
+            # 往已经批准启动的后台命令里输入；只读 / 计划模式下不允许（可能让交互程序做写操作）
+            if self.mode in READONLY_MODES:
+                return Decision("deny", "当前是只读模式，不能向后台命令输入")
+            if any(_match_rule(r, tool, "") for r in self.deny):
+                return Decision("deny", "命中 deny 规则")
+            return Decision("allow")
         if tool in NET_TOOLS or tool == "task":
             # 网页搜索/抓取是只读的（只读模式“只能读和搜”也允许）；deny/ask 规则按 url / query 匹配。
             # task 本身放行：子代理里的每个工具调用各自走权限判断（主会话只读时子代理强制只读）。

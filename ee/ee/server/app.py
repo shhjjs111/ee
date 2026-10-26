@@ -28,7 +28,7 @@ from ee.core.secrets import redact
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc
+from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, shell_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -83,6 +83,7 @@ class Backend:
         branch.register(self.methods, self)            # thread/fork|edit_resend
         mcp_rpc.register(self.methods, self)           # mcp/list|test
         review_rpc.register(self.methods, self)        # review/targets|start, git/commit_message|commit
+        shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -248,6 +249,11 @@ class Backend:
         t = self.threads.pop(thread_id, None)
         if t is not None and t.running:
             t.interrupt()
+        if t is not None and t.session is not None:      # 会话删除：杀掉它的后台命令（D4-6）
+            try:
+                asyncio.get_running_loop().create_task(t.session.bg.close())
+            except RuntimeError:
+                t.session.bg.kill_all_sync()
         path = self.home / "sessions" / f"{thread_id}.jsonl"
         if path.is_file():
             path.unlink()
@@ -584,6 +590,11 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     watchdog.stop()
     for t in backend.threads.values():
         t.interrupt()
+    try:
+        from ee.core.bgproc import close_all as bg_close_all
+        await asyncio.wait_for(bg_close_all(), 8)       # 结束所有后台命令（D4-6）
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from ee.mcp.manager import shutdown as mcp_shutdown
         await asyncio.wait_for(mcp_shutdown(), 8)       # 关掉 MCP 子进程

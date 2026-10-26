@@ -315,13 +315,16 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   if (item.name === "shell") {
     const cmd = String(a.command ?? item.meta?.command ?? "");
     const exit = item.meta?.exit as number | undefined;
+    const bg = !!item.meta?.background;
     const isOpen = open || (running && !!item.output);
     return (
       <Row
         icon={denied ? <Ban size={14} /> : <SquareTerminal size={14} />}
         title={
           <>
-            {running ? "正在运行" : denied ? "未运行" : "运行了"} <Mono>{cmd.split("\n")[0].slice(0, 120)}</Mono>
+            {running ? (bg ? "正在后台启动" : "正在运行") : denied ? "未运行" : bg ? (item.meta?.running ? "后台运行" : "后台运行了") : "运行了"}{" "}
+            <Mono>{cmd.split("\n")[0].slice(0, 120)}</Mono>
+            {bg && item.meta?.bg_id && <span className="ml-1.5 rounded bg-soft px-1 text-[11px] text-muted">{item.meta.bg_id}</span>}
           </>
         }
         right={
@@ -390,6 +393,36 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
     );
   }
 
+  if (["shell_output", "shell_write", "shell_kill"].includes(item.name)) {
+    const id = String(a.id ?? item.meta?.bg_id ?? "");
+    const verb =
+      item.name === "shell_kill" ? (running ? "正在结束" : "结束了") : item.name === "shell_write" ? (running ? "正在输入到" : "输入到") : running ? "正在查看" : "查看了";
+    const input = item.name === "shell_write" ? String(a.input ?? "").replace(/\n$/, "") : "";
+    const cmd = String(item.meta?.command ?? "");
+    return (
+      <Row
+        icon={<SquareTerminal size={14} />}
+        title={
+          <>
+            {verb}后台命令 <Mono>{id}</Mono>
+            {input && (
+              <>
+                {" "}
+                <Mono>{input.split("\n")[0].slice(0, 60)}</Mono>
+              </>
+            )}
+            {cmd && <span className="ml-1.5 truncate text-[12px] text-faint">{cmd.slice(0, 60)}</span>}
+          </>
+        }
+        active={running}
+        tone={failed ? "error" : undefined}
+        open={open}
+        onToggle={() => setOpen(!open)}
+      >
+        <OutputBox text={item.output || ""} />
+      </Row>
+    );
+  }
   if (item.name === "todo") return null; // 计划单独渲染
   if (item.name === "present_plan" && item.meta?.kind === "plan_proposal") return <PlanProposalCard item={item} />;
   if (item.name === "task" || item.meta?.kind === "subagent") return <SubagentCard item={item} />;
