@@ -1,12 +1,12 @@
 import clsx from "clsx";
 import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Wrench } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
-import { useApp, type Theme } from "../lib/store";
+import { pushDesktopPrefs, useApp, type Theme } from "../lib/store";
 import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
 import { keySourceText } from "../types";
 import { AgentSettings } from "./AgentSettings";
 import { McpSettings } from "./McpSettings";
-import { Button, Field, Input, Select, Spinner, Tip } from "./ui";
+import { Button, Field, Input, Select, Spinner, Tip, Toggle } from "./ui";
 
 const SECTIONS = ["general", "models", "tools", "mcp", "about"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -355,6 +355,7 @@ export function SettingsPage() {
       setResp(r);
       setDraft(structuredClone(r.settings));
       s.setTheme(r.settings.ui.theme as Theme);
+      pushDesktopPrefs(r.settings.ui);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -408,7 +409,7 @@ export function SettingsPage() {
                     <Segmented<Theme>
                       value={draft.ui.theme}
                       onChange={(v) => {
-                        up({ ui: { theme: v } });
+                        up({ ui: { ...draft.ui, theme: v } });
                         s.setTheme(v);
                       }}
                       options={[
@@ -417,6 +418,25 @@ export function SettingsPage() {
                         { value: "dark", label: "深色", icon: <Moon size={13} /> },
                       ]}
                     />
+                  </SettingRow>
+                </Card>
+                <Card title="通知与后台">
+                  <SettingRow label="桌面通知" desc="回合完成、出错时弹出 Windows 通知；点通知直接打开对应对话">
+                    <Segmented<"never" | "unfocused" | "always">
+                      value={draft.ui.notify ?? "unfocused"}
+                      onChange={(v) => up({ ui: { ...draft.ui, notify: v } })}
+                      options={[
+                        { value: "never", label: "从不" },
+                        { value: "unfocused", label: "窗口不在前台时" },
+                        { value: "always", label: "总是" },
+                      ]}
+                    />
+                  </SettingRow>
+                  <SettingRow label="需要审批时通知" desc="有命令或改动等你批准时也提醒（同时闪烁任务栏图标）">
+                    <Toggle on={draft.ui.notify_approval ?? true} onChange={(v) => up({ ui: { ...draft.ui, notify_approval: v } })} />
+                  </SettingRow>
+                  <SettingRow label="关闭窗口后留在托盘" desc="点 × 只隐藏窗口，ee 在系统托盘继续运行（正在跑的任务不中断）；从托盘菜单「退出」才真正关闭">
+                    <Toggle on={draft.ui.close_to_tray ?? true} onChange={(v) => up({ ui: { ...draft.ui, close_to_tray: v } })} />
                   </SettingRow>
                 </Card>
                 <Card title="执行">

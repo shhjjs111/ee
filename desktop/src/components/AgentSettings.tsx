@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import type { MemoryInfo, Settings, SettingsResponse, WebKeySettings, WebSettings } from "../types";
 import { keySourceText } from "../types";
-import { Button, Input, Select, Spinner } from "./ui";
+import { Button, Input, Select, Spinner, Toggle } from "./ui";
 
 const SEARCH_LABEL: Record<string, [string, string]> = {
   exa: ["Exa（免费，默认）", "免费、无需 key（Exa 公共 MCP 端点）"],
@@ -48,18 +48,6 @@ function Row({ label, desc, children }: { label: string; desc?: string; children
   );
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={on}
-      onClick={() => onChange(!on)}
-      className={clsx("relative h-5 w-9 rounded-full transition-colors", on ? "bg-accent" : "bg-soft border border-line")}
-    >
-      <span className={clsx("absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all", on ? "left-[18px]" : "left-0.5")} />
-    </button>
-  );
-}
 
 const DEFAULT_WEB: WebSettings = {
   search_backend: "exa",

@@ -188,3 +188,16 @@ export function Spinner({ size = 14, className }: { size?: number; className?: s
     </svg>
   );
 }
+
+export function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className={clsx("relative h-5 w-9 rounded-full transition-colors", on ? "bg-accent" : "bg-soft border border-line")}
+    >
+      <span className={clsx("absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all", on ? "left-[18px]" : "left-0.5")} />
+    </button>
+  );
+}

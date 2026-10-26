@@ -21,6 +21,7 @@ from ee.tools.web import FETCH_BACKENDS, KEY_ENV, SEARCH_BACKENDS
 from ee.tools.web import deepseek_key as web_deepseek_key
 
 THEMES = ["system", "dark", "light"]
+NOTIFY_MODES = ["never", "unfocused", "always"]
 FAMILIES = ["auto", *FAMILY_ORDER, "default"]
 MODEL_KEYS = {"provider", "model", "family", "context_window", "price", "vision"}
 PROVIDER_KEYS = {"base_url", "api_key_env", "api_key"}
@@ -73,7 +74,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "max_steps": int(data.get("max_steps", 50)),
             "bash_timeout": int(data.get("bash_timeout", 120)),
             "permissions": {"mode": (data.get("permissions") or {}).get("mode", "default")},
-            "ui": {"theme": (data.get("ui") or {}).get("theme", "system")},
+            "ui": _ui_out(data.get("ui") or {}),
             "network": _network_out(data.get("network") or {}),
             **_d2_out(data),
             "mcp": _mcp_out(data),
@@ -82,8 +83,17 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "models": models,
         },
         "choices": {"shells": SHELL_CHOICES, "modes": MODES, "families": FAMILIES, "themes": THEMES,
-                    "search_backends": SEARCH_BACKENDS, "fetch_backends": FETCH_BACKENDS},
+                    "notify_modes": NOTIFY_MODES, "search_backends": SEARCH_BACKENDS, "fetch_backends": FETCH_BACKENDS},
     }
+
+
+def _ui_out(ui: dict) -> dict:
+    """界面设置：主题、桌面通知（never|unfocused|always）、关窗后托盘常驻（D4-5）。"""
+    notify = ui.get("notify", "unfocused")
+    return {"theme": ui.get("theme", "system"),
+            "notify": notify if notify in NOTIFY_MODES else "unfocused",
+            "notify_approval": bool(ui.get("notify_approval", True)),
+            "close_to_tray": bool(ui.get("close_to_tray", True))}
 
 
 def _secrets_out() -> dict:
@@ -308,6 +318,14 @@ def set_settings(new: dict) -> dict:
         if theme not in THEMES:
             raise ValueError(f"未知主题：{theme}")
         out.setdefault("ui", {})["theme"] = theme
+    if (new.get("ui") or {}).get("notify") is not None:
+        nm = new["ui"]["notify"]
+        if nm not in NOTIFY_MODES:
+            raise ValueError(f"未知通知方式：{nm}")
+        out.setdefault("ui", {})["notify"] = nm
+    for k in ("close_to_tray", "notify_approval"):
+        if (new.get("ui") or {}).get(k) is not None:
+            out.setdefault("ui", {})[k] = bool(new["ui"][k])
 
     if isinstance(new.get("network"), dict):
         n = new["network"]

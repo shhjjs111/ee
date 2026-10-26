@@ -1,8 +1,9 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 16:45（Asia/Shanghai，D4-4 会话全文搜索完成，Windows CI 全绿（run 40292571917）；下一步 D4-5 桌面通知 + 托盘）
+最后更新：2026-10-26 17:10（Asia/Shanghai，D4-5 桌面通知 + 托盘完成，待 Windows CI；下一步 D4-6 后台长命令）
 
-> **接手第一步（2026-10-26 16:45）**：D4-4 Windows CI 已全绿（351358b）；直接做 D4-5 桌面通知 + 托盘常驻。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 17:10）**：D4-5 已推送，先确认 Windows CI 绿（失败就修）；然后做 D4-6 后台长命令。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -137,7 +138,12 @@
    - 前端：Sidebar 搜索框停顿 250ms 调 thread/search，标题命中或内容命中都列出，内容命中的会话下显示一行片段（点击打开会话），搜索中显示转圈。
    - 测试：`tests/test_search.py` 3 个（建索引/不变不重建/英文 FTS/中文 trigram/两字 LIKE/工具输出/追加增量/截断后不命中/删除移除、snippet、RPC 含 cwd 过滤与删除）；pytest 272 通过 2 跳过，vitest 17 通过。
    - 已知/后续：点片段只打开会话，还不会滚动定位到命中条目（item_id 已返回，可后续做）；搜索结果不高亮关键词。
-5. [ ] 桌面通知 + 托盘常驻：回合完成 / 需要审批时 Windows 通知（从不 / 窗口不在前台 / 总是）；关窗后托盘常驻（自动化前置）
+5. [x] 桌面通知 + 托盘常驻（2026-10-26 17:10）：回合完成 / 出错 / 防死循环停下 / 需要审批时 Windows 通知（从不 / 窗口不在前台 / 总是）；关窗后托盘常驻（自动化前置）
+   - 参考了谁、取了哪点：通知三档（从不 / 窗口不在前台 / 总是）与“回合完成 + 需要审批”两类提醒取自 Codex 桌面版的通知设置；托盘常驻、托盘菜单（打开 / 新对话 / 设置 / 退出）、Electron Tray + Notification 的写法取自 Goose 桌面端（同为 Electron）；需要审批时闪烁任务栏取自 Cline/VS Code 的“需要注意”提示思路；关窗首次弹“仍在后台运行”提示取自常见 Windows 托盘应用（Slack/Discord）。OpenCode/Aider 只有终端响铃，没取。
+   - 后端：设置 `ui.notify`（never|unfocused|always，默认 unfocused）、`ui.notify_approval`（默认开）、`ui.close_to_tray`（默认开），settings/get|set 读写校验，choices 带 notify_modes。测试 `tests/test_ui_settings.py`。
+   - 前端：`src/lib/notify.ts` 纯函数（turn/completed → 完成/出错/防死循环/到最大步数，用户中断不通知；thread/updated 状态变成 waiting_approval 时通知一次；正文取最后一条助手回复去 markdown 的开头，出错取错误信息）+ `notify.test.ts`；store 在收到事件时调 `window.ee.notify`，启动和保存设置时 `pushDesktopPrefs` 把设置交给主进程；App 监听点通知打开会话、托盘菜单动作，并把进行中/等审批的会话数报给托盘提示。设置页「常规 → 通知与后台」三项；`Toggle` 挪到 ui.tsx 共用。
+   - Electron：`electron/tray.ts`（setAppUserModelId=com.ee.desktop 让 Windows 通知可用；托盘图标 resources/icon.ico；按设置和窗口焦点决定弹不弹；点通知 show+focus 并发 `app:openThread`；需要审批且不在前台时 flashFrame，聚焦时停；close_to_tray 时 × 改为 hide，第一次提示一次；托盘「退出」/before-quit 才真正退出并杀终端和后端）。main.ts 接入，second-instance 也能把隐藏的窗口拉出来；package.json extraResources 把 build/icon.ico、icon.png 带进 resources。
+   - 已知/后续：没有托盘区的 Linux 桌面上关窗照常退出；通知点击后只打开会话，不定位到审批条目；托盘图标暂不随状态变色（D5 可加角标）；真机 Windows 通知效果待用户验证（CI 无法看到弹窗）。
 6. [ ] 后台长命令：bash 工具可后台启动（dev server、watch、长测试），返回进程会话 id；新工具 shell_output（读增量输出）、shell_write（写 stdin，支持交互程序）、shell_kill；回合结束不杀，会话关闭时杀进程树；UI 列出后台命令
 7. [ ] PDF / Word / Excel 读取：read 工具按扩展名分派 pypdf / python-docx / openpyxl，带页码/表名；打包 spec 加依赖
 8. [ ] 永久允许规则（审批“以后都允许”写进配置）+ ask_user 提问工具 + .eeignore

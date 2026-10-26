@@ -2,9 +2,11 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electro
 import path from "node:path";
 import { Backend } from "./backend";
 import { killAll as killTerminals, registerTerminalIpc, setPtySearchPaths } from "./terminal";
+import { markQuitting, setupTray } from "./tray";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 let win: BrowserWindow | null = null;
+let trayCtl: ReturnType<typeof setupTray> | null = null;
 
 const backend = new Backend({
   isPackaged: app.isPackaged,
@@ -46,6 +48,14 @@ function createWindow() {
     },
   });
   win.once("ready-to-show", () => win?.show());
+  // D4-5：关窗按设置改为隐藏到托盘；窗口回到前台时停止任务栏闪烁
+  win.on("close", (e) => {
+    if (win && trayCtl?.interceptClose(win)) e.preventDefault();
+  });
+  win.on("focus", () => win && trayCtl?.stopFlash(win));
+  win.on("closed", () => {
+    win = null;
+  });
   // 外部链接用系统浏览器打开
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
@@ -108,12 +118,16 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => {
     if (win) {
       if (win.isMinimized()) win.restore();
+      win.show();
       win.focus();
+    } else {
+      createWindow();
     }
   });
   app.whenReady().then(() => {
     backend.info().catch(() => undefined); // 尽早启动，窗口加载时并行
     createWindow();
+    trayCtl = setupTray({ appRoot: path.resolve(__dirname, ".."), getWin: () => win, createWindow });
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -124,6 +138,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("before-quit", () => {
+  markQuitting();
+  trayCtl?.destroy();
   killTerminals();
   backend.stop();
 });

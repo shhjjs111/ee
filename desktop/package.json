@@ -84,6 +84,14 @@
           "build/Release/*.node",
           "build/Release/spawn-helper"
         ]
+      },
+      {
+        "from": "build",
+        "to": ".",
+        "filter": [
+          "icon.ico",
+          "icon.png"
+        ]
       }
     ],
     "asar": true,

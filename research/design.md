@@ -153,4 +153,5 @@ ee/
 - [x] D4-4 会话全文搜索（2026-10-26：SQLite FTS5 trigram 索引 ~/.ee/index/search.db，按会话文件增量同步，RPC thread/search 返回片段，左栏搜索接入；参考 Codex 会话索引、Cline 历史搜索展示，详见 HANDOFF.md）
 - [x] D4-2 /review 与 /commit（2026-10-26：审查对象四选一、只读回合、P0–P3 结构化结果与一键修复；提交信息生成→编辑→确认提交；综合 Codex、OpenCode、Aider、Cline 的做法，详见 HANDOFF.md）
 - [x] D4-3 Plan 模式（2026-10-26：第四种权限模式 plan，present_plan 提交方案即结束回合，卡片批准后切默认/全自动执行；综合 Claude Code、Cline、OpenCode 的做法，详见 HANDOFF.md）
+- [x] D4-5 桌面通知 + 托盘（2026-10-26：ui.notify 从不/不在前台/总是、审批通知+任务栏闪烁、点通知打开会话；关窗托盘常驻；electron/tray.ts；参考 Codex 通知设置、Goose 桌面端托盘，详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）

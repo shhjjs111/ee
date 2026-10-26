@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { approvalNotice, turnCompletedNotice } from "./notify";
 import type { ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
 import type { Attachment } from "./attachments";
@@ -138,6 +139,7 @@ export const useApp = create<State & Actions>((set, get) => ({
       const s = await rpc.call("settings/get");
       const theme = s.settings.ui.theme as Theme;
       get().setTheme(theme);
+      pushDesktopPrefs(s.settings.ui);
       if (!localStorage.getItem("ee.mode")) set({ draftMode: s.settings.permissions.mode });
     } catch {
       /* ignore */
@@ -403,6 +405,11 @@ function onNotification(method: string, p: any) {
   const st = useApp.getState();
   if (method === "thread/updated") {
     const t = p.thread as ThreadSummary;
+    const prev = st.threads.find((x) => x.id === t.id);
+    if (t.status) {
+      const n = approvalNotice(t.id, prev?.status, t.status, t.title || prev?.title || "", st.details[t.id]?.items);
+      if (n) window.ee?.notify?.(n);
+    }
     useApp.setState((s) => {
       const exists = s.threads.some((x) => x.id === t.id);
       const threads = exists ? s.threads.map((x) => (x.id === t.id ? { ...x, ...t } : x)) : [t, ...s.threads];
@@ -426,6 +433,9 @@ function onNotification(method: string, p: any) {
     useApp.setState((s) => ({ turnStartedAt: { ...s.turnStartedAt, [p.thread_id]: s.turnStartedAt[p.thread_id] ?? Date.now() } }));
   }
   if (method === "turn/completed") {
+    const title = st.threads.find((x) => x.id === p.thread_id)?.title || st.details[p.thread_id]?.title || "";
+    const n = turnCompletedNotice(p, title, st.details[p.thread_id]?.items);
+    if (n) window.ee?.notify?.(n);
     useApp.setState((s) => {
       const rest = { ...s.turnStartedAt };
       delete rest[p.thread_id];
@@ -448,6 +458,16 @@ export function toRelative(path: string, cwd: string): string {
   const c = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
   if (c && p.toLowerCase().startsWith(c.toLowerCase() + "/")) return p.slice(c.length + 1);
   return p;
+}
+
+/** 把通知 / 托盘设置交给 Electron 主进程（D4-5）。 */
+export function pushDesktopPrefs(ui: { notify?: string; notify_approval?: boolean; close_to_tray?: boolean } | undefined) {
+  if (!ui) return;
+  window.ee?.setPrefs?.({
+    notify: (ui.notify as "never" | "unfocused" | "always") ?? "unfocused",
+    notifyApproval: ui.notify_approval ?? true,
+    closeToTray: ui.close_to_tray ?? true,
+  }).catch?.(() => undefined);
 }
 
 export function applyTheme(t: Theme) {

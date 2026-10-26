@@ -90,7 +90,28 @@ export default function App() {
       }
     };
     window.addEventListener("keydown", onKey);
+    // D4-5：点通知打开对应会话；托盘菜单动作；托盘提示里显示进行中的会话数
+    const offOpen = window.ee?.onOpenThread?.((id) => {
+      useApp.getState().openThread(id).catch(() => undefined);
+    });
+    const offTray = window.ee?.onTrayAction?.((a) => {
+      if (a === "new") useApp.getState().newThread();
+      else if (a === "settings") useApp.getState().openSettings("general");
+    });
+    let lastTray = "";
+    const offStatus = useApp.subscribe((st) => {
+      const running = st.threads.filter((t) => t.status === "running" || t.status === "compacting").length;
+      const waiting = st.threads.filter((t) => t.status === "waiting_approval").length;
+      const key = `${running}/${waiting}`;
+      if (key !== lastTray) {
+        lastTray = key;
+        window.ee?.setTrayStatus?.({ running, waiting });
+      }
+    });
     return () => {
+      offOpen?.();
+      offTray?.();
+      offStatus();
       mq.removeEventListener("change", onMq);
       off?.();
       offConn();

@@ -29,6 +29,20 @@ contextBridge.exposeInMainWorld("ee", {
       return () => ipcRenderer.removeListener("term:exit", h);
     },
   },
+  notify: (msg: { kind: string; threadId: string; title: string; body: string }) => ipcRenderer.send("app:notify", msg),
+  setPrefs: (p: { notify: string; notifyApproval: boolean; closeToTray: boolean }) => ipcRenderer.invoke("app:setPrefs", p),
+  setTrayStatus: (s: { running: number; waiting: number }) => ipcRenderer.send("app:trayStatus", s),
+  quitApp: () => ipcRenderer.send("app:quit"),
+  onOpenThread: (cb: (threadId: string) => void) => {
+    const h = (_e: unknown, id: string) => cb(id);
+    ipcRenderer.on("app:openThread", h);
+    return () => ipcRenderer.removeListener("app:openThread", h);
+  },
+  onTrayAction: (cb: (action: string) => void) => {
+    const h = (_e: unknown, a: string) => cb(a);
+    ipcRenderer.on("app:trayAction", h);
+    return () => ipcRenderer.removeListener("app:trayAction", h);
+  },
   onBackendExit: (cb: (info: { code: number | null; tail: string }) => void) => {
     const h = (_e: unknown, info: { code: number | null; tail: string }) => cb(info);
     ipcRenderer.on("backend:exit", h);

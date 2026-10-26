@@ -122,7 +122,7 @@ export type Settings = {
   max_steps: number;
   bash_timeout: number;
   permissions: { mode: string };
-  ui: { theme: "system" | "dark" | "light" };
+  ui: { theme: "system" | "dark" | "light"; notify?: "never" | "unfocused" | "always"; notify_approval?: boolean; close_to_tray?: boolean };
   network?: NetworkSettings;
   web?: WebSettings;
   subagent?: SubagentSettings;
@@ -300,6 +300,13 @@ export interface EeBridge {
   appInfo(): Promise<{ version: string; logs: string; packaged: boolean }>;
   onBackendExit(cb: (info: { code: number | null; tail: string }) => void): () => void;
   log?(line: string): void; // 写进 logs/backend.log
+  // D4-5 桌面通知 + 托盘
+  notify?(msg: { kind: string; threadId: string; title: string; body: string }): void;
+  setPrefs?(p: { notify: "never" | "unfocused" | "always"; notifyApproval: boolean; closeToTray: boolean }): Promise<void>;
+  setTrayStatus?(s: { running: number; waiting: number }): void;
+  onOpenThread?(cb: (threadId: string) => void): () => void;
+  onTrayAction?(cb: (action: string) => void): () => void;
+  quitApp?(): void;
 }
 
 declare global {
