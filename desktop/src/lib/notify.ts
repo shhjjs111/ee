@@ -50,7 +50,10 @@ export function turnCompletedNotice(p: { thread_id: string; reason: string }, th
 /** 会话状态从非审批变成 waiting_approval 时通知一次。 */
 export function approvalNotice(threadId: string, prev: ThreadStatus | undefined, next: ThreadStatus, threadTitle: string, items?: Item[]): NotifyMsg | null {
   if (next !== "waiting_approval" || prev === "waiting_approval") return null;
-  const ap = [...(items ?? [])].reverse().find((x) => x.type === "approval" && (x as any).status === "pending") as any;
+  const ap = [...(items ?? [])].reverse().find((x) => (x.type === "approval" || x.type === "question") && (x as any).status === "pending") as any;
+  if (ap?.type === "question") {
+    return { kind: "approval", threadId, title: `${threadTitle || "对话"} · 需要你回答`, body: String(ap.question).slice(0, 160) };
+  }
   const body = ap?.title ? String(ap.title).slice(0, 160) : "有操作在等你批准";
   return { kind: "approval", threadId, title: `${threadTitle || "对话"} · 需要你审批`, body };
 }

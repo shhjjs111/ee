@@ -24,6 +24,9 @@ def build_tools(profile, config=None) -> list[Tool]:
     if data0.get("background_shell", True):
         from ee.tools.bgshell import ShellKillTool, ShellOutputTool, ShellWriteTool
         tools += [ShellOutputTool(), ShellWriteTool(), ShellKillTool()]
+    if data0.get("ask_user", True):
+        from ee.tools.ask import AskUserTool
+        tools.append(AskUserTool())
     if getattr(profile, "edit_style", "edit") == "apply_patch":
         tools.append(ApplyPatchTool())
     if config is None:

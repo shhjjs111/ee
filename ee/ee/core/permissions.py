@@ -20,7 +20,7 @@ MODES = ["read-only", "default", "auto", "plan"]
 MODE_LABEL = {"read-only": "只读", "default": "默认", "auto": "全自动", "plan": "计划"}
 READONLY_MODES = ("read-only", "plan")
 
-READ_TOOLS = {"read", "grep", "glob", "todo", "present_plan"}
+READ_TOOLS = {"read", "grep", "glob", "todo", "present_plan", "ask_user"}
 WRITE_TOOLS = {"write", "edit", "apply_patch"}
 NET_TOOLS = {"web_search", "web_fetch"}
 
@@ -304,7 +304,31 @@ class PermissionPolicy:
         elif d.prefix:
             self.session_tools.add(f"{tool}:{d.prefix}")
 
+    def _eeignored(self, tool: str, args: dict) -> str | None:
+        """.eeignore 命中的路径（D4-8）；read/write/edit/apply_patch 碰到一律拒绝。"""
+        if tool not in ("read", "write", "edit", "apply_patch"):
+            return None
+        try:
+            from ee.core.eeignore import for_dir
+            ig = for_dir(self.workspace)
+        except Exception:  # noqa: BLE001
+            return None
+        if ig.empty:
+            return None
+        for p in (self._paths(tool, args) if tool != "read" else [str(args.get("path") or "")]):
+            if not p:
+                continue
+            ap = Path(p.strip().strip('"').strip("'")).expanduser()
+            if not ap.is_absolute():
+                ap = self.workspace / ap
+            if ig.ignored(ap):
+                return p
+        return None
+
     def check(self, tool: str, args: dict, info: dict | None = None) -> Decision:
+        hit = self._eeignored(tool, args)
+        if hit is not None:
+            return Decision("deny", f"{hit} 被项目的 .eeignore 排除，ee 不能读写它（也不要用 shell 绕过）")
         if tool.startswith("mcp__"):
             return self._check_mcp(tool, args, info or {})
         if tool == "shell":
@@ -455,7 +479,8 @@ class PermissionPolicy:
             return Decision("allow")
         remaining = []
         for s in unsafe:
-            if any(_match_rule(r, "shell", s) for r in self.allow):
+            # “shell(npm run *)” 也要命中不带参数的 “npm run”
+            if any(_match_rule(r, "shell", s) or _match_rule(r, "shell", s + " ") for r in self.allow):
                 continue
             pre = command_prefix(s)
             if pre in self.session_prefixes or any(s.startswith(p + " ") or s == p for p in self.session_prefixes):

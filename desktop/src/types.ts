@@ -17,7 +17,7 @@ export type ToolItem = ItemBase & {
   diff: string;
   meta: Record<string, any>;
 };
-export type ApprovalStatus = "pending" | "once" | "always" | "deny" | "cancelled";
+export type ApprovalStatus = "pending" | "once" | "always" | "forever" | "deny" | "cancelled";
 export type ApprovalItem = ItemBase & {
   type: "approval";
   call_id: string;
@@ -27,6 +27,17 @@ export type ApprovalItem = ItemBase & {
   prefix: string;
   status: ApprovalStatus;
   reason?: string;
+  rule?: string; // 选「本项目以后都允许」时写入的永久规则（D4-8）；空 = 不能永久允许
+};
+// ask_user 提问（D4-8）
+export type QuestionItem = ItemBase & {
+  type: "question";
+  call_id: string;
+  question: string;
+  options: string[];
+  multiple: boolean;
+  status: "pending" | "answered" | "cancelled";
+  answer?: string;
 };
 export type PlanEntry = { content: string; status: "pending" | "in_progress" | "completed" | string };
 export type PlanItem = ItemBase & { type: "plan"; items: PlanEntry[] };
@@ -34,7 +45,7 @@ export type NoticeItem = ItemBase & { type: "notice"; text: string; level: "info
 export type ErrorItem = ItemBase & { type: "error"; message: string };
 export type TurnEndItem = ItemBase & { type: "turn_end"; reason: string; duration_ms: number; usage: Usage };
 
-export type Item = UserItem | AssistantItem | ToolItem | ApprovalItem | PlanItem | NoticeItem | ErrorItem | TurnEndItem;
+export type Item = UserItem | AssistantItem | ToolItem | ApprovalItem | QuestionItem | PlanItem | NoticeItem | ErrorItem | TurnEndItem;
 
 export type Usage = {
   requests?: number;

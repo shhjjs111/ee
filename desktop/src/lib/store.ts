@@ -58,7 +58,8 @@ type Actions = {
   forkFrom(itemId: string): Promise<void>;
   editResend(itemId: string, text: string): Promise<boolean>;
   openSettings(section?: SettingsSection): void;
-  respond(callId: string, choice: "once" | "always" | "deny", reason?: string): Promise<void>;
+  respond(callId: string, choice: "once" | "always" | "forever" | "deny", reason?: string): Promise<void>;
+  answer(callId: string, answer: string): Promise<boolean>;
   openFile(path: string): void;
   set(p: Partial<State>): void;
   showToast(text: string, kind?: "info" | "error"): void;
@@ -382,6 +383,18 @@ export const useApp = create<State & Actions>((set, get) => ({
     const id = get().activeThreadId;
     if (!id) return;
     await get().rpc!.call("turn/interrupt", { thread_id: id }).catch(() => undefined);
+  },
+
+  async answer(callId, answer) {
+    const id = get().activeThreadId;
+    if (!id) return false;
+    try {
+      await get().rpc!.call("question/respond", { thread_id: id, call_id: callId, answer });
+      return true;
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+      return false;
+    }
   },
 
   async respond(callId, choice, reason) {

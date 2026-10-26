@@ -240,6 +240,71 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
           </div>
         )}
       </Card>
+
+      <PermanentRules />
     </>
+  );
+}
+
+/** 审批时选「本项目以后都允许」留下的永久规则（D4-8，~/.ee/permissions.json）。 */
+function PermanentRules() {
+  const rpc = useApp((s) => s.rpc);
+  const [rules, setRules] = useState<{ project: string; rule: string; added?: number; title?: string }[] | null>(null);
+  const [path, setPath] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const load = () =>
+    rpc!
+      .call("permissions/list", {})
+      .then((r) => {
+        setRules(r.rules);
+        setPath(r.path);
+      })
+      .catch((e) => setErr((e as Error).message));
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const remove = async (project: string, rule: string) => {
+    try {
+      await rpc!.call("permissions/remove", { project, rule });
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  const groups = new Map<string, { rule: string; title?: string }[]>();
+  for (const r of rules ?? []) groups.set(r.project, [...(groups.get(r.project) ?? []), r]);
+  return (
+    <Card
+      title="永久允许的操作"
+      desc={<>审批时点「本项目以后都允许」记下的规则，只在对应项目（及其子目录）生效，保存在 <span className="mono">{path || "~/.ee/permissions.json"}</span>，不会写进项目仓库。项目里不想让 ee 读写的文件，写进项目根目录的 <span className="mono">.eeignore</span>（语法同 .gitignore）。</>}
+    >
+      {err && <div className="pb-2 text-[12.5px] text-danger">{err}</div>}
+      {rules === null ? (
+        <Spinner />
+      ) : rules.length === 0 ? (
+        <div className="text-[12.5px] text-faint">还没有永久允许的规则</div>
+      ) : (
+        <div className="space-y-3">
+          {[...groups.entries()].map(([proj, list]) => (
+            <div key={proj}>
+              <div className="mono mb-1 truncate text-[12px] text-muted" title={proj}>
+                {proj}
+              </div>
+              {list.map((r) => (
+                <div key={r.rule} className="flex items-center gap-2 border-b border-line py-1.5 last:border-b-0">
+                  <span className="mono min-w-0 flex-1 truncate text-[12.5px] text-fg" title={r.title}>
+                    {r.rule}
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => remove(proj, r.rule)}>
+                    删除
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }

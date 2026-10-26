@@ -30,5 +30,7 @@ describe("notify", () => {
     expect(approvalNotice("t", "waiting_approval", "waiting_approval", "x", its)).toBeNull();
     expect(approvalNotice("t", "running", "idle", "x", its)).toBeNull();
     expect(approvalNotice("t", undefined, "waiting_approval", "x")!.body).toBe("有操作在等你批准");
+    const q = [{ id: "q", type: "question", status: "pending", question: "用哪个数据库？", options: [] }] as any;
+    expect(approvalNotice("t", "running", "waiting_approval", "建项目", q)).toMatchObject({ title: "建项目 · 需要你回答", body: "用哪个数据库？" });
   });
 });

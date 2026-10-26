@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 18:00（Asia/Shanghai，D4-7 文档读取完成；D4-5 CI 绿（run 40295558344）；下一步 D4-8 永久允许规则 + ask_user + .eeignore）
+最后更新：2026-10-26 18:30（Asia/Shanghai，D4-8 完成；D4-7 CI 绿（run 40296739267）；并行分支 feat/d4-9-exec、feat/d5-skills、feat/d5-hooks 进行中，合并后再做 D4-10 自动化）
 
-> **接手第一步（2026-10-26 18:00）**：D4-6、D4-7 已推送，先确认最新 Windows CI 绿（失败就修，尤其打包 exe 的 selftest 文档组件）；然后做 D4-8 永久允许规则 + ask_user + .eeignore。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；检查远端分支 feat/d4-9-exec、feat/d5-skills、feat/d5-hooks（并行开发中，各自测完后合并进 main 并在下面对应项打勾），然后做 D4-10 自动化。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -158,7 +158,13 @@
    - 依赖：pyproject 加 pypdf、python-docx、openpyxl、python-pptx；PyInstaller spec 加 hiddenimports（pypdf/docx/openpyxl/pptx/lxml）和 docx/pptx 的模板数据；`selftest` 增加文档组件检查（真建一个 docx/pptx，打包漏模板会直接失败）。
    - 测试：`tests/test_docread.py` 7 个（页码解析、PDF（手写最小 PDF，不依赖样本）含空页/选页/分段、docx 标题列表表格顺序、xlsx 多表/日期/按名字和序号选表/不存在的表、pptx 选张和备注、旧格式/损坏文件报错、缓存与文件变化、files 预览）；pytest 287 通过 2 跳过。
    - 已知/后续：扫描版 PDF 没有 OCR（可以让支持看图的模型看截图，后续可做“PDF 页转图片”）；.xls/.doc 旧格式不支持；Excel 图表、Word 图片不提取；python-pptx 带进 Pillow，安装包会大一些。
-8. [ ] 永久允许规则（审批“以后都允许”写进配置）+ ask_user 提问工具 + .eeignore
+8. [x] 永久允许规则 + ask_user 提问工具 + .eeignore（2026-10-26 18:30）
+   - 参考了谁、取了哪点：审批多一个“本项目以后都允许”、规则按项目存在用户目录（不进仓库）取自 Claude Code 的 “don't ask again for this project”（settings.local）与 Codex 的 execpolicy 规则追加；命令前缀规则沿用 ee 已有的 shell(前缀 *) 语法。ask_user：回合内等待回答、给 2～6 个选项 + 可自由回答、推荐项放第一个取自 Claude Code 的 AskUserQuestion 与 Cline 的 ask_followup_question（options）；子代理/无人值守不提供取自 Codex（exec 无交互）。.eeignore：gitignore 语法、拦读写工具、搜索结果过滤取自 Cline 的 .clineignore，文件名风格同 Aider 的 .aiderignore / Continue 的 .continueignore。
+   - 永久规则：`ee/core/rules.py`（~/.ee/permissions.json，按项目规范化路径存 allow 列表，子目录继承；rule_from_decision：shell→shell(前缀 *)、工作区外写→write(目录/*)、MCP/其他工具→工具名；强制询问（无前缀）的不能永久允许）。Session 初始化时并入 policy.allow；审批选项新增 `forever`（threads.respond 接受，审批条目带 `rule` 字段供界面显示）；permissions `shell(npm run *)` 也命中裸 `npm run`。RPC `permissions/list|remove`（server/rules_rpc.py，删除时同步去掉已打开会话里的规则）。界面：审批卡片「本项目以后都允许」（悬停显示规则），设置「工具与记忆」底部「永久允许的操作」列表可删。
+   - ask_user：`tools/ask.py` + 事件 `QuestionRequest`（core/events.py）；thread 里加 `question` 条目并放进 approvals（会话状态变 waiting_approval → 桌面通知“需要你回答”；中断时标 cancelled）；RPC `question/respond {thread_id, call_id, answer}`，approval/respond 不能回答提问。配置 `ask_user = true`，子代理里关闭。界面 QuestionCard：单选点选项即发送、多选勾选后提交、可自由输入；回答后折叠成一行。
+   - .eeignore：`ee/core/eeignore.py`（gitignore 子集：注释、!、目录 /、锚定、* ? [] **；工作区到 git 根之间的多个 .eeignore 叠加，近的优先；按文件 mtime 缓存）。permissions 对 read/write/edit/apply_patch 命中直接拒绝（原因写明“被 .eeignore 排除，也不要用 shell 绕过”）；glob/grep 结果过滤。设置页说明里提到。
+   - 测试：`tests/test_rules_ask_ignore.py` 8 个（规则推导/存取/子目录/删除、裸前缀命中、forever 全流程含新会话生效与删除同步、ask_user 全流程与中断取消、子代理无 ask_user、.eeignore 匹配与叠加、工具拦截与搜索过滤与缓存失效）；notify.test 加提问通知；pytest 295 通过 2 跳过，vitest 20。
+   - 已知/后续：.eeignore 拦不住 shell 命令（只靠提示）；文件面板还不标 .eeignore；永久规则只有 allow，没有界面添加 deny；ask_user 不支持一次问多个问题。
 9. [ ] headless `ee exec --json`（自动化执行器的基础）
 10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）
 

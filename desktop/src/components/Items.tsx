@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import {
+  MessageCircleQuestion,
   SearchCheck,
   GitFork,
   Pencil,
@@ -27,7 +28,7 @@ import { diffStat, formatDuration, shortPath } from "../lib/reduce";
 import { splitReview } from "../lib/review";
 import { PlanProposalCard, ReviewCard } from "./ReviewDialogs";
 import { useApp } from "../lib/store";
-import type { ApprovalItem, AssistantItem, Item, PlanItem, ToolItem, TurnEndItem, UserItem } from "../types";
+import type { ApprovalItem, AssistantItem, Item, PlanItem, QuestionItem, ToolItem, TurnEndItem, UserItem } from "../types";
 import { SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
 import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -424,6 +425,7 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
     );
   }
   if (item.name === "todo") return null; // 计划单独渲染
+  if (item.name === "ask_user" && !failed) return null; // 提问卡片单独渲染
   if (item.name === "present_plan" && item.meta?.kind === "plan_proposal") return <PlanProposalCard item={item} />;
   if (item.name === "task" || item.meta?.kind === "subagent") return <SubagentCard item={item} />;
   if (item.name === "web_search") return <WebSearchCard item={item} />;
@@ -497,7 +499,15 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
   const isCmd = item.tool === "shell";
   const isPatch = item.tool === "apply_patch";
   const label =
-    item.status === "once" ? "已允许一次" : item.status === "always" ? "已允许（本会话内不再询问）" : item.status === "deny" ? "已拒绝" : "已取消";
+    item.status === "once"
+      ? "已允许一次"
+      : item.status === "always"
+        ? "已允许（本会话内不再询问）"
+        : item.status === "forever"
+          ? `已永久允许（本项目：${item.rule ?? ""}）`
+          : item.status === "deny"
+            ? "已拒绝"
+            : "已取消";
   if (!pending) {
     return (
       <div className="fadein flex items-center gap-2 py-0.5 text-[12.5px] text-faint">
@@ -550,6 +560,13 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
         <Button variant="outline" size="sm" onClick={() => respond(item.call_id, "always")} title={always}>
           本会话都允许
         </Button>
+        {item.rule && (
+          <Tip label={`写入永久规则 ${item.rule}，本项目以后的对话都不再询问；可在 设置 → 工具与记忆 里删除`}>
+            <Button variant="ghost" size="sm" onClick={() => respond(item.call_id, "forever")}>
+              本项目以后都允许
+            </Button>
+          </Tip>
+        )}
         <div className="flex-1" />
         {askReason ? (
           <Button variant="danger" size="sm" onClick={() => respond(item.call_id, "deny", reason)}>
@@ -565,6 +582,89 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
             </Button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ 提问（ask_user，D4-8）
+export function QuestionCard({ item }: { item: QuestionItem }) {
+  const answer = useApp((s) => s.answer);
+  const [text, setText] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  if (item.status !== "pending") {
+    return (
+      <div className="fadein flex items-start gap-2 py-0.5 text-[12.5px] text-faint">
+        <MessageCircleQuestion size={13} className="mt-[3px] shrink-0" />
+        <span className="min-w-0">
+          {item.question}
+          {item.status === "answered" ? (
+            <span className="text-muted"> → {item.answer}</span>
+          ) : (
+            <span>（已取消）</span>
+          )}
+        </span>
+      </div>
+    );
+  }
+  const send = async (a: string) => {
+    if (!a.trim() || busy) return;
+    setBusy(true);
+    await answer(item.call_id, a.trim());
+    setBusy(false);
+  };
+  const toggle = (o: string) => setPicked(picked.includes(o) ? picked.filter((x) => x !== o) : [...picked, o]);
+  return (
+    <div className="fadein overflow-hidden rounded-xl border border-accent/40 bg-elev shadow-[var(--shadow)]">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5 text-[13px] font-medium">
+        <MessageCircleQuestion size={15} className="text-accent" />
+        ee 想问你
+      </div>
+      <div className="px-4 py-3">
+        <div className="mb-3 whitespace-pre-wrap text-[13.5px] text-fg">{item.question}</div>
+        {item.options.length > 0 && (
+          <div className="mb-3 flex flex-col gap-1.5">
+            {item.options.map((o, i) =>
+              item.multiple ? (
+                <label key={i} className="flex cursor-pointer items-center gap-2 rounded-lg border border-line px-3 py-2 text-[13px] hover:bg-soft">
+                  <input type="checkbox" checked={picked.includes(o)} onChange={() => toggle(o)} />
+                  {o}
+                </label>
+              ) : (
+                <button
+                  key={i}
+                  disabled={busy}
+                  onClick={() => send(o)}
+                  className="rounded-lg border border-line px-3 py-2 text-left text-[13px] text-fg transition hover:border-accent hover:bg-soft disabled:opacity-50"
+                >
+                  <span className="mr-2 text-faint">{i + 1}.</span>
+                  {o}
+                </button>
+              ),
+            )}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) send(item.multiple && picked.length ? [...picked, text].filter(Boolean).join("；") : text);
+            }}
+            placeholder={item.options.length ? "或者直接写你的回答，回车发送" : "写下你的回答，回车发送"}
+            className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2.5 text-[13px] outline-none focus:border-accent"
+          />
+          {item.multiple && item.options.length > 0 ? (
+            <Button size="sm" variant="primary" disabled={busy || (!picked.length && !text.trim())} onClick={() => send([...picked, text].filter((x) => x.trim()).join("；"))}>
+              提交{picked.length ? `（${picked.length}）` : ""}
+            </Button>
+          ) : (
+            <Button size="sm" variant="primary" disabled={busy || !text.trim()} onClick={() => send(text)}>
+              回答
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );

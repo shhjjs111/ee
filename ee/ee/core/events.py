@@ -77,6 +77,16 @@ class ApprovalRequest(Event):
 
 
 @dataclass
+class QuestionRequest(Event):
+    """ask_user 工具向用户提问（D4-8）。界面调用 future.set_result(回答文字)。"""
+    call_id: str
+    question: str
+    options: list = field(default_factory=list)
+    multiple: bool = False
+    future: asyncio.Future | None = None
+
+
+@dataclass
 class ApprovalDecision:
     choice: str             # once | always | deny | deny_with_reason
     reason: str = ""

@@ -147,6 +147,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     data = copy.deepcopy(parent.config.data)
     data["max_steps"] = steps
     data.setdefault("subagent", {})["enabled"] = False      # 不嵌套
+    data["ask_user"] = False                                 # 子代理不向用户提问
     cfg = copy.copy(parent.config)
     cfg.data = data
 

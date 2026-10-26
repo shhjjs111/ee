@@ -56,6 +56,16 @@ def _expand_braces(p: str) -> list[str]:
     return [x for opt in m.group(1).split(",") for x in _expand_braces(p[:m.start()] + opt + p[m.end():])]
 
 
+def _ignore(ctx: ToolContext):
+    """.eeignore（D4-8）：没有规则时返回 None。"""
+    from ee.core.eeignore import for_dir
+    try:
+        ig = for_dir(ctx.cwd)
+    except Exception:  # noqa: BLE001
+        return None
+    return None if ig.empty else ig
+
+
 def _mtime(p: Path) -> float:
     try:
         return p.stat().st_mtime
@@ -91,6 +101,9 @@ class GlobTool(Tool):
             files = [root / l for l in out.splitlines() if l]
         else:
             files = [p for p in _walk(root) if _glob_match(str(p.relative_to(root)), pattern)]
+        ig = _ignore(ctx)
+        if ig is not None:
+            files = [f for f in files if not ig.ignored(f, False)]
         files.sort(key=_mtime, reverse=True)
         total = len(files)
         shown = files[:MAX_FILES]
@@ -164,6 +177,9 @@ class GrepTool(Tool):
                                 per_file.setdefault(str(p), []).append(f"{i}: {line.rstrip()[:400]}")
                 except (UnicodeDecodeError, OSError):
                     continue
+        ig = _ignore(ctx)
+        if ig is not None:
+            per_file = {f: v for f, v in per_file.items() if not ig.ignored(Path(f) if Path(f).is_absolute() else ctx.cwd / f, False)}
         if not per_file:
             return ToolResult("没有匹配", summary=self.summary(args), meta={"kind": "search"})
         order = sorted(per_file, key=lambda f: _mtime(Path(f)), reverse=True)

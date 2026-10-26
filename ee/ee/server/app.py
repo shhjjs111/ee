@@ -28,7 +28,7 @@ from ee.core.secrets import redact
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, shell_rpc
+from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, rules_rpc, shell_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -65,6 +65,7 @@ class Backend:
             "turn/start": self.turn_start,
             "turn/interrupt": self.turn_interrupt,
             "approval/respond": self.approval_respond,
+            "question/respond": self.question_respond,
             "settings/get": self.settings_get,
             "settings/set": self.settings_set,
             "models/list": self.models_list,
@@ -84,6 +85,7 @@ class Backend:
         mcp_rpc.register(self.methods, self)           # mcp/list|test
         review_rpc.register(self.methods, self)        # review/targets|start, git/commit_message|commit
         shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
+        rules_rpc.register(self.methods, self)         # permissions/list|remove（永久允许规则，D4-8）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -335,6 +337,13 @@ class Backend:
         t = await self._athread(thread_id)
         try:
             return t.respond(call_id, choice, reason)
+        except ValueError as e:
+            raise RpcError(str(e))
+
+    async def question_respond(self, thread_id: str, call_id: str, answer: str) -> dict:
+        t = await self._athread(thread_id)
+        try:
+            return t.answer(call_id, answer)
         except ValueError as e:
             raise RpcError(str(e))
 

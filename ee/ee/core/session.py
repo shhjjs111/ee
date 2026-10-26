@@ -65,6 +65,11 @@ class Session:
         self.policy = PermissionPolicy(mode=mode or perms.get("mode", "default"), workspace=self.cwd,
                                        allow=list(perms.get("allow", [])), ask=list(perms.get("ask", [])),
                                        deny=list(perms.get("deny", [])))
+        try:     # 审批时选过「本项目以后都允许」的规则（D4-8，~/.ee/permissions.json）
+            from ee.core import rules as _rules
+            self.policy.allow += [r for r in _rules.rules_for(self.cwd, self.home) if r not in self.policy.allow]
+        except Exception:  # noqa: BLE001
+            pass
         self.shell_name = shell or config.data.get("shell", "auto")
         self.shell = None
         self.notices: list[str] = []
@@ -713,8 +718,18 @@ class Session:
             return ToolResult(f"被权限规则拒绝，未执行：{d.reason}", ok=False, meta={"denied": True})
         if d.action == "ask":
             dec = await self._ask(cid, tool, args, d, emit)
-            if dec.choice == "always":
+            if dec.choice in ("always", "forever"):
                 self.policy.remember(d, tool.name)
+            if dec.choice == "forever":
+                from ee.core import rules as _rules
+                rule = _rules.rule_from_decision(tool.name, d.prefix)
+                if rule:
+                    try:
+                        _rules.add(self.cwd, rule, self.home, title=str(args.get("command") or args.get("path") or tool.name))
+                    except OSError:
+                        pass
+                    if rule not in self.policy.allow:
+                        self.policy.allow.append(rule)
             elif dec.choice in ("deny", "deny_with_reason"):
                 msg = "用户拒绝了这次操作，没有执行。"
                 if dec.reason:

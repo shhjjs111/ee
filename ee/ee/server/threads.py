@@ -23,7 +23,7 @@ from ee.config import load_config
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Error, Notice, PlanUpdate,
                             ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
                             TurnStart, Usage)
-from ee.core.events import SubagentEnd, SubagentStart, SubagentUpdate
+from ee.core.events import QuestionRequest, SubagentEnd, SubagentStart, SubagentUpdate
 from ee.core.permissions import MODES
 from ee.core.subagent import apply_event as apply_subagent_event
 from ee.core.session import Session
@@ -241,12 +241,31 @@ class Thread:
             return False
         return self.session.interrupt()
 
+    def answer(self, call_id: str, answer: str) -> dict:
+        """回答 ask_user 的提问（D4-8）。"""
+        entry = self.approvals.get(call_id)
+        if entry is None or entry[1].get("type") != "question":
+            raise ValueError("这个提问已经回答过或已失效")
+        answer = str(answer or "").strip()
+        if not answer:
+            raise ValueError("回答不能为空")
+        self.approvals.pop(call_id, None)
+        fut, it = entry
+        it["status"] = "answered"
+        it["answer"] = answer[:4000]
+        self._update(it)
+        if not fut.done():
+            fut.set_result(answer)
+        self.notify("thread/updated", {"thread": self.summary()})
+        return {"ok": True}
+
     def respond(self, call_id: str, choice: str, reason: str = "") -> dict:
-        if choice not in ("once", "always", "deny"):
+        if choice not in ("once", "always", "forever", "deny"):
             raise ValueError(f"未知审批选项：{choice}")
-        entry = self.approvals.pop(call_id, None)
-        if entry is None:
+        entry = self.approvals.get(call_id)
+        if entry is None or entry[1].get("type") != "approval":
             raise ValueError("这个审批已经处理过或已失效")
+        self.approvals.pop(call_id, None)
         fut, it = entry
         it["status"] = choice
         if reason:
@@ -395,9 +414,17 @@ class Thread:
             it.update({"status": status, "output": _clip(ev.output or ""), "summary": ev.summary or it.get("summary"),
                        "diff": _clip(ev.diff or ""), "meta": ev.meta})
             self._update(it)
+        elif isinstance(ev, QuestionRequest):
+            it = self._add({"type": "question", "call_id": ev.call_id, "question": ev.question,
+                            "options": list(ev.options or []), "multiple": bool(ev.multiple), "status": "pending"})
+            if ev.future is not None:
+                self.approvals[ev.call_id] = (ev.future, it)
+            self.notify("thread/updated", {"thread": self.summary()})
         elif isinstance(ev, ApprovalRequest):
+            from ee.core.rules import rule_from_decision
             it = self._add({"type": "approval", "call_id": ev.call_id, "tool": ev.tool, "title": ev.title,
-                            "detail": _clip(ev.detail or "", 20000), "prefix": ev.prefix, "status": "pending"})
+                            "detail": _clip(ev.detail or "", 20000), "prefix": ev.prefix, "status": "pending",
+                            "rule": rule_from_decision(ev.tool, ev.prefix) or ""})
             if ev.future is not None:
                 self.approvals[ev.call_id] = (ev.future, it)
             self.notify("thread/updated", {"thread": self.summary()})

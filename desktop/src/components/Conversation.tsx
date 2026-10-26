@@ -12,6 +12,7 @@ import {
   ExploreGroup,
   NoticeRow,
   PlanCard,
+  QuestionCard,
   ToolCard,
   TurnEnd,
   UserMessage,
@@ -28,8 +29,10 @@ function renderItem(it: Item, approvals: Map<string, string>) {
       return <ToolCard item={it} approval={approvals.get(it.call_id)} />;
     case "approval":
       // 批准过的不单独占一行（工具行上有小盾牌）；待批准和拒绝的显示
-      if (it.status === "once" || it.status === "always") return null;
+      if (it.status === "once" || it.status === "always" || it.status === "forever") return null;
       return <ApprovalCard item={it} />;
+    case "question":
+      return <QuestionCard item={it} />;
     case "plan":
       return <PlanCard item={it} />;
     case "notice":
