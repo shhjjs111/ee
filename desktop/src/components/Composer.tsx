@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ArrowUp, AtSign, Cpu, File, ImagePlus, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
+import { ArrowUp, AtSign, Cpu, File, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import { parseSlash, resolveMode, slashItems, type PromptInfo, type SlashItem } from "../lib/slash";
@@ -11,6 +11,7 @@ const MODES = [
   { value: "read-only", label: "只读", hint: "只能读文件和运行只读命令", icon: <Shield size={14} /> },
   { value: "default", label: "默认", hint: "工作区内改文件免问；其他命令先问你", icon: <ShieldCheck size={14} /> },
   { value: "auto", label: "全自动", hint: "都不问（deny 规则和危险命令仍会拦）", icon: <ShieldOff size={14} /> },
+  { value: "plan", label: "计划", hint: "只调研出方案，你批准后再动手（Shift+Tab 切换模式）", icon: <ListChecks size={14} /> },
 ];
 
 export function modeLabel(m: string) {
@@ -221,6 +222,13 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         clearInput();
         s.openSettings("mcp");
         return true;
+      case "plan":
+        clearInput();
+        localStorage.setItem("ee.mode", "plan");
+        s.set({ draftMode: "plan" });
+        if (args) s.send(args);
+        else s.showToast("已切到计划模式：先出方案，批准后再改文件");
+        return true;
       case "review":
         clearInput();
         s.set({ dialog: { kind: "review", instructions: args } });
@@ -353,6 +361,16 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         setMention(null);
         return;
       }
+    }
+    if (e.key === "Tab" && e.shiftKey) {
+      // Shift+Tab 轮换权限模式：默认 → 全自动 → 计划 → 只读 → 默认
+      e.preventDefault();
+      const order = ["default", "auto", "plan", "read-only"];
+      const next = order[(order.indexOf(s.draftMode) + 1) % order.length];
+      localStorage.setItem("ee.mode", next);
+      s.set({ draftMode: next });
+      s.showToast(`权限模式：${modeLabel(next)}`);
+      return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();

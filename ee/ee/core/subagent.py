@@ -140,7 +140,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     steps = max(1, min(limit, int(steps)))
 
     want = str(args.get("mode") or "").strip().lower()
-    read_only = (want in ("read-only", "readonly", "read_only") or parent.policy.mode == "read-only"
+    read_only = (want in ("read-only", "readonly", "read_only") or parent.policy.mode in ("read-only", "plan")
                  or kind == "explore")
     model = str(args.get("model") or adef.model or "").strip() or parent.spec.alias
 

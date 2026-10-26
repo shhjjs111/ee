@@ -20,7 +20,7 @@ describe("slash", () => {
   it("lists commands by prefix, prompts after builtins, no duplicates", () => {
     const all = slashItems("/", prompts, models)!;
     expect(all.map((i) => i.key)).toEqual([
-      "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:memory",
+      "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:plan", "builtin:memory",
       "builtin:review", "builtin:commit", "builtin:mcp",
       "prompt:init",
     ]);
@@ -35,7 +35,8 @@ describe("slash", () => {
 
   it("second level options for model and mode", () => {
     expect(slashItems("/model pro", prompts, models)!.map((i) => i.action)).toEqual([{ run: "/model deepseek-pro" }]);
-    expect(slashItems("/mode ", prompts, models)!.length).toBe(3);
+    expect(slashItems("/mode ", prompts, models)!.length).toBe(4);
+    expect(resolveMode("计划")).toBe("plan");
     expect(slashItems("/mode 全", prompts, models)![0].action).toEqual({ run: "/mode auto" });
   });
 

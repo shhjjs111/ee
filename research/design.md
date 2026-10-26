@@ -151,4 +151,5 @@ ee/
 - [x] D3-F key 安全存储（2026-10-26：Windows 凭据管理器 + DPAPI 文件后备，v3 迁移明文，脱敏；优先级 凭据存储 > 旧明文 > 环境变量，见 HANDOFF.md）
 - [x] D4-1 磁盘快照（2026-10-26：影子 git 目录 ~/.ee/snapshot/<哈希>，回合前后 tree 记在用户条目，/undo 与编辑重发走磁盘，失败回退内存快照；参考 OpenCode 并适配 ee，详见 HANDOFF.md）
 - [x] D4-2 /review 与 /commit（2026-10-26：审查对象四选一、只读回合、P0–P3 结构化结果与一键修复；提交信息生成→编辑→确认提交；综合 Codex、OpenCode、Aider、Cline 的做法，详见 HANDOFF.md）
+- [x] D4-3 Plan 模式（2026-10-26：第四种权限模式 plan，present_plan 提交方案即结束回合，卡片批准后切默认/全自动执行；综合 Claude Code、Cline、OpenCode 的做法，详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）

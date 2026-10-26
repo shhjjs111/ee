@@ -558,7 +558,12 @@ class Session:
                     emit(Notice(f"已达到最大步数 {max_steps}，本回合结束。", "warn"))
                     emit(TurnDone("max_steps", final))
                     return
+                self._end_turn = False
                 note = await self._run_tools(comp.tool_calls, emit)
+                if self._end_turn and not self.pending:   # present_plan：方案已提交，等用户批准
+                    self._end_turn = False
+                    emit(TurnDone("completed", final))
+                    return
                 if self.guard.halt:
                     emit(Notice(self.guard.halt, "warn"))
                     emit(TurnDone("loop", final))
@@ -695,6 +700,8 @@ class Session:
         emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, res.meta))
         if res.meta.get("kind") == "plan":
             emit(PlanUpdate(res.meta.get("items", [])))
+        if res.ok and res.meta.get("end_turn"):
+            self._end_turn = True
 
     async def _guarded_run(self, cid: str, tool, args: dict, emit) -> ToolResult:
         d: Decision = self.policy.check(tool.name, args, info={"read_only": bool(getattr(tool, "read_only", False)),

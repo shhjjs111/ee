@@ -17,7 +17,9 @@ __all__ = ["Tool", "ToolContext", "ToolError", "ToolResult", "ToolState", "build
 
 
 def build_tools(profile, config=None) -> list[Tool]:
-    tools: list[Tool] = [ReadTool(), WriteTool(), EditTool(), ShellTool(), GrepTool(), GlobTool(), TodoTool()]
+    from ee.tools.plan import PresentPlanTool
+    tools: list[Tool] = [ReadTool(), WriteTool(), EditTool(), ShellTool(), GrepTool(), GlobTool(), TodoTool(),
+                         PresentPlanTool()]
     if getattr(profile, "edit_style", "edit") == "apply_patch":
         tools.append(ApplyPatchTool())
     if config is None:

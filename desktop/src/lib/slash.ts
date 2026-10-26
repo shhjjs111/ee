@@ -25,7 +25,8 @@ export const BUILTIN: SlashCommand[] = [
   { name: "new", description: "开始新对话", takesArgs: false, kind: "builtin" },
   { name: "undo", description: "撤销上一回合的文件改动", takesArgs: false, kind: "builtin" },
   { name: "model", description: "切换模型", argHint: "<模型名>", takesArgs: true, kind: "builtin" },
-  { name: "mode", description: "切换权限模式", argHint: "只读 | 默认 | 全自动", takesArgs: true, kind: "builtin" },
+  { name: "mode", description: "切换权限模式", argHint: "只读 | 默认 | 全自动 | 计划", takesArgs: true, kind: "builtin" },
+  { name: "plan", description: "计划模式：先调研出方案，批准后再改（可直接跟任务）", argHint: "[任务]", takesArgs: true, kind: "builtin" },
   { name: "memory", description: "记住一句话（不带文字则打开记忆设置）", argHint: "[要记住的话]", takesArgs: true, kind: "builtin" },
   { name: "review", description: "代码审查：未提交的改动、相对分支、某个提交或按要求（只读）", argHint: "[额外要求]", takesArgs: true, kind: "builtin" },
   { name: "commit", description: "让模型根据改动写提交信息，确认后 git commit", takesArgs: false, kind: "builtin" },
@@ -36,6 +37,7 @@ export const MODE_OPTIONS = [
   { value: "read-only", label: "只读", hint: "只能读文件和运行只读命令" },
   { value: "default", label: "默认", hint: "工作区内改文件免问；其他命令先问你" },
   { value: "auto", label: "全自动", hint: "都不问（deny 规则和危险命令仍会拦）" },
+  { value: "plan", label: "计划", hint: "只调研出方案，批准后再改" },
 ];
 
 export function allCommands(prompts: PromptInfo[]): SlashCommand[] {

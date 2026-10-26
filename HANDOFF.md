@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 16:05（Asia/Shanghai，D4-2 /review 与 /commit 完成，等 Windows CI；下一步 D4-3 Plan 模式）
+最后更新：2026-10-26 16:25（Asia/Shanghai，D4-2 CI 全绿；D4-3 Plan 模式完成，等 Windows CI；下一步 D4-4 会话全文搜索）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -122,7 +122,12 @@
    - 前端：`components/ReviewDialogs.tsx`（审查弹窗：四种对象 + 分支/提交下拉 + 额外要求；提交弹窗：自动生成、可改、重新生成、Ctrl+Enter 提交、显示要提交的文件；ReviewCard：总评 + P0–P3 列表、点路径打开文件、展开说明、勾选后“修复选中的 N 个”按当前权限模式发给模型）；`lib/review.ts` 解析/拆块/修复消息（流式中未闭合的块也隐藏）；斜杠菜单加 /review [要求]、/commit；改动审阅栏加「审查」「提交」两个按钮。
    - 测试：`tests/test_review.py` 6 个（对象与 diff、错误、解析、只读回合拦写且恢复模式、生成并提交、只提交暂存）；`src/lib/review.test.ts` 4 个；pytest 266 通过 2 跳过，vitest 17 通过。
    - 已知/后续：审查提示（含 diff）进入主会话历史，占上下文（靠自动压缩）；PR 审查（gh pr diff）未做；审查进行中插入的消息也在只读下执行。
-3. [ ] ★Plan 模式：只读出方案 → 点「按此执行」切到默认/全自动继续
+3. [x] ★Plan 模式（2026-10-26 16:25）：只读出方案 → 点「按此执行」切到默认/全自动继续
+   - 参考了谁、取了哪点：计划模式作为第四种权限模式、Shift+Tab 轮换模式、模型用专门工具提交方案后停下等批准取自 Claude Code（ExitPlanMode）；“方案工具调用即结束回合、用户回复即修改意见”取自 Cline 的 plan_mode_respond；计划模式权限 = 只读（写文件/非只读命令/改记忆一律拒）取自 OpenCode 的 plan agent；批准时选“默认/全自动”再执行取自 Claude Code 的批准选项；子代理在计划模式下强制只读沿用 ee 现有规则。
+   - 后端：permissions `MODES` 加 `plan`（标签“计划”，`READONLY_MODES` 统一判只读）；context `PLAN_NOTE` 在计划模式时写进 <permissions> 环境块（切模式时随增量环境信息告诉模型）；新工具 `tools/plan.py` `present_plan{title?, plan}`（非计划模式调用报错；成功时 meta `kind=plan_proposal`、`end_turn`），session 在一步工具执行完后看到 end_turn 且没有排队消息就直接结束回合（不再请求模型）；子代理在 plan 下只读。
+   - 前端：模式下拉加“计划”，输入框 Shift+Tab 轮换 默认→全自动→计划→只读；`/plan [任务]` 切到计划模式（带任务就直接发）；`/mode 计划`；PlanProposalCard（方案 markdown + 「按此执行（默认模式）」「按此执行（全自动）」，之后有新消息就显示“已处理”）；设置页默认模式可选计划。
+   - 测试：`tests/test_plan.py` 3 个（权限、完整流程：写被拒→提交方案后不再请求模型→批准切默认后能写且模型看到模式变化、非计划模式报错继续）；pytest 269 通过 2 跳过，vitest 17 通过。
+   - 已知/后续：方案不单独存文件（在会话里）；ask_user 结构化提问留到 D4-8。
 4. [ ] ★会话全文搜索：sqlite FTS5 索引条目文本，store.append 增量写；RPC thread/search 返回命中片段；左栏搜索框改走它
 5. [ ] 桌面通知 + 托盘常驻：回合完成 / 需要审批时 Windows 通知（从不 / 窗口不在前台 / 总是）；关窗后托盘常驻（自动化前置）
 6. [ ] 后台长命令：bash 工具可后台启动（dev server、watch、长测试），返回进程会话 id；新工具 shell_output（读增量输出）、shell_write（写 stdin，支持交互程序）、shell_kill；回合结束不杀，会话关闭时杀进程树；UI 列出后台命令

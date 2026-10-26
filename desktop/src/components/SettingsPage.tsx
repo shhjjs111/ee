@@ -23,6 +23,7 @@ const MODE_LABEL: Record<string, [string, string]> = {
   "read-only": ["只读", "只能读文件和搜索，不改任何东西"],
   default: ["默认", "工作区内读写免问；其他命令、工作区外写入先问你"],
   auto: ["全自动", "都不问；deny 规则和危险命令仍会拦下"],
+  plan: ["计划", "只调研出方案，你批准后再切到默认/全自动执行"],
 };
 const FAMILY_LABEL: Record<string, string> = {
   auto: "自动识别", deepseek: "DeepSeek", qwen: "Qwen", kimi: "Kimi", glm: "GLM", minimax: "MiniMax",

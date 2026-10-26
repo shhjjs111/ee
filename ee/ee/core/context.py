@@ -57,6 +57,13 @@ class FrozenPrefix:
 
 # ------------------------------------------------------------------ 动态环境块
 
+PLAN_NOTE = ("计划模式：现在只调研、出方案，不修改任何文件（写文件和非只读命令都会被拒绝）。\n"
+             "1. 先读代码、搜索、必要时上网，把要改哪里、为什么弄清楚；需求有关键歧义时直接用文字问用户，然后结束回合。\n"
+             "2. 想清楚后调用 present_plan 提交方案（markdown）：目标、要改的文件和具体改法、步骤顺序、风险和验证方法；"
+             "要具体到别人照着就能做，不要写空话。\n"
+             "3. 提交后本回合结束，等用户批准；用户可能提修改意见，按意见改完再次 present_plan。\n")
+
+
 def env_parts(cwd: Path, shell, git: gitinfo.GitStatus | None, gh_available: bool, mode_label: str,
               today: str | None = None) -> dict[str, str]:
     """返回 name → 内容。每个子块独立比较变化；量化到“天”，避免无谓抖动。"""
@@ -66,7 +73,7 @@ def env_parts(cwd: Path, shell, git: gitinfo.GitStatus | None, gh_available: boo
                 f"日期：{today or time.strftime('%Y-%m-%d')}\n</env>"),
         "shell": (f"<shell>\n当前 shell：{shell.display}（{_syntax_hint(shell)}）\n</shell>" if shell else
                   "<shell>\n当前 shell：未知\n</shell>"),
-        "permissions": f"<permissions>\n权限模式：{mode_label}\n</permissions>",
+        "permissions": f"<permissions>\n权限模式：{mode_label}\n{PLAN_NOTE if mode_label == '计划' else ''}</permissions>",
     }
     if git is not None and git.is_repo:
         dirty = f"{git.changed} 个已跟踪文件有改动，{git.untracked} 个未跟踪文件" if git.dirty else "工作区干净"

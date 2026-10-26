@@ -1,11 +1,13 @@
 // D4-2：/review 选择审查对象的弹窗、/commit 提交弹窗、审查结果卡片。
 import * as Dialog from "@radix-ui/react-dialog";
 import clsx from "clsx";
-import { CheckCircle2, GitCommitHorizontal, RefreshCw, SearchCheck, TriangleAlert, Wrench, X } from "lucide-react";
+import { CheckCircle2, GitCommitHorizontal, ListChecks, Play, RefreshCw, SearchCheck, TriangleAlert, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { location, fixMessage, type ReviewResult } from "../lib/review";
 import { useApp, type ReviewParams } from "../lib/store";
+import type { ToolItem } from "../types";
 import { PathLink } from "./Items";
+import { Markdown } from "./Markdown";
 import { Button, Select, Spinner } from "./ui";
 
 function useCwd(): string {
@@ -328,6 +330,50 @@ export function ReviewCard({ result }: { result: ReviewResult }) {
           <Button size="sm" variant="soft" disabled={!chosen.length || !idle} onClick={() => s.send(fixMessage(chosen))}>
             <Wrench size={13} />
             修复选中的 {chosen.length} 个
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 计划模式提交的方案（present_plan）：批准后切模式并让模型按方案执行。 */
+export function PlanProposalCard({ item }: { item: ToolItem }) {
+  const s = useApp();
+  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  const idle = !d || d.status === "idle";
+  const idx = d ? d.items.findIndex((x) => x.id === item.id) : -1;
+  const later = d && idx >= 0 ? d.items.slice(idx + 1).some((x) => x.type === "user") : false;
+  const plan = String(item.meta?.plan ?? "");
+  const title = String(item.meta?.title || "实施方案");
+
+  const run = (mode: "default" | "auto") => {
+    localStorage.setItem("ee.mode", mode);
+    s.set({ draftMode: mode });
+    s.send("方案已批准，请按上面的方案开始执行；每完成一步更新任务清单，最后跑验证并汇报结果。");
+  };
+
+  return (
+    <div className="fadein overflow-hidden rounded-xl border border-line-strong">
+      <div className="flex items-center gap-2 border-b border-line bg-soft px-3 py-2 text-[12.5px]">
+        <ListChecks size={14} className="text-muted" />
+        <span className="font-medium text-fg">{title}</span>
+        <span className="flex-1" />
+        <span className="text-faint">{later ? "已处理" : "等你批准"}</span>
+      </div>
+      <div className="max-h-[480px] overflow-y-auto px-4 py-2">
+        <Markdown text={plan} />
+      </div>
+      {!later && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-2">
+          <span className="flex-1 text-[11.5px] text-faint">不满意就直接在输入框写修改意见，ee 会改方案再提交</span>
+          <Button size="sm" variant="soft" disabled={!idle} onClick={() => run("default")}>
+            <Play size={12} />
+            按此执行（默认模式）
+          </Button>
+          <Button size="sm" variant="primary" disabled={!idle} onClick={() => run("auto")}>
+            <Play size={12} />
+            按此执行（全自动）
           </Button>
         </div>
       )}
