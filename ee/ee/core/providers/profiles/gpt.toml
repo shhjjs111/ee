@@ -1,0 +1,13 @@
+# GPT 家族（多经中转站）。额外提供 apply_patch 工具（训练过的补丁格式）。
+family = "gpt"
+match = ["gpt", "re:(^|/)o[1-9]"]
+context_window = 272000
+max_output = 32000
+parallel_tools = true
+vision = true
+reasoning = false
+reasoning_passback = "none"
+edit_style = "apply_patch"
+prompt_patch = "gpt"
+empty_assistant_content = "null"
+quirks = []

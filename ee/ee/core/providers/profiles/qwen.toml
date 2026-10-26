@@ -1,0 +1,12 @@
+family = "qwen"
+match = ["qwen", "qwq"]
+context_window = 131072
+max_output = 16384
+parallel_tools = true
+vision = false
+reasoning = true
+reasoning_passback = "none"
+edit_style = "edit"
+prompt_patch = "qwen"
+empty_assistant_content = "empty"
+quirks = ["xml_tool_calls", "json_tool_calls"]

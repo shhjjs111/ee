@@ -1,0 +1,14 @@
+# 未识别家族时的保守档案。所有字段都可以在 config.toml 的 [models.x] 里逐项覆盖。
+family = "default"
+match = []
+context_window = 128000
+max_output = 8192
+parallel_tools = true
+vision = false
+reasoning = false
+reasoning_passback = "none"     # none | tool_turns | all
+edit_style = "edit"             # edit | apply_patch
+prompt_patch = "default"
+empty_assistant_content = "empty"   # empty("") | null
+quirks = []
+# [price] 单位：每百万 token；不填 = 未知，状态栏显示 ¥?

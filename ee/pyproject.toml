@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ee-agent"
+version = "0.1.0"
+description = "ee：个人 AI 编程 agent 的内核与桌面端后端（OpenAI Chat Completions 协议，多模型通用）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.40",
+  "websockets>=13.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+ee = "ee.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ee*"]
+
+[tool.setuptools.package-data]
+"ee" = ["prompts/*.md", "prompts/system/*.md", "prompts/tools/*.md", "core/providers/profiles/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

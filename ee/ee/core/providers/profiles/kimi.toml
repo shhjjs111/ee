@@ -1,0 +1,12 @@
+family = "kimi"
+match = ["kimi", "moonshot"]
+context_window = 262144
+max_output = 16384
+parallel_tools = true
+vision = false
+reasoning = true
+reasoning_passback = "tool_turns"
+edit_style = "edit"
+prompt_patch = "kimi"
+empty_assistant_content = "empty"
+quirks = ["json_tool_calls"]

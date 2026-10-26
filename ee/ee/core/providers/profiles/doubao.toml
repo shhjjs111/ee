@@ -1,0 +1,12 @@
+family = "doubao"
+match = ["doubao", "seed-", "ark-"]
+context_window = 131072
+max_output = 16384
+parallel_tools = true
+vision = false
+reasoning = true
+reasoning_passback = "none"
+edit_style = "edit"
+prompt_patch = "default"
+empty_assistant_content = "empty"
+quirks = ["json_tool_calls"]

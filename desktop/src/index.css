@@ -1,0 +1,277 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #ffffff;
+  --bg-sidebar: #f7f7f6;
+  --bg-elev: #ffffff;
+  --bg-soft: #f3f3f2;
+  --bg-hover: #ececea;
+  --bg-active: #e6e6e3;
+  --fg: #1d1d1b;
+  --fg-muted: #6b6b66;
+  --fg-faint: #9a9a94;
+  --border: #e6e6e2;
+  --border-strong: #d6d6d1;
+  --accent: #2f6fed;
+  --accent-fg: #ffffff;
+  --add-bg: #e7f6ec;
+  --add-fg: #116329;
+  --del-bg: #fdecec;
+  --del-fg: #a40e26;
+  --warn: #b25e09;
+  --danger: #cf222e;
+  --ok: #1a7f37;
+  --code-bg: #f6f6f4;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.06);
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #181818;
+  --bg-sidebar: #131313;
+  --bg-elev: #212121;
+  --bg-soft: #1f1f1f;
+  --bg-hover: #262626;
+  --bg-active: #2d2d2d;
+  --fg: #ececea;
+  --fg-muted: #a1a19c;
+  --fg-faint: #6f6f6a;
+  --border: #2a2a2a;
+  --border-strong: #383838;
+  --accent: #5b8cff;
+  --accent-fg: #0b0b0b;
+  --add-bg: rgb(46 160 67 / 0.16);
+  --add-fg: #7ee2a0;
+  --del-bg: rgb(248 81 73 / 0.16);
+  --del-fg: #ffa198;
+  --warn: #e3a34a;
+  --danger: #ff7b72;
+  --ok: #56d364;
+  --code-bg: #141414;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.35);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--bg-sidebar);
+  --color-elev: var(--bg-elev);
+  --color-soft: var(--bg-soft);
+  --color-hover: var(--bg-hover);
+  --color-active: var(--bg-active);
+  --color-fg: var(--fg);
+  --color-muted: var(--fg-muted);
+  --color-faint: var(--fg-faint);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-add-bg: var(--add-bg);
+  --color-add: var(--add-fg);
+  --color-del-bg: var(--del-bg);
+  --color-del: var(--del-fg);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-ok: var(--ok);
+  --color-code: var(--code-bg);
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Noto Sans SC", system-ui, sans-serif, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji";
+  --font-mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Consolas, "Noto Sans Mono CJK SC", "DejaVu Sans Mono", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* 助手 markdown */
+.md {
+  line-height: 1.7;
+  word-wrap: break-word;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0.55em 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 1.1em 0 0.45em;
+}
+.md h1 {
+  font-size: 1.35em;
+}
+.md h2 {
+  font-size: 1.2em;
+}
+.md h3 {
+  font-size: 1.07em;
+}
+.md ul,
+.md ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.2em 0;
+}
+.md li::marker {
+  color: var(--fg-faint);
+}
+.md a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.md a:hover {
+  text-decoration: underline;
+}
+.md blockquote {
+  border-left: 3px solid var(--border-strong);
+  margin: 0.6em 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  color: var(--fg-muted);
+}
+.md :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 0.93em;
+  display: block;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.7em;
+  text-align: left;
+}
+.md th {
+  background: var(--bg-soft);
+  font-weight: 600;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+
+/* shiki 双主题：默认用 light 变量，dark 下切换 */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  background-color: transparent !important;
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+pre.shiki {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-faint) 0%, var(--fg) 45%, var(--fg-faint) 90%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+.stream-caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: var(--fg-muted);
+  border-radius: 1px;
+  animation: caret 1s steps(1) infinite;
+}
+
+@keyframes fadein {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fadein {
+  animation: fadein 0.18s ease-out;
+}

@@ -1,0 +1,198 @@
+import clsx from "clsx";
+import { ChevronRight, FileCode2, FileDiff, GitBranch, RefreshCw, RotateCcw, SquareTerminal, Undo2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { useApp, type RightTab } from "../lib/store";
+import type { DiffFile, GitReview } from "../types";
+import { DiffView, Stat } from "./DiffView";
+import { Button, Spinner, Tip } from "./ui";
+
+const STATUS: Record<string, { label: string; cls: string }> = {
+  modified: { label: "M", cls: "text-warn" },
+  added: { label: "A", cls: "text-ok" },
+  deleted: { label: "D", cls: "text-danger" },
+  renamed: { label: "R", cls: "text-accent" },
+};
+
+function FileRow({ f, cwd, onChanged }: { f: DiffFile; cwd: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const s = useApp();
+  const st = STATUS[f.status] ?? STATUS.modified;
+  const name = f.path.split("/").pop();
+  const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
+  const revert = async () => {
+    const msg = f.status === "added" ? `删除新文件 ${f.path}？` : `把 ${f.path} 恢复成最近一次提交的版本？未提交的改动会丢失。`;
+    if (!confirm(msg)) return;
+    setBusy(true);
+    try {
+      await s.rpc!.call("git/revert_file", { cwd, path: f.path });
+      s.showToast(f.status === "added" ? `已删除 ${f.path}` : `已撤销 ${f.path} 的改动`);
+      onChanged();
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="border-b border-line last:border-b-0">
+      <div
+        className="group flex h-9 cursor-default items-center gap-2 px-3 text-[13px] hover:bg-hover"
+        onClick={() => setOpen(!open)}
+      >
+        <ChevronRight size={13} className={clsx("shrink-0 text-faint transition-transform", open && "rotate-90")} />
+        <span className={clsx("mono w-3 shrink-0 text-[11.5px] font-semibold", st.cls)}>{st.label}</span>
+        <span className="min-w-0 truncate">
+          <span className="text-fg">{name}</span>
+          {dir && <span className="ml-1.5 text-[12px] text-faint">{dir}</span>}
+        </span>
+        <span className="flex-1" />
+        <Stat add={f.additions} del={f.deletions} className="shrink-0 group-hover:hidden" />
+        <span className="hidden shrink-0 group-hover:flex" onClick={(e) => e.stopPropagation()}>
+          <Tip label={f.status === "added" ? "删除这个新文件" : "撤销这个文件的改动"}>
+            <Button size="icon-sm" variant="danger" onClick={revert} disabled={busy}>
+              {busy ? <Spinner size={12} /> : <RotateCcw size={13} />}
+            </Button>
+          </Tip>
+        </span>
+      </div>
+      {open && (
+        <div className="border-t border-line bg-code">
+          {f.binary ? <div className="px-4 py-3 text-[12px] text-faint">二进制或过大的文件，不显示内容</div> : <DiffView patch={f.patch} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Review() {
+  const s = useApp();
+  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  const cwd = d?.cwd ?? s.activeWorkspace;
+  const [data, setData] = useState<GitReview | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!cwd || !s.rpc) return;
+    setLoading(true);
+    try {
+      setData(await s.rpc.call("git/diff", { cwd }));
+    } catch (e) {
+      setData(null);
+      s.showToast((e as Error).message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [cwd, s.rpc]);
+
+  useEffect(() => {
+    load();
+  }, [load, s.reviewNonce]);
+
+  const undo = async () => {
+    if (!d) return;
+    try {
+      const r = await s.rpc!.call("thread/undo", { thread_id: d.id });
+      s.showToast(r.restored.length ? `已恢复 ${r.restored.length} 个文件` : "上一回合没有可撤销的文件改动");
+      load();
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+  };
+
+  if (!cwd) return <div className="p-6 text-center text-[13px] text-faint">先选择一个项目</div>;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3 text-[12.5px] text-muted">
+        {data?.is_repo ? (
+          <>
+            <GitBranch size={13} />
+            <span className="truncate">{data.branch}</span>
+            <span className="text-faint">·</span>
+            <span>{data.files.length} 个文件</span>
+            {data.files.length > 0 && <Stat add={data.additions ?? 0} del={data.deletions ?? 0} />}
+          </>
+        ) : (
+          <span>{data ? "不是 git 仓库" : ""}</span>
+        )}
+        <span className="flex-1" />
+        {d && (
+          <Tip label="撤销 ee 上一回合写过的文件">
+            <Button size="icon-sm" onClick={undo} disabled={d.status !== "idle"}>
+              <Undo2 size={14} />
+            </Button>
+          </Tip>
+        )}
+        <Tip label="刷新">
+          <Button size="icon-sm" onClick={load}>
+            {loading ? <Spinner size={12} /> : <RefreshCw size={13} />}
+          </Button>
+        </Tip>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {data && !data.is_repo && (
+          <div className="px-6 py-10 text-center text-[12.5px] leading-relaxed text-faint">
+            {data.git_available ? "这个文件夹不是 git 仓库，没法按文件对比。" : "没有找到 git。安装 Git for Windows 后可以按文件审阅改动。"}
+            <br />
+            仍可用右上角的撤销按钮回退 ee 上一回合的改动。
+          </div>
+        )}
+        {data?.is_repo && data.files.length === 0 && (
+          <div className="flex flex-col items-center px-6 py-14 text-center text-[12.5px] text-faint">
+            <FileDiff size={28} className="mb-3 opacity-50" />
+            工作区没有未提交的改动
+          </div>
+        )}
+        {data?.is_repo && data.files.map((f) => <FileRow key={f.path} f={f} cwd={cwd} onChanged={load} />)}
+      </div>
+    </div>
+  );
+}
+
+function Stub({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
+      <div className="mb-3 text-faint">{icon}</div>
+      <div className="mb-1 text-[13px] font-medium text-fg">{title}</div>
+      <div className="text-[12.5px] leading-relaxed text-faint">{text}</div>
+    </div>
+  );
+}
+
+const TABS: { id: RightTab; label: string; icon: React.ReactNode }[] = [
+  { id: "review", label: "改动", icon: <FileDiff size={14} /> },
+  { id: "terminal", label: "终端", icon: <SquareTerminal size={14} /> },
+  { id: "files", label: "文件", icon: <FileCode2 size={14} /> },
+];
+
+export function RightPanel() {
+  const s = useApp();
+  if (!s.rightOpen || s.view !== "chat") return null;
+  return (
+    <aside className="flex w-[400px] shrink-0 flex-col border-l border-line bg-bg">
+      <div className="drag flex h-11 shrink-0 items-center gap-1 border-b border-line pl-2" style={{ paddingRight: "calc(var(--overlay-w) + 8px)" }}>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => s.set({ rightTab: t.id })}
+            className={clsx(
+              "no-drag flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors",
+              s.rightTab === t.id ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg",
+            )}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {s.rightTab === "review" && <Review />}
+      {s.rightTab === "terminal" && (
+        <Stub icon={<SquareTerminal size={28} />} title="内置终端" text="下一个版本（D2）接入 xterm.js，直接在项目目录里开 PowerShell / Git Bash。" />
+      )}
+      {s.rightTab === "files" && (
+        <Stub icon={<FileCode2 size={28} />} title="文件预览" text="下一个版本（D2）可以浏览项目文件并高亮预览。" />
+      )}
+    </aside>
+  );
+}

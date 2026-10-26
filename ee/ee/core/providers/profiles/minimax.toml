@@ -1,0 +1,13 @@
+# MiniMax 常把思考写在 content 的 <think>…</think> 里。
+family = "minimax"
+match = ["minimax", "abab"]
+context_window = 204800
+max_output = 16384
+parallel_tools = true
+vision = false
+reasoning = true
+reasoning_passback = "none"
+edit_style = "edit"
+prompt_patch = "default"
+empty_assistant_content = "empty"
+quirks = ["think_tags", "xml_tool_calls", "json_tool_calls"]

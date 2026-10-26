@@ -1,0 +1,21 @@
+# DeepSeek V4 系（deepseek-flash / deepseek-v4-pro）。价格按官方峰时价（元/百万 token），请以官网为准。
+family = "deepseek"
+match = ["deepseek"]
+context_window = 1000000
+max_output = 64000
+request_max_tokens = 64000
+parallel_tools = true
+vision = false
+reasoning = true
+# 带工具调用的助手轮次始终回传 reasoning_content（缺失补 ""）；纯文本轮不回传。规则确定 → 历史字节稳定。
+reasoning_passback = "tool_turns"
+edit_style = "edit"
+prompt_patch = "deepseek"
+empty_assistant_content = "empty"
+quirks = ["dsml_tool_calls", "json_tool_calls"]
+
+[price]
+currency = "¥"
+input = 2.0
+output = 8.0
+cache_read = 0.04

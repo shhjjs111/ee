@@ -1,0 +1,12 @@
+family = "claude"
+match = ["claude"]
+context_window = 200000
+max_output = 32000
+parallel_tools = true
+vision = true
+reasoning = false
+reasoning_passback = "none"
+edit_style = "edit"
+prompt_patch = "default"
+empty_assistant_content = "empty"
+quirks = []
