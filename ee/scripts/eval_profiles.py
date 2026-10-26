@@ -324,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=900, help="单次 ee exec 超时秒数")
     p.add_argument("--check-timeout", type=float, default=300)
     p.add_argument("--ee", dest="ee_cmd", default=None,
-                   help="调用 ee 的命令（默认当前 Python 的 -m ee；可写成 \"ee\" 或 exe 路径）")
+                   help="调用 ee 的命令（默认当前 Python 的 -m ee；可写成 \"ee\"、exe 路径或 .py 脚本）")
     p.add_argument("--key-env", default="DEEPSEEK_API_KEY", help="检查哪个环境变量里有 key（不打印）")
     p.add_argument("--out", help="结果目录：results.jsonl + summary.md")
     p.add_argument("--keep", action="store_true", help="保留每次运行的仓库副本（排查用）")
@@ -334,8 +334,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    args.ee_cmd = (args.ee_cmd.split() if args.ee_cmd and " " in args.ee_cmd and not Path(args.ee_cmd).exists()
-                   else [args.ee_cmd] if args.ee_cmd else [sys.executable, "-m", "ee"])
+    if not args.ee_cmd:
+        args.ee_cmd = [sys.executable, "-m", "ee"]
+    elif args.ee_cmd.endswith(".py") and Path(args.ee_cmd).is_file():
+        args.ee_cmd = [sys.executable, args.ee_cmd]
+    elif " " in args.ee_cmd and not Path(args.ee_cmd).exists():
+        args.ee_cmd = args.ee_cmd.split()
+    else:
+        args.ee_cmd = [args.ee_cmd]
     repo = Path(args.repo).resolve()
     tasks = load_tasks(Path(args.tasks_dir), [x.strip() for x in args.tasks.split(",")] if args.tasks else None)
     if not tasks:
@@ -362,7 +368,8 @@ def main(argv=None) -> int:
                 rec = run_once(t, prof, i + 1, args, repo)
                 results.append(rec)
                 print(f"    {'完成' if rec.get('passed') else '未完成'} · {rec.get('reason')} · {rec.get('steps', 0)} 步 · "
-                      f"{rec.get('duration_s', 0)}s", file=sys.stderr, flush=True)
+                      f"{rec.get('duration_s', 0)}s" + (f" · {rec['error']}" if rec.get("error") else ""),
+                      file=sys.stderr, flush=True)
                 if out_dir:
                     with open(out_dir / "results.jsonl", "a", encoding="utf-8") as f:
                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
