@@ -54,11 +54,10 @@ def register(methods: dict, backend) -> None:
 
     async def remove(path: str, delete_branch: bool = False, force: bool = False) -> dict:
         _refuse_running(path)            # 在这个 worktree 里还在跑的会话先停
-        r = await _call(W.remove, path, bool(delete_branch), bool(force), backend.home)
-        for t in list(backend.threads.values()):
+        for t in list(backend.threads.values()):     # 先结束后台命令：Windows 上运行中的进程会占住目录，删不掉
             if _in_wt(t, path) and t.session is not None:
                 await t.session.bg.close()
-        return r
+        return await _call(W.remove, path, bool(delete_branch), bool(force), backend.home)
 
     methods["worktree/list"] = list_
     methods["worktree/create"] = create

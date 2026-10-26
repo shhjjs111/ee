@@ -393,6 +393,29 @@ async def _kill(proc) -> None:
         pass
 
 
+def _kill_on_cancel(proc) -> None:
+    """被取消时杀进程树，但不在事件循环里等：Windows 的 taskkill 可能要好几秒，放到线程里跑，跑完再 kill 根进程。"""
+    if not IS_WINDOWS:
+        try:
+            kill_tree(proc.pid)
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    def _done(_f) -> None:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        # 先 taskkill /T（要靠根进程还活着才能找到子进程），再 kill 根进程
+        fut = asyncio.get_running_loop().run_in_executor(None, kill_tree, proc.pid)
+        fut.add_done_callback(_done)
+    except Exception:  # noqa: BLE001
+        _done(None)
+
+
 async def run_hook(hook: HookDef, payload: dict, cwd: Path, default_shell: str = "auto",
                    env_extra: dict | None = None) -> HookRun:
     """跑一个 hook：stdin 写 JSON 后关闭；超时 / 被取消时杀整个进程树。绝不抛异常（取消除外）。"""
@@ -427,11 +450,7 @@ async def run_hook(hook: HookDef, payload: dict, cwd: Path, default_shell: str =
             await _kill(proc)
         except asyncio.CancelledError:
             if proc.returncode is None:
-                try:
-                    kill_tree(proc.pid)
-                    proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+                _kill_on_cancel(proc)
             raise
     finally:
         r.duration_ms = int((time.monotonic() - t0) * 1000)
@@ -673,6 +692,8 @@ async def pre_tool_use(session, call_id: str, tool, args: dict, emit) -> PreResu
         return PreResult(args)
     o = await r.fire("PreToolUse", {"tool_name": tool.name, "tool_input": args, "tool_call_id": call_id},
                      tool.name, emit)
+    if o.stop:
+        session._hook_stop = o.stop_reason or o.reason or "（没有给出原因）"
     if o.block or o.stop:
         from ee.tools import ToolResult
         why = o.reason or o.stop_reason or "（没有给出原因）"
@@ -704,6 +725,8 @@ async def post_tool_use(session, call_id: str, tool, args: dict, res, emit):
     o = await r.fire("PostToolUse", {"tool_name": tool.name, "tool_input": args, "tool_call_id": call_id,
                                      "tool_response": _clip(out, PAYLOAD_LIMIT), "tool_ok": bool(res.ok)},
                      tool.name, emit)
+    if o.stop:                       # continue=false：这一步的工具跑完后结束本回合
+        session._hook_stop = o.stop_reason or o.reason or "（没有给出原因）"
     extra = []
     if o.block:
         extra.append(f"[Hook 反馈] {o.reason}")
@@ -725,7 +748,10 @@ async def on_stop(session, final: str, emit) -> bool:
     if not cfg.active("Stop"):
         return False
     o = await r.fire("Stop", {"stop_hook_active": r.stop_count > 0, "last_assistant_message": final}, None, emit)
-    if not o.block or o.stop:
+    if o.stop:                       # continue=false 优先于 decision=block：不再继续
+        emit(Notice(f"Hook（回合结束）要求停止：{_first(o.stop_reason or o.reason or '（没有给出原因）', 500)}", "info"))
+        return False
+    if not o.block:
         return False
     if r.stop_count >= MAX_STOP_CONTINUES:
         emit(Notice(f"Hook（回合结束）已连续 {MAX_STOP_CONTINUES} 次要求继续，本回合到此结束。", "warn"))

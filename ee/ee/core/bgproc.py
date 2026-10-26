@@ -148,13 +148,16 @@ class BgManager:
         proc = p._proc
         assert proc is not None and proc.stdout is not None
         dec = codecs.getincrementaldecoder("utf-8")("replace")
+        cr = ""          # 上一块末尾的 \r 先扣着：\r\n 可能被拆在两次读取之间
         try:
             while True:
                 b = await proc.stdout.read(4096)
                 if not b:
                     break
-                p._append(dec.decode(b).replace("\r\n", "\n"))
-            p._append(dec.decode(b"", final=True))
+                s = (cr + dec.decode(b)).replace("\r\n", "\n")
+                cr = "\r" if s.endswith("\r") else ""
+                p._append(s[:-1] if cr else s)
+            p._append(cr + dec.decode(b"", final=True))
             code = await proc.wait()
         except asyncio.CancelledError:
             return

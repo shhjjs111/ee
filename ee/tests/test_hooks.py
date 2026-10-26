@@ -453,3 +453,101 @@ def test_hook_allow_does_not_skip_forced_ask():
     assert adjust_decision(forced, PreResult(args={}, permission="allow")).action == "ask"
     normal = Decision("ask", "要问", "npm run")
     assert adjust_decision(normal, PreResult(args={}, permission="allow")).action == "allow"
+
+
+# ------------------------------------------------------------------ 审查补充（ToolStart 参数 / continue:false / 取消不阻塞）
+def test_tool_start_shows_hook_updated_input(ee_home, workspace, hook_py, tmp_path):
+    from ee.core.events import ToolStart
+    out = json.dumps({"hookSpecificOutput": {"updatedInput": {"path": "b.txt", "content": "改过的"}}},
+                     ensure_ascii=False)
+    write_user_hooks(ee_home, {"PreToolUse": [{"matcher": "write", "command": cmd(hook_py, tmp_path / "l", "json", out)}]})
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "write", {"path": "a.txt", "content": "原来的"}) + finish("tool_calls"),
+        text_chunks("好") + finish("stop"),
+    ])
+    ev = asyncio.run(collect(s, "写"))
+    starts = [e for e in ev if isinstance(e, ToolStart)]
+    assert len(starts) == 1
+    assert starts[0].args == {"path": "b.txt", "content": "改过的"}
+    assert (workspace / "b.txt").exists() and not (workspace / "a.txt").exists()
+
+
+def test_post_tool_continue_false_ends_turn(ee_home, workspace, hook_py, tmp_path):
+    out = json.dumps({"continue": False, "stopReason": "构建坏了，先停下"}, ensure_ascii=False)
+    write_user_hooks(ee_home, {"PostToolUse": [{"matcher": "write", "command": cmd(hook_py, tmp_path / "l", "json", out)}]})
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "write", {"path": "a.txt", "content": "x"}) + finish("tool_calls"),
+        text_chunks("继续干") + finish("stop"),
+    ])
+    ev = asyncio.run(collect(s, "写"))
+    assert (workspace / "a.txt").exists()                  # 工具已经执行
+    assert len(fake.calls) == 1                            # 不再请求模型
+    assert any("构建坏了，先停下" in t for t in notices(ev))
+    assert [m for m in s.history if m.get("role") == "tool"]   # 工具结果仍记入历史
+    assert done(ev).reason == "completed"
+
+
+def test_pre_tool_continue_false_ends_turn(ee_home, workspace, hook_py, tmp_path):
+    out = json.dumps({"continue": False, "stopReason": "今天不许动代码"}, ensure_ascii=False)
+    write_user_hooks(ee_home, {"PreToolUse": [{"matcher": "write", "command": cmd(hook_py, tmp_path / "l", "json", out)}]})
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "write", {"path": "a.txt", "content": "x"}) + finish("tool_calls"),
+        text_chunks("继续干") + finish("stop"),
+    ])
+    ev = asyncio.run(collect(s, "写"))
+    assert not (workspace / "a.txt").exists()
+    assert len(fake.calls) == 1
+    assert any("今天不许动代码" in t for t in notices(ev))
+
+
+def test_stop_continue_false_wins_over_block(ee_home, workspace, hook_py, tmp_path):
+    out = json.dumps({"decision": "block", "reason": "再跑一遍", "continue": False, "stopReason": "预算用完"},
+                     ensure_ascii=False)
+    write_user_hooks(ee_home, {"Stop": [{"command": cmd(hook_py, tmp_path / "l", "json", out)}]})
+    s, fake = make_session(workspace, [text_chunks(f"第{i}次") + finish("stop") for i in range(3)])
+    ev = asyncio.run(collect(s, "做事"))
+    assert len(fake.calls) == 1
+    assert any("预算用完" in t for t in notices(ev))
+    assert not any("要求继续" in t for t in notices(ev))
+
+
+def test_cancel_hook_does_not_block_event_loop(monkeypatch, tmp_path):
+    """Windows 上取消 hook 时 taskkill 可能要等好几秒，不能在事件循环里同步调用。"""
+    from ee import proc as P
+    real_kill = P.kill_tree
+    calls = []
+
+    def slow_kill(pid):
+        calls.append(pid)
+        time.sleep(1.5)
+        real_kill(pid)
+
+    monkeypatch.setattr(H, "IS_WINDOWS", True)
+    monkeypatch.setattr(H, "kill_tree", slow_kill)
+    pidf = tmp_path / "pid"
+    code = f"import os,time;open({str(pidf)!r},'w').write(str(os.getpid()));time.sleep(30)"
+    hook = H.HookDef(event="PreToolUse", command=[sys.executable, "-c", code], timeout=60)
+
+    async def main():
+        t = asyncio.create_task(H.run_hook(hook, {}, tmp_path))
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if pidf.exists() and pidf.read_text():
+                break
+        t0 = time.monotonic()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        took = time.monotonic() - t0
+        await asyncio.sleep(2.5)                       # 后台把进程树杀掉
+        return took
+
+    took = asyncio.run(main())
+    assert took < 0.8, took
+    assert calls
+    pid = int(pidf.read_text())
+    try:
+        state = open(f"/proc/{pid}/status").read()
+        assert "\nState:\tZ" in state                    # 已死（尚未回收）
+    except FileNotFoundError:
+        pass

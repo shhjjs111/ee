@@ -202,3 +202,66 @@ def test_server_rpc_and_turn_end_keeps_running(ee_home, workspace):
         assert mgr.get("b2").status == "killed"
 
     asyncio.run(go())
+
+
+def test_crlf_split_across_reads_is_normalized(tmp_path):
+    """\\r\\n 恰好被拆在两次读取之间时，也要合成 \\n（不留孤立的 \\r）。"""
+    sh = resolve_shell("auto")
+    script = tmp_path / "crlf.py"
+    script.write_text("import sys, time\n"
+                      "sys.stdout.buffer.write(b'a\\r'); sys.stdout.flush(); time.sleep(0.4)\n"
+                      "sys.stdout.buffer.write(b'\\nb\\r\\n'); sys.stdout.flush()\n", encoding="utf-8")
+
+    async def go():
+        mgr = BgManager(tmp_path / "logs", owner="t")
+        p = await mgr.start(_py(sh, str(script)), sh, tmp_path, dict(__import__("os").environ))
+        for _ in range(100):
+            if not p.running:
+                break
+            await asyncio.sleep(0.05)
+        return p
+
+    p = asyncio.run(go())
+    assert p.tail() == "a\nb\n", repr(p.tail())
+    assert p.log_path.read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_worktree_remove_kills_bg_before_removing(tmp_path, ee_home, monkeypatch):
+    """Windows 上运行中的进程会占住 worktree 目录，必须先结束后台命令再删目录。"""
+    import shutil
+    import subprocess
+    import pytest
+    if shutil.which("git") is None:
+        pytest.skip("需要 git")
+    from conftest import FakeClient
+    from ee.core import worktree as W
+    from ee.core.providers.openai_chat import ChatClient
+    from ee.server.app import Backend
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    for a in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True,
+                       capture_output=True)
+    b = Backend(home=ee_home, client_factory=lambda spec: ChatClient(spec, client=FakeClient([])))
+    seen = []
+    real_remove = W.remove
+
+    def spy(*a, **k):
+        seen.append([p.status for p in procs])
+        return real_remove(*a, **k)
+
+    monkeypatch.setattr(W, "remove", spy)
+    procs = []
+
+    async def go():
+        th = (await b.call("thread/start", {"cwd": str(repo), "worktree": {"name": "bg"}}))["thread"]
+        s = await b.threads[th["id"]].ensure_session_async()
+        sh = resolve_shell("auto")
+        p = await s.bg.start(_py(sh, '-c "import time; time.sleep(30)"'), sh, s.cwd, dict(__import__("os").environ))
+        procs.append(p)
+        await b.call("worktree/remove", {"path": th["cwd"]})
+        if p.running:
+            await s.bg.kill(p)
+
+    asyncio.run(go())
+    assert seen == [["killed"]] or seen == [["exited"]], seen

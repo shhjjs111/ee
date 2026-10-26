@@ -101,6 +101,7 @@ class Session:
         self._open_calls: list[str] = []
         self._results: dict[str, str] = {}
         self._ok: dict[str, bool] = {}
+        self._hook_stop: str | None = None      # Hook 输出 continue=false 时的原因：本步工具跑完后结束回合
         self._approval_lock = asyncio.Lock()
         self.last_reasoning = ""
         self.running = False
@@ -580,6 +581,7 @@ class Session:
         final = ""
         try:
             self.turns += 1
+            self._hook_stop = None
             self.state.new_turn()
             self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
             log.info("回合开始：会话 %s 第 %d 回合 模型 %s cwd=%s", self.store.id, self.turns, self.spec.alias, self.cwd)
@@ -633,6 +635,11 @@ class Session:
                     return
                 self._end_turn = False
                 note = await self._run_tools(comp.tool_calls, emit)
+                if self._hook_stop is not None:   # Hook 输出 continue=false：结束本回合
+                    why, self._hook_stop = self._hook_stop, None
+                    emit(Notice(f"Hook 要求结束本回合：{why}", "warn"))
+                    emit(TurnDone("completed", final))
+                    return
                 if self._end_turn and not self.pending:   # present_plan：方案已提交，等用户批准
                     self._end_turn = False
                     emit(TurnDone("completed", final))
@@ -761,12 +768,16 @@ class Session:
     async def _exec_one(self, tc: dict, tool, args: dict, err: str | None, emit) -> None:
         cid = tc["id"]
         name = tc["function"]["name"]
+        pre = None
+        if err is None and tool is not None:     # 先跑 PreToolUse，ToolStart 显示的是最终执行的参数
+            pre = await hooks.pre_tool_use(self, cid, tool, args, emit)   # D5-4 Hooks：可拦截 / 改参数 / 免审批
+            args = pre.args
         summary = tool.summary(args) if tool else name
         emit(ToolStart(cid, name, args, summary))
         if err is not None:
             res = ToolResult(err, ok=False, summary=summary)
         else:
-            res = await self._guarded_run(cid, tool, args, emit)
+            res = await self._guarded_run(cid, tool, args, emit, pre)
             res = await hooks.post_tool_use(self, cid, tool, args, res, emit)   # D5-4 Hooks
         out, _ = truncate_output(res.output, self.home / "tool-output", name)
         self._results[cid] = out
@@ -777,8 +788,9 @@ class Session:
         if res.ok and res.meta.get("end_turn"):
             self._end_turn = True
 
-    async def _guarded_run(self, cid: str, tool, args: dict, emit) -> ToolResult:
-        pre = await hooks.pre_tool_use(self, cid, tool, args, emit)   # D5-4 Hooks：可拦截 / 改参数 / 免审批
+    async def _guarded_run(self, cid: str, tool, args: dict, emit, pre=None) -> ToolResult:
+        if pre is None:
+            pre = await hooks.pre_tool_use(self, cid, tool, args, emit)   # D5-4 Hooks：可拦截 / 改参数 / 免审批
         if pre.result is not None:
             return pre.result
         args = pre.args
