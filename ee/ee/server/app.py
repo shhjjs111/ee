@@ -27,7 +27,7 @@ from ee.core.permissions import MODE_LABEL, MODES
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import memory_rpc
+from ee.server import memory_rpc, prompts_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -77,6 +77,7 @@ class Backend:
             "git/revert_file": self.git_revert_file,
         }
         memory_rpc.register(self.methods, self.home)   # memory/get|add|remove|save
+        prompts_rpc.register(self.methods, self.home)  # prompts/list|expand
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:

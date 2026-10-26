@@ -6,7 +6,8 @@ import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, Settin
 import { AgentSettings } from "./AgentSettings";
 import { Button, Field, Input, Select, Spinner, Tip } from "./ui";
 
-type Section = "general" | "models" | "tools" | "about";
+const SECTIONS = ["general", "models", "tools", "about"] as const;
+type Section = (typeof SECTIONS)[number];
 
 const SHELL_LABEL: Record<string, string> = {
   auto: "自动（pwsh → Windows PowerShell）",
@@ -268,7 +269,16 @@ function AddRow({ placeholder, onAdd, exists }: { placeholder: string; onAdd: (n
 
 export function SettingsPage() {
   const s = useApp();
-  const [section, setSection] = useState<Section>("general");
+  const [section, setSection] = useState<Section>(() => {
+    const want = useApp.getState().settingsSection;
+    return want && (SECTIONS as readonly string[]).includes(want) ? (want as Section) : "general";
+  });
+  useEffect(() => {
+    if (s.settingsSection) {
+      if ((SECTIONS as readonly string[]).includes(s.settingsSection)) setSection(s.settingsSection as Section);
+      s.set({ settingsSection: null });
+    }
+  }, [s.settingsSection]);
   const [resp, setResp] = useState<SettingsResponse | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);

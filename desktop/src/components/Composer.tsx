@@ -1,7 +1,9 @@
 import clsx from "clsx";
 import { ArrowUp, AtSign, Cpu, File, Shield, ShieldCheck, ShieldOff, Square } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
+import { parseSlash, resolveMode, slashItems, type PromptInfo, type SlashItem } from "../lib/slash";
 import { useApp } from "../lib/store";
+import { SlashMenu } from "./SlashMenu";
 import { Select, Spinner, Tip } from "./ui";
 
 const MODES = [
@@ -57,6 +59,9 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [files, setFiles] = useState<string[]>([]);
   const [sel, setSel] = useState(0);
+  const [prompts, setPrompts] = useState<PromptInfo[]>([]);
+  const [slashSel, setSlashSel] = useState(0);
+  const [slashClosed, setSlashClosed] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
   const cwd = detail?.cwd ?? s.activeWorkspace;
   const model = s.draftModel ?? detail?.model ?? s.defaultModel;
@@ -90,6 +95,123 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     };
   }, [mention?.query, cwd]);
 
+  // 输入 "/" 时拉一次自定义提示列表（切换项目后重新拉）
+  const slashing = text.startsWith("/");
+  useEffect(() => {
+    if (!slashing || !s.rpc) return;
+    let alive = true;
+    s.rpc
+      .call("prompts/list", { cwd })
+      .then((r) => alive && setPrompts(r.prompts))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [slashing, cwd, s.rpc]);
+
+  const modelHints = s.models.map((m) => ({ name: m.name, hint: `${m.provider} · ${m.model}` }));
+  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints);
+  const showSlash = !!slashList && slashList.length > 0 && !mention;
+  useEffect(() => setSlashSel(0), [slashList?.length, text.split(" ")[0]]);
+
+  function clearInput() {
+    setText("");
+    setMention(null);
+    setSlashClosed(false);
+  }
+
+  /** 执行斜杠命令；返回 false 表示不是已知命令（当普通消息发送）。 */
+  async function runSlash(t: string): Promise<boolean> {
+    const p = parseSlash(t);
+    if (!p) return false;
+    const { name, args } = p;
+    switch (name) {
+      case "compact":
+        clearInput();
+        s.compact();
+        return true;
+      case "new":
+        clearInput();
+        s.newThread();
+        return true;
+      case "undo":
+        clearInput();
+        s.undo();
+        return true;
+      case "model": {
+        const hit = s.models.find((m) => m.name === args) ?? s.models.find((m) => m.name.toLowerCase().includes(args.toLowerCase()));
+        if (!args || !hit) {
+          s.showToast(args ? `没有这个模型：${args}` : "用法：/model 模型名", "error");
+          return true;
+        }
+        clearInput();
+        s.set({ draftModel: hit.name });
+        s.showToast(`已切换模型：${hit.name}`);
+        return true;
+      }
+      case "mode": {
+        const m = resolveMode(args);
+        if (!m) {
+          s.showToast("用法：/mode 只读 | 默认 | 全自动", "error");
+          return true;
+        }
+        clearInput();
+        localStorage.setItem("ee.mode", m);
+        s.set({ draftMode: m });
+        s.showToast(`权限模式：${modeLabel(m)}`);
+        return true;
+      }
+      case "memory":
+        clearInput();
+        if (!args) {
+          s.openSettings("tools");
+          return true;
+        }
+        try {
+          await s.rpc!.call("memory/add", { text: args, scope: "user", cwd });
+          s.showToast("已记住，新对话开始时生效");
+        } catch (e) {
+          s.showToast((e as Error).message, "error");
+        }
+        return true;
+      case "mcp":
+        clearInput();
+        s.openSettings("tools"); // TODO(D3-A)：MCP 设置分区做好后改成 "mcp"
+        return true;
+    }
+    if (!prompts.some((x) => x.name === name)) {
+      // 可能还没拉到列表：再问一次后端
+      try {
+        const r = await s.rpc!.call("prompts/list", { cwd });
+        setPrompts(r.prompts);
+        if (!r.prompts.some((x: PromptInfo) => x.name === name)) return false;
+      } catch {
+        return false;
+      }
+    }
+    try {
+      const r = await s.rpc!.call("prompts/expand", { name, args, cwd });
+      clearInput();
+      s.send(r.text);
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+    return true;
+  }
+
+  function pickSlash(it: SlashItem) {
+    if ("fill" in it.action) {
+      setText(it.action.fill);
+      requestAnimationFrame(() => {
+        const n = (it.action as { fill: string }).fill.length;
+        ta.current?.setSelectionRange(n, n);
+        ta.current?.focus();
+      });
+    } else {
+      runSlash(it.action.run);
+    }
+  }
+
   function updateMention(value: string, caret: number) {
     const before = value.slice(0, caret);
     const m = /(^|\s)@([^\s@]*)$/.exec(before);
@@ -109,22 +231,40 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     });
   }
 
-  function submit() {
+  async function submit() {
     const t = text.trim();
     if (!t) return;
-    if (t === "/compact") {
-      setText("");
-      setMention(null);
-      s.compact();
-      return;
-    }
+    if (t.startsWith("/") && (await runSlash(t))) return;
     s.send(t);
-    setText("");
-    setMention(null);
+    clearInput();
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return; // 中文输入法组字中
+    if (showSlash && slashList) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashSel((slashSel + 1) % slashList.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashSel((slashSel - 1 + slashList.length) % slashList.length);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        const it = slashList[Math.min(slashSel, slashList.length - 1)];
+        // 已经完整输入了一个不带参数的命令，Enter 直接执行
+        pickSlash(it);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashClosed(true);
+        return;
+      }
+    }
     if (mention && files.length) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -164,6 +304,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
 
   return (
     <div className="relative">
+      {showSlash && slashList && <SlashMenu items={slashList} sel={slashSel} onPick={pickSlash} onHover={setSlashSel} />}
       {mention && files.length > 0 && (
         <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-line bg-elev p-1 shadow-[var(--shadow)] fadein">
           <div className="px-2.5 pb-1 pt-1.5 text-[11.5px] text-faint">文件</div>
@@ -198,9 +339,10 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           value={text}
           rows={1}
           spellCheck={false}
-          placeholder={running ? "继续输入，会在当前步骤结束后送给 ee…" : "让 ee 帮你写代码、改 bug、解释项目…  输入 @ 引用文件"}
+          placeholder={running ? "继续输入，会在当前步骤结束后送给 ee…" : "让 ee 帮你写代码、改 bug、解释项目…  输入 @ 引用文件，/ 使用命令"}
           onChange={(e) => {
             setText(e.target.value);
+            if (!e.target.value.startsWith("/")) setSlashClosed(false);
             updateMention(e.target.value, e.target.selectionStart);
           }}
           onClick={(e) => updateMention(text, (e.target as HTMLTextAreaElement).selectionStart)}

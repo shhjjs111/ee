@@ -6,6 +6,7 @@ import { RpcClient, type ConnState } from "./rpc";
 export type View = "chat" | "settings";
 export type Theme = "system" | "dark" | "light";
 export type RightTab = "review" | "terminal" | "files";
+export type SettingsSection = "general" | "models" | "tools" | "mcp" | "about";
 
 type State = {
   conn: ConnState;
@@ -30,6 +31,7 @@ type State = {
   lastFilePath: string | null;
   fileNonce: number;
   search: string;
+  settingsSection: SettingsSection | null; // 打开设置页时要跳到的分区（斜杠命令用），读取后清空
   toast: { text: string; kind: "info" | "error" } | null;
 };
 
@@ -44,6 +46,8 @@ type Actions = {
   send(text: string): Promise<void>;
   interrupt(): Promise<void>;
   compact(): Promise<void>;
+  undo(): Promise<void>;
+  openSettings(section?: SettingsSection): void;
   respond(callId: string, choice: "once" | "always" | "deny", reason?: string): Promise<void>;
   openFile(path: string): void;
   set(p: Partial<State>): void;
@@ -74,6 +78,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   lastFilePath: null,
   fileNonce: 0,
   search: "",
+  settingsSection: null,
   toast: null,
 
   set: (p) => set(p),
@@ -243,6 +248,31 @@ export const useApp = create<State & Actions>((set, get) => ({
     } finally {
       setStatus(id, "idle");
     }
+  },
+
+  async undo() {
+    const s = get();
+    const id = s.activeThreadId;
+    const d = id ? s.details[id] : null;
+    if (!id || !d) {
+      s.showToast("还没有对话，没有可撤销的改动");
+      return;
+    }
+    if (d.status !== "idle") {
+      s.showToast("正在运行中，等这一回合结束再撤销", "error");
+      return;
+    }
+    try {
+      const r = await s.rpc!.call("thread/undo", { thread_id: id });
+      s.showToast(r.restored?.length ? `已恢复 ${r.restored.length} 个文件` : "上一回合没有可撤销的文件改动");
+      set((st) => ({ reviewNonce: st.reviewNonce + 1 }));
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+  },
+
+  openSettings(section) {
+    set({ view: "settings", settingsSection: section ?? null });
   },
 
   async interrupt() {
