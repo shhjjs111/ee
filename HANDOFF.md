@@ -87,7 +87,7 @@
   - 已知：/undo 弹出快照层后层号会错位（编辑重发可能恢复错层），概率低，未处理；编辑排队中插入的消息不支持。
 - [x] D 图片附件（2026-10-26）：`ee/ee/core/attachments.py`（按文件头识别 JPEG/PNG/GIF/WebP；每条 ≤8 张、单张 ≤20MiB；存 `~/.ee/sessions/<id>/attachments/`）；turn/start 加 `attachments:[{name,data(base64),thumb}]`，可只发图；历史用户消息带 `_images`（路径），`transforms.wire_messages` 发送时 vision=true 转 `image_url` data URL 分块，vision=false 降级为文字说明 + 界面提示条目；用户条目带 attachments 元数据（缩略图）。DeepSeek 官方 Vision 文档（2026-10）：deepseek-flash 支持图片、deepseek-v4-pro 不支持 → deepseek.toml vision=true，pro variant vision=false。设置：模型可设「看图 自动/支持/不支持」（MODEL_KEYS 加 vision），models/list 返回 vision。分叉时 `_images` 路径换到新会话目录并复制附件。前端 `lib/attachments.ts`（canvas 压缩：长边≤2048，PNG>1.5MB 转 JPEG，GIF 原样，160px 缩略图）；Composer 粘贴/拖放/按钮加图、托盘可删、不支持看图时提示；气泡显示缩略图。测试 tests/test_attachments.py（pytest 231、vitest 9、vite build 通过）。
   - 已知：编辑重发只带新文字，原消息的图片不会重发；运行中不能追加图片（后端拒绝并提示）。
-- [ ] A MCP
+- [ ] A MCP（进行中 2026-10-26 14:35）：已写 `ee/ee/mcp/{config,client,schema,tool,manager}.py`（未接入、未测试）。待做：Session 接入（首次冻结前缀前 await 连接、工具追加末尾、set_model 重建时带上）、permissions 加 mcp__ 分支（并修“未知工具”分支没查 session_tools）、server/mcp_rpc.py（mcp/list、mcp/test）、settings _mcp_out/_mcp_in、设置页 MCP 分区（/mcp 命令改成打开它）、tests/fake_mcp_server.py + 测试、serve 退出时 mcp.manager.shutdown()。
 - [ ] F API key 安全存储
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
 
