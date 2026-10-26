@@ -48,7 +48,8 @@ def _new_id(prefix: str) -> str:
 class Thread:
     def __init__(self, tid: str, home: Path, notify: Callable[[str, dict], None], meta: dict,
                  messages: list[dict] | None = None, items: list[dict] | None = None,
-                 client_factory: Callable | None = None, persist: bool = True):
+                 client_factory: Callable | None = None, persist: bool = True,
+                 configure: Callable | None = None):
         self.id = tid
         self.home = home
         self.notify = notify
@@ -58,6 +59,7 @@ class Thread:
         self._seq = max([int(it.get("seq", 0)) for it in self.items] + [len(self.items)]) + 1
         self.client_factory = client_factory
         self.persist = persist
+        self.configure = configure     # 建会话前改配置的钩子（ee exec 用：关 ask_user、步数上限、额外规则）
         self.session: Session | None = None
         self._pending_messages = messages or []
         self.task: asyncio.Task | None = None
@@ -79,6 +81,8 @@ class Thread:
         if self.session is not None:
             return self.session
         cfg = load_config(self.cwd)
+        if self.configure is not None:
+            self.configure(cfg)
         model = self.meta.get("model") or None
         if model and model not in cfg.model_names() and "/" not in model:
             model = None
@@ -148,7 +152,7 @@ class Thread:
         return {"id": self.id, "title": self.meta.get("title") or "新对话", "cwd": self.meta.get("cwd", ""),
                 "model": self.meta.get("model", ""), "mode": self.meta.get("mode", ""),
                 "created": self.meta.get("created"), "updated": self.meta.get("updated"), "status": self.status,
-                "parent_id": self.meta.get("parent_id")}
+                "parent_id": self.meta.get("parent_id"), "source": self.meta.get("source")}
 
     def detail(self) -> dict:
         s = self.session

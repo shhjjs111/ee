@@ -117,7 +117,7 @@ class SessionStore:
         return {"id": path.stem, "title": meta.get("title") or "新对话", "cwd": meta.get("cwd", ""),
                 "model": meta.get("model", ""), "mode": meta.get("mode", ""),
                 "created": meta.get("created"), "updated": meta.get("updated") or path.stat().st_mtime,
-                "parent_id": meta.get("parent_id")}
+                "parent_id": meta.get("parent_id"), "source": meta.get("source")}
 
 
 def strip_context(text: str) -> str:
