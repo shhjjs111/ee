@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 18:30（Asia/Shanghai，D4-8 完成；D4-7 CI 绿（run 40296739267）；并行分支 feat/d4-9-exec、feat/d5-skills、feat/d5-hooks 进行中，合并后再做 D4-10 自动化）
+最后更新：2026-10-26 19:00（Asia/Shanghai，D5-1 worktree 完成；并行分支 feat/d4-9-exec（已完成待合并）、feat/d5-skills、feat/d5-hooks、feat/d5-repomap 进行中）
 
 > **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；检查远端分支 feat/d4-9-exec、feat/d5-skills、feat/d5-hooks（并行开发中，各自测完后合并进 main 并在下面对应项打勾），然后做 D4-10 自动化。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
@@ -169,7 +169,15 @@
 10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）
 
 **D5 — 并行与扩展**
-1. ★git worktree 管理（.worktreeinclude、删除前快照） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. ★Hooks（6 个核心事件，退出码 2 拦截，信任表复用 MCP） 5. Skills（SKILL.md，兼容 .claude/.agents） 6. ★仓库地图（tree-sitter tags） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
+1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. ★Hooks（6 个核心事件，退出码 2 拦截，信任表复用 MCP） 5. Skills（SKILL.md，兼容 .claude/.agents） 6. ★仓库地图（tree-sitter tags） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
+
+**D5 进度**
+- [x] D5-1 git worktree 管理（2026-10-26 19:00）
+  - 参考了谁、取了哪点：目录放在用户目录下按仓库分组、分支名 `ee/<名>`、元数据单独存一份索引取自 Codex 的 worktree 模块（paths/metadata）；`.worktreeinclude`（被忽略但需要的文件在新建时复制过去）取自 Claude Code 桌面版/Cursor 的同名做法；“新对话直接在新 worktree 里开始”的开关、项目菜单里的 worktree 列表取自 Codex 桌面版与 Cursor 的 `/worktree`；删除前把未提交改动自动提交到分支上（不丢活）、合并前要求主目录干净、冲突时自动 abort 是 ee 自己的保守组合（OpenCode 的 worktree 只管建删）。
+  - 后端 `ee/core/worktree.py`：create（检查是 git 仓库且有提交、名字 slug、分支已存在报错、`git worktree add -b ee/<名> <路径> <base 提交>`、按 .worktreeinclude 复制 `git ls-files --others --ignored --exclude-standard` 里匹配的文件（总量 200MB 上限）、写 ~/.ee/worktrees/index.json）；list_for/status（存在否、未提交改动、相对 base 的提交数；在 worktree 里也能找到主仓库）；info_for_dir；diff（相对 base 的全部改动含未跟踪，按文件拆）；remove（先自动提交未提交改动 → 要删分支且有未合并提交时不带 force 直接拒绝、什么都不动 → worktree remove + prune → 可选删分支）；merge（主目录必须干净；--no-ff 或 --squash；冲突时 merge --abort / reset --merge 恢复原样并报错）。没配 git 身份时用 ee 兜底。RPC `worktree/list|create|diff|merge|remove`（server/worktree_rpc.py；删除前若有对话在里面运行则拒绝，删后结束其后台命令；merge 后发 `git/changed` 刷新审阅面板）。`thread/start` 新增 `worktree: true|{name,base}`；在已有 ee worktree 目录里开对话也会记上 worktree；会话 meta/summary 带 `worktree{path,branch,repo,name}` 和 `workspace`（主仓库路径）。
+  - 前端：新对话时输入框工具栏「本地 / 新 worktree」切换；左栏 worktree 里的对话归到主仓库下并显示分支图标；项目「…」菜单「Worktree…」打开 `components/WorktreeDialog.tsx`（新建、在这里新对话、合并 / 压成一份、删除（可选删分支、强制））。
+  - 测试 `tests/test_worktree.py` 5 个（建/include 复制/重名、列表状态与 worktree 内反查、diff、脏主目录拒绝合并、合并、删分支；删除自动保存与未合并保护；冲突自动 abort；squash 与非 git 仓库；thread/start worktree 全流程）；pytest 300 通过 2 跳过。
+  - 已知/后续：worktree 的审阅面板显示的是相对 HEAD 的未提交改动（合并前想看全部改动用 worktree/diff，界面暂未接）；没有“移回本地”（handoff）；index.json 不会自动清理被手动删掉的目录（列表里显示“目录已不存在”，可删除）。
 
 **D6 — 编排与深度理解**
 1. ★指挥会话：threads_list / thread_create（可指定分支，自动建 worktree）/ thread_send / thread_status / thread_wait；跨会话审批冒泡；左栏树形从属；指挥会话里每个子会话一张进度卡片 2. ★LSP 诊断回灌（pyright、typescript-language-server 先行）+ LSP 工具 3. best-of-n、本地 ↔ worktree 交接 4. Goal 模式、/side 侧聊 5. 自动审批审查员 6. 命令面板 / 快捷键自定义、活动视图、会话归档置顶、导出 7. 自动记忆提取（待用户确认） 8. 自动更新、GBK 解码回退、PAC 代理、PR 工作流、lint/test 循环

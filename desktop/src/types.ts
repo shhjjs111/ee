@@ -69,6 +69,8 @@ export type ThreadSummary = {
   updated?: number;
   status: ThreadStatus;
   parent_id?: string | null; // 分叉来源（D3-E）
+  worktree?: { path: string; branch: string; repo: string; name: string } | null; // D5-1
+  workspace?: string; // 归属的项目目录（worktree 对话归到主仓库）
 };
 
 export type ThreadDetail = ThreadSummary & {
@@ -340,4 +342,20 @@ export type BgProc = {
   output_chars: number;
   unread: number;
   log_path: string;
+};
+
+// git worktree（D5-1，后端 ee/core/worktree.py）
+export type WorktreeInfo = {
+  name: string;
+  path: string;
+  repo: string;
+  branch: string;
+  base: string;
+  base_ref?: string;
+  created: number;
+  included?: string[];
+  exists?: boolean;
+  changed?: number;
+  untracked?: number;
+  commits?: number;
 };

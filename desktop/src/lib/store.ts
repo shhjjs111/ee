@@ -27,6 +27,8 @@ type State = {
   defaultModel: string;
   draftModel: string | null;
   draftMode: string;
+  draftWorktree: boolean; // 新对话在新 worktree 里开始（D5-1）
+  worktreeDialog: string | null; // 打开 worktree 管理的项目路径
   rightOpen: boolean;
   rightTab: RightTab;
   reviewNonce: number;
@@ -83,6 +85,8 @@ export const useApp = create<State & Actions>((set, get) => ({
   defaultModel: "",
   draftModel: null,
   draftMode: localStorage.getItem("ee.mode") || "default",
+  draftWorktree: false,
+  worktreeDialog: null,
   rightOpen: localStorage.getItem("ee.right") !== "0",
   rightTab: "review",
   reviewNonce: 0,
@@ -210,10 +214,11 @@ export const useApp = create<State & Actions>((set, get) => ({
           s.showToast("先在左侧选择或添加一个项目文件夹", "error");
           return false;
         }
-        const r = await rpc.call("thread/start", { cwd: s.activeWorkspace, model, mode });
+        const r = await rpc.call("thread/start", { cwd: s.activeWorkspace, model, mode, worktree: s.draftWorktree || undefined }, s.draftWorktree ? 120000 : undefined);
         const t = r.thread as ThreadDetail;
         id = t.id;
         set((st) => ({
+          draftWorktree: false,
           details: { ...st.details, [t.id]: t },
           activeThreadId: t.id,
           threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
@@ -450,6 +455,10 @@ function onNotification(method: string, p: any) {
       const next = cur.some((x) => x.id === proc.id) ? cur.map((x) => (x.id === proc.id ? proc : x)) : [...cur, proc];
       return { bgProcs: { ...s.bgProcs, [p.thread_id]: next } };
     });
+    return;
+  }
+  if (method === "git/changed") {
+    useApp.setState((s) => ({ reviewNonce: s.reviewNonce + 1 }));
     return;
   }
   if (method === "settings/changed") {

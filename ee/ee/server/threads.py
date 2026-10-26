@@ -148,7 +148,9 @@ class Thread:
         return {"id": self.id, "title": self.meta.get("title") or "新对话", "cwd": self.meta.get("cwd", ""),
                 "model": self.meta.get("model", ""), "mode": self.meta.get("mode", ""),
                 "created": self.meta.get("created"), "updated": self.meta.get("updated"), "status": self.status,
-                "parent_id": self.meta.get("parent_id")}
+                "parent_id": self.meta.get("parent_id"),
+                "worktree": self.meta.get("worktree"),          # D5-1：在 worktree 里的对话 {path, branch, repo, name}
+                "workspace": (self.meta.get("worktree") or {}).get("repo") or self.meta.get("cwd", "")}
 
     def detail(self) -> dict:
         s = self.session

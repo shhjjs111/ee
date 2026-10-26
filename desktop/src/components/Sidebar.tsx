@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import {
+  GitBranch,
   GitFork,
   ChevronRight,
   Folder,
@@ -17,6 +18,7 @@ import { relTime } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import type { ThreadSummary } from "../types";
 import { Button, Menu, Spinner, Tip } from "./ui";
+import { WorktreeDialog } from "./WorktreeDialog";
 
 function norm(p: string) {
   return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -51,6 +53,11 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
         />
       ) : (
         <>
+          {t.worktree && (
+            <Tip label={`在 worktree 里：${t.worktree.branch}`}>
+              <GitBranch size={12} className="shrink-0 text-accent" />
+            </Tip>
+          )}
           {t.parent_id && (
             <Tip label="分叉出来的对话">
               <GitFork size={12} className="shrink-0 text-faint" />
@@ -131,10 +138,11 @@ export function Sidebar() {
     for (const w of s.workspaces) map.set(norm(w.path), { path: w.path, name: w.name, threads: [] });
     for (const t of s.threads) {
       if (q && !t.title.toLowerCase().includes(q) && !(t.id in hits)) continue;
-      const k = norm(t.cwd || "");
+      const home = t.workspace || t.cwd || ""; // worktree 里的对话归到主仓库（D5-1）
+      const k = norm(home);
       if (!map.has(k)) {
-        const name = (t.cwd || "其他").replace(/\\/g, "/").split("/").filter(Boolean).pop() || t.cwd;
-        map.set(k, { path: t.cwd, name, threads: [] });
+        const name = (home || "其他").replace(/\\/g, "/").split("/").filter(Boolean).pop() || home;
+        map.set(k, { path: home, name, threads: [] });
       }
       map.get(k)!.threads.push(t);
     }
@@ -245,6 +253,7 @@ export function Sidebar() {
                     }
                     items={[
                       { label: "在资源管理器中打开", onSelect: () => window.ee?.openPath(g.path) },
+                      { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
                       { label: "从列表移除", danger: true, onSelect: () => s.removeWorkspace(g.path) },
                     ]}
                   />
@@ -290,6 +299,7 @@ export function Sidebar() {
           )}
         </button>
       </div>
+      <WorktreeDialog />
     </aside>
   );
 }

@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
-import { ArrowUp, AtSign, Cpu, File, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
+import { GitBranch, ArrowUp, AtSign, Cpu, File, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import { parseSlash, resolveMode, slashItems, type PromptInfo, type SlashItem } from "../lib/slash";
@@ -526,6 +526,19 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             icon={MODES.find((m) => m.value === mode)?.icon}
             title="权限模式"
           />
+          {!s.activeThreadId && (
+            <Tip label={s.draftWorktree ? "将在新的 git worktree（独立目录 + ee/ 分支）里开始，不动主目录；完成后在左栏项目菜单「Worktree」里合并或删除" : "在新的 git worktree 里开始（独立目录和分支，适合并行做多件事）"}>
+              <button
+                onClick={() => s.set({ draftWorktree: !s.draftWorktree })}
+                className={clsx(
+                  "flex h-7 items-center gap-1 rounded-full px-2 text-[12px] transition",
+                  s.draftWorktree ? "bg-accent/15 text-accent" : "text-muted hover:bg-soft",
+                )}
+              >
+                <GitBranch size={13} /> {s.draftWorktree ? "新 worktree" : "本地"}
+              </button>
+            </Tip>
+          )}
           <div className="flex-1" />
           <BgCommands threadId={s.activeThreadId} />
           <ContextRing

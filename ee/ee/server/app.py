@@ -28,7 +28,7 @@ from ee.core.secrets import redact
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, rules_rpc, shell_rpc
+from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, rules_rpc, shell_rpc, worktree_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -86,6 +86,7 @@ class Backend:
         review_rpc.register(self.methods, self)        # review/targets|start, git/commit_message|commit
         shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
         rules_rpc.register(self.methods, self)         # permissions/list|remove（永久允许规则，D4-8）
+        worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -205,7 +206,8 @@ class Backend:
                 break
         return {"results": out}
 
-    async def thread_start(self, cwd: str, model: str | None = None, mode: str | None = None) -> dict:
+    async def thread_start(self, cwd: str, model: str | None = None, mode: str | None = None,
+                           worktree: bool | dict | None = None) -> dict:
         if mode and mode not in MODES:
             raise RpcError(f"未知权限模式：{mode}")
 
@@ -213,9 +215,26 @@ class Backend:
             p = Path(cwd).expanduser()
             if not p.is_dir():
                 raise RpcError(f"目录不存在：{cwd}")
+            wt = None
+            if worktree:          # 在新 worktree 里开对话（D5-1）
+                from ee.core import worktree as W
+                opts = worktree if isinstance(worktree, dict) else {}
+                try:
+                    wt = W.create(p, opts.get("name"), opts.get("base"), self.home)
+                except W.WorktreeError as e:
+                    raise RpcError(str(e))
+                p = Path(wt["path"])
+            else:                 # 直接在已有的 ee worktree 目录里开对话，也记上 worktree 信息
+                try:
+                    from ee.core import worktree as W
+                    wt = W.info_for_dir(p, self.home)
+                except Exception:  # noqa: BLE001
+                    wt = None
             store = SessionStore(self.home)
             meta = {"cwd": str(p.resolve()), "model": model or "", "mode": mode or "", "title": "新对话",
                     "created": time.time()}
+            if wt:
+                meta["worktree"] = {"path": wt["path"], "branch": wt["branch"], "repo": wt["repo"], "name": wt["name"]}
             t = Thread(store.id, self.home, self.notify, meta, client_factory=self.client_factory,
                        persist=self.persist)
             try:
@@ -223,7 +242,7 @@ class Backend:
             except ValueError as e:
                 raise RpcError(f"配置错误：{e}")
             t.save_meta()
-            self._touch_workspace(meta["cwd"])
+            self._touch_workspace(meta["worktree"]["repo"] if meta.get("worktree") else meta["cwd"])
             return t
 
         t = await asyncio.to_thread(build)
