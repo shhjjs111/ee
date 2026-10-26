@@ -41,6 +41,9 @@ DEFAULTS: dict = {
     "memory": {"enabled": True, "workspace": True, "max_bytes": 8192},
     # 技能：~/.ee/skills、<项目>/.ee/skills（compat 时兼容 .claude/skills、.agents/skills）；清单总长上限 max_chars
     "skills": {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000},
+    # 仓库地图（repo_map 工具，tree-sitter）：auto_inject = 会话开始时把一小份地图固定注入（默认关，省 token）
+    "repo_map": {"enabled": True, "auto_inject": False, "max_tokens": 1536, "inject_tokens": 1024,
+                 "max_files": 3000, "time_limit": 20},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     "network": {"proxy": "system", "connect_timeout": 15, "read_timeout": 90, "retries": 2},
     "providers": {

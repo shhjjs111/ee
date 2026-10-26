@@ -169,6 +169,14 @@ def _selftest(secrets_check: bool = False) -> int:
     except Exception as e:  # noqa: BLE001
         ok = False
         out["docs_error"] = f"{type(e).__name__}: {e}"
+    try:   # 仓库地图（D5-6）：真解析一小段 Python/TSX，语言库漏打包时在 CI 里暴露
+        from ee.core.repomap import selftest as repomap_selftest
+        rm = repomap_selftest()
+        out["repomap"] = rm
+        ok = ok and rm["ok"]
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        out["repomap_error"] = f"{type(e).__name__}: {e}"
     try:
         "你好".encode("gbk").decode("gbk")
         out["encodings"] = "ok"

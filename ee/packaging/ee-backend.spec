@@ -24,6 +24,13 @@ for pkg in ("ee", "websockets", "anyio._backends", "httpx2", "httpcore2", "httpx
     except Exception:
         pass
 hiddenimports += ["tomllib", "tomli"]
+# 仓库地图（D5-6）：语言包按名字动态 import 各语言的扩展模块（.pyd/.so），静态分析看不到；
+# 包里有 170 多种语言（约 170MB），只收 ee.core.repomap.LANGUAGES 用到的这些（C# 在单独的 tree_sitter_c_sharp 包里）。
+REPOMAP_LANGS = ["python", "javascript", "typescript", "tsx", "go", "rust", "java", "c", "cpp", "ruby", "php",
+                 "kotlin", "lua"]
+hiddenimports += ["tree_sitter", "tree_sitter_language_pack", "tree_sitter_c_sharp", "tree_sitter_yaml",
+                  "tree_sitter_embedded_template"]
+hiddenimports += [f"tree_sitter_language_pack.bindings.{l}" for l in REPOMAP_LANGS]
 
 a = Analysis(
     [os.path.join(HERE, "entry.py")],
