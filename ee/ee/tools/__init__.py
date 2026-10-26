@@ -33,6 +33,12 @@ def build_tools(profile, config=None) -> list[Tool]:
         return tools
     from ee.tools.web import WebFetchTool, WebSearchTool, fetch_mode, web_config
     data = getattr(config, "data", config) or {}
+    rmap = data.get("repo_map") or {}
+    if rmap.get("enabled", True):               # 仓库地图（D5-6）：固定排在其他可选工具之前；tree-sitter 不可用时不注册
+        from ee.core.repomap import available
+        if available():
+            from ee.tools.repomap import RepoMapTool
+            tools.append(RepoMapTool(rmap))
     w = web_config(data)
     if w.get("search_backend") not in (None, "", "off"):
         tools.append(WebSearchTool(data))

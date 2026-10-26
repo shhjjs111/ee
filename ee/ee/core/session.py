@@ -20,6 +20,7 @@ from ee.core import compaction as C
 from ee.core import gitinfo
 from ee.core.instructions import load_instructions
 from ee.core.memory import load_memory
+from ee.core.repomap import startup_message as repo_map_message
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
@@ -468,6 +469,10 @@ class Session:
         if mmsg is not None:
             self._append(mmsg)
             self.memory_sources = list(mem.sources)
+        # 仓库地图（repo_map.auto_inject，默认关）：同样是会话开始时的固定 user 消息
+        rmsg = await asyncio.to_thread(repo_map_message, self.cwd, self.home, self.config.data)
+        if rmsg is not None:
+            self._append(rmsg)
 
     def _ensure_instructions(self) -> None:
         """会话开始（历史为空）时加载 AGENTS.md，作为固定 user 消息放在 system 之后；之后不再改动。"""
@@ -486,6 +491,9 @@ class Session:
         if mmsg is not None:
             self._append(mmsg)
             self.memory_sources = list(mem.sources)
+        rmsg = repo_map_message(self.cwd, self.home, self.config.data)
+        if rmsg is not None:
+            self._append(rmsg)
 
     def _fill_missing(self, why: str) -> None:
         for cid in list(self._open_calls):

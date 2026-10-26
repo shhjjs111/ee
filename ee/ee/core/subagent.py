@@ -33,7 +33,7 @@ BUILTIN: dict[str, AgentDef] = {
     "general": AgentDef(name="general", description="通用子代理：能读能改（权限同主会话），适合独立的多步子任务",
                         prompt=""),
     "explore": AgentDef(name="explore", description="只读探索：搜索、阅读代码和网页，回答问题，不改任何文件",
-                        tools=["read", "grep", "glob", "shell", "todo", "web_search", "web_fetch"],
+                        tools=["read", "grep", "glob", "shell", "todo", "web_search", "web_fetch", "repo_map"],
                         prompt="你是只读的探索子代理：只搜索和阅读（代码、文档、网页），不修改任何文件。"
                                "尽量并行地读和搜，给出有依据的结论，并列出关键文件路径和行号。"),
 }

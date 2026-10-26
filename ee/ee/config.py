@@ -39,6 +39,9 @@ DEFAULTS: dict = {
     "subagent": {"enabled": True, "max_steps": 30, "max_steps_limit": 100},
     # 长期记忆：~/.ee/memory.md + 工作区 .ee/memory.md，会话开始时注入（总大小上限）
     "memory": {"enabled": True, "workspace": True, "max_bytes": 8192},
+    # 仓库地图（repo_map 工具，tree-sitter）：auto_inject = 会话开始时把一小份地图固定注入（默认关，省 token）
+    "repo_map": {"enabled": True, "auto_inject": False, "max_tokens": 1536, "inject_tokens": 1024,
+                 "max_files": 3000, "time_limit": 20},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     "network": {"proxy": "system", "connect_timeout": 15, "read_timeout": 90, "retries": 2},
     "providers": {
