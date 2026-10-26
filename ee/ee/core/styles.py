@@ -1,4 +1,4 @@
-"""回答风格（D5-9）：默认 / 简洁 / 讲解 / 作业辅导，以及用户自己的 ~/.ee/styles/<名>.md。
+"""回答风格（D5-9）：默认 / 简洁，以及用户自己的 ~/.ee/styles/<名>.md。
 
 每个风格是一段提示词（ee/prompts/styles/<名>.md，首行 `# 显示名`，其余是正文）。注入方式兼顾前缀缓存：
 - 会话首次请求时把当前风格段附在 system 提示末尾，随 system 一起冻结 —— 会话内每次请求字节不变；
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-BUILTIN_ORDER = ("default", "concise", "explain", "tutor")
+BUILTIN_ORDER = ("default", "concise")
 _NAME_RE = re.compile(r"^[\w\-]{1,40}$")
 MAX_CHARS = 4000
 

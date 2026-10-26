@@ -356,8 +356,8 @@ def test_thread_options_rpc_persists_effort_and_style(ee_home, workspace):
         b = Backend(home=ee_home, client_factory=lambda sp: ChatClient(sp, client=fake))
         t = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
         assert t["effort"] == "" and t["style"] == "default" and t["effort_support"]["effort"] is True
-        r = await b.call("thread/options", {"thread_id": t["id"], "effort": "low", "style": "tutor"})
-        assert r["effort"] == "low" and r["style"] == "tutor"
+        r = await b.call("thread/options", {"thread_id": t["id"], "effort": "low", "style": "concise"})
+        assert r["effort"] == "low" and r["style"] == "concise"
         await b.call("turn/start", {"thread_id": t["id"], "text": "hi", "effort": "off"})
         await b.threads[t["id"]].task
         # 重启后照旧
@@ -366,7 +366,7 @@ def test_thread_options_rpc_persists_effort_and_style(ee_home, workspace):
         return d
     d = asyncio.run(main())
     assert fake.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
-    assert d["thread"]["effort"] == "off" and d["thread"]["style"] == "tutor"
+    assert d["thread"]["effort"] == "off" and d["thread"]["style"] == "concise"
     with pytest.raises(Exception):
         asyncio.run(_bad_option(ee_home, workspace))
 

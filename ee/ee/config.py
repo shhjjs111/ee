@@ -50,7 +50,7 @@ DEFAULTS: dict = {
     "roles": {"title": "", "compact": "", "explore": "", "plan": "", "review": "", "commit": ""},
     # 用模型生成对话标题（用 roles.title 的模型；关掉则取第一条消息开头）
     "title": {"ai": False},
-    # 回答风格（D5-9）：default | concise | explain | tutor | ~/.ee/styles/<名>.md
+    # 回答风格（D5-9）：default | concise | ~/.ee/styles/<名>.md
     "style": {"default": "default"},
     # 花费上限（D5-9）：0 = 不限；action = warn（仅提醒）| pause（暂停并询问）；currency 跟单价币种
     "budget": {"session": 0, "daily": 0, "monthly": 0, "action": "warn", "warn_ratio": 0.8, "currency": "¥"},

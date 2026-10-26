@@ -46,10 +46,18 @@ def notices(evs):
 
 # ------------------------------------------------------------------ 回答风格
 
+def _user_styles(home):
+    """内置只有 默认/简洁；切换机制用两个用户风格文件来测。"""
+    d = home / "styles"
+    d.mkdir(exist_ok=True)
+    (d / "tutor.md").write_text("# 作业辅导\n引导思考，不直接给出完整答案。\n", encoding="utf-8")
+    (d / "explain.md").write_text("# 讲解\n边做边解释原理。\n", encoding="utf-8")
+
+
 def test_builtin_styles_listed_and_user_style(ee_home):
     ids = [s.id for s in ST.available(ee_home)]
-    assert ids[:4] == ["default", "concise", "explain", "tutor"]
-    assert ST.get(ee_home, "tutor").label == "作业辅导" and "不直接给出完整答案" in ST.get(ee_home, "tutor").body
+    assert ids == ["default", "concise"]
+    assert ST.get(ee_home, "concise").label == "简洁"
     (ee_home / "styles").mkdir()
     (ee_home / "styles" / "pirate.md").write_text("# 海盗腔\n用海盗的口吻回答。\n", encoding="utf-8")
     assert ST.get(ee_home, "pirate").label == "海盗腔"
@@ -64,6 +72,7 @@ def test_default_style_keeps_system_prompt_bytes(ee_home, workspace):
 
 
 def test_style_frozen_in_system_and_switch_appends_only(ee_home, workspace):
+    _user_styles(ee_home)
     s, fake = make_session(workspace, [answer("1"), answer("2"), answer("3"), answer("4")])
     s.set_style("tutor")
     run(turn(s, "第一题怎么做"))
@@ -101,6 +110,7 @@ def test_style_switch_back_to_default_and_compaction_baseline(ee_home, workspace
 
 
 def test_style_default_from_config_and_subagent_has_no_style(ee_home, workspace):
+    _user_styles(ee_home)
     (ee_home / "config.toml").write_text('[style]\ndefault = "explain"\n', encoding="utf-8")
     from test_subagent_parallel import RouterClient, report, session, task_call
     cli = RouterClient({"parent": [task_call(0, "t1", "查A") + finish("tool_calls"), report("好")],
@@ -367,16 +377,16 @@ def test_settings_roundtrip_and_validation(ee_home):
     from ee.server import settings as S
     r = S.set_settings({"budget": {"session": 2, "daily": "10", "monthly": 0, "action": "pause", "warn_ratio": 0.9},
                         "roles": {"title": "deepseek-pro", "compact": ""}, "reasoning": {"effort": "off"},
-                        "style": {"default": "tutor"}, "title": {"ai": True}})["settings"]
+                        "style": {"default": "concise"}, "title": {"ai": True}})["settings"]
     assert r["budget"]["daily"] == 10 and r["budget"]["action"] == "pause" and r["budget"]["warn_ratio"] == 0.9
     assert r["roles"]["title"] == "deepseek-pro" and r["reasoning"]["effort"] == "off"
-    assert r["style"]["default"] == "tutor" and r["title"]["ai"] is True
+    assert r["style"]["default"] == "concise" and r["title"]["ai"] is True
     for bad in ({"budget": {"daily": -1}}, {"budget": {"action": "explode"}}, {"roles": {"title": "没有的模型"}},
                 {"roles": {"nope": ""}}, {"reasoning": {"effort": "超高"}}, {"style": {"default": "nope"}}):
         with pytest.raises(ValueError):
             S.set_settings(bad)
     choices = S.get_settings()["choices"]
-    assert choices["efforts"] == ["", "low", "medium", "high", "off"] and "tutor" in [x["id"] for x in choices["styles"]]
+    assert choices["efforts"] == ["", "low", "medium", "high", "off"] and [x["id"] for x in choices["styles"]] == ["default", "concise"]
 
 
 def test_budget_status_rpc_without_thread(ee_home):

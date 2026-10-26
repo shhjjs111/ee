@@ -254,7 +254,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       case "style": {
         const id = resolveStyle(args, styles);
         if (!id) {
-          s.showToast(`用法：/style ${styles.map((x) => x.label).join(" | ") || "默认 | 简洁 | 讲解 | 作业辅导"}`, "error");
+          s.showToast(`用法：/style ${styles.map((x) => x.label).join(" | ") || "默认 | 简洁"}`, "error");
           return true;
         }
         clearInput();
