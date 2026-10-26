@@ -214,16 +214,20 @@ def _sha8(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:8]
 
 
-def allow_id(path: Path, table: dict) -> str:
-    """项目 hooks 的允许记录：路径指纹:内容指纹。内容（hook 定义）一变就要重新允许。"""
+def file_allow_id(path: Path, content: str) -> str:
+    """项目文件的信任记录：路径指纹:内容指纹。内容一变指纹就变，要重新确认（hooks、项目 SYSTEM.md 共用）。"""
     try:
         p = str(Path(path).resolve())
     except OSError:
         p = str(path)
     if IS_WINDOWS:
         p = p.lower()
-    blob = json.dumps(events_table(table), sort_keys=True, ensure_ascii=False)
-    return f"{_sha8(p)}:{_sha8(blob)}"
+    return f"{_sha8(p)}:{_sha8(content)}"
+
+
+def allow_id(path: Path, table: dict) -> str:
+    """项目 hooks 的允许记录：路径指纹:内容指纹。内容（hook 定义）一变就要重新允许。"""
+    return file_allow_id(path, json.dumps(events_table(table), sort_keys=True, ensure_ascii=False))
 
 
 @dataclass

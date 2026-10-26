@@ -24,15 +24,31 @@ def load_prompt(rel_path: str) -> str:
     return f.read_text(encoding="utf-8").strip()
 
 
-def system_prompt(profile, style_segment: str = "") -> str:
-    """style_segment：回答风格段（core/styles.py），附在最末尾；默认风格为空，system 与没有风格时逐字节相同。"""
-    base = load_prompt("system/base.md")
-    patch_name = getattr(profile, "prompt_patch", "default") or "default"
-    try:
-        patch = load_prompt(f"system/{patch_name}.md")
-    except (FileNotFoundError, OSError):
-        patch = load_prompt("system/default.md")
-    text = base + "\n\n" + patch + "\n"
+def builtin_base(profile=None) -> str:
+    """内置基础段。用户的 SYSTEM.md（core/sysprompt.py）替换的就是这一段。"""
+    return load_prompt("system/base.md")
+
+
+def system_prompt(profile, style_segment: str = "", custom=None) -> str:
+    """style_segment：回答风格段（core/styles.py），附在最末尾；默认风格为空，system 与没有风格时逐字节相同。
+    custom：sysprompt.SystemSources（SYSTEM.md 替换基础段、APPEND_SYSTEM.md 追加、模型补丁开关）；
+    None 或没有任何自定义时与原来逐字节相同。"""
+    base = builtin_base(profile)
+    use_patch = True
+    if custom is not None:
+        if custom.system is not None:
+            base = custom.system.text
+        use_patch = custom.model_patch
+    text = base + "\n"
+    if use_patch:
+        patch_name = getattr(profile, "prompt_patch", "default") or "default"
+        try:
+            patch = load_prompt(f"system/{patch_name}.md")
+        except (FileNotFoundError, OSError):
+            patch = load_prompt("system/default.md")
+        text = base + "\n\n" + patch + "\n"
+    if custom is not None and custom.append is not None:
+        text += "\n" + custom.append.text + "\n"
     if style_segment:
         text += "\n" + style_segment.strip() + "\n"
     return text

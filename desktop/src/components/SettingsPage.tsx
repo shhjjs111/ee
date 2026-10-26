@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ArrowLeft, Check, Cpu, Gauge, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
+import { ArrowLeft, Check, Cpu, FileText, Gauge, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { pushDesktopPrefs, useApp, type Theme } from "../lib/store";
 import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
@@ -8,9 +8,10 @@ import { AgentSettings } from "./AgentSettings";
 import { AnswerSettings } from "./AnswerSettings";
 import { HooksSettings } from "./HooksSettings";
 import { McpSettings } from "./McpSettings";
+import { SystemPromptSettings } from "./SystemPromptSettings";
 import { Button, Field, Input, Select, Spinner, Tip, Toggle } from "./ui";
 
-const SECTIONS = ["general", "models", "answer", "tools", "mcp", "hooks", "about"] as const;
+const SECTIONS = ["general", "models", "answer", "tools", "mcp", "hooks", "prompt", "about"] as const;
 type Section = (typeof SECTIONS)[number];
 
 const SHELL_LABEL: Record<string, string> = {
@@ -374,6 +375,7 @@ export function SettingsPage() {
     { id: "tools", label: "工具与记忆", icon: <Wrench size={15} /> },
     { id: "mcp", label: "MCP", icon: <Plug size={15} /> },
     { id: "hooks", label: "Hooks", icon: <Webhook size={15} /> },
+    { id: "prompt", label: "系统提示词", icon: <FileText size={15} /> },
     { id: "about", label: "关于", icon: <Info size={15} /> },
   ];
   const providerNames = Object.keys(draft.providers);
@@ -586,6 +588,7 @@ export function SettingsPage() {
 
             {section === "mcp" && <McpSettings draft={draft} resp={resp} up={up} />}
             {section === "hooks" && <HooksSettings draft={draft} resp={resp} up={up} />}
+            {section === "prompt" && <SystemPromptSettings />}
 
             {section === "about" && (
               <>

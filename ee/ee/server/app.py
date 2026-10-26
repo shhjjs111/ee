@@ -92,6 +92,8 @@ class Backend:
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
+        from ee.server import sysprompt_rpc
+        sysprompt_rpc.register(self.methods, self)     # sysprompt/info|preview|trust|untrust|set（SYSTEM.md）
         from ee.server import answer_rpc
         answer_rpc.register(self.methods, self)        # thread/options、styles/list、budget/status、reasoning/*（D5-9）
         from ee.server import automations as automations_rpc
