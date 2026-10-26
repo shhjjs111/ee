@@ -71,7 +71,8 @@ class DiskSnapshot:
     def _run(self, *args: str, timeout: float = 30.0, input: bytes | None = None) -> bytes:
         argv = [self.exe or "git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
                 "-c", "core.quotepath=false", "-c", "core.longpaths=true", "-c", "core.fsmonitor=false",
-                "-c", "core.hooksPath=" + os.devnull, *args]
+                "-c", "core.hooksPath=" + os.devnull,
+                "--literal-pathspecs", *args]       # 路径一律按字面匹配：a[b].txt 不能顺带匹配到 ab.txt
         code, out, err = run_capture(argv, cwd=self.worktree, timeout=timeout, input=input, env=self._env())
         if code != 0:
             msg = err.decode("utf-8", "replace").strip()[:300] or f"退出码 {code}"

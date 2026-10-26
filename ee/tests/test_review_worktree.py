@@ -58,6 +58,7 @@ def test_remove_broken_worktree_does_not_rmtree_user_files(repo, ee_home):
     info = W.create(repo, "broken", home=ee_home)
     p = Path(info["path"])
     (p / "work.txt").write_text("important\n", encoding="utf-8")
+    (p / ".git").unlink()                      # Windows 上 .git 文件带隐藏属性，直接覆盖写会被拒
     (p / ".git").write_text("gitdir: " + str(p.parent / "nowhere") + "\n", encoding="utf-8")
     with pytest.raises(W.WorktreeError):
         W.remove(p, home=ee_home)
