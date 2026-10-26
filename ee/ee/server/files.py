@@ -159,6 +159,16 @@ def read(cwd: str, path: str, max_bytes: int = MAX_TEXT) -> dict:
         data = f.read_bytes()
         return {**base, "kind": "image", "mime": IMAGE_MIME[ext],
                 "data_url": f"data:{IMAGE_MIME[ext]};base64,{base64.b64encode(data).decode('ascii')}"}
+    from ee.core.docread import DOC_EXTS, DocError, extract
+    if ext in DOC_EXTS:               # PDF / Word / Excel / PPT 转文字预览（D4-7）
+        try:
+            text, info = extract(f)
+        except DocError as e:
+            return {**base, "kind": "binary", "reason": "doc_error", "message": str(e)}
+        truncated = len(text) > MAX_TEXT * 2
+        text = text[: MAX_TEXT * 2]
+        return {**base, "kind": "text", "text": text, "encoding": "utf-8", "truncated": truncated,
+                "doc": info.get("kind"), "lines": text.count("\n") + 1}
     if ext in BINARY_EXT:
         return {**base, "kind": "binary", "reason": "binary"}
     max_bytes = max(1024, min(int(max_bytes or MAX_TEXT), 4 * MAX_TEXT))

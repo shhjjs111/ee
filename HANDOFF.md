@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 17:40（Asia/Shanghai，D4-6 后台长命令完成；下一步 D4-7 PDF/Word/Excel 读取）
+最后更新：2026-10-26 18:00（Asia/Shanghai，D4-7 文档读取完成；D4-5 CI 绿（run 40295558344）；下一步 D4-8 永久允许规则 + ask_user + .eeignore）
 
-> **接手第一步（2026-10-26 17:40）**：D4-5、D4-6 已推送，先确认最新 Windows CI 绿（失败就修）；然后做 D4-7 PDF/Word/Excel 读取。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 18:00）**：D4-6、D4-7 已推送，先确认最新 Windows CI 绿（失败就修，尤其打包 exe 的 selftest 文档组件）；然后做 D4-8 永久允许规则 + ask_user + .eeignore。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -150,7 +150,14 @@
    - 前端：输入框工具栏「后台 N」按钮（`components/BgCommands.tsx`）：列出本会话后台命令（状态、运行时长），「输出」弹窗看最后 6 万字符（运行中每 1.5 秒刷新，显示完整日志路径），「停止」结束进程树；store `bgProcs`（打开会话时 shell/list，之后跟 shell/updated）。工具卡片：后台启动显示「后台运行 <命令> b1」，shell_output/write/kill 显示「查看了/输入到/结束了后台命令 b1」。
    - 测试：`tests/test_bgshell.py` 6 个（生命周期：开头输出/等待/写 stdin/正则过滤/退出码/日志文件/已结束不能写/未知 id；很快结束的命令；kill 与 close；权限；工具注册与开关；server：回合结束后仍在跑、shell/list|read|kill、删除会话清理）；pytest 280 通过 2 跳过，vitest 20、tsc、vite build 通过。
    - 已知/后续：后台命令是管道不是伪终端（交互程序可能缓冲输出，提示词里让模型 Python 用 -u）；内核重启后后台命令不会恢复（内核退出时已全部结束）；子代理启动的后台命令归主会话，子代理结束不杀；还没做“前台命令超时自动转后台”。
-7. [ ] PDF / Word / Excel 读取：read 工具按扩展名分派 pypdf / python-docx / openpyxl，带页码/表名；打包 spec 加依赖
+7. [x] PDF / Word / Excel / PowerPoint 读取（2026-10-26 18:00）：read 工具按扩展名自动转文字，带页码/表名；文件预览同样可看
+   - 参考了谁、取了哪点：read 工具按扩展名自动抽取文字（模型不用另外调工具、不用自己写脚本）取自 Cline 的 extractTextFromFile（pdf/docx/xlsx）；PDF 的 pages 选页参数和“大 PDF 默认只给前面一段并提示用 pages 读其余”取自 Claude Code 的 Read；Excel 先列全部工作表和大小、再读指定工作表取自 Goose 的 xlsx 工具；Word 标题/列表/表格转 markdown 并保持文档顺序是 ee 自己的组合。Codex/OpenCode/Aider 不支持二进制文档，没取。
+   - `ee/core/docread.py`：pypdf（每页「=== 第 N 页 ===」，pages 支持 3、2-5、1,3,7-9、8-，默认前 50 页，无文字层的页标出“可能是扫描件”，加密 PDF 试空密码）；python-docx（按 body 顺序遍历段落和表格，标题样式→#，列表→- ，表格→markdown，横向合并单元格只出一次）；openpyxl 只读 + data_only（公式取缓存值；列出全部工作表及范围；每行「行号 | A | B…」，最多 2000 个非空行、60 列，日期格式化，超出提示用 shell 跑 pandas）；python-pptx（每张幻灯片文字、表格、备注，pages 选张）；旧版 .doc/.xls/.ppt 明确报不支持；按 (路径, mtime, 大小, 参数) LRU 缓存 16 个。
+   - read 工具：新参数 pages、sheet；转换在线程里跑；转换后的文字照常按行号 + offset/limit 分段（头部一行说明类型/页数/工作表）；meta.doc。提示词 read.md 写明可直接读这些格式、不要自己装库写脚本。
+   - 文件预览：files/read 对这些格式返回转换后的文字（kind=text, doc=pdf|docx|xlsx|pptx），Word/PPT 按 markdown 渲染，PDF/Excel 纯文本，顶部提示“转换出的文字”；解析失败显示原因。
+   - 依赖：pyproject 加 pypdf、python-docx、openpyxl、python-pptx；PyInstaller spec 加 hiddenimports（pypdf/docx/openpyxl/pptx/lxml）和 docx/pptx 的模板数据；`selftest` 增加文档组件检查（真建一个 docx/pptx，打包漏模板会直接失败）。
+   - 测试：`tests/test_docread.py` 7 个（页码解析、PDF（手写最小 PDF，不依赖样本）含空页/选页/分段、docx 标题列表表格顺序、xlsx 多表/日期/按名字和序号选表/不存在的表、pptx 选张和备注、旧格式/损坏文件报错、缓存与文件变化、files 预览）；pytest 287 通过 2 跳过。
+   - 已知/后续：扫描版 PDF 没有 OCR（可以让支持看图的模型看截图，后续可做“PDF 页转图片”）；.xls/.doc 旧格式不支持；Excel 图表、Word 图片不提取；python-pptx 带进 Pillow，安装包会大一些。
 8. [ ] 永久允许规则（审批“以后都允许”写进配置）+ ask_user 提问工具 + .eeignore
 9. [ ] headless `ee exec --json`（自动化执行器的基础）
 10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）

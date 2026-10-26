@@ -217,7 +217,8 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
 
   const rel = data?.path ?? path;
   const parts = rel.split("/").filter(Boolean);
-  const isMd = /\.(md|markdown)$/i.test(rel);
+  const doc = (data as any)?.doc as string | undefined; // PDF/Word/Excel/PPT 转出来的文字（D4-7）
+  const isMd = /\.(md|markdown)$/i.test(rel) || doc === "docx" || doc === "pptx";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line pl-1.5 pr-2">
@@ -264,6 +265,11 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
         {err && <div className="px-5 py-8 text-center text-[12.5px] text-danger">{err}</div>}
         {data?.kind === "text" && (
           <>
+            {doc && (
+              <div className="border-b border-line bg-soft px-3 py-1.5 text-[11.5px] text-muted">
+                {{ pdf: "PDF", docx: "Word", xlsx: "Excel", pptx: "PowerPoint" }[doc] ?? doc} 转换出的文字（只看内容，不含排版和图片）
+              </div>
+            )}
             {data.truncated && (
               <div className="border-b border-line bg-soft px-3 py-1.5 text-[11.5px] text-muted">
                 文件较大，只显示前 {fmtSize(data.text?.length ?? 0)}
@@ -274,7 +280,7 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
                 <Markdown text={data.text ?? ""} />
               </div>
             ) : data.text ? (
-              <CodeView text={data.text} path={rel} />
+              <CodeView text={data.text} path={doc ? rel + ".txt" : rel} />
             ) : (
               <div className="px-5 py-8 text-center text-[12.5px] text-faint">空文件</div>
             )}
@@ -292,7 +298,7 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
         {data?.kind === "binary" && (
           <div className="flex flex-col items-center px-6 py-14 text-center text-[12.5px] text-faint">
             <File size={28} className="mb-3 opacity-50" />
-            {data.reason === "too_large" ? "文件太大，不预览" : "二进制文件，不预览"}
+            {data.reason === "too_large" ? "文件太大，不预览" : data.reason === "doc_error" ? ((data as any).message ?? "无法解析") : "二进制文件，不预览"}
             {window.ee && (
               <Button className="mt-4" onClick={() => window.ee!.openPath(data.abs)}>
                 <SquareArrowOutUpRight size={13} /> 用默认程序打开

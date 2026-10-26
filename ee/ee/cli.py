@@ -141,6 +141,20 @@ def _selftest(secrets_check: bool = False) -> int:
     except Exception as e:  # noqa: BLE001
         ok = False
         out["cert_error"] = f"{type(e).__name__}: {e}"
+    try:   # 文档解析组件（D4-7）：打包漏了就在 CI 里暴露；docx/pptx 需要内置模板，真建一个文档验证
+        import io
+
+        import docx
+        import openpyxl
+        import pptx
+        import pypdf
+        buf = io.BytesIO()
+        docx.Document().save(buf)
+        pptx.Presentation().save(io.BytesIO())
+        out["docs"] = {"pypdf": pypdf.__version__, "openpyxl": openpyxl.__version__, "docx": len(buf.getvalue()) > 0}
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        out["docs_error"] = f"{type(e).__name__}: {e}"
     try:
         "你好".encode("gbk").decode("gbk")
         out["encodings"] = "ok"
