@@ -40,7 +40,8 @@ def test_default_is_byte_identical(ee_home, workspace):
 
 
 def test_user_system_replaces_base_and_patch_still_appended(ee_home, workspace):
-    (ee_home / "SYSTEM.md").write_text("\ufeff我的全局提示词\r\n第二行\r\n", encoding="utf-8")
+    # 按字节写：write_text 在 Windows 上会把 \n 再译成 \r\n，得到 \r\r\n，测的就不是“记事本存的 BOM+CRLF”了
+    (ee_home / "SYSTEM.md").write_bytes("\ufeff我的全局提示词\r\n第二行\r\n".encode("utf-8"))
     s, fake, ev = _turn(workspace)
     text = _sent_system(fake)
     assert text.startswith("我的全局提示词\n第二行\n\n")
