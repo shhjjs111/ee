@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 13:15（Asia/Shanghai）
+最后更新：2026-10-26 13:20（Asia/Shanghai）
 
 ## 用户要什么
 - 用户 ee 自用的 AI 编程 Agent，**只要 Windows 桌面端，不要终端版**。UI 照 OpenAI Codex 桌面版（三栏：左项目/对话、中对话、右改动审阅）。
@@ -29,7 +29,9 @@
 **用户最高优先级 bug**：装了 D1 安装包，填了 API key，发“你好”完全没反应；点设置有时一直转圈。
 - 用户的 `%APPDATA%\ee\logs\backend.log` 只有 3 次正常启动（`EE_SERVE_READY`），没有任何报错/退出 → 后端起来了，卡在启动之后，且出错没写日志。
 - Linux 上源码版跑 `ee/scripts/e2e_ws.py`（拉后端 + 假模型，settings/get→set→workspace/open→thread/start→turn/start“你好”）0.5 秒正常完成 → 问题是 Windows/冻结 exe 特有。
-- 怀疑并正在修：
+- **根因已在 Windows CI 上复现（2026-10-26 13:10，分支 repro-win-hang，run 40272706672）**：`--exit-on-stdin-eof` 的线程阻塞读 stdin 管道时，git 子进程（继承了同一根 stdin 管道）在 Windows 上启动即卡死；`subprocess.run(timeout=10)` 超时后 Windows 实现还会无限期 `communicate()` → `thread/start`（同步跑 git status）把事件循环永久卡住 → “你好”没反应、设置转圈，且不会有任何日志。同一脚本 stdin=DEVNULL 或不读 stdin 时 0.1s 正常。复现脚本 `ee/scripts/win_stdin_repro.py`、`ee/scripts/e2e_ws.py`。
+- 修复（进行中，代码在 Hark 工作区，未推送）：`ee/proc.py` 统一子进程（stdin=DEVNULL、超时杀进程树、收尾有超时）；serve 启动时把 fd0 换成 NUL、只在私有副本上读 EOF；所有慢 RPC 挪到 asyncio.to_thread；后端日志 `ee-backend.log` + 事件循环卡顿看门狗；模型请求超时/代理设置/中文错误/“正在连接模型…”状态。
+- 其余排查点：
   1. AsyncOpenAI 默认 timeout 600s + 自己重试 3 次 → 网络/代理不通时界面几十分钟毫无提示。要加连接/读取超时、立即显示“正在连接模型…”、失败显示清晰中文错误。Windows 上 httpx 会读系统代理（注册表），要可配置（跟随系统/直连/自定义）。
   2. server 里有同步 subprocess（git 等）在事件循环上执行 → 阻塞 WebSocket，设置 RPC 转圈。全部改 to_thread。
   3. Electron 端 RPC 无超时、WS 断开不提示 → 加超时、重连、错误显示；后端 stderr 和 Python 端自己的日志都写进 logs。
