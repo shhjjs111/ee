@@ -141,6 +141,9 @@ export function SubagentCard({ item }: { item: ToolItem }) {
           <span className={clsx("shrink-0 text-[12px]", failed ? "text-danger" : "text-faint")}>
             {agent}
             {rec?.mode === "read-only" ? " · 只读" : ""}
+            {rec?.fork || item.args?.fork === true ? (
+              <span title="分叉子代理：继承主会话到这一步的完整上下文，只把结论交回主会话"> · 分叉</span>
+            ) : null}
             {rec?.worktree ? " · worktree" : ""} · {SUB_STATUS[status] ?? status}
             {rec?.step ? ` · ${rec.step}${rec.max_steps ? `/${rec.max_steps}` : ""} 步` : ""}
           </span>
