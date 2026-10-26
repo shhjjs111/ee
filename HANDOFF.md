@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 22:45（Asia/Shanghai，D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限完成：pytest 536 过 2 跳过、vitest 40 过；Windows CI：后端 WIP 54d1cb7 run 40339235884、完整提交 488233b run 40340977819 均全绿；下一步按 research/pi.md 落地 Pi 借鉴项第一批）
+最后更新：2026-10-26 23:50（Asia/Shanghai，Pi 第一批 + D5-10 全部合并；pytest 673 过 2 跳过、vitest 52；真实 DeepSeek 对比待用户打包前跑 eval_profiles.py）
 
 > **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。第二轮（19:25）：Hook 的 PreToolUse 返回 allow 会跳过危险命令的强制确认（force），已修（hooks.py adjust_decision，测试 test_hook_allow_does_not_skip_forced_ask）；已核实：永久允许规则对 `git push && curl|sh`、`git push; rm` 这类复合命令不会放行；项目 hooks 信任按路径+内容指纹、超时杀进程树、退出码 2 拦截正确；automations.json 与规则文件原子写；read-only/plan 下后台 shell、shell_write 被拒。待查（低风险）：ToolStart 显示的是 Hook 改写前的参数；PostToolUse/Stop 忽略 continue:false；Windows 取消 hook 时 taskkill 同步阻塞最多 10 秒；cron 边界、worktree 删除、bgproc 编码、repomap/docread 异常、前端四个新页面尚未逐行审。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
 
@@ -11,7 +11,7 @@
 > - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
 > - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
-> **并行进行中（2026-10-26 23:15）**：1 个分支开发中（A3 edit、A4+A10、A5、D5-10 已合并），未合并：`feat/pi-lean`（A1/A2/A7/A8 精简模式、工具描述压缩、开关、前缀预算测试、真实对比脚本 eval_profiles.py）。沙箱无 DeepSeek key：新功能默认关、可选开，真实对比留到打包时用户用 key 跑 eval_profiles.py 再决定默认。接手时看各分支最新提交信息（WIP 写了已完成/还差），做完后逐个合并、全量测试、在此打勾。
+> **2026-10-26 23:50 状态**：Pi 第一批（A1/A2/A7/A8 精简模式与工具描述压缩、A3 edit、A4 SYSTEM.md、A5 两条队列、A10 错误分类）和 D5-10 全部合并进 main，无未合并分支；pytest 673 过 2 跳过、vitest 52。**沙箱无 DeepSeek key，以上都没做真实任务对比**：打包前用户设好 DEEPSEEK_API_KEY 后跑 `python ee/scripts/eval_profiles.py --runs 3`（full vs lean，10 个任务），再决定 lean 是否设为默认；注意 A2 压缩了 full 模式的工具描述、A3 改了 edit schema，这两项影响默认行为，若真实对比变差就回退对应提交。下一步：D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、Pi 第二批（A6 details 契约、A9、A12），再 D6。
 
 > **接手第一步（2026-10-26 22:58 更新）**：先确认最新 Windows CI 绿（最新提交 b41f6a5「回答风格只留默认/简洁」，推送时 CI 还在跑；上一个 488233b 已绿）。用户原则：Pi 只作参考、不强行适配，没实用价值的功能宁可不要（已删内置「讲解」「作业辅导」风格）；平时不催用户真机测试，攒齐功能后统一打包测。**下一步：按 `research/pi.md` 落地 Pi 借鉴项，第一批 = 精简模式、工具描述压缩、edit 改进、SYSTEM.md / APPEND_SYSTEM.md、两条消息队列**。用户决定：自动压缩保持 80% 阈值，不加 128k 上限。每一项都必须用 DeepSeek 真实任务实测（对比改前改后的成功率 / token / 花费），不好用就不合入。之后再按路线做 D5-10（修剪旧工具输出 + fork 式子代理）、D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话。D5-9 遗留待做见「D5 进度 · D5-9 · 剩余待做」。**用户决定（22:48）：暂不出安装包，先攒功能；Windows 真机手测（含 D5-9 新界面、真实 DeepSeek key 的推理强度/关闭思考）统一放到功能差不多后打包时一起做。**
 > （旧）**接手第一步（2026-10-26 21:20）**：确认最新 Windows CI 绿（D5-2 的提交）。下一步 D5-9：回答风格（讲解/作业辅导）、按用途分模型（`[models.roles]` compact/title/explore/plan/review）、推理强度、预算告警；之后 D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话（依赖 D5-2 已就绪）。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
@@ -195,6 +195,16 @@
 1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」）
 
 **D5 进度**
+
+- **Pi A2+A7+A1+A8 提示词与工具表瘦身**（合并自 feat/pi-lean，2026-10-26 23:50）
+  - 参考：Pi 的“工具描述一两句、细则随启用的工具进系统提示词”和默认只开 4 个工具。
+  - A2：`prompts/tools/*.md` 以 `## 规则` 分隔，前为 schema 描述（一两句），后面每条规则只在工具启用时按顺序去重拼成系统提示词「# 工具使用规则」段（`tools.tool_rules`）；base.md 去掉与工具重复的条目；参数描述去重；edit 不再说返回 diff。保留的踩坑规则：shell 语法以 context-update 为准、常驻命令用 background 不用 `&`/start/nohup、read「与上次相同」再读拿全文。
+  - A7：`todo`、`present_plan` 开关（默认开；关 present_plan 时计划模式用文字给方案）；`memory.inject`/`memory.tool` 拆分（`enabled` 仍是总开关）。
+  - A1：`profile = "full" | "lean"`（默认 full），会话开始定下记在 meta（旧对话按 full）；lean = read/write/edit/shell + `system/lean.md`（约 200 token），shell background 返回 pid 与日志路径；权限/Hooks/只读白名单不变；`builtin_base(profile, agent)`，SYSTEM.md 替换「内置基础段 + 工具使用规则」；`ee exec --profile`；设置页「工具与记忆 → 模式」。
+  - A8：记忆、技能清单、仓库地图注入头缩短；无 skill 工具时技能规则改为用 read 读 SKILL.md。
+  - 实测（DeepSeek-V3 tokenizer，无 MCP）：system+tools 7,458 → full 3,822（−49%）/ lean 1,088（−85%）。
+  - 测试：`test_prefix_budget.py`（字符/2.2 近似，lean ≤1200、full ≤4500）、`test_lean_profile.py`、`test_eval_profiles.py`、AgentSettings.test.tsx。真实对比脚本 `ee/scripts/eval_profiles.py`（key 只读环境变量，10 个任务：修 bug×4、新功能、多文件×2、补测试、写文档、作业；隐藏验收测试；`--selfcheck` 不调模型检查任务有效性）。
+  - 已知：lean 完成率未实测；lean 没有 memory/skill/todo/子代理工具（说“记住”存不了）；lean 结束后台命令走 shell（会弹审批），Windows 未实测；技能清单精简后触发率待验证。
 
 - **Pi A4 SYSTEM.md / APPEND_SYSTEM.md + A10 错误分类与重试**（合并自 feat/pi-system-md，2026-10-26 23:35）
   - 参考：Pi 的系统提示词文件发现规则（项目级信任后才生效，否则全局；APPEND 同规则）与重试分类（可重试/余额不重试/上下文溢出交给压缩），只借思路。

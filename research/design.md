@@ -165,3 +165,4 @@ ee/
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）
 - 2026-10-26：D5-6 仓库地图（tree-sitter 定义/引用图排名，repo_map 只读工具，可选会话开始注入）合并。
 - 2026-10-26：D4-10 自动化 v1（ee serve 内调度，cron/每天/间隔，收件箱与通知）合并。
+- 2026-10-26：Pi 第一批（A1/A2/A3/A4/A5/A7/A8/A10）与 D5-10 合并；真实任务对比待用 key 跑 eval_profiles.py。
