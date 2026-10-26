@@ -23,3 +23,4 @@ def test_moved():
                 if isinstance(t, ast.Name)}
     assert not assigned & {"REPEAT_NOTE", "REPEAT_STOP", "NO_PROGRESS_NOTE"}
     assert "结果不会变" in loopguard_text.REPEAT_NOTE
+```

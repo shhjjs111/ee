@@ -22,3 +22,4 @@ def test_cap_tests_exist():
 def test_impl_untouched():
     src = (Path(__file__).parents[1] / "ee" / "tools" / "truncate.py").read_text(encoding="utf-8")
     assert 'return b[:n].decode("utf-8", errors="ignore") + " …"' in src
+```

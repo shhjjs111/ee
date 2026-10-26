@@ -24,3 +24,4 @@ def test_fmt_tokens():
     assert fmt_tokens(3_400_000) == "3.4M"
     assert fmt_tokens(2_000_000) == "2M"
     assert fmt_tokens(-5) == "0"
+```

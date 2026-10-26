@@ -33,3 +33,4 @@ def test_enabled_still_blocks():
     cfg = copy.deepcopy(DEFAULTS["loop_guard"])
     g = LoopGuard.from_config(cfg)
     assert [g.check("s")[0] for _ in range(3)][-1] == "block"
+```

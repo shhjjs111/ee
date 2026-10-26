@@ -37,3 +37,4 @@ def test_main_and_readme():
     assert "97" in out and "2" in out
     t = (ROOT / "homework" / "README.md").read_text(encoding="utf-8")
     assert "√" in t or "sqrt" in t.lower() or "平方根" in t
+```

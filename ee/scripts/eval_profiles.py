@@ -72,8 +72,10 @@ def parse_task(path: Path) -> Task:
     hidden = ""
     if "\n## 验收测试" in "\n" + body:
         body, rest = ("\n" + body).split("\n## 验收测试", 1)
-        cm = re.search(r"```python\n(.*?)```", rest, re.S)
+        cm = re.search(r"```python\n(.*?)(?:```|\Z)", rest, re.S)
         hidden = cm.group(1) if cm else ""
+        if not hidden.strip():
+            raise ValueError(f"{path.name}：「## 验收测试」下没有 python 代码块")
     for k in ("id", "check"):
         if not meta.get(k):
             raise ValueError(f"{path.name}：缺少 {k}")

@@ -19,3 +19,4 @@ def test_doc():
     for kw in ("lean", "profile", "--profile", "read", "edit", "write", "shell", "权限", "新对话"):
         assert kw in t, kw
     assert len(t) > 300
+```

@@ -17,3 +17,4 @@ from ee.core.styles import _parse
 def test_parse_title():
     assert _parse("# 我的风格\n正文", "x") == ("我的风格", "正文")
     assert _parse("没有标题", "fb") == ("fb", "没有标题")
+```
