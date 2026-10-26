@@ -133,8 +133,9 @@ export type WebKeySettings = {
   env_present?: boolean;
 };
 export type WebSettings = {
-  search_backend: "deepseek" | "tavily" | "brave" | "off" | string;
+  search_backend: "exa" | "duckduckgo" | "deepseek" | "tavily" | "brave" | "off" | string;
   fetch_backend: "auto" | "deepseek" | "direct" | "off" | string;
+  search_fallback?: string[];
   timeout: number;
   max_results: number;
   deepseek_key_available?: boolean;

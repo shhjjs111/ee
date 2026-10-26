@@ -19,6 +19,6 @@ npm run dev
 需要 Python 3.11+ 和 Node 20+。指定 python：`$env:EE_PYTHON="C:\path\python.exe"`。
 API key：在设置页填写（明文存于 `%USERPROFILE%\.ee\config.toml`），或设环境变量 `DEEPSEEK_API_KEY`。
 
-## 状态（D1）
-- 已完成：后端服务（135 个测试通过）、桌面界面（构建通过）、设置页、审批、改动审阅
-- 待做：Windows 安装包打包与 GitHub Actions、终端和文件预览（D2）、上下文压缩/记忆/子代理
+## 状态（2026-10-26）
+- 已完成：D1（后端、桌面界面、设置页、审批、改动审阅、Windows 安装包 + GitHub Actions）、D2（终端、文件预览、上下文压缩、AGENTS.md、防死循环、网页搜索、子代理、记忆）、D3-C（配置迁移、模型单价细分）
+- 进行中：D3（MCP、斜杠命令、附件、分叉/编辑重发、API key 安全存储），方案见 `research/d3-plan.md`，接手进度见 `HANDOFF.md`

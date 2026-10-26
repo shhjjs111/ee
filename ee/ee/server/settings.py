@@ -10,6 +10,7 @@ import copy
 import os
 
 from ee.config import DEFAULTS, deep_merge, load_user_file, save_user_file, user_config_path
+from ee.core.migrate import CURRENT_VERSION
 from ee.core.permissions import MODES
 from ee.core.providers.profiles import FAMILY_ORDER, profile_for
 from ee.tools.shellenv import SHELL_CHOICES
@@ -87,7 +88,8 @@ def _d2_out(data: dict) -> dict:
     sa = {**DEFAULTS.get("subagent", {}), **(data.get("subagent") or {})}
     mem = {**DEFAULTS.get("memory", {}), **(data.get("memory") or {})}
     return {
-        "web": {"search_backend": w.get("search_backend", "exa"), "fetch_backend": w.get("fetch_backend", "auto"),
+        "web": {"search_backend": w.get("search_backend", "exa"), "fetch_backend": w.get("fetch_backend", "direct"),
+                "search_fallback": [b for b in (w.get("search_fallback") or []) if b in SEARCH_BACKENDS],
                 "timeout": w.get("timeout", 20), "max_results": w.get("max_results", 8),
                 "deepseek_key_available": bool(web_deepseek_key(data)),
                 "keys": {"tavily": _key_out(w, "tavily"), "brave": _key_out(w, "brave")}},
@@ -109,6 +111,15 @@ def _d2_in(new: dict, out: dict) -> None:
             if n["fetch_backend"] not in FETCH_BACKENDS:
                 raise ValueError(f"未知抓取方式：{n['fetch_backend']}")
             w["fetch_backend"] = n["fetch_backend"]
+        if n.get("search_fallback") is not None:
+            fb = n["search_fallback"]
+            if isinstance(fb, str):
+                fb = [x.strip() for x in fb.split(",") if x.strip()]
+            fb = [str(x) for x in fb]
+            bad = [x for x in fb if x not in SEARCH_BACKENDS or x == "off"]
+            if bad:
+                raise ValueError(f"未知回退搜索后端：{'、'.join(bad)}")
+            w["search_fallback"] = list(dict.fromkeys(fb))
         for k, lo, hi in (("timeout", 3, 120), ("max_results", 1, 20)):
             if n.get(k) not in (None, ""):
                 v = int(float(n[k]))
@@ -299,5 +310,6 @@ def set_settings(new: dict) -> dict:
         if m.get("provider") not in (final.get("providers") or {}):
             raise ValueError(f"模型 {name} 引用了不存在的供应商：{m.get('provider')}")
     _d2_in(new, out)
+    out["config_version"] = CURRENT_VERSION
     save_user_file(out)
     return get_settings()

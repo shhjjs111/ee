@@ -48,6 +48,8 @@ class Profile:
     temperature: float | None = None
     request_max_tokens: int | None = None   # 设了才在请求里发 max_tokens
     extra_body: dict = field(default_factory=dict)
+    # 同家族内按模型名细分的覆盖项（[[variants]] match=[...] + 任意档案字段，price 按键合并）
+    variants: list = field(default_factory=list)
 
     def has_quirk(self, q: str) -> bool:
         return q in self.quirks
@@ -68,7 +70,16 @@ class Profile:
         d["match"] = list(self.match)
         d["quirks"] = list(self.quirks)
         d["extra_body"] = dict(self.extra_body)
+        d["variants"] = [dict(v) for v in self.variants]
         return d
+
+    def for_model(self, model_name: str) -> "Profile":
+        """应用第一个按模型名匹配上的 variant（不改原档案）。"""
+        name = model_name.lower()
+        for v in self.variants:
+            if any(_matches(m, name) for m in (v.get("match") or [])):
+                return self.merged({k: x for k, x in v.items() if k != "match"})
+        return self
 
     @classmethod
     def from_dict(cls, d: dict) -> "Profile":
@@ -114,5 +125,5 @@ def detect_family(model_name: str) -> str:
 def profile_for(model_name: str, family: str | None = None, overrides: dict | None = None) -> Profile:
     profs = load_builtin()
     fam = family or detect_family(model_name)
-    base = profs.get(fam) or profs["default"]
+    base = (profs.get(fam) or profs["default"]).for_model(model_name)
     return base.merged(overrides or {})

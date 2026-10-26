@@ -191,11 +191,16 @@ def user_config_path() -> Path:
 
 
 def load_user_file(path: Path | None = None) -> dict:
+    """读用户级 config.toml；读之前先跑版本迁移（见 ee/core/migrate.py），迁移失败时内存里照样迁移。"""
+    from ee.core.migrate import migrate_data, migrate_user_file
+
     path = path or user_config_path()
     if not path.is_file():
         return {}
+    migrate_user_file(path)
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        data = tomllib.load(f)
+    return migrate_data(data)[0]
 
 
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -262,7 +267,11 @@ def load_config(cwd: Path | None = None) -> Config:
         candidates.append(proj)
     for p in candidates:
         if p.is_file():
-            with open(p, "rb") as f:
-                data = deep_merge(data, tomllib.load(f))
+            if p is user_cfg:
+                layer = load_user_file(p)
+            else:
+                with open(p, "rb") as f:
+                    layer = tomllib.load(f)
+            data = deep_merge(data, layer)
             sources.append(p)
     return Config(data=data, cwd=cwd, sources=sources)

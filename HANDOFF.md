@@ -1,6 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 14:05（Asia/Shanghai）
+最后更新：2026-10-26 14:30（Asia/Shanghai）
+
+> 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
 ## 用户要什么
 - 用户 ee 自用的 AI 编程 Agent，**只要 Windows 桌面端，不要终端版**。UI 照 OpenAI Codex 桌面版（三栏：左项目/对话、中对话、右改动审阅）。
@@ -75,3 +77,14 @@
 - [x] 2026-10-26 13:43 免费搜索：默认 web_search 后端改为 Exa 公共 MCP（https://mcp.exa.ai/mcp，免 key，已实测可用），失败回退 DuckDuckGo HTML（仅 mock 测试，沙箱 IP 被限流）；DeepSeek 搜索改为可选付费项；web_fetch 默认直接 httpx 抓取。待办：老用户 config.toml 里已存 search_backend="deepseek" 的需迁移；search_fallback 设置页暂无选项。
 - 用户决定：不急出新安装包，继续推进功能后统一出包。
 - 2026-10-26 13:50 D3 方案定稿：research/d3-plan.md（A MCP、B 斜杠命令、C 配置迁移+单价、D 附件、E 分叉/编辑重发）。尚未写代码。API key 安全存储方案见 d3-plan.md F 节，未实现。2026-10-26 13:51 Hark 当日额度用尽（次日 12:17 恢复），D3 全部未写代码，接手从 C 节开始。
+
+## D3 进度（接手从第一个 [ ] 开始；每项做完都提交推送并在此打勾）
+本地开发：`cd ee && pip install -e . pytest && python -m pytest -q`；`cd desktop && npm ci --ignore-scripts && npx tsc --noEmit -p tsconfig.json && npx vitest run`。
+- [x] C 配置迁移 + 单价（2026-10-26 14:30）：`ee/ee/core/migrate.py`（config_version 版本链；v2 = search_backend deepseek→exa、fetch_backend auto→direct；逐键写回保留注释；备份 `config.toml.pre-v2.bak`；坏文件/写失败只记日志）。`load_user_file`/`load_config` 读用户文件前迁移；`settings/set` 写出时带 `config_version`。设置 `web.search_fallback` 读写 + 设置页「出错时改用」。`Profile.variants` + `profile_for` 按模型名匹配，deepseek-v4-pro 单价 0.30/9/27。测试 `tests/test_migrate.py`（pytest 220 通过）。
+  - 注意：`.pre-v2.bak` 里可能有明文 key（与原 config 相同）；F 节实现时要一起抹掉。flash 是否支持图像仍待查官方文档（D 节要用 vision）。
+- [ ] B 斜杠命令与自定义提示
+- [ ] E 分叉 / 编辑重发
+- [ ] D 附件（需先确认 DeepSeek 哪些模型 vision=true）
+- [ ] A MCP
+- [ ] F API key 安全存储
+- [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证

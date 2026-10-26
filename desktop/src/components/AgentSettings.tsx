@@ -6,9 +6,9 @@ import type { MemoryInfo, Settings, SettingsResponse, WebKeySettings, WebSetting
 import { Button, Input, Select, Spinner } from "./ui";
 
 const SEARCH_LABEL: Record<string, [string, string]> = {
-  exa: ["Exa（免费，默认）", "免费、无需 key（Exa 公共 MCP 端点）；出错时自动改用 DuckDuckGo"],
+  exa: ["Exa（免费，默认）", "免费、无需 key（Exa 公共 MCP 端点）"],
   duckduckgo: ["DuckDuckGo（免费）", "免费、无需 key，抓取 DuckDuckGo 网页版结果；请求多了可能被限流"],
-  deepseek: ["DeepSeek（付费）", "复用 DeepSeek 的 API key；北京时间 2026-11-01 起 $0.75 / 千次；出错时自动改用 DuckDuckGo"],
+  deepseek: ["DeepSeek（付费）", "复用 DeepSeek 的 API key；北京时间 2026-11-01 起 $0.75 / 千次"],
   tavily: ["Tavily", "需要 Tavily API key"],
   brave: ["Brave Search", "需要 Brave Search API key"],
   off: ["关闭", "不提供 web_search 工具"],
@@ -63,6 +63,7 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 const DEFAULT_WEB: WebSettings = {
   search_backend: "exa",
   fetch_backend: "direct",
+  search_fallback: ["duckduckgo"],
   timeout: 20,
   max_results: 8,
   keys: { tavily: {}, brave: {} },
@@ -144,6 +145,23 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
             className={selCls}
           />
         </Row>
+        {web.search_backend !== "off" && (
+          <Row label="出错时改用" desc="主搜索后端报错（限流、没 key、超时）时自动改用的后端">
+            <Select
+              value={(web.search_fallback ?? []).find((b) => b !== web.search_backend) ?? "none"}
+              options={[
+                { value: "none", label: "不改用" },
+                ...backends
+                  .filter((v) => v !== "off" && v !== web.search_backend)
+                  .map((v) => ({ value: v, label: SEARCH_LABEL[v]?.[0] ?? v })),
+              ]}
+              onChange={(v) => setWeb({ search_fallback: v === "none" ? [] : [v] })}
+              side="bottom"
+              align="end"
+              className={selCls}
+            />
+          </Row>
+        )}
         {web.search_backend === "deepseek" && (
           <Row label="DeepSeek key" desc="在「模型与供应商」里的 deepseek 供应商填写（或环境变量 DEEPSEEK_API_KEY）">
             <span className={clsx("text-[12.5px]", web.deepseek_key_available ? "text-muted" : "text-danger")}>
