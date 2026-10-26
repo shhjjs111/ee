@@ -1,14 +1,15 @@
 import clsx from "clsx";
-import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { pushDesktopPrefs, useApp, type Theme } from "../lib/store";
 import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
 import { keySourceText } from "../types";
 import { AgentSettings } from "./AgentSettings";
+import { HooksSettings } from "./HooksSettings";
 import { McpSettings } from "./McpSettings";
 import { Button, Field, Input, Select, Spinner, Tip, Toggle } from "./ui";
 
-const SECTIONS = ["general", "models", "tools", "mcp", "about"] as const;
+const SECTIONS = ["general", "models", "tools", "mcp", "hooks", "about"] as const;
 type Section = (typeof SECTIONS)[number];
 
 const SHELL_LABEL: Record<string, string> = {
@@ -370,6 +371,7 @@ export function SettingsPage() {
     { id: "models", label: "模型与供应商", icon: <KeyRound size={15} /> },
     { id: "tools", label: "工具与记忆", icon: <Wrench size={15} /> },
     { id: "mcp", label: "MCP", icon: <Plug size={15} /> },
+    { id: "hooks", label: "Hooks", icon: <Webhook size={15} /> },
     { id: "about", label: "关于", icon: <Info size={15} /> },
   ];
   const providerNames = Object.keys(draft.providers);
@@ -580,6 +582,7 @@ export function SettingsPage() {
             {section === "tools" && <AgentSettings draft={draft} resp={resp} up={up} />}
 
             {section === "mcp" && <McpSettings draft={draft} resp={resp} up={up} />}
+            {section === "hooks" && <HooksSettings draft={draft} resp={resp} up={up} />}
 
             {section === "about" && (
               <>
