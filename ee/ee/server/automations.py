@@ -493,7 +493,12 @@ class Automations:
             run["thread_id"] = th.id
             if wt:
                 run["worktree"] = {"path": wt["path"], "branch": wt["branch"]}
-            self.store.update(lambda d: _patch_run(d, run))
+            def _alive(d) -> bool:
+                _patch_run(d, run)
+                return any(x.get("id") == a["id"] for x in d["automations"])
+            if not self.store.update(_alive):         # 建会话期间自动化被删了：不再开跑、不再推送
+                status, text = "interrupted", "自动化已删除"
+                return
             self._notify("automation/run_updated", {"run": dict(run)})
             self.backend.notify("thread/updated", {"thread": th.summary()})
             th.start_turn(a["prompt"], mode=a.get("mode") or "read-only")

@@ -107,3 +107,27 @@ def test_stale_running_runs_cleaned_on_start(ee_home, workspace):
         finally:
             await b2.automations.stop()
     asyncio.run(main())
+
+
+def test_delete_while_thread_is_being_created_leaves_no_ghost_run(ee_home, workspace):
+    """建会话慢（Windows 上常见）时，在会话建好之前删除自动化：不再开跑、不推送、不留记录。"""
+    async def main():
+        b, fake, clock = make_backend(ee_home, [text_chunks("不该跑", n=2) + finish("stop")])
+        orig = b.automations._make_thread
+
+        def slow(a, run):
+            time.sleep(0.4)
+            return orig(a, run)
+        b.automations._make_thread = slow
+        seen = []
+        b.listeners.append(lambda m, p: seen.append((m, p)))
+        a = (await b.call("automations/create", {"automation": new_auto(b, workspace)}))["automation"]
+        await b.call("automations/run_now", {"id": a["id"]})
+        await asyncio.sleep(0.05)
+        await b.call("automations/delete", {"id": a["id"]})
+        await b.automations.wait_idle()
+        r = await b.call("automations/runs", {})
+        assert [x for x in r["runs"] if x.get("automation_id") == a["id"]] == []
+        i = next(i for i, (m, _) in enumerate(seen) if m == "automation/deleted")
+        assert not [m for m, _ in seen[i + 1:] if m in ("automation/run_updated", "automation/run_done")]
+    asyncio.run(main())
