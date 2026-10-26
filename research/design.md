@@ -149,5 +149,5 @@ ee/
 - [x] D3-D 图片附件（2026-10-26）：core/attachments.py，_images + wire_messages 分块，deepseek-flash vision=true。
 - [x] D3-A MCP（2026-10-26）：ee/ee/mcp/（config/client/schema/manager/tool），RPC mcp/list、mcp/test，权限 mcp__ 分支，设置页 McpSettings.tsx。
 - [x] D3-F key 安全存储（2026-10-26：Windows 凭据管理器 + DPAPI 文件后备，v3 迁移明文，脱敏；优先级 凭据存储 > 旧明文 > 环境变量，见 HANDOFF.md）
-- [~] D4-1 磁盘快照（2026-10-26 进行中：影子 git 目录 ~/.ee/snapshot/<哈希>，回合前后 tree，照抄 OpenCode 做法，详见 HANDOFF.md）
+- [~] D4-1 磁盘快照（2026-10-26 进行中：影子 git 目录 ~/.ee/snapshot/<哈希>，回合前后 tree，参考 OpenCode 做法并适配 ee，详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）
