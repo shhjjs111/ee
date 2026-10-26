@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 21:20（Asia/Shanghai，D5-2 子代理并行完成：FIFO 读写闸门、只读子代理并发、写型子代理进独立 worktree 并行；pytest 483 过 2 跳过、vitest 36 过；下一步 D5-9）
+最后更新：2026-10-26 22:10（Asia/Shanghai，D5-2 子代理并行完成并推送：pytest 483 过 2 跳过、vitest 36 过；Windows CI run 40333619262（37b3484）全绿；下一步 D5-9）
 
 > **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。第二轮（19:25）：Hook 的 PreToolUse 返回 allow 会跳过危险命令的强制确认（force），已修（hooks.py adjust_decision，测试 test_hook_allow_does_not_skip_forced_ask）；已核实：永久允许规则对 `git push && curl|sh`、`git push; rm` 这类复合命令不会放行；项目 hooks 信任按路径+内容指纹、超时杀进程树、退出码 2 拦截正确；automations.json 与规则文件原子写；read-only/plan 下后台 shell、shell_write 被拒。待查（低风险）：ToolStart 显示的是 Hook 改写前的参数；PostToolUse/Stop 忽略 continue:false；Windows 取消 hook 时 taskkill 同步阻塞最多 10 秒；cron 边界、worktree 删除、bgproc 编码、repomap/docread 异常、前端四个新页面尚未逐行审。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
 
@@ -205,6 +205,7 @@
     - 配置/设置：`[subagent] max_parallel = 3`、`worktree = true`；settings/get|set 读写并校验（1～8）。task 工具新参数 `isolation: auto|worktree|none`，工具说明里写了并行规则。
   - 前端：`lib/reduce.ts` 连续的 task 条目合成 `agents` 块、`subagentStatus()`（记录停在运行/排队但条目已结束时以条目为准）；`SubagentGroup`（组头“N 个子代理并行 · 2 个进行中，1 个排队中”）+ `SubagentCard` 增加排队状态、worktree 分支与改动文件列表、模型与 token/花费；审批卡片右上角“来自子代理 X · 描述”；设置「工具与记忆 → 子代理」加“同时运行数”“写型子代理用 worktree 并行”。
   - 测试：`tests/test_subagent_parallel.py` 17 个（闸门 FIFO 顺序与取消、普通工具读并发/写独占/结果顺序、同一步读写读看到写入、3 个只读子代理确实重叠且结果按序、上限 2 时峰值 2 且 2 个排队、中断传到运行中和排队中的子代理、一个子代理请求失败不影响另一个、每个调用都跑 PreToolUse、两个写型子代理在 worktree 里并行且主目录不变、分支里带基线、无改动自动删、非 git 退回串行、单个写型原地、read-only/plan 拒绝 worktree 子代理、两个审批同时挂起可区分来源、服务端两张卡片同时 running 与 thread/usage、设置读写）；`AgentItems.test.tsx` 2 个 + reduce.test 1 个。pytest 483 过 2 跳过，vitest 36 过，tsc 两份、vite build 通过。
+  - Windows CI：第 1 轮（c227a1f，run 40329553594）唯一失败是“两个写型子代理时间重叠”的断言——Windows 上建 worktree 约 2 秒且串行，第一个子代理的首个请求在第二个开始前就结束了；测试改为会合点（A 的首个请求要等 B 也开始请求，串行就会等满 30 秒记为失败）。第 2 轮（315d783，run 40331422411）后端测试在 74%～89% 那一段（test_secrets 末尾 → test_subagent_parallel）卡住 10 分钟以上，已取消；之后给 CI 的后端测试加了 20 分钟上限和 `-o faulthandler_timeout=150`（卡住会打印所有线程调用栈）。第 3 轮（37b3484，run 40333619262）全绿（pytest 476 过 9 跳过）。为复现那次卡住，在临时分支上用 Windows 跑了 6×4 + 4×4 轮相关测试文件（约 1800 次用例执行），一次都没复现，临时分支已删。**未解决风险**：那次卡住原因不明（可能是并行改动引入的偶发死锁，也可能是 test_server 等旧测试的偶发问题）；以后 CI 再卡住，看日志里 faulthandler 打出的调用栈定位。
   - 已知限制：worktree 子代理不加载项目 Hooks（信任按路径登记，worktree 路径不同）且 MCP 服务器仍以主目录为工作目录；分支里带的“基线提交”意味着主目录有未提交改动时直接 `git merge` 会要求先提交（Worktree 对话框合并要求主目录干净），只取子代理改动可用 `git cherry-pick --no-commit <基线>..<分支>`（报告里给了命令）；被中断的 worktree 子代理不自动提交、目录保留待用户处理；写型子代理之间看不到彼此改动，改同一文件需人工合并；普通只读工具没有并发上限（一步里模型给多少就并发多少，和以前一样）；并行子代理的 PreToolUse Hook 也是并发执行的，写全局状态的 Hook 脚本需自己加锁。
 
 - **D5-6 仓库地图**（合并自 feat/d5-repomap）
