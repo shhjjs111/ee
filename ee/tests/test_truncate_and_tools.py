@@ -34,8 +34,18 @@ def _ctx(ws, shell=None):
 
 
 def test_shell_runs_and_reports_exit(workspace):
-    r = run(ShellTool().run({"command": "echo hello && exit 3"}, _ctx(workspace, resolve_shell("auto"))))
+    sh = resolve_shell("auto")
+    cmd = "echo hello; exit 3" if sh.syntax == "powershell" else "echo hello && exit 3"
+    r = run(ShellTool().run({"command": cmd}, _ctx(workspace, sh)))
     assert "hello" in r.output and "exit 3" in r.output and not r.ok
+    assert "CLIXML" not in r.output
+
+
+def test_shell_failed_command_reports_error(workspace):
+    sh = resolve_shell("auto")
+    cmd = "Get-Item C:/__ee_no_such__" if sh.syntax == "powershell" else "ls /__ee_no_such__"
+    r = run(ShellTool().run({"command": cmd}, _ctx(workspace, sh)))
+    assert not r.ok and "CLIXML" not in r.output and "<Objs" not in r.output
 
 
 def test_shell_timeout(workspace):
@@ -59,12 +69,24 @@ def test_shell_resolution_errors():
 def test_powershell_argv():
     from ee.tools.shellenv import ShellInfo
     sh = ShellInfo("pwsh", "pwsh.exe", "PowerShell 7 (pwsh)")
-    argv = sh.argv("Get-ChildItem")
-    import base64
-    assert argv[:5] == ["pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]
-    script = base64.b64decode(argv[-1]).decode("utf-16-le")
-    assert script.endswith("Get-ChildItem") and "UTF8" in script
+    argv, path = sh.prepare("Get-ChildItem 中文")
+    try:
+        assert argv[:4] == ["pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive"]
+        assert argv[-2] == "-File" and argv[-1] == str(path)
+        raw = path.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+        script = raw.decode("utf-8-sig")
+        assert "Get-ChildItem 中文" in script and "UTF8" in script and "LASTEXITCODE" in script
+    finally:
+        path.unlink()
     assert ShellInfo("cmd", "cmd.exe", "cmd").argv("dir")[:4] == ["cmd.exe", "/d", "/s", "/c"]
+
+
+def test_strip_clixml():
+    from ee.tools.shellenv import strip_clixml
+    raw = 'hello\n#< CLIXML\n<Objs Version="1.1.0.1"><S S="Error">boom_x000D__x000A_</S></Objs>\n[x]'
+    assert strip_clixml(raw) == "hello\nboom\r\n\n[x]"
+    assert strip_clixml("plain") == "plain"
 
 
 def test_grep_and_glob(workspace):

@@ -5,8 +5,9 @@ Windows 是首要平台：auto = pwsh → powershell.exe；git-bash 在常见安
 """
 from __future__ import annotations
 
-import base64
 import os
+import re
+import tempfile
 import shutil
 import sys
 from dataclasses import dataclass
@@ -35,16 +36,51 @@ class ShellInfo:
             return "cmd"
         return "posix"
 
-    def argv(self, command: str) -> list[str]:
+    def prepare(self, command: str) -> tuple[list[str], Path | None]:
+        """返回 (argv, 用完要删的临时脚本)。
+
+        PowerShell 用临时 .ps1 + -File：-EncodedCommand / -Command 在 stderr 被重定向时会把错误流
+        序列化成 CLIXML（Windows 真机 CI 上踩到），-File 输出的是普通文本，也没有引号转义问题。
+        """
         if self.syntax == "powershell":
             prelude = ("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-                       "$OutputEncoding=[System.Text.Encoding]::UTF8;$ProgressPreference='SilentlyContinue';")
-            # -EncodedCommand（UTF-16LE base64）避开 Windows 命令行引号转义的各种坑
-            enc = base64.b64encode((prelude + command).encode("utf-16-le")).decode("ascii")
-            return [self.exe, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc]
+                       "$OutputEncoding=[System.Text.Encoding]::UTF8;$ProgressPreference='SilentlyContinue'\n")
+            # 把最后一条命令的失败带成进程退出码（原生命令看 $LASTEXITCODE，cmdlet 看 $?）
+            epilogue = ("\n$__ee_ok=$?\n"
+                        "if ($LASTEXITCODE) { exit $LASTEXITCODE } elseif (-not $__ee_ok) { exit 1 }\n")
+            fd, name = tempfile.mkstemp(prefix="ee-", suffix=".ps1")
+            with os.fdopen(fd, "w", encoding="utf-8-sig", newline="\r\n") as f:  # 5.1 需要 BOM 才按 UTF-8 读
+                f.write(prelude + command + epilogue)
+            path = Path(name)
+            return [self.exe, "-NoLogo", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-File", str(path)], path
+        return self.argv(command), None
+
+    def argv(self, command: str) -> list[str]:
+        """cmd / posix 的命令行；PowerShell 请用 prepare()。"""
+        if self.syntax == "powershell":
+            raise ValueError("PowerShell 需要用 prepare()（临时脚本）")
         if self.syntax == "cmd":
             return [self.exe, "/d", "/s", "/c", "chcp 65001>nul & " + command]
         return [self.exe, "-c", command]
+
+
+_CLIXML_S = re.compile(r'<S S="Error">(.*?)</S>', re.S)
+
+
+def strip_clixml(out: str) -> str:
+    """兜底：万一输出里混进了 PowerShell 的 CLIXML 错误流，还原成普通文本。"""
+    i = out.find("#< CLIXML")
+    if i < 0:
+        return out
+    head, tail = out[:i], out[i + len("#< CLIXML"):]
+    msgs = _CLIXML_S.findall(tail)
+    text = "".join(msgs)
+    text = re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&amp;", "&")
+    end = tail.find("</Objs>")
+    rest = tail[end + len("</Objs>"):] if end >= 0 else ""
+    return head + text + rest
 
 
 def _which(name: str) -> str | None:

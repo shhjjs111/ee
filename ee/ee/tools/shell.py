@@ -8,7 +8,7 @@ import subprocess
 import time
 
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
-from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell
+from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
 from ee.tools.truncate import truncate_output
 
 MAX_TIMEOUT = 600
@@ -28,8 +28,20 @@ async def run_command(command: str, shell: ShellInfo, cwd, timeout: float, emit=
         kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     else:
         kw["start_new_session"] = True
+    argv, script = shell.prepare(command)
+    try:
+        return await _run(argv, cwd, timeout, emit, kw)
+    finally:
+        if script is not None:
+            try:
+                script.unlink()
+            except OSError:
+                pass
+
+
+async def _run(argv, cwd, timeout, emit, kw) -> tuple[int | None, str, bool]:
     proc = await asyncio.create_subprocess_exec(
-        *shell.argv(command), cwd=str(cwd), stdin=asyncio.subprocess.DEVNULL,
+        *argv, cwd=str(cwd), stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=child_env(), **kw)
     chunks: list[str] = []
     timed_out = False
@@ -52,7 +64,7 @@ async def run_command(command: str, shell: ShellInfo, cwd, timeout: float, emit=
     except asyncio.CancelledError:
         await _kill(proc)
         raise
-    out = "".join(chunks).replace("\r\n", "\n")
+    out = strip_clixml("".join(chunks).replace("\r\n", "\n"))
     return proc.returncode, out, timed_out
 
 
