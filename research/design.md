@@ -129,8 +129,14 @@ ee/
 
 ## 12. 桌面端（2026-10-25 用户更正：一直要的是桌面端，不是 CLI）
 参照 Codex 桌面版（Electron + React 19 + Tailwind + Radix + CodeMirror/Shiki + xterm.js/node-pty；界面通过 app-server 协议驱动 Codex 内核）。
-- 内核复用 M1 的 ee core：新增 `ee serve`（本地 app-server，WebSocket JSON-RPC：thread/start、turn/start、interrupt、approval/respond、settings/get|set、事件推送）。TUI 保留作备用。
+- 内核复用 M1 的 ee core：新增 `ee serve`（本地 app-server，WebSocket JSON-RPC：thread/start、turn/start、interrupt、approval/respond、settings/get|set、事件推送）。终端版 TUI 已于 2026-10-26 删除（用户只要桌面端）。
 - 外壳：Electron + React + TypeScript + Tailwind + Radix + Shiki + xterm.js（提议，待用户确认，备选 Tauri）。Python 内核用 PyInstaller 打成 sidecar，Electron 启动时拉起。
 - 布局三栏：左 项目/会话侧栏（新建、搜索、底部设置按钮）；中 对话（消息流、工具卡片折叠、计划清单、审批卡片、底部输入框带模型选择/权限模式/附件/@文件）；右 可收起面板：改动审阅（按文件 diff、撤销/暂存）、终端、文件预览。
 - 设置页：模型与供应商（base_url、key 变量名、单价）、默认 shell、权限模式、主题、快捷键。
 - 打包：GitHub Actions windows-latest 构建安装包（用户 GitHub 已连接）。
+
+
+### 状态（2026-10-26）
+- [x] ee serve 后端 + 测试；桌面 UI 三栏 + 设置页 + 审批 + 改动审阅
+- [~] 真实 Electron 窗口验证、Windows 打包（PyInstaller + electron-builder + GitHub Actions）
+- [ ] D2：右栏终端（xterm.js + node-pty）、文件预览、/compact、AGENTS.md、防死循环、网页搜索、子代理、记忆

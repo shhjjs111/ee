@@ -18,9 +18,10 @@
 ## 现状（D1）
 - 已完成：后端 + 135 个 pytest 通过；桌面 UI `npm run build` 通过，vitest 4 个通过；浏览器内截图检查过布局。
 - 未完成（按顺序接着做）：
-  1. 在真实 Electron 窗口里验证（预加载桥接、后端进程退出清理）。
-  2. 打包：PyInstaller onedir 后端（`collect_data_files('ee')` 打进 prompts 和 profiles/*.toml）；`desktop/scripts/build-backend.mjs`（package.json 已引用但文件还没写）；electron-builder NSIS，`extraResources` → resources/backend；`.github/workflows/desktop-windows.yml`（windows-latest 构建并上传安装包）。
-  3. `ee/README.md` 仍是旧终端版内容，需改写成桌面端中文说明；design.md 第 12 节状态要更新（TUI 已删除）。
+  1. [x] 真实 Electron 窗口验证通过（Xvfb，`work/electron_smoke.py` 在 Hark 工作区，不在仓库）。
+  2. [x] 打包：`ee/packaging/ee-backend.spec` + `entry.py`；`desktop/scripts/build-backend.mjs`；package.json 里 electron-builder NSIS 配置（`npm run dist:win:full` 一键）；占位图标 `desktop/build/icon.*`；`.github/workflows/desktop-windows.yml`（push main 或手动触发，产出 artifact `ee-windows-installer`）。
+  3. [x] README 已改写。
+  4. [ ] 看 Actions 在 windows-latest 上能否出安装包；用户在 Windows 真机试装反馈。
 - D2：右栏终端（xterm.js + node-pty）和文件预览（现为占位）、上下文压缩 /compact、会话 fork、AGENTS.md 自动加载、防死循环、网页搜索（倾向 DeepSeek 自家 Search/Fetch API）、子代理、记忆。
 
 ## 已知限制
