@@ -768,7 +768,7 @@ class Session:
                     emit(TurnDone("budget", final))
                     return
                 emit(StepStart(step))
-                comp = await self._sample(emit)
+                comp = await self._sample_or_compact(emit)
                 if comp.content:
                     final = comp.content
                 if not comp.tool_calls:
@@ -817,6 +817,22 @@ class Session:
             self._fill_missing("执行出错，未完成。")
             emit(Error(_friendly_error(e)))
             emit(TurnDone("error", final))
+
+    async def _sample_or_compact(self, emit) -> Completion:
+        """服务端报上下文超长时：自动压缩一次再重试（自动压缩关了就直接报错，让用户自己决定）。"""
+        from ee.core.providers.openai_chat import ModelError
+        try:
+            return await self._sample(emit)
+        except ModelError as e:
+            cfg = self.config.data.get("compact", {}) or {}
+            if getattr(e, "kind", "") != "overflow" or not cfg.get("auto", True) \
+                    or not any(m.get("_kind") != "agents" for m in self.history):
+                raise
+            emit(Notice("对话超出了模型的上下文长度上限，先自动压缩上下文再重试一次。", "warn"))
+            r = await self._compact(emit, "overflow")
+            if not r.get("ok"):
+                raise
+            return await self._sample(emit)
 
     async def _sample(self, emit) -> Completion:
         prefix = self._ensure_prefix(emit)

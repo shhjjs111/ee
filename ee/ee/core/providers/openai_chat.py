@@ -21,11 +21,13 @@ log = logging.getLogger("ee.model")
 
 
 class ModelError(RuntimeError):
-    """模型请求最终失败：消息已是给用户看的中文说明。status_code 保留原 HTTP 状态（没有则 None）。"""
+    """模型请求最终失败：消息已是给用户看的中文说明。status_code 保留原 HTTP 状态（没有则 None）；
+    kind 是错误分类（net.classify：quota / overflow / auth / rate_limit / server / timeout / network …）。"""
 
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(self, message: str, status_code: int | None = None, kind: str = "other"):
         super().__init__(message)
         self.status_code = status_code
+        self.kind = kind
 
 
 @dataclass
@@ -199,6 +201,7 @@ class ChatClient:
             except Exception as e:  # noqa: BLE001
                 status = getattr(e, "status_code", None)
                 text = _err_text(e)
+                kind = "other" if isinstance(e, ModelError) else net.classify(e, text)
                 log.warning("模型请求失败：%s 用时 %.1fs status=%s %s", self.spec.alias, time.monotonic() - t0, status,
                             text[:500], exc_info=True)
                 if status == 400 and degrade_budget > 0:
@@ -212,26 +215,29 @@ class ChatClient:
                         self.state.save()
                         yield ("notice", f"服务端不支持参数 {bad}，已自动降级并记住")
                         continue
-                    if sent_reasoning and not strip_reasoning and not emitted:
+                    if sent_reasoning and not strip_reasoning and not emitted and kind not in ("overflow", "quota"):
                         # 说不清是哪个参数的 400：先去掉推理参数试一次（成功才记住）
                         strip_reasoning = True
                         degrade_budget -= 1
                         yield ("notice", "服务端拒绝了这次请求，先去掉推理强度参数重试一次")
                         continue
-                retryable = status in (408, 409, 429) or (status is not None and status >= 500) or \
-                    type(e).__name__ in ("APIConnectionError", "APITimeoutError")
-                if retryable and not emitted and attempt < self.retries:
+                wait = net.retry_after(e) if kind in net.RETRYABLE else None
+                too_long = wait is not None and wait > net.MAX_RETRY_AFTER
+                if kind in net.RETRYABLE and not emitted and attempt < self.retries and not too_long:
                     attempt += 1
-                    delay = min(20.0, 1.5 * 2 ** (attempt - 1)) + random.random() * 0.5
+                    # 服务端给了 Retry-After 就照它等；否则指数退避加抖动
+                    delay = wait if wait is not None else min(20.0, 1.5 * 2 ** (attempt - 1)) + random.random() * 0.5
                     why = net.describe_error(e, self.spec.base_url, self.spec.model, self.np, text if status else "")
-                    yield ("notice", f"请求失败：{why}\n{delay:.0f}s 后第 {attempt} 次重试")
+                    yield ("notice", f"请求失败：{why}\n{max(delay, 1):.0f}s 后第 {attempt} 次重试")
                     await asyncio.sleep(delay)
                     continue
                 if isinstance(e, ModelError):
                     raise
                 msg = net.describe_error(e, self.spec.base_url, self.spec.model, self.np, text if status else "")
-                log.error("模型请求最终失败：%s", msg)
-                raise ModelError(msg, status) from e
+                if too_long:
+                    msg += f"\n服务端要求 {wait:.0f} 秒后再试，超过自动等待上限（{net.MAX_RETRY_AFTER:.0f} 秒），请稍后再发。"
+                log.error("模型请求最终失败（%s）：%s", kind, msg)
+                raise ModelError(msg, status, kind) from e
 
     async def _stream_once(self, params: dict, tools: list[dict] | None):
         known = [t["function"]["name"] for t in (tools or [])]
