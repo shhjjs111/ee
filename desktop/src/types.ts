@@ -59,6 +59,7 @@ export type Usage = {
   cost?: number | null;
   currency?: string;
   reasoning?: number; // 推理 token（服务端给了才有，D5-9）
+  pruned?: number; // 修剪旧工具输出累计省下的 token（估计，D5-10）
   by_model?: Record<string, { requests: number; prompt: number; completion: number; reasoning: number; cost: number | null; currency: string }>;
 };
 
@@ -272,6 +273,7 @@ export type SubagentRecord = {
   notices?: string[];
   usage?: Usage & Record<string, any>;
   worktree?: SubagentWorktree; // 写型子代理在独立 git worktree 里并行时（D5-2）
+  fork?: boolean; // 分叉子代理：继承主会话上下文（D5-10）
 };
 
 export type NetworkSettings = {

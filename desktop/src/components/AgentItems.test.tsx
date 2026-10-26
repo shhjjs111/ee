@@ -60,6 +60,17 @@ describe("SubagentGroup", () => {
   });
 });
 
+describe("SubagentCard fork", () => {
+  it("分叉子代理显示分叉标识", () => {
+    const el = render(
+      <SubagentGroup items={[task("p9", "旁支", { status: "completed", summary: "好", fork: true }, "ok"), task("p8", "普通", { status: "completed" }, "ok")]} />,
+    );
+    const cards = el.querySelectorAll('[data-testid="subagent-card"]');
+    expect(cards[0].textContent).toContain("分叉");
+    expect(cards[1].textContent).not.toContain("分叉");
+  });
+});
+
 describe("ApprovalCard", () => {
   it("子代理发出的审批标明来源", () => {
     const item = {
