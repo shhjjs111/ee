@@ -6,10 +6,14 @@ import { Conversation } from "./components/Conversation";
 import { RightPanel } from "./components/RightPanel";
 import { Dialogs } from "./components/ReviewDialogs";
 import { SettingsPage } from "./components/SettingsPage";
+import { AutomationsPage } from "./components/AutomationsPage";
+import { useAutomations } from "./lib/automationStore";
 import { Sidebar } from "./components/Sidebar";
 import { Button, Spinner } from "./components/ui";
 import { RpcClient, rpcLog } from "./lib/rpc";
 import { applyTheme, useApp } from "./lib/store";
+
+let autoOff: (() => void) | null = null;
 
 type Boot = { state: "loading" } | { state: "error"; message: string } | { state: "ready" };
 
@@ -37,6 +41,8 @@ export default function App() {
       if (old) old.close();
       const rpc = new RpcClient(url);
       await useApp.getState().init(rpc);
+      autoOff?.();
+      autoOff = useAutomations.getState().init(rpc); // 自动化（D4-10）
       setBoot({ state: "ready" });
     } catch (e) {
       setBoot({ state: "error", message: (e as Error).message });
@@ -158,7 +164,7 @@ export default function App() {
       )}
       <div className="flex h-full overflow-hidden">
         <Sidebar />
-        {view === "settings" ? <SettingsPage /> : <Conversation />}
+        {view === "settings" ? <SettingsPage /> : view === "automations" ? <AutomationsPage /> : <Conversation />}
         <RightPanel />
       </div>
       <Dialogs />

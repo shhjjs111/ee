@@ -3,6 +3,7 @@ import {
   GitBranch,
   GitFork,
   ChevronRight,
+  Clock,
   Folder,
   FolderPlus,
   MoreHorizontal,
@@ -16,6 +17,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { relTime } from "../lib/reduce";
 import { useApp } from "../lib/store";
+import { useAutomations } from "../lib/automationStore";
 import type { ThreadSummary } from "../types";
 import { Button, Menu, Spinner, Tip } from "./ui";
 import { WorktreeDialog } from "./WorktreeDialog";
@@ -101,6 +103,7 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
 
 export function Sidebar() {
   const s = useApp();
+  const autoUnread = useAutomations((x) => x.unread);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
   const q = s.search.trim().toLowerCase();
@@ -138,6 +141,8 @@ export function Sidebar() {
     for (const w of s.workspaces) map.set(norm(w.path), { path: w.path, name: w.name, threads: [] });
     for (const t of s.threads) {
       if (q && !t.title.toLowerCase().includes(q) && !(t.id in hits)) continue;
+      // 自动化产生的对话在「自动化」收件箱里看，不挤占项目列表（正在看的除外，D4-10）
+      if (!q && (t as { source?: string }).source === "automation" && t.id !== s.activeThreadId) continue;
       const home = t.workspace || t.cwd || ""; // worktree 里的对话归到主仓库（D5-1）
       const k = norm(home);
       if (!map.has(k)) {
@@ -147,7 +152,7 @@ export function Sidebar() {
       map.get(k)!.threads.push(t);
     }
     return [...map.values()].filter((g) => !q || g.threads.length);
-  }, [s.workspaces, s.threads, q, hits]);
+  }, [s.workspaces, s.threads, q, hits, s.activeThreadId]);
 
   const pickFolder = async () => {
     const p = window.ee ? await window.ee.openFolder() : window.prompt("项目文件夹路径");
@@ -196,6 +201,20 @@ export function Sidebar() {
             <span className="ml-auto text-[11px] text-faint">Ctrl K</span>
           </button>
         )}
+        <button
+          onClick={() => s.set({ view: s.view === "automations" ? "chat" : "automations" })}
+          className={clsx(
+            "no-drag flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[13px] transition-colors",
+            s.view === "automations" ? "bg-active text-fg" : "text-fg hover:bg-hover",
+          )}
+        >
+          <Clock size={15} /> 自动化
+          {autoUnread > 0 && (
+            <span className="ml-auto min-w-[18px] rounded-full bg-accent px-1.5 text-center text-[11px] font-medium leading-[18px] text-white">
+              {autoUnread > 99 ? "99+" : autoUnread}
+            </span>
+          )}
+        </button>
       </div>
 
       <div className="flex items-center justify-between px-4 pb-1 pt-2">
