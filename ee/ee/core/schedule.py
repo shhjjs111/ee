@@ -9,7 +9,8 @@
   {"kind": "cron", "expr": "0 9 * * 1-5"}
 
 cron 5 段：分 时 日 月 星期。每段支持 *、数字、a-b、列表 a,b、步长 */n 与 a-b/n、a/n；
-月份可写 jan…dec，星期可写 sun…sat（0 和 7 都是周日）。日和星期都受限时按 cron 惯例取“或”。
+月份可写 jan…dec，星期可写 sun…sat（0 和 7 都是周日）。日和星期都受限时按 cron 惯例取“或”；
+其中一个以 * 开头（包括 */n）时取“且”。
 """
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ def _parse_field(text: str, lo: int, hi: int, names: dict[str, int] | None, labe
         t = tok.strip().lower()
         if names and t in names:
             return names[t]
-        if not t.isdigit():
+        if not (t.isascii() and t.isdigit()):
             raise ScheduleError(f"cron 的{label}字段里有看不懂的值：{tok}")
         return int(t)
 
@@ -49,7 +50,7 @@ def _parse_field(text: str, lo: int, hi: int, names: dict[str, int] | None, labe
         step = 1
         if "/" in part:
             part, _, st = part.partition("/")
-            if not st.isdigit() or int(st) <= 0:
+            if not (st.isascii() and st.isdigit()) or int(st) <= 0:
                 raise ScheduleError(f"cron 的{label}字段步长不合法：/{st}")
             step = int(st)
         if part == "*":
@@ -87,12 +88,8 @@ class Cron:
     def _day_ok(self, t: datetime) -> bool:
         dom_ok = t.day in self.doms
         dow_ok = ((t.weekday() + 1) % 7) in self.dows
-        if self.dom_any and self.dow_any:
-            return True
-        if self.dom_any:
-            return dow_ok
-        if self.dow_any:
-            return dom_ok
+        if self.dom_any or self.dow_any:          # 有一个以 * 开头（含 */n）：两者都要满足
+            return dom_ok and dow_ok
         return dom_ok or dow_ok                   # 两个都限定：任一满足即可（cron 惯例）
 
     def next_after(self, after: datetime) -> datetime:
@@ -187,7 +184,16 @@ def next_run(sched: dict, after_ts: float, anchor_ts: float | None = None) -> fl
         return base + k * step
     after = datetime.fromtimestamp(after_ts)
     cron = _daily_cron(sched) if kind == "daily" else Cron(sched["expr"])
-    return cron.next_after(after).timestamp()
+    while True:
+        cand = cron.next_after(after)
+        t = cand.timestamp()
+        if t > after_ts:
+            return t
+        # 夏令时回拨时同一钟点出现两次：after 落在第二次里，按第二次（fold=1）算；仍不晚于就继续往后找
+        t = cand.replace(fold=1).timestamp()
+        if t > after_ts:
+            return t
+        after = cand
 
 
 def next_runs(sched: dict, after_ts: float, n: int = 3, anchor_ts: float | None = None) -> list[float]:
