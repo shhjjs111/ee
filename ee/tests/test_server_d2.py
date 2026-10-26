@@ -26,7 +26,7 @@ def test_d2_settings_roundtrip(ee_home, monkeypatch):
     b = Backend(home=ee_home, persist=False)
     g = run(b.call("settings/get", {}))
     st = g["settings"]
-    assert st["web"]["search_backend"] == "deepseek" and st["subagent"]["max_steps"] == 30
+    assert st["web"]["search_backend"] == "exa" and st["web"]["fetch_backend"] == "direct" and st["subagent"]["max_steps"] == 30
     assert st["memory"]["enabled"] is True and "tavily" in g["choices"]["search_backends"]
     res = run(b.call("settings/set", {"settings": {
         "web": {"search_backend": "tavily", "keys": {"tavily": {"api_key": "tvly-abcdefgh1234"}}},

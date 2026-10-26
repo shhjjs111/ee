@@ -87,7 +87,7 @@ def _d2_out(data: dict) -> dict:
     sa = {**DEFAULTS.get("subagent", {}), **(data.get("subagent") or {})}
     mem = {**DEFAULTS.get("memory", {}), **(data.get("memory") or {})}
     return {
-        "web": {"search_backend": w.get("search_backend", "deepseek"), "fetch_backend": w.get("fetch_backend", "auto"),
+        "web": {"search_backend": w.get("search_backend", "exa"), "fetch_backend": w.get("fetch_backend", "auto"),
                 "timeout": w.get("timeout", 20), "max_results": w.get("max_results", 8),
                 "deepseek_key_available": bool(web_deepseek_key(data)),
                 "keys": {"tavily": _key_out(w, "tavily"), "brave": _key_out(w, "brave")}},

@@ -1,8 +1,9 @@
 """web_search / web_fetch：搜索后端可插拔（设置里选），抓取有 API 用 API、没有就 httpx 直接抓 + HTML 转文本。
 
 配置（config.toml 的 [web]）：
-  search_backend = "deepseek"   # deepseek | tavily | brave | off（off = 不提供 web_search 工具）
-  fetch_backend  = "auto"       # auto（DeepSeek 搜索且有 key 时用 DeepSeek Fetch，失败退回直连）| deepseek | direct | off
+  search_backend = "exa"        # exa（免费，默认）| duckduckgo（免费）| deepseek（付费）| tavily | brave | off（off = 不提供 web_search）
+  search_fallback = ["duckduckgo"]  # 主后端出错时依次改用的后端（跳过与主后端相同的）；[] = 不回退
+  fetch_backend  = "direct"     # direct（免费，默认）| auto（DeepSeek 搜索且有 key 时用 DeepSeek Fetch，失败退回直连）| deepseek | off
   timeout = 20                  # 秒，每个网络请求的总超时
   max_results = 8               # 搜索默认返回条数
   fetch_max_chars = 20000       # 抓取结果默认最多返回多少字符
@@ -14,6 +15,14 @@ DeepSeek Search/Fetch 复用 providers.deepseek 的 key（设置页保存的 api
        → {results: [{title, url, snippet, summary, content, site_name, date, rerank_score, authority}]}
   POST https://api.deepseek.com/v1/tools/fetch   {url} → {title, content(markdown)}
   鉴权 Authorization: Bearer <DeepSeek API Key>；按成功请求计费，各 $0.75/千次。
+Exa（2026-10-26 实测，OpenCode websearch 同款公共 MCP 端点，无需 key；有 EXA_API_KEY 时附在 ?exaApiKey=）：
+  POST https://mcp.exa.ai/mcp  accept: application/json, text/event-stream
+       {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_search_exa",
+        "arguments":{"query","numResults","type":"auto","livecrawl":"fallback"}}}
+  → SSE `event: message` / `data: {"result":{"content":[{"type":"text","text":"Title: …\nURL: …\nPublished: …\n
+    Author: …\nHighlights:\n…"}]}}`，多条结果之间用 `\n\n---\n\n` 分隔；也兼容直接返回 JSON。
+DuckDuckGo：GET https://html.duckduckgo.com/html/?q=…（浏览器 UA），解析 a.result__a 与 .result__snippet；
+  被限流时返回 202/验证页，翻译成中文错误。
 代理：跟随 [network] 设置（ee.core.providers.net.plan），没有就跟随系统代理。
 """
 from __future__ import annotations
@@ -28,15 +37,20 @@ from urllib.parse import urljoin, urlparse
 
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 
-SEARCH_BACKENDS = ["deepseek", "tavily", "brave", "off"]
-FETCH_BACKENDS = ["auto", "deepseek", "direct", "off"]
-BACKEND_LABEL = {"deepseek": "DeepSeek", "tavily": "Tavily", "brave": "Brave", "direct": "直接抓取"}
-DEFAULT_WEB = {"search_backend": "deepseek", "fetch_backend": "auto", "timeout": 20, "max_results": 8,
-               "fetch_max_chars": 20000}
+SEARCH_BACKENDS = ["exa", "duckduckgo", "deepseek", "tavily", "brave", "off"]
+FETCH_BACKENDS = ["direct", "auto", "deepseek", "off"]
+BACKEND_LABEL = {"exa": "Exa", "duckduckgo": "DuckDuckGo", "deepseek": "DeepSeek", "tavily": "Tavily",
+                 "brave": "Brave", "direct": "直接抓取"}
+DEFAULT_WEB = {"search_backend": "exa", "search_fallback": ["duckduckgo"], "fetch_backend": "direct",
+               "timeout": 20, "max_results": 8, "fetch_max_chars": 20000}
+EXA_URL = "https://mcp.exa.ai/mcp"
+DDG_URL = "https://html.duckduckgo.com/html/"
+SNIPPET_CHARS = {"exa": 800}     # Exa 的 Highlights 是正文片段，给模型多留一点
 KEY_ENV = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_API_KEY"}
 MAX_DOWNLOAD = 3 * 1024 * 1024
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-      "Chrome/126.0 Safari/537.36 ee-agent")
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/126.0 Safari/537.36")
+UA = BROWSER_UA + " ee-agent"
 
 # 测试注入：httpx.MockTransport；为 None 时走真实网络
 _transport = None
@@ -252,7 +266,189 @@ async def search_brave(query: str, count: int, data: dict, timeout: float) -> li
             for x in res]
 
 
-SEARCHERS = {"deepseek": search_deepseek, "tavily": search_tavily, "brave": search_brave}
+def _mcp_text(body: str) -> tuple[str | None, str | None]:
+    """解析 MCP tools/call 响应（直接 JSON 或 SSE 的 data: 行）。返回 (文本, 错误信息)。"""
+    payloads = []
+    t = body.strip()
+    if t.startswith("{"):
+        payloads.append(t)
+    payloads += [ln[5:].strip() for ln in body.splitlines() if ln.startswith("data:")]
+    err = None
+    for p in payloads:
+        try:
+            j = json.loads(p)
+        except ValueError:
+            continue
+        if not isinstance(j, dict):
+            continue
+        if j.get("error"):
+            e = j["error"]
+            err = str(e.get("message") or e) if isinstance(e, dict) else str(e)
+            continue
+        res = j.get("result") or {}
+        texts = [_s(c.get("text")) for c in res.get("content") or [] if isinstance(c, dict) and c.get("text")]
+        if res.get("isError"):
+            err = " ".join(texts) or "isError"
+            continue
+        if texts:
+            return "\n\n".join(texts), None
+    return None, err
+
+
+_EXA_FIELD = re.compile(r"^(Title|URL|Published|Author|Highlights|Text|Summary):[ \t]*(.*)$")
+
+
+def parse_exa_text(text: str) -> list[Hit]:
+    """把 Exa 的「Title: …\nURL: …」文本切成结果列表。"""
+    hits: list[Hit] = []
+    for block in re.split(r"(?m)^(?=Title: )", text):
+        if not block.strip():
+            continue
+        f: dict[str, str] = {}
+        body: list[str] = []
+        cur = None
+        for ln in block.splitlines():
+            m = _EXA_FIELD.match(ln) if cur in (None, "Title", "URL", "Published", "Author") else None
+            if m:
+                cur = m.group(1)
+                f[cur] = m.group(2).strip()
+            elif cur in ("Highlights", "Text", "Summary"):
+                body.append(ln)
+        snippet = "\n".join(body).strip()
+        snippet = re.sub(r"\n-{3,}\s*$", "", snippet).strip() or f.get("Highlights") or f.get("Summary") or ""
+        url = f.get("URL", "")
+        if not url:
+            continue
+        date = f.get("Published", "")
+        date = "" if date.upper() in ("N/A", "NONE", "") else date[:10]
+        hits.append(Hit(f.get("Title", ""), url, snippet, date))
+    return hits
+
+
+async def search_exa(query: str, count: int, data: dict, timeout: float) -> list[Hit]:
+    w = (data or {}).get("web") or {}
+    url = str(w.get("exa_url") or EXA_URL)
+    key = str(w.get("exa_api_key") or "") or os.environ.get("EXA_API_KEY", "")
+    params = {"exaApiKey": key} if key else None
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "web_search_exa",
+                       "arguments": {"query": query, "numResults": max(1, min(20, count)),
+                                     "type": str(w.get("exa_type") or "auto"), "livecrawl": "fallback"}}}
+    r = await request("POST", url, data=data, timeout=timeout, params=params, json_body=body,
+                      headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+    if r.status != 200:
+        raise _api_error(r, "Exa 搜索失败")
+    text, err = _mcp_text(r.content.decode("utf-8", errors="replace"))
+    if text is None:
+        raise WebError("Exa 搜索失败：" + (f"服务端返回错误：{err[:300]}" if err else "返回内容无法解析"))
+    hits = parse_exa_text(text)
+    if not hits and text.strip() and not re.search(r"no (search )?results", text, re.I):
+        raise WebError(f"Exa 搜索失败：返回格式无法解析：{_clip(text, 200)}")
+    return hits
+
+
+class _DdgParser(HTMLParser):
+    """html.duckduckgo.com 结果页：a.result__a（标题+链接）、.result__snippet（摘要）；跳过广告。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hits: list[Hit] = []
+        self.mode: str | None = None
+        self.mode_tag = ""
+        self.href = ""
+        self.depth = 0
+        self.buf: list[str] = []
+        self.ad = False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        cls = (a.get("class") or "").split()
+        if tag == "div" and not self.mode and ("result" in cls or "result--ad" in cls):
+            self.ad = "result--ad" in cls
+        if self.mode:
+            if tag == self.mode_tag:
+                self.depth += 1
+            return
+        if "result__a" in cls and tag == "a":
+            self.mode, self.mode_tag, self.depth, self.buf = "title", tag, 1, []
+            self.href = a.get("href") or ""
+        elif "result__snippet" in cls:
+            self.mode, self.mode_tag, self.depth, self.buf = "snippet", tag, 1, []
+
+    def handle_endtag(self, tag):
+        if not self.mode or tag != self.mode_tag:
+            return
+        self.depth -= 1
+        if self.depth > 0:
+            return
+        text = " ".join("".join(self.buf).split())
+        if self.mode == "title":
+            url = _ddg_url(self.href)
+            if url and not self.ad:
+                self.hits.append(Hit(text, url))
+        elif self.hits and not self.ad and not self.hits[-1].snippet:
+            self.hits[-1].snippet = text
+        self.mode = None
+
+    def handle_data(self, d):
+        if self.mode:
+            self.buf.append(d)
+
+
+def _ddg_url(href: str) -> str:
+    from urllib.parse import parse_qs
+    if href.startswith("//"):
+        href = "https:" + href
+    u = urlparse(href)
+    if (u.hostname or "").endswith("duckduckgo.com"):
+        q = parse_qs(u.query)
+        if u.path.startswith("/l/") and q.get("uddg"):
+            return q["uddg"][0]
+        return ""          # y.js 广告跳转等
+    return href if u.scheme in ("http", "https") else ""
+
+
+async def search_duckduckgo(query: str, count: int, data: dict, timeout: float) -> list[Hit]:
+    r = await request("GET", DDG_URL, data=data, timeout=timeout, params={"q": query},
+                      headers={"User-Agent": BROWSER_UA, "Referer": "https://html.duckduckgo.com/",
+                               "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                               "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
+    html = _decode(r) if r.content else ""
+    limited = r.status in (202, 403, 429) or "anomaly-modal" in html or "challenge-form" in html
+    if limited:
+        raise WebError(f"DuckDuckGo 搜索失败：被限流或要求人机验证（HTTP {r.status}），稍后再试，"
+                       "或在 设置 → 工具与记忆 换用 Exa 等后端。", r.status)
+    if r.status != 200:
+        raise WebError(f"DuckDuckGo 搜索失败：HTTP {r.status}" + ("，服务端出错，稍后再试" if r.status >= 500 else ""),
+                       r.status)
+    p = _DdgParser()
+    try:
+        p.feed(html)
+        p.close()
+    except Exception:  # noqa: BLE001
+        pass
+    if not p.hits and "result__" not in html and "no-results" not in html and "No results" not in html:
+        raise WebError("DuckDuckGo 搜索失败：结果页格式无法识别（可能被限流或页面改版）")
+    return p.hits[:count]
+
+
+SEARCHERS = {"exa": search_exa, "duckduckgo": search_duckduckgo, "deepseek": search_deepseek,
+             "tavily": search_tavily, "brave": search_brave}
+
+
+def search_chain(data: dict | None) -> list[str]:
+    """主后端 + 回退链（去重、去掉 off/未知）。"""
+    w = web_config(data)
+    primary = str(w.get("search_backend") or "exa")
+    fb = w.get("search_fallback", DEFAULT_WEB["search_fallback"])
+    if isinstance(fb, str):
+        fb = [x.strip() for x in fb.split(",")]
+    chain = [primary]
+    for b in fb or []:
+        b = str(b).strip()
+        if b in SEARCHERS and b not in chain:
+            chain.append(b)
+    return chain
 
 
 def _clip(s: str, n: int) -> str:
@@ -260,7 +456,8 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n].rstrip() + "…"
 
 
-def format_hits(query: str, backend: str, hits: list[Hit], snippet_chars: int = 500) -> str:
+def format_hits(query: str, backend: str, hits: list[Hit], snippet_chars: int | None = None) -> str:
+    snippet_chars = snippet_chars or SNIPPET_CHARS.get(backend, 500)
     if not hits:
         return f"搜索「{query}」（{BACKEND_LABEL.get(backend, backend)}）没有结果。换个关键词或去掉限定条件再试。"
     lines = [f"搜索「{query}」（{BACKEND_LABEL.get(backend, backend)}），{len(hits)} 条结果："]
@@ -474,15 +671,32 @@ class WebSearchTool(Tool):
             raise ToolError("query 不能为空")
         data = _live(self, ctx)
         w = web_config(data)
-        backend = str(w.get("search_backend") or "deepseek")
-        if backend == "off" or backend not in SEARCHERS:
+        chain = search_chain(data)
+        if chain[0] == "off" or chain[0] not in SEARCHERS:
             raise ToolError("网页搜索已在设置里关闭")
         n = int(args.get("max_results") or w.get("max_results") or 8)
         n = max(1, min(20, n))
-        hits = await SEARCHERS[backend](q, n, data, float(w.get("timeout") or 20))
+        timeout = float(w.get("timeout") or 20)
+        errors: list[str] = []
+        hits: list[Hit] = []
+        backend = chain[0]
+        for backend in chain:
+            try:
+                hits = await SEARCHERS[backend](q, n, data, timeout)
+                break
+            except WebError as e:
+                errors.append(f"{BACKEND_LABEL.get(backend, backend)}：{e}")
+        else:
+            if len(errors) == 1:
+                raise ToolError(errors[0].split("：", 1)[1])
+            raise ToolError("网页搜索失败，已依次尝试 " + "、".join(BACKEND_LABEL.get(b, b) for b in chain) +
+                            "：\n" + "\n".join(f"- {x}" for x in errors))
         hits = [h for h in hits if h.url][:n]
-        return ToolResult(format_hits(q, backend, hits), summary=f"Searched {q}",
-                          meta={"kind": "web_search", "backend": backend, "query": q,
+        out = format_hits(q, backend, hits)
+        if errors:
+            out = f"（{'；'.join(errors)}；已改用 {BACKEND_LABEL.get(backend, backend)}）\n" + out
+        return ToolResult(out, summary=f"Searched {q}",
+                          meta={"kind": "web_search", "backend": backend, "query": q, "fallback_errors": errors,
                                 "results": [{"title": h.title, "url": h.url, "snippet": _clip(h.snippet, 200),
                                              "date": h.date, "site": h.site} for h in hits]})
 

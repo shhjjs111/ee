@@ -31,7 +31,7 @@ python -m pytest -q
 - 用户配置：`%USERPROFILE%\.ee\config.toml`，桌面端设置页会读写它（保存前备份为 `.bak`，注释不保留）
 - 项目配置：项目目录下 `.ee/config.toml`（设置页不改它）
 - API key：设置页里直接填（明文存配置文件），或填环境变量名，比如 `DEEPSEEK_API_KEY`
-- 网页搜索（设置 → 工具与记忆，或 `[web]`）：`search_backend = "deepseek" | "tavily" | "brave" | "off"`、`fetch_backend = "auto" | "deepseek" | "direct" | "off"`、`timeout = 20`、`max_results = 8`；Tavily/Brave 的 key 存 `tavily_api_key` / `brave_api_key` 或用环境变量 `TAVILY_API_KEY` / `BRAVE_API_KEY`。DeepSeek Search/Fetch 自 2026-11-01 00:00（北京时间）起按成功请求计费，各 $0.75/千次。
+- 网页搜索（设置 → 工具与记忆，或 `[web]`）：`search_backend = "exa" | "duckduckgo" | "deepseek" | "tavily" | "brave" | "off"`，默认 `exa`（免费、无需 key，Exa 公共 MCP 端点；有 `EXA_API_KEY` 时会带上）；`duckduckgo` 免费但可能被限流；主后端出错时按 `search_fallback = ["duckduckgo"]` 依次回退（`[]` = 不回退），全部失败才报错。`fetch_backend = "direct" | "auto" | "deepseek" | "off"`，默认 `direct`（本机直接抓取，免费）；`timeout = 20`、`max_results = 8`；Tavily/Brave 的 key 存 `tavily_api_key` / `brave_api_key` 或用环境变量 `TAVILY_API_KEY` / `BRAVE_API_KEY`。DeepSeek Search/Fetch 为可选付费项，自 2026-11-01 00:00（北京时间）起按成功请求计费，各 $0.75/千次。
 - 子代理 `[subagent]`：`enabled = true`、`max_steps = 30`（默认步数）、`max_steps_limit = 100`
 - 记忆 `[memory]`：`enabled = true`、`workspace = true`、`max_bytes = 8192`
 - 工具开关在新会话开始时决定工具表（之后冻结进缓存前缀），改设置从下一个新对话生效；已启用的工具换 key 或换后端，对空闲中的会话立即生效。

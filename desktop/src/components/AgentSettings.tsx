@@ -6,15 +6,17 @@ import type { MemoryInfo, Settings, SettingsResponse, WebKeySettings, WebSetting
 import { Button, Input, Select, Spinner } from "./ui";
 
 const SEARCH_LABEL: Record<string, [string, string]> = {
-  deepseek: ["DeepSeek（默认）", "复用 DeepSeek 的 API key；约 $0.75 / 千次"],
+  exa: ["Exa（免费，默认）", "免费、无需 key（Exa 公共 MCP 端点）；出错时自动改用 DuckDuckGo"],
+  duckduckgo: ["DuckDuckGo（免费）", "免费、无需 key，抓取 DuckDuckGo 网页版结果；请求多了可能被限流"],
+  deepseek: ["DeepSeek（付费）", "复用 DeepSeek 的 API key；北京时间 2026-11-01 起 $0.75 / 千次；出错时自动改用 DuckDuckGo"],
   tavily: ["Tavily", "需要 Tavily API key"],
   brave: ["Brave Search", "需要 Brave Search API key"],
   off: ["关闭", "不提供 web_search 工具"],
 };
 const FETCH_LABEL: Record<string, [string, string]> = {
-  auto: ["自动", "DeepSeek 搜索且有 key 时用 DeepSeek Fetch，失败自动改直连"],
-  deepseek: ["DeepSeek Fetch", "按次计费，失败自动改直连"],
-  direct: ["直接抓取", "本机直接下载网页并转成文本，免费"],
+  direct: ["直接抓取（免费，默认）", "本机直接下载网页并转成文本，免费"],
+  auto: ["自动", "搜索后端是 DeepSeek 且有 key 时用 DeepSeek Fetch（付费），否则直接抓取"],
+  deepseek: ["DeepSeek Fetch（付费）", "北京时间 2026-11-01 起 $0.75 / 千次，失败自动改直连"],
   off: ["关闭", "不提供 web_fetch 工具"],
 };
 
@@ -59,8 +61,8 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 }
 
 const DEFAULT_WEB: WebSettings = {
-  search_backend: "deepseek",
-  fetch_backend: "auto",
+  search_backend: "exa",
+  fetch_backend: "direct",
   timeout: 20,
   max_results: 8,
   keys: { tavily: {}, brave: {} },
@@ -93,8 +95,8 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   const sub = draft.subagent ?? { enabled: true, max_steps: 30 };
   const mem = draft.memory ?? { enabled: true, workspace: true, max_bytes: 8192 };
   const setWeb = (p: Partial<WebSettings>) => up({ web: { ...web, ...p } });
-  const backends = resp.choices.search_backends ?? ["deepseek", "tavily", "brave", "off"];
-  const fetches = resp.choices.fetch_backends ?? ["auto", "deepseek", "direct", "off"];
+  const backends = resp.choices.search_backends ?? ["exa", "duckduckgo", "deepseek", "tavily", "brave", "off"];
+  const fetches = resp.choices.fetch_backends ?? ["direct", "auto", "deepseek", "off"];
   const cwd = (s.activeThreadId ? s.details[s.activeThreadId]?.cwd : null) ?? s.activeWorkspace ?? null;
 
   const [memInfo, setMemInfo] = useState<MemoryInfo | null>(null);
