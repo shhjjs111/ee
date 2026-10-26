@@ -69,14 +69,16 @@ def web_config(data: dict | None) -> dict:
 
 
 def deepseek_key(data: dict | None) -> str:
+    """凭据存储 > 旧明文 > 环境变量；web 专用 key 优先于 deepseek 供应商的 key。"""
+    from ee.core import secrets
     data = data or {}
     w = data.get("web") or {}
-    if w.get("deepseek_api_key"):
-        return str(w["deepseek_api_key"])
     p = (data.get("providers") or {}).get("deepseek") or {}
-    if p.get("api_key"):
-        return str(p["api_key"])
-    return os.environ.get(p.get("api_key_env") or "DEEPSEEK_API_KEY", "") or ""
+    env = p.get("api_key_env") or "DEEPSEEK_API_KEY"
+    secrets.remember_env_keys([env])
+    return (secrets.get(secrets.web_key_name("deepseek")) or str(w.get("deepseek_api_key") or "")
+            or secrets.get(secrets.provider_key_name("deepseek")) or str(p.get("api_key") or "")
+            or os.environ.get(env, "") or "")
 
 
 def deepseek_base(data: dict | None) -> str:
@@ -95,8 +97,12 @@ def deepseek_base(data: dict | None) -> str:
 def backend_key(name: str, data: dict | None) -> str:
     if name == "deepseek":
         return deepseek_key(data)
+    from ee.core import secrets
     w = (data or {}).get("web") or {}
-    return str(w.get(f"{name}_api_key") or "") or os.environ.get(w.get(f"{name}_api_key_env") or KEY_ENV[name], "")
+    env = w.get(f"{name}_api_key_env") or KEY_ENV[name]
+    secrets.remember_env_keys([env])
+    return (secrets.get(secrets.web_key_name(name)) or str(w.get(f"{name}_api_key") or "")
+            or os.environ.get(env, ""))
 
 
 def fetch_mode(data: dict | None) -> str:
@@ -328,7 +334,8 @@ def parse_exa_text(text: str) -> list[Hit]:
 async def search_exa(query: str, count: int, data: dict, timeout: float) -> list[Hit]:
     w = (data or {}).get("web") or {}
     url = str(w.get("exa_url") or EXA_URL)
-    key = str(w.get("exa_api_key") or "") or os.environ.get("EXA_API_KEY", "")
+    from ee.core import secrets
+    key = secrets.get(secrets.web_key_name("exa")) or str(w.get("exa_api_key") or "") or os.environ.get("EXA_API_KEY", "")
     params = {"exaApiKey": key} if key else None
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "web_search_exa",

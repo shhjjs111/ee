@@ -186,15 +186,21 @@ def test_settings_roundtrip(ee_home, monkeypatch):
         assert out["models"]["gpt-x"]["detected_family"] == "gpt"
         assert out["models"]["gpt-x"]["price"]["input"] == 2
         text = (ee_home / "config.toml").read_text(encoding="utf-8")
-        assert 'api_key = "sk-secret-123456"' in text and "[models.gpt-x.price]" in text
+        assert "sk-secret-123456" not in text and "[models.gpt-x.price]" in text     # 明文不落盘
+        from ee.core import secrets
+        assert secrets.get("provider/myproxy") == "sk-secret-123456"
+        assert p["api_key_source"] == "store" and res["settings"]["secrets"]["backend"] == "memory"
         # 再存一次但不带 api_key：key 保留
         out["providers"]["myproxy"].pop("api_key", None)
         await b.call("settings/set", {"settings": out})
-        assert 'api_key = "sk-secret-123456"' in (ee_home / "config.toml").read_text(encoding="utf-8")
+        assert secrets.get("provider/myproxy") == "sk-secret-123456"
+        assert not list(ee_home.glob("config.toml*.bak")) or all(
+            "sk-secret-123456" not in x.read_text(encoding="utf-8") for x in ee_home.glob("config.toml*.bak"))
         # 显式清空
         out["providers"]["myproxy"]["api_key"] = ""
         res = await b.call("settings/set", {"settings": out})
         assert res["settings"]["providers"]["myproxy"]["api_key_set"] is False
+        assert secrets.get("provider/myproxy") is None
         models = await b.call("models/list", {})
         assert models["default"] == "gpt-x"
         gx = [m for m in models["models"] if m["name"] == "gpt-x"][0]

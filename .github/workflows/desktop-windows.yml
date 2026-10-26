@@ -93,7 +93,7 @@ jobs:
       - name: Packaged backend selftest (openai/httpx/certifi/encodings)
         if: ${{ !cancelled() }}
         working-directory: desktop
-        run: resources/backend/ee-backend/ee-backend.exe selftest
+        run: resources/backend/ee-backend/ee-backend.exe selftest --secrets
 
       - name: E2E with packaged backend (fake model, stdin pipe + git workspace)
         if: ${{ !cancelled() }}

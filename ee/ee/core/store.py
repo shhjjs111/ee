@@ -28,7 +28,8 @@ class SessionStore:
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"t": time.time(), "kind": kind, **data}, ensure_ascii=False) + "\n")
+                from ee.core.secrets import redact
+                f.write(redact(json.dumps({"t": time.time(), "kind": kind, **data}, ensure_ascii=False)) + "\n")
         except OSError:
             pass
 

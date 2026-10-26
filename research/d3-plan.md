@@ -35,7 +35,7 @@
 - 撤销：state.snapshots 每回合一层（仅内存），_turn 开头记层号，从被编辑回合倒序恢复；无快照提示不可撤销。turn_starts 压缩后清空、重启不恢复，需注意。
 - 分叉复制该消息之前历史与附件目录，meta 记 parent_id，新会话输入框预填该消息；左栏分叉图标；thread_delete 连同 sessions/<id>/ 目录删除。
 
-## F. API key 安全存储（方案已定，未实现）
+## F. API key 安全存储（2026-10-26 已实现；优先级最终定为 凭据存储 > 旧明文 > 环境变量，见 HANDOFF.md）
 - 各家：Codex 凭据存储 File(默认 auth.json 0600)/Keyring/Auto/Ephemeral，Windows 用凭据管理器；OpenCode auth.json 明文 0600；Claude Code macOS Keychain，其他平台 0600 文件，env 优先。
 - ee/ee/core/secrets.py：Windows 用 ctypes 调 CredWriteW/CredReadW/CredDeleteW（GENERIC，目标名 ee/provider/<名>，无需 keyring 包）；不可用时回退 ~/.ee/credentials.json（Windows DPAPI CryptProtectData 加密，其他平台 0600 并在 UI 警告）；Linux/mac 有 keyring 用 keyring。配置 [secrets] store=auto|keyring|file。
 - config.toml 只存 api_key_ref；覆盖 providers.*.api_key 与 web.tavily/brave/exa/deepseek_api_key（tools/web.py）。优先级改为 环境变量 > 凭据存储 > 旧明文（现在 config.py ModelSpec.api_key() 与 web.py backend_key/deepseek_key 顺序相反）。

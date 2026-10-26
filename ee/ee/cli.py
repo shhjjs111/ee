@@ -32,7 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=0, help="端口，0 = 随机")
     s.add_argument("--token", help="连接口令（默认读环境变量 EE_SERVE_TOKEN，都没有则随机生成并打印）")
     s.add_argument("--exit-on-stdin-eof", action="store_true", help="stdin 关闭时退出（由 Electron 拉起时用）")
-    sub.add_parser("selftest", help="检查打包是否完整（openai/httpx/证书/编码），不联网，输出 JSON")
+    t = sub.add_parser("selftest", help="检查打包是否完整（openai/httpx/证书/编码），不联网，输出 JSON")
+    t.add_argument("--secrets", action="store_true", help="另外测一次凭据存储读写删（写入临时项后立即删除）")
     d = sub.add_parser("doctor", help="自检某个模型的兼容性（会真实调用 API）")
     d.add_argument("model_name", nargs="?", help="模型名，默认用默认模型")
     d.add_argument("-C", "--cd", help="按这个目录加载项目级配置")
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         from ee import log as eelog
         eelog.setup()
+        _migrate_secrets()
         from ee.server.app import serve
         token = args.token or os.environ.get("EE_SERVE_TOKEN")
         if not token:
@@ -60,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
         return 0
     if args.cmd == "selftest":
-        return _selftest()
+        return _selftest(secrets_check=args.secrets)
     if args.cmd == "doctor":
         from ee.config import load_config
         from ee.doctor import run_doctor
@@ -71,7 +73,46 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def _selftest() -> int:
+def _migrate_secrets() -> None:
+    """启动时：config.toml 明文 key 迁进凭据存储、抹掉备份里的明文（失败只记日志）。"""
+    import logging
+    try:
+        from ee.config import user_config_path
+        from ee.core.migrate import migrate_user_file
+        from ee.core.secrets import scrub_backups
+        migrate_user_file()
+        n = scrub_backups(user_config_path())
+        if n:
+            logging.getLogger("ee.secrets").info("已抹掉 %d 个配置备份里的明文 key", n)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("ee.secrets").warning("key 迁移失败：%s", type(e).__name__)
+
+
+def _secrets_selftest(out: dict) -> bool:
+    import uuid
+    from ee.core import secrets
+    name = f"selftest/{uuid.uuid4().hex[:8]}"
+    val = "sk-selftest-" + uuid.uuid4().hex
+    try:
+        st = secrets.store()
+        out["secrets_backend"] = st.name
+        st.set(name, val)
+        got = st.get(name)
+        st.delete(name)
+        gone = st.get(name)
+        ok = got == val and gone is None
+        if sys.platform == "win32":
+            from ee.core.secrets import _dpapi
+            ok = ok and _dpapi(_dpapi(b"ee-dpapi", True), False) == b"ee-dpapi"
+            out["dpapi"] = "ok" if ok else "fail"
+        out["secrets"] = "ok" if ok else "mismatch"
+        return ok
+    except Exception as e:  # noqa: BLE001
+        out["secrets"] = f"{type(e).__name__}: {e}"
+        return False
+
+
+def _selftest(secrets_check: bool = False) -> int:
     import json
     import ssl
     out: dict = {"version": __version__, "frozen": bool(getattr(sys, "frozen", False)), "python": sys.version.split()[0]}
@@ -113,6 +154,8 @@ def _selftest() -> int:
         out["log_dir"] = str(eelog.log_dir())
     except Exception as e:  # noqa: BLE001
         out["proxy_error"] = str(e)
+    if secrets_check:
+        ok = _secrets_selftest(out) and ok
     out["ok"] = ok
     print(json.dumps(out, ensure_ascii=False), flush=True)
     return 0 if ok else 1

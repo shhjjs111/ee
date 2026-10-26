@@ -1,7 +1,8 @@
 """配置：内置默认 ← ~/.ee/config.toml ← 项目 .ee/config.toml（越近越优先）。
 
-API key：优先用设置页保存在 config.toml 里的 providers.<名>.api_key，没有再读环境变量 api_key_env。
-任何地方都不打印 key 本身（设置接口只返回是否已设置和末四位）。
+API key：凭据存储（设置页保存的，见 ee/core/secrets.py：Windows 凭据管理器）> 旧版 config.toml 明文
+providers.<名>.api_key（启动时会迁移进凭据存储）> 环境变量 api_key_env。
+任何地方都不打印 key 本身（设置接口只返回来源和末四位）。
 Windows 上 ~ 即 %USERPROFILE%；可用环境变量 EE_HOME 改位置（测试也用它）。
 """
 from __future__ import annotations
@@ -75,9 +76,21 @@ class ModelSpec:
     stored_key: str = ""
 
     def api_key(self) -> str | None:
+        return self.key_source()[1]
+
+    def key_source(self) -> tuple[str, str | None]:
+        """(来源, key)：来源 = store | plain | env | ""。"""
+        from ee.core import secrets
+        v = secrets.get(secrets.provider_key_name(self.provider)) if self.provider else None
+        if v:
+            return "store", v
         if self.stored_key:
-            return self.stored_key
-        return os.environ.get(self.api_key_env) if self.api_key_env else None
+            return "plain", self.stored_key
+        env = os.environ.get(self.api_key_env) if self.api_key_env else None
+        if env:
+            secrets.remember_env_keys([self.api_key_env])
+            return "env", env
+        return "", None
 
     def key_hint(self) -> str:
         """缺 key 时给用户看的说明。"""
@@ -238,9 +251,11 @@ def save_user_file(data: dict, path: Path | None = None) -> Path:
     path = path or user_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
-        try:
-            (path.parent / (path.name + ".bak")).write_bytes(path.read_bytes())
-        except OSError:
+        try:                                    # 备份里绝不留明文 key
+            from ee.core.secrets import strip_secret_lines
+            (path.parent / (path.name + ".bak")).write_text(
+                strip_secret_lines(path.read_text(encoding="utf-8")), encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             pass
     tmp = path.with_suffix(".toml.tmp")
     tmp.write_text(dump_toml(data), encoding="utf-8")

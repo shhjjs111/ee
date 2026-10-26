@@ -3,6 +3,7 @@ import clsx from "clsx";
 import React, { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import type { MemoryInfo, Settings, SettingsResponse, WebKeySettings, WebSettings } from "../types";
+import { keySourceText } from "../types";
 import { Button, Input, Select, Spinner } from "./ui";
 
 const SEARCH_LABEL: Record<string, [string, string]> = {
@@ -70,7 +71,7 @@ const DEFAULT_WEB: WebSettings = {
 };
 
 function KeyInput({ k, onChange }: { k: WebKeySettings; onChange: (k: WebKeySettings) => void }) {
-  const status = k.api_key_set ? `已保存 ${k.api_key_preview ?? ""}` : k.env_present ? `使用环境变量 ${k.api_key_env}` : "未设置";
+  const status = keySourceText(k.api_key_source ?? (k.api_key_set ? "store" : k.env_present ? "env" : ""), k.api_key_preview, k.api_key_env);
   return (
     <div className="flex items-center gap-2">
       <span className="text-[12px] text-faint">{status}</span>

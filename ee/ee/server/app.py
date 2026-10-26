@@ -24,6 +24,7 @@ from ee import __version__
 from ee.config import ee_home, load_config
 from ee.core.fileindex import FileIndex
 from ee.core.permissions import MODE_LABEL, MODES
+from ee.core.secrets import redact
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
@@ -498,10 +499,10 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             out = {"jsonrpc": "2.0", "id": rid, "result": result}
         except RpcError as e:
             log.warning("RPC %s 失败：%s", method, e)
-            out = {"jsonrpc": "2.0", "id": rid, "error": {"code": e.code, "message": str(e)}}
+            out = {"jsonrpc": "2.0", "id": rid, "error": {"code": e.code, "message": redact(str(e))}}
         except Exception as e:  # noqa: BLE001
             log.error("RPC %s 内部错误", method, exc_info=True)
-            out = {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": f"{type(e).__name__}: {e}"}}
+            out = {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": redact(f"{type(e).__name__}: {e}")}}
         dt = time.monotonic() - t0
         if dt >= SLOW_RPC:
             log.warning("RPC %s 用时 %.1fs（慢）", method, dt)

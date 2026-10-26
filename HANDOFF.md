@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:25（Asia/Shanghai，按用户要求调整 D4 顺序：磁盘快照第一；D3-F 进行中）
+最后更新：2026-10-26 15:12（Asia/Shanghai，D3-F API key 安全存储完成，等 Windows CI；下一步 D4-1 磁盘快照）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -90,7 +90,13 @@
 - [x] A MCP（后端 2026-10-26 14:40，界面 2026-10-26 15:10）：`ee/ee/mcp/`（config：[mcp] + 项目 .mcp.json，未允许的项目服务器不连、允许记 name:sha8；client：stdio（stdin PIPE、stderr 留尾 50 行、Windows .cmd 走 shell）/ streamable HTTP（JSON 或 SSE 响应、Mcp-Session-Id）/ 旧式 SSE，本机地址不走代理，应答服务器 ping/roots/list；schema：$ref/allOf/anyOf/type 数组/const 等规范化；manager：每事件循环一个，按配置指纹缓存连接，并行连接，断线重连一次，test 独立连接；tool：mcp__<srv>__<tool>，图片/音频存 tool-output/mcp-images/）。Session `_attach_mcp`（首次冻结前缀前连接，工具追加末尾，set_model 时保留，失败/未允许出提示）；子代理沿用父会话 MCP 工具（定义了 tools 的不带）；permissions `_check_mcp`（deny→只读模式仅 readOnlyHint 工具→ask 规则→auto/trusted/allow 规则 mcp__srv__* 通配/会话“以后都行”）并修了未知工具“以后都行”不生效；RPC `mcp/list`、`mcp/test`（server/mcp_rpc.py）；settings `mcp` 读写（_mcp_out/_mcp_in，校验名字）；serve 退出关闭 MCP 子进程。测试 tests/test_mcp.py + tests/fake_mcp_server.py（pytest 240 通过）。
   - 界面（完成）：设置页「MCP」分区 `desktop/src/components/McpSettings.tsx`：总开关 / 读 .mcp.json / 两个超时；「我的服务器」增删改（本地命令：command、参数（空格分隔、引号包空格）、工作目录、环境变量 KEY=VAL 每行；远程：URL、传输 自动/Streamable HTTP/旧式 SSE、请求头 名称: 值 每行）、启用、信任、测试连接（用未保存的草稿配置，显示状态点、错误、工具列表含只读标记）；「项目服务器」列出 .mcp.json 里的服务器，允许/撤销（写 mcp.allowed_project，保存后生效），允许后可测试；mcp/list 的配置错误单独列出。纯函数 `desktop/src/lib/mcp.ts`（parseArgs/formatArgs/parseKv/formatKv）+ vitest。Composer /mcp 直接打开 MCP 分区。工具卡片 meta.kind="mcp" 显示「调用了 <工具>（MCP · 服务器）」。vitest 13、tsc、vite build、pytest 240 通过。
   - 已知：项目服务器点「允许」后要先保存才能测试；MCP 的 env/headers 里的 token 仍是 config.toml 明文（F 只管模型和搜索 key，建议用 ${环境变量} 引用）。
-- [~] F API key 安全存储（2026-10-26 15:10 开始，按 d3-plan.md F 节）
+- [x] F API key 安全存储（2026-10-26 15:12）：`ee/ee/core/secrets.py`。后端：Windows 凭据管理器（ctypes 调 CredWriteW/CredReadW/CredDeleteW，GENERIC，目标名 `ee/provider/<名>`、`ee/web/<tavily|brave|exa|deepseek>`）；不可用时回退 `~/.ee/credentials.json`（Windows 值用 DPAPI 加密写成 `dpapi:<base64>`；其他平台 keyring 优先，否则 0600 明文文件）；`EE_SECRETS_STORE=auto|wincred|keyring|file|memory` 可强制。API：`get/put/delete`（get 出错返回 None 并记日志，put 失败抛 SecretStoreError）、`store()/use()/info()`、`provider_key_name/web_key_name`、`plain_keys/move_plain_keys(data, overwrite)`、`strip_secret_lines/scrub_backups`、`redact/RedactFilter/remember_env_keys`。
+  - 读取优先级：凭据存储 > 旧 config.toml 明文 > 环境变量（`ModelSpec.key_source()` 返回来源；`tools/web.py` 同序，web 专用 key 优先于 deepseek 供应商 key）。与 d3-plan 原写的「环境变量优先」不同：沿用 D1 以来「设置页填的优先」，避免残留的旧环境变量悄悄盖掉设置页的 key；`tests/test_secrets.py::test_key_priority` 锁定此顺序。
+  - 迁移：config 版本 v3（core/migrate.py `_v3`）把 `providers.*.api_key` 与 `web.*_api_key` 挪进凭据存储并删掉对应行（保留注释和其他键）；存储里已有值不被旧明文覆盖；存不进去的保留明文照常可用。`save_user_file` 与迁移写的 `.bak` / `.pre-v*.bak` 都去掉 key 行；`serve` 启动时 `scrub_backups` 清理已有备份。
+  - 设置：settings/get 返回 `api_key_source`（store/plain/env）+ 末四位 + `secrets`（backend/label/secure），绝不回传明文；set 先校验，再删除被清除/被删供应商的 key，再把新 key 存进凭据存储，存不进去报错且不写文件。前端供应商和搜索 key 显示来源，占位提示「保存在 Windows 凭据管理器」。
+  - 脱敏：日志 handler 挂 RedactFilter（含异常堆栈），SessionStore.append、session._friendly_error、net.describe_error、RPC 错误统一 redact（已知 key 值 + `sk-…`/`tvly-…`/`Bearer …`/`api_key=…`）。
+  - 自检：`ee-backend.exe selftest --secrets`（凭据管理器写读删 + DPAPI 往返），Windows workflow 已改为带此参数。测试 `tests/test_secrets.py`（Windows 上额外跑真实凭据管理器/DPAPI）；pytest 252 通过 2 跳过（Windows 专用），vitest 13、tsc、vite build 通过。
+  - 已知：bash 输出里的 key（如 `echo $DEEPSEEK_API_KEY`）仍会进模型上下文；MCP env/headers 里的 token 仍是明文；项目级 `.ee/config.toml` 里的明文 key 不迁移。
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
 
 ## 借鉴其他 agent 的原则（用户 2026-10-26 授权）

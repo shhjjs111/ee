@@ -787,13 +787,18 @@ class Session:
 
 
 def _friendly_error(e: Exception) -> str:
+    from ee.core.secrets import redact
+    return redact(_friendly_error_raw(e))
+
+
+def _friendly_error_raw(e: Exception) -> str:
     from ee.core.providers.openai_chat import ModelError
     if isinstance(e, ModelError):
         return str(e)
     status = getattr(e, "status_code", None)
     name = type(e).__name__
     if status == 401:
-        return "API key 无效或未授权（401）。请检查对应的环境变量。"
+        return "API key 无效或未授权（401）。请到 设置 → 模型与供应商 检查 key。"
     if status == 404:
         return f"模型或接口不存在（404）：{e}"
     if status:

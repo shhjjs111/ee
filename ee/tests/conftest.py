@@ -138,3 +138,12 @@ def run(coro):
 
 
 os.environ.pop("DEEPSEEK_API_KEY", None)
+
+
+@pytest.fixture(autouse=True)
+def _memory_secrets():
+    """测试一律用内存凭据存储，绝不碰真实的 Windows 凭据管理器 / 钥匙串。"""
+    from ee.core import secrets
+    secrets.use(secrets.MemoryStore())
+    yield
+    secrets.use(secrets.MemoryStore())

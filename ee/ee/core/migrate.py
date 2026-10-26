@@ -34,8 +34,21 @@ def _v2(data: dict, writes: Writes) -> None:
         writes.append(("web.fetch_backend", "direct"))
 
 
+STRIP_SECRETS = "__strip_secret_values__"
+
+
+def _v3(data: dict, writes: Writes) -> None:
+    """D3-F：config.toml 里的明文 key 迁进凭据存储（Windows 凭据管理器），文件里删掉那几行。"""
+    from ee.core.secrets import move_plain_keys
+    n, moved = move_plain_keys(data)
+    if moved:
+        writes.append((STRIP_SECRETS, moved))
+        log.info("已把 %d 个 API key 迁移到凭据存储", n)
+
+
 MIGRATIONS: list[tuple[int, Callable[[dict, Writes], None]]] = [
     (2, _v2),
+    (3, _v3),
 ]
 CURRENT_VERSION = MIGRATIONS[-1][0]
 
@@ -75,15 +88,20 @@ def migrate_user_file(path: Path | None = None) -> bool:
     _, writes, start = migrate_data(data)
     if start >= CURRENT_VERSION:
         return False
+    from ee.core.secrets import scrub_backups, strip_secret_lines
     try:
         bak = path.parent / f"{path.name}.pre-v{CURRENT_VERSION}.bak"
         if not bak.exists():
-            bak.write_bytes(raw)
+            bak.write_text(strip_secret_lines(raw.decode("utf-8")), encoding="utf-8")   # 备份不留明文 key
         for dotted, value in writes:
-            write_setting(dotted, value, path)
+            if dotted == STRIP_SECRETS:
+                path.write_text(strip_secret_lines(path.read_text(encoding="utf-8"), value), encoding="utf-8")
+            else:
+                write_setting(dotted, value, path)
         write_setting("config_version", CURRENT_VERSION, path)
     except OSError as e:
         log.warning("config 迁移写回失败（本次仅在内存里生效）：%s", e)
         return False
+    scrub_backups(path)
     log.info("config.toml 已从 v%s 迁移到 v%s（%d 处改动）", start, CURRENT_VERSION, len(writes))
     return True

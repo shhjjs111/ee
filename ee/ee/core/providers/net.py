@@ -98,7 +98,12 @@ def _chain(e: BaseException) -> list[BaseException]:
 
 
 def describe_error(e: BaseException, base_url: str, model: str, np: NetPlan | None, detail: str = "") -> str:
-    """把 openai/httpx 异常翻译成一句清楚的中文，带上接口地址、HTTP 状态和代理情况。"""
+    """把 openai/httpx 异常翻译成一句清楚的中文，带上接口地址、HTTP 状态和代理情况（已脱敏）。"""
+    from ee.core.secrets import redact
+    return redact(_describe_error(e, base_url, model, np, detail))
+
+
+def _describe_error(e: BaseException, base_url: str, model: str, np: NetPlan | None, detail: str = "") -> str:
     status = getattr(e, "status_code", None)
     names = [type(x).__name__ for x in _chain(e)]
     where = f"接口 {base_url or '（默认）'}，模型 {model}，{np.describe if np else '网络设置未知'}"

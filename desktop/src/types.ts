@@ -91,6 +91,7 @@ export type ProviderSettings = {
   api_key_set?: boolean;
   api_key_preview?: string;
   env_present?: boolean;
+  api_key_source?: KeySource;
   builtin?: boolean;
 };
 
@@ -127,9 +128,21 @@ export type Settings = {
   subagent?: SubagentSettings;
   memory?: MemorySettings;
   mcp?: McpSettings;
+  secrets?: SecretsInfo; // 只读：凭据存储后端说明
   providers: Record<string, ProviderSettings>;
   models: Record<string, ModelSettings>;
 };
+
+/** key 来源：store=凭据存储（Windows 凭据管理器），plain=旧版 config.toml 明文（启动时迁移），env=环境变量 */
+export type KeySource = "store" | "plain" | "env" | "";
+export type SecretsInfo = { backend: string; label: string; secure: boolean };
+
+export function keySourceText(source: KeySource | undefined, preview: string | undefined, env: string | undefined): string {
+  if (source === "store") return `已保存在凭据存储（${preview ?? ""}）`;
+  if (source === "plain") return `config.toml 明文（${preview ?? ""}），下次启动会移进凭据存储`;
+  if (source === "env") return `使用环境变量 ${env ?? ""}`;
+  return "未设置";
+}
 
 export type WebKeySettings = {
   api_key?: string | null; // 只在保存时发送；"" = 清除
@@ -137,6 +150,7 @@ export type WebKeySettings = {
   api_key_set?: boolean;
   api_key_preview?: string;
   env_present?: boolean;
+  api_key_source?: KeySource;
 };
 export type WebSettings = {
   search_backend: "exa" | "duckduckgo" | "deepseek" | "tavily" | "brave" | "off" | string;

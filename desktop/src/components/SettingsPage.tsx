@@ -3,6 +3,7 @@ import { ArrowLeft, Check, Cpu, Info, KeyRound, Monitor, Moon, Plug, Plus, Serve
 import React, { useEffect, useMemo, useState } from "react";
 import { useApp, type Theme } from "../lib/store";
 import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
+import { keySourceText } from "../types";
 import { AgentSettings } from "./AgentSettings";
 import { McpSettings } from "./McpSettings";
 import { Button, Field, Input, Select, Spinner, Tip } from "./ui";
@@ -86,7 +87,7 @@ function num(v: any): string {
 function ProviderEditor({ name, p, onChange, onDelete, usedBy }: { name: string; p: ProviderSettings; onChange: (p: ProviderSettings) => void; onDelete: () => void; usedBy: number }) {
   const [keyDraft, setKeyDraft] = useState("");
   const keyState =
-    p.api_key === "" ? "将清除" : p.api_key ? "将保存新 key" : p.api_key_set ? `已保存（${p.api_key_preview}）` : p.env_present ? `使用环境变量 ${p.api_key_env}` : "未配置";
+    p.api_key === "" ? "将清除" : p.api_key ? "将保存新 key" : p.api_key_set || p.env_present ? keySourceText(p.api_key_source ?? (p.api_key_set ? "store" : "env"), p.api_key_preview, p.api_key_env) : "未配置";
   const ok = (p.api_key_set && p.api_key !== "") || !!p.api_key || p.env_present;
   return (
     <div className="rounded-xl border border-line p-4">
@@ -121,7 +122,7 @@ function ProviderEditor({ name, p, onChange, onDelete, usedBy }: { name: string;
             <Input
               type="password"
               value={keyDraft}
-              placeholder={p.api_key_set ? `已保存 ${p.api_key_preview}，输入以替换` : "sk-…（保存在本机 config.toml）"}
+              placeholder={p.api_key_set ? `已保存 ${p.api_key_preview}，输入以替换` : "sk-…（保存在 Windows 凭据管理器）"}
               onChange={(e) => {
                 setKeyDraft(e.target.value);
                 onChange({ ...p, api_key: e.target.value || null });
@@ -493,7 +494,10 @@ export function SettingsPage() {
                     <Input className="w-24 text-right" inputMode="numeric" value={num(draft.network?.retries)} onChange={(e) => up({ network: { ...net(draft), retries: Number(e.target.value) || 0 } })} />
                   </SettingRow>
                 </Card>
-                <Card title="供应商" desc="接口地址和 key。key 可以直接保存在本机，也可以只填环境变量名。">
+                <Card
+                  title="供应商"
+                  desc={`接口地址和 key。key 保存在${resp.settings.secrets?.label ?? "Windows 凭据管理器"}${resp.settings.secrets && !resp.settings.secrets.secure ? "（未加密）" : ""}，config.toml 里不留明文；也可以只填环境变量名。`}
+                >
                   <div className="space-y-3">
                     {Object.entries(draft.providers).map(([n, p]) => (
                       <ProviderEditor

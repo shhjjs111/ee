@@ -1,7 +1,9 @@
 """设置页 <-> ~/.ee/config.toml。
 
 - get：内置默认 + 用户级 config.toml 合并后的值（不含项目级覆盖；项目级文件路径单独列出）。
-  API key 永远不回传原文，只给 api_key_set / api_key_preview（末四位）/ env_present。
+  API key 永远不回传原文，只给 api_key_set / api_key_preview（末四位）/ api_key_source（store|plain|env|""）
+  / env_present，以及 secrets 存储说明。
+- key 一律存进凭据存储（ee/core/secrets.py，Windows 凭据管理器），config.toml 里不再写明文。
 - set：在用户级文件原内容上覆盖界面管理的键（未知键原样保留），整份写回（旧文件备份为 .bak）。
 """
 from __future__ import annotations
@@ -10,6 +12,7 @@ import copy
 import os
 
 from ee.config import DEFAULTS, deep_merge, load_user_file, save_user_file, user_config_path
+from ee.core import secrets
 from ee.core.migrate import CURRENT_VERSION
 from ee.core.permissions import MODES
 from ee.core.providers.profiles import FAMILY_ORDER, profile_for
@@ -35,10 +38,14 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
     data = effective()
     providers = {}
     for name, p in (data.get("providers") or {}).items():
-        key = str(p.get("api_key") or "")
+        stored = secrets.get(secrets.provider_key_name(name)) or ""
+        plain = str(p.get("api_key") or "")
+        key = stored or plain
         env = str(p.get("api_key_env") or "")
+        env_present = bool(env and os.environ.get(env))
         providers[name] = {"base_url": p.get("base_url", ""), "api_key_env": env, "api_key_set": bool(key),
-                           "api_key_preview": _preview(key), "env_present": bool(env and os.environ.get(env)),
+                           "api_key_preview": _preview(key), "env_present": env_present,
+                           "api_key_source": "store" if stored else "plain" if plain else "env" if env_present else "",
                            "builtin": name in DEFAULTS["providers"]}
     models = {}
     for name, m in (data.get("models") or {}).items():
@@ -70,6 +77,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "network": _network_out(data.get("network") or {}),
             **_d2_out(data),
             "mcp": _mcp_out(data),
+            "secrets": _secrets_out(),
             "providers": providers,
             "models": models,
         },
@@ -78,11 +86,22 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
     }
 
 
+def _secrets_out() -> dict:
+    try:
+        return secrets.info()
+    except Exception as e:  # noqa: BLE001
+        return {"backend": "error", "label": f"凭据存储不可用：{type(e).__name__}", "secure": False}
+
+
 def _key_out(w: dict, name: str) -> dict:
-    key = str(w.get(f"{name}_api_key") or "")
+    stored = secrets.get(secrets.web_key_name(name)) or ""
+    plain = str(w.get(f"{name}_api_key") or "")
+    key = stored or plain
     env = str(w.get(f"{name}_api_key_env") or KEY_ENV[name])
+    env_present = bool(os.environ.get(env))
     return {"api_key_set": bool(key), "api_key_preview": _preview(key), "api_key_env": env,
-            "env_present": bool(os.environ.get(env))}
+            "api_key_source": "store" if stored else "plain" if plain else "env" if env_present else "",
+            "env_present": env_present}
 
 
 def _d2_out(data: dict) -> dict:
@@ -102,7 +121,7 @@ def _d2_out(data: dict) -> dict:
     }
 
 
-def _d2_in(new: dict, out: dict) -> None:
+def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
     if isinstance(new.get("web"), dict):
         n = new["web"]
         w = dict(out.get("web") or {})
@@ -137,6 +156,8 @@ def _d2_in(new: dict, out: dict) -> None:
                     w[f"{name}_api_key"] = str(kv["api_key"]).strip()
                 else:
                     w.pop(f"{name}_api_key", None)
+                    if deletes is not None:
+                        deletes.append(secrets.web_key_name(name))
             if kv.get("api_key_env") is not None:
                 env = str(kv["api_key_env"]).strip()
                 if env and env != KEY_ENV[name]:
@@ -265,6 +286,7 @@ def set_settings(new: dict) -> dict:
     user = load_user_file()
     out = copy.deepcopy(user)
     merged_before = effective()
+    deletes: list[str] = []          # 校验全部通过后才从凭据存储删除的 key
 
     if "shell" in new:
         if new["shell"] not in SHELL_CHOICES:
@@ -328,13 +350,17 @@ def set_settings(new: dict) -> dict:
             entry["api_key_env"] = str(p.get("api_key_env") or "").strip()
             if "api_key" in p and p["api_key"] is not None:      # "" = 清除；None/缺省 = 不变
                 if str(p["api_key"]).strip():
-                    entry["api_key"] = str(p["api_key"]).strip()
+                    entry["api_key"] = str(p["api_key"]).strip()   # 暂存，保存前移进凭据存储
+                else:
+                    deletes.append(secrets.provider_key_name(name))
             else:
                 prev = (old.get(name) or old_eff.get(name) or {}).get("api_key")
                 if prev:
                     entry["api_key"] = prev
             provs[name] = entry
         out["providers"] = provs
+        for gone in set(merged_before.get("providers") or {}) - set(provs):
+            deletes.append(secrets.provider_key_name(gone))
 
     if "models" in new:
         old = user.get("models") or {}
@@ -378,8 +404,17 @@ def set_settings(new: dict) -> dict:
     for name, m in (final.get("models") or {}).items():
         if m.get("provider") not in (final.get("providers") or {}):
             raise ValueError(f"模型 {name} 引用了不存在的供应商：{m.get('provider')}")
-    _d2_in(new, out)
+    _d2_in(new, out, deletes)
     _mcp_in(new, out)
     out["config_version"] = CURRENT_VERSION
+    # 校验都过了：先删要清除的，再把新填的 key 存进凭据存储（config.toml 里不留明文）
+    for d in dict.fromkeys(deletes):
+        secrets.delete(d)
+    try:
+        secrets.move_plain_keys(out, overwrite=True)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"保存 API key 到{secrets.info().get('label', '凭据存储')}失败：{e}")
+    if secrets.plain_keys(out):
+        raise ValueError("API key 没能存进凭据存储，设置未保存（详见 ee-backend.log）")
     save_user_file(out)
     return get_settings()

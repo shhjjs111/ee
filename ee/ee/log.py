@@ -45,6 +45,8 @@ def setup(level: int = logging.INFO) -> Path | None:
         root.addHandler(logging.NullHandler())
         return None
     h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    from ee.core.secrets import RedactFilter
+    h.addFilter(RedactFilter())                 # 日志里不留 key
     root.addHandler(h)
     # websockets 的握手失败等也记到同一个文件（不再走 lastResort → stderr）
     wl = logging.getLogger("websockets")
