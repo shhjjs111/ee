@@ -176,6 +176,52 @@ class Session:
         self.store.append("rewind", {"to": i})
         return text
 
+    def user_text_at(self, i: int) -> str | None:
+        """history[i] 是用户回合开头时返回其原文（去掉环境附录），否则 None。"""
+        if not (0 <= i < len(self.history)):
+            return None
+        m = self.history[i]
+        if m.get("role") != "user" or m.get("_kind"):
+            return None
+        return (m.get("content") or "").split("\n\n<context-update")[0]
+
+    def truncate_to(self, i: int) -> None:
+        """编辑重发（D3-E）：把历史截到第 i 条之前（第 i 条是某回合的用户消息）。文件改动另用 revert_files_from。"""
+        if self.running:
+            raise RuntimeError("运行中不能截断历史")
+        self.history = self.history[:i]
+        self.turn_starts = [x for x in self.turn_starts if x < i]
+        self.updates.reset()
+        self.pending.clear()
+        self.notes.clear()
+        self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
+        self.store.append("rewind", {"to": i})
+
+    def revert_files_from(self, layer: int) -> list[str] | None:
+        """把第 layer 层及之后所有回合写过的文件恢复到那之前（倒序逐层恢复）。没有对应快照（重启过）返回 None。"""
+        layers = self.state.snapshots
+        if layer < 0 or layer >= len(layers):
+            return None
+        restored: list[str] = []
+        for snap in reversed(layers[layer:]):
+            for path, data in snap.items():
+                p = Path(path)
+                try:
+                    if data is None:
+                        if p.exists():
+                            p.unlink()
+                    else:
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_bytes(data)
+                    if path not in restored:
+                        restored.append(path)
+                    self.state.files.pop(path, None)
+                except OSError:
+                    continue
+        del layers[layer:]
+        layers.append({})
+        return restored
+
     def undo(self) -> list[str]:
         """/undo：把最近一个有改动的回合里 ee 写过的文件恢复成改动前。"""
         layers = self.state.snapshots

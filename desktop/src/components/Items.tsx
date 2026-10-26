@@ -1,5 +1,7 @@
 import clsx from "clsx";
 import {
+  GitFork,
+  Pencil,
   AlertTriangle,
   Ban,
   Brain,
@@ -21,7 +23,7 @@ import {
 import React, { useState } from "react";
 import { diffStat, formatDuration, shortPath } from "../lib/reduce";
 import { useApp } from "../lib/store";
-import type { ApprovalItem, AssistantItem, Item, PlanItem, ToolItem, TurnEndItem } from "../types";
+import type { ApprovalItem, AssistantItem, Item, PlanItem, ToolItem, TurnEndItem, UserItem } from "../types";
 import { SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
 import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -126,13 +128,83 @@ function Approved({ how }: { how?: string }) {
 }
 
 // ------------------------------------------------------------ 用户 / 助手
-export function UserMessage({ text, queued }: { text: string; queued?: boolean }) {
-  return (
-    <div className="fadein flex justify-end">
-      <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
-        {text}
-        {queued && <div className="mt-1 text-[11.5px] text-faint">已排队，当前步骤结束后送入</div>}
+export function UserMessage({ item }: { item: UserItem }) {
+  const s = useApp();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.text);
+  const [busy, setBusy] = useState(false);
+  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  const idle = !d || d.status === "idle";
+  const canBranch = typeof item.hist === "number" && !item.queued;
+
+  if (editing) {
+    const send = async () => {
+      if (!draft.trim() || busy) return;
+      setBusy(true);
+      const ok = await s.editResend(item.id, draft.trim());
+      setBusy(false);
+      if (ok) setEditing(false);
+    };
+    return (
+      <div className="fadein flex justify-end">
+        <div className="w-[80%] rounded-2xl border border-line-strong bg-elev p-2">
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              } else if (e.key === "Escape") setEditing(false);
+            }}
+            rows={Math.min(10, Math.max(2, draft.split("\n").length))}
+            className="block w-full resize-none bg-transparent px-2 py-1 text-[14px] leading-relaxed text-fg outline-none"
+          />
+          <div className="flex items-center gap-2 px-1 pt-1">
+            <span className="flex-1 text-[11.5px] text-faint">重新发送会丢掉这条之后的对话，并恢复之后 ee 改过的文件</span>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
+              取消
+            </Button>
+            <Button size="sm" disabled={!draft.trim() || busy || !idle} onClick={send}>
+              {busy ? <Spinner size={12} /> : "重新发送"}
+            </Button>
+          </div>
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div className="group fadein flex flex-col items-end">
+      <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
+        {item.text}
+        {item.queued && <div className="mt-1 text-[11.5px] text-faint">已排队，当前步骤结束后送入</div>}
+      </div>
+      {canBranch && idle && (
+        <div className="mt-1 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <Tip label="编辑后重新发送">
+            <button
+              onClick={() => {
+                setDraft(item.text);
+                setEditing(true);
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-fg"
+            >
+              <Pencil size={12.5} />
+            </button>
+          </Tip>
+          <Tip label="从这里分叉成新对话">
+            <button
+              onClick={() => s.forkFrom(item.id)}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-fg"
+            >
+              <GitFork size={12.5} />
+            </button>
+          </Tip>
+        </div>
+      )}
     </div>
   );
 }

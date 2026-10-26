@@ -2,7 +2,7 @@
 
 export type ItemBase = { id: string; ts?: number; seq?: number };
 
-export type UserItem = ItemBase & { type: "user"; text: string; queued?: boolean };
+export type UserItem = ItemBase & { type: "user"; text: string; queued?: boolean; hist?: number; snap?: number };
 export type AssistantItem = ItemBase & { type: "assistant"; text: string; reasoning: string; streaming?: boolean };
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 export type ToolItem = ItemBase & {
@@ -56,6 +56,7 @@ export type ThreadSummary = {
   created?: number;
   updated?: number;
   status: ThreadStatus;
+  parent_id?: string | null; // 分叉来源（D3-E）
 };
 
 export type ThreadDetail = ThreadSummary & {

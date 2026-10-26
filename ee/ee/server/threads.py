@@ -90,6 +90,10 @@ class Thread:
             s.history = list(self._pending_messages)
             s.turns = sum(1 for it in self.items if it.get("type") == "user")
             self._pending_messages = []
+            # 重启后恢复回合起点（编辑重发 / 回退用）：只认能对上原文的
+            s.turn_starts = sorted({int(it["hist"]) for it in self.items
+                                    if it.get("type") == "user" and isinstance(it.get("hist"), int)
+                                    and s.user_text_at(int(it["hist"])) is not None})
         self.meta["model"] = s.spec.alias
         self.meta["mode"] = s.policy.mode
         self.session = s
@@ -139,7 +143,8 @@ class Thread:
     def summary(self) -> dict:
         return {"id": self.id, "title": self.meta.get("title") or "新对话", "cwd": self.meta.get("cwd", ""),
                 "model": self.meta.get("model", ""), "mode": self.meta.get("mode", ""),
-                "created": self.meta.get("created"), "updated": self.meta.get("updated"), "status": self.status}
+                "created": self.meta.get("created"), "updated": self.meta.get("updated"), "status": self.status,
+                "parent_id": self.meta.get("parent_id")}
 
     def detail(self) -> dict:
         s = self.session
@@ -281,6 +286,19 @@ class Thread:
                                        "instructions": self.instructions()})
         self.notify("thread/updated", {"thread": {**self.summary(), "status": "idle"}})
 
+    def _mark_turn_start(self) -> None:
+        """给本回合的用户条目记下它在历史里的位置和文件快照层号（编辑重发 / 分叉用，D3-E）。"""
+        s = self.session
+        if s is None or not s.turn_starts:
+            return
+        for it in reversed(self.items):
+            if it.get("type") == "user":
+                if not it.get("queued") and "hist" not in it:
+                    it["hist"] = s.turn_starts[-1]
+                    it["snap"] = len(s.state.snapshots) - 1
+                    self._update(it)
+                break
+
     def _assistant(self) -> dict:
         if self.cur_assistant is None:
             self.cur_assistant = self._add({"type": "assistant", "text": "", "reasoning": "", "streaming": True},
@@ -293,6 +311,7 @@ class Thread:
                 self.status_text = ev.text
                 self.notify("turn/status", {"thread_id": self.id, "text": ev.text})
         elif isinstance(ev, TurnStart):
+            self._mark_turn_start()
             self.notify("turn/started", {"thread_id": self.id, "turn": ev.turn})
         elif isinstance(ev, StepStart):
             self.cur_assistant = None

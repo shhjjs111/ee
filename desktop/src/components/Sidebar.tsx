@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import {
+  GitFork,
   ChevronRight,
   Folder,
   FolderPlus,
@@ -49,7 +50,14 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
           className="h-6 min-w-0 flex-1 rounded border border-accent bg-bg px-1.5 text-[13px] text-fg outline-none"
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate">{t.title}</span>
+        <>
+          {t.parent_id && (
+            <Tip label="分叉出来的对话">
+              <GitFork size={12} className="shrink-0 text-faint" />
+            </Tip>
+          )}
+          <span className="min-w-0 flex-1 truncate">{t.title}</span>
+        </>
       )}
       {t.status === "running" && <Spinner size={12} className="shrink-0 text-muted" />}
       {t.status === "waiting_approval" && (

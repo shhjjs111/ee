@@ -21,7 +21,7 @@ import { Button, Select, Tip } from "./ui";
 function renderItem(it: Item, approvals: Map<string, string>) {
   switch (it.type) {
     case "user":
-      return <UserMessage text={it.text} queued={it.queued} />;
+      return <UserMessage item={it} />;
     case "assistant":
       return <AssistantMessage item={it} />;
     case "tool":

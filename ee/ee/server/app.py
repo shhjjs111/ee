@@ -27,7 +27,7 @@ from ee.core.permissions import MODE_LABEL, MODES
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import memory_rpc, prompts_rpc
+from ee.server import branch, memory_rpc, prompts_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -78,6 +78,7 @@ class Backend:
         }
         memory_rpc.register(self.methods, self.home)   # memory/get|add|remove|save
         prompts_rpc.register(self.methods, self.home)  # prompts/list|expand
+        branch.register(self.methods, self)            # thread/fork|edit_resend
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -222,6 +223,10 @@ class Backend:
         path = self.home / "sessions" / f"{thread_id}.jsonl"
         if path.is_file():
             path.unlink()
+        extra = self.home / "sessions" / thread_id      # 附件等（D3-D）
+        if extra.is_dir():
+            import shutil
+            shutil.rmtree(extra, ignore_errors=True)
         self.notify("thread/deleted", {"thread_id": thread_id})
         return {"ok": True}
 

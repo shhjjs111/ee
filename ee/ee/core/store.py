@@ -5,6 +5,7 @@
   meta     线程元数据（cwd / model / mode / title），后写的覆盖先写的
   item     桌面端显示用的条目（用户消息、助手消息、工具卡片、审批……），同 id 后写的覆盖先写的
   prefix / rewind / reset  内核内部记录
+  truncate 编辑重发（D3-E）：丢掉 seq ≥ from_seq 的已有条目（之后新写的条目照常保留）
 """
 from __future__ import annotations
 
@@ -89,6 +90,9 @@ class SessionStore:
                 messages = []
             elif kind == "rewind":
                 messages = messages[: int(rec.get("to", len(messages)))]
+            elif kind == "truncate":
+                cut = int(rec.get("from_seq", 0))
+                items = {k: v for k, v in items.items() if int(v.get("seq", 0)) < cut}
             elif kind == "meta":
                 meta.update(rec.get("meta") or {})
             elif kind == "item":
@@ -111,7 +115,8 @@ class SessionStore:
         meta = d["meta"]
         return {"id": path.stem, "title": meta.get("title") or "新对话", "cwd": meta.get("cwd", ""),
                 "model": meta.get("model", ""), "mode": meta.get("mode", ""),
-                "created": meta.get("created"), "updated": meta.get("updated") or path.stat().st_mtime}
+                "created": meta.get("created"), "updated": meta.get("updated") or path.stat().st_mtime,
+                "parent_id": meta.get("parent_id")}
 
 
 def strip_context(text: str) -> str:

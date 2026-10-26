@@ -31,7 +31,8 @@ type State = {
   lastFilePath: string | null;
   fileNonce: number;
   search: string;
-  settingsSection: SettingsSection | null; // 打开设置页时要跳到的分区（斜杠命令用），读取后清空
+  settingsSection: SettingsSection | null;
+  composerDraft: { text: string; nonce: number } | null; // 让输入框预填（分叉后） // 打开设置页时要跳到的分区（斜杠命令用），读取后清空
   toast: { text: string; kind: "info" | "error" } | null;
 };
 
@@ -47,6 +48,8 @@ type Actions = {
   interrupt(): Promise<void>;
   compact(): Promise<void>;
   undo(): Promise<void>;
+  forkFrom(itemId: string): Promise<void>;
+  editResend(itemId: string, text: string): Promise<boolean>;
   openSettings(section?: SettingsSection): void;
   respond(callId: string, choice: "once" | "always" | "deny", reason?: string): Promise<void>;
   openFile(path: string): void;
@@ -79,6 +82,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   fileNonce: 0,
   search: "",
   settingsSection: null,
+  composerDraft: null,
   toast: null,
 
   set: (p) => set(p),
@@ -268,6 +272,54 @@ export const useApp = create<State & Actions>((set, get) => ({
       set((st) => ({ reviewNonce: st.reviewNonce + 1 }));
     } catch (e) {
       s.showToast((e as Error).message, "error");
+    }
+  },
+
+  async forkFrom(itemId) {
+    const s = get();
+    const id = s.activeThreadId;
+    if (!id) return;
+    try {
+      const r = await s.rpc!.call("thread/fork", { thread_id: id, item_id: itemId });
+      const t = r.thread as ThreadDetail;
+      set((st) => ({
+        details: { ...st.details, [t.id]: t },
+        threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
+        activeThreadId: t.id,
+        view: "chat",
+        composerDraft: { text: r.draft ?? "", nonce: Date.now() },
+      }));
+      s.showToast("已分叉到新对话，可以修改后发送");
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+  },
+
+  async editResend(itemId, text) {
+    const s = get();
+    const id = s.activeThreadId;
+    if (!id) return false;
+    try {
+      set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id]: Date.now() } }));
+      const r = await s.rpc!.call("thread/edit_resend", {
+        thread_id: id,
+        item_id: itemId,
+        text,
+        model: s.draftModel || undefined,
+        mode: s.draftMode,
+      });
+      const t = r.thread as ThreadDetail;
+      set((st) => ({ details: { ...st.details, [id]: { ...t, status: "running" } }, reviewNonce: st.reviewNonce + 1 }));
+      if (r.restored?.length) s.showToast(`已恢复 ${r.restored.length} 个文件并重新发送`);
+      return true;
+    } catch (e) {
+      set((st) => {
+        const rest = { ...st.turnStartedAt };
+        delete rest[id];
+        return { turnStartedAt: rest };
+      });
+      s.showToast((e as Error).message, "error");
+      return false;
     }
   },
 

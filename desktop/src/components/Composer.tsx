@@ -71,6 +71,18 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     if (autoFocus) ta.current?.focus();
   }, [autoFocus, s.activeThreadId]);
 
+  // 分叉后把原消息预填进输入框
+  useEffect(() => {
+    if (!s.composerDraft) return;
+    setText(s.composerDraft.text);
+    s.set({ composerDraft: null });
+    requestAnimationFrame(() => {
+      const n = ta.current?.value.length ?? 0;
+      ta.current?.setSelectionRange(n, n);
+      ta.current?.focus();
+    });
+  }, [s.composerDraft?.nonce]);
+
   useEffect(() => {
     const el = ta.current;
     if (!el) return;
