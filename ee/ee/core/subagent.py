@@ -19,6 +19,11 @@
   提交在自己的分支上，向主代理汇报分支和改动统计，由用户或主代理决定是否合并；否则原地按顺序执行。
   同时运行的子代理数受 [subagent].max_parallel 限制（默认 3），超出的排队（界面显示“排队中”）。
 - 只读 / 计划模式下：显式要 worktree 写的子代理直接拒绝；其它子代理一律只读运行。
+- fork 模式（D5-10，task 的 fork=true）：子代理继承主会话到这一步为止的完整上下文，复用主会话冻结的
+  system + tools 和历史前缀（字节相同 → 前缀缓存命中），历史末尾补上这一步各调用的占位结果再追加分支任务；
+  工具表与主会话完全相同（保持前缀不变），只是 task / ask_user 在子代理里调用会直接报错（不嵌套、不提问）。
+  只把最终报告回传主会话，子代理的过程不进主会话历史。并行、只读/写型、worktree、权限、Hooks 规则与普通
+  子代理相同；只支持 general / explore，模型固定为主会话当前请求用的模型。
 """
 from __future__ import annotations
 
@@ -32,7 +37,7 @@ from ee.core.events import (ApprovalRequest, AssistantMessage, Error, Notice, St
                             SubagentUpdate, ToolEnd, ToolStart, TurnDone, Usage)
 from ee.core import parallel
 from ee.core.permissions import READONLY_MODES, PermissionPolicy
-from ee.tools.base import ToolState
+from ee.tools.base import Tool, ToolError, ToolResult, ToolState
 
 DEFAULT_SUBAGENT = {"enabled": True, "max_steps": 30, "max_steps_limit": 100, "max_parallel": 3, "worktree": True}
 MAX_PARALLEL_LIMIT = 8
@@ -51,6 +56,61 @@ PREAMBLE = ("[子代理任务] 你是主代理派生出来的子代理，在独�
             "你看不到主代理和用户之间的对话，任务说明就是你的全部信息；不要向用户提问。\n"
             "完成后用文字给出最终报告：结论、关键发现（附文件路径或 URL）、做了哪些改动、还有什么没完成。"
             "这份报告会原样交给主代理，是它唯一能看到的内容，所以要完整但简洁。")
+
+
+FORK_PREAMBLE = ("[分支子代理任务] 你是从主会话分叉出来的子代理：上面是主会话到目前为止的完整对话，可以直接利用其中的"
+                 "信息，不必重新读一遍已经看过的内容（除非文件可能已变化）。现在只做下面这一个分支任务，不要接着做主会话"
+                 "里的其他事情；不能再派子代理，也不要向用户提问。\n"
+                 "完成后用文字给出最终报告：结论、关键发现（附文件路径或 URL）、做了哪些改动、还有什么没完成。"
+                 "这份报告会交给主会话，你的中间过程它看不到，所以要完整但简洁，不要复述主会话已经知道的内容。")
+FORK_AGENTS = ("general", "explore")
+FORK_BLOCKED = ("task", "ask_user")
+
+
+def _wants_fork(args: dict) -> bool:
+    v = args.get("fork")
+    return v is True or str(v).strip().lower() in ("true", "1", "yes")
+
+
+class _ForkBlocked(Tool):
+    """分支子代理里的 task / ask_user：schema 与主会话一字不差（保住前缀缓存），调用时直接报错。"""
+    read_only = True
+
+    def __init__(self, orig) -> None:     # noqa: D401  不读描述文件，照抄原工具
+        self.name = orig.name
+        self.description = getattr(orig, "description", "")
+        self.parameters = orig.parameters
+        self._schema = orig.schema()
+
+    def schema(self) -> dict:
+        return self._schema
+
+    async def run(self, args: dict, ctx) -> ToolResult:
+        raise ToolError(f"分支子代理里不能使用 {self.name}（不能再派子代理，也不能向用户提问）。请自己完成任务并给出报告。")
+
+
+def fork_tools(tools: list) -> list:
+    return [_ForkBlocked(t) if t.name in FORK_BLOCKED else t for t in tools]
+
+
+def fork_history(history: list[dict], call_id: str) -> list[dict]:
+    """主会话历史截到含这个 task 调用的 assistant 消息（含），再给这一步的每个调用补一条占位结果。
+    前面的部分与主会话下一次请求逐字节相同，所以分支子代理的第一个请求能命中主会话的前缀缓存。"""
+    k = None
+    for i in range(len(history) - 1, -1, -1):
+        m = history[i]
+        if m.get("role") == "assistant" and any(tc.get("id") == call_id for tc in m.get("tool_calls") or []):
+            k = i
+            break
+    if k is None:
+        raise ValueError("找不到这次 task 调用所在的消息，无法分叉主会话上下文")
+    out = copy.deepcopy(history[:k + 1])
+    for tc in history[k].get("tool_calls") or []:
+        own = tc.get("id") == call_id
+        out.append({"role": "tool", "tool_call_id": tc.get("id"),
+                    "content": "已派出分支子代理（fork），它的任务见下一条消息。" if own
+                    else "（同一步里的其他调用，它的结果不在这个分支里。）"})
+    return out
 
 
 def subagent_config(data: dict | None) -> dict:
@@ -146,6 +206,8 @@ def new_record(ev: SubagentStart) -> dict:
            "summary": "", "notices": [], "usage": {}}
     if ev.worktree:
         rec["worktree"] = dict(ev.worktree)
+    if getattr(ev, "fork", False):
+        rec["fork"] = True
     return rec
 
 
@@ -225,6 +287,18 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
         raise ValueError(f"当前是{'计划' if parent.policy.mode == 'plan' else '只读'}模式，不能派会改文件的子代理"
                          "（isolation=worktree）。需要改文件请先让用户批准切换到默认或全自动模式；只读调研用 agent=explore。")
 
+    fork = _wants_fork(args)
+    if fork:
+        if kind not in FORK_AGENTS:
+            raise ValueError(f"fork 模式只支持 {' / '.join(FORK_AGENTS)} 子代理（自定义子代理有自己的提示词和工具表，无法复用主会话上下文）")
+        if parent.prefix is None:
+            raise ValueError("主会话还没有可继承的上下文，不能用 fork 模式")
+        fork_model = parent.role_spec(parent.active_role()).alias
+        if args.get("model") and str(args["model"]).strip() not in (fork_model, parent.spec.alias):
+            raise ValueError(f"fork 模式沿用主会话当前的模型 {fork_model}（换模型就用不上主会话的缓存），不要指定 model；"
+                             "需要别的模型请去掉 fork")
+        fork_hist = fork_history(parent.history, call_id)
+
     limit = max(1, int(sc.get("max_steps_limit") or 100))
     steps = args.get("max_steps") or (adef.max_steps if kind not in BUILTIN and adef.max_steps else None) \
         or sc.get("max_steps") or 30
@@ -234,6 +308,8 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     # 模型：调用时指定 > 子代理定义 > 只读子代理用 roles.explore（D5-9）> 主会话的模型
     model = str(args.get("model") or adef.model or "").strip() or \
         ((parent.config.role_model("explore") or "") if read_only else "") or parent.spec.alias
+    if fork:
+        model = fork_model
     use_wt = (not read_only) and (getattr(parent, "_subagent_plan", None) or {}).get(call_id) == "worktree"
     mode_label = "read-only" if read_only else parent.policy.mode
 
@@ -292,7 +368,18 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             if child.spec.alias == parent.spec.alias:
                 child.effort = parent.effort           # 同模型沿用主会话当前的推理强度
             child._mcp_done = True                     # 子代理不自己连 MCP：沿用父会话已连好的工具
-            if adef.tools:
+            if fork:
+                # 继承主会话：同一个冻结前缀 + 同一份工具表（task / ask_user 调用时报错）+ 历史前缀 + 环境附录状态
+                child.prefix = parent.prefix
+                child._prefix_style = parent._prefix_style
+                child.style = parent._prefix_style or "default"
+                child.tools = fork_tools(parent.tools)
+                child.tool_map = {t.name: t for t in child.tools}
+                child.mcp_tools = list(parent.mcp_tools)
+                child.history = fork_hist
+                child.updates = copy.deepcopy(parent.updates)
+                child.effort = parent.effort_for(child.spec)
+            elif adef.tools:
                 keep = set(adef.tools)
                 child.tools = [t for t in child.tools if t.name in keep]
                 child.tool_map = {t.name: t for t in child.tools}
@@ -312,7 +399,8 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
 
         wt_pub = ({"path": wt_info["path"], "branch": wt_info["branch"], "base": wt_info["agent_base"],
                    "synced_dirty": wt_info.get("synced_dirty", False)} if wt_info else {})
-        start = SubagentStart(call_id, kind, desc, child.spec.alias, child.policy.mode, steps, worktree=wt_pub)
+        start = SubagentStart(call_id, kind, desc, child.spec.alias, child.policy.mode, steps, worktree=wt_pub,
+                              fork=fork)
         rec = new_record(start)
         emit(start)
 
@@ -327,7 +415,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             _merge_usage(parent, child, merged)
             up(SubagentUpdate(call_id, "usage", usage=child.stats.totals(), totals=parent.stats.totals()))
 
-        text = PREAMBLE + (f"\n\n[子代理角色：{adef.name}] {adef.prompt}" if adef.prompt else "")
+        text = (FORK_PREAMBLE if fork else PREAMBLE) + (f"\n\n[子代理角色：{adef.name}] {adef.prompt}" if adef.prompt else "")
         if wt_info:
             text += ("\n\n[工作目录] 你在一个独立的 git worktree 里工作（分支 " + wt_info["branch"] + "），"
                      "与主目录隔离：其他子代理可能同时在改主目录或别的 worktree。只在当前目录里改文件，不要切换分支、"
@@ -388,7 +476,8 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     note = {"completed": "", "max_steps": f"（子代理用完了 {steps} 步上限，报告可能不完整）",
             "loop": "（子代理陷入重复调用被停止）", "error": "（子代理出错结束）",
             "budget": "（子代理因达到花费上限停止）"}.get(reason, "")
-    out = (f'<task_result agent="{kind}" status="{reason}" steps="{step}">\n{final.strip()}\n</task_result>' +
+    fork_attr = ' fork="true"' if fork else ""
+    out = (f'<task_result agent="{kind}"{fork_attr} status="{reason}" steps="{step}">\n{final.strip()}\n</task_result>' +
            (f"\n{note}" if note else "") + (f"\n{wt_note}" if wt_note else ""))
     return out, ok, rec
 

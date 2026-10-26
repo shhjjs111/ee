@@ -20,6 +20,9 @@ class TaskTool(Tool):
             "isolation": {"type": "string", "enum": ["auto", "worktree", "none"],
                           "description": "会改文件的子代理在哪里干活：auto（默认：同一步有多个时各进独立 git worktree 并行）/ "
                                          "worktree（放进独立 worktree）/ none（在主目录按顺序）"},
+            "fork": {"type": "boolean",
+                     "description": "true = 分支子代理：继承你到目前为止的完整上下文（不用在 prompt 里重复背景，复用缓存更省），"
+                                    "只把结论交回给你。适合需要用到当前对话信息的旁支任务；只支持 general / explore，沿用当前模型"},
         },
         "required": ["description", "prompt"],
     }
@@ -30,7 +33,7 @@ class TaskTool(Tool):
         return access(session, args)
 
     def summary(self, args: dict) -> str:
-        return f"Task {args.get('description', '')}".strip()
+        return f"Task{' (fork)' if args.get('fork') is True else ''} {args.get('description', '')}".strip()
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
         from ee.core.subagent import run_subagent
