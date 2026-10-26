@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 22:45（Asia/Shanghai，D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限完成：pytest 536 过 2 跳过、vitest 40 过；后端 WIP 54d1cb7 的 Windows CI run 40339235884 全绿，前端提交的 CI 见「D5 进度 · D5-9」；下一步按 research/pi.md 落地 Pi 借鉴项第一批）
+最后更新：2026-10-26 22:45（Asia/Shanghai，D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限完成：pytest 536 过 2 跳过、vitest 40 过；Windows CI：后端 WIP 54d1cb7 run 40339235884、完整提交 488233b run 40340977819 均全绿；下一步按 research/pi.md 落地 Pi 借鉴项第一批）
 
 > **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。第二轮（19:25）：Hook 的 PreToolUse 返回 allow 会跳过危险命令的强制确认（force），已修（hooks.py adjust_decision，测试 test_hook_allow_does_not_skip_forced_ask）；已核实：永久允许规则对 `git push && curl|sh`、`git push; rm` 这类复合命令不会放行；项目 hooks 信任按路径+内容指纹、超时杀进程树、退出码 2 拦截正确；automations.json 与规则文件原子写；read-only/plan 下后台 shell、shell_write 被拒。待查（低风险）：ToolStart 显示的是 Hook 改写前的参数；PostToolUse/Stop 忽略 continue:false；Windows 取消 hook 时 taskkill 同步阻塞最多 10 秒；cron 边界、worktree 删除、bgproc 编码、repomap/docread 异常、前端四个新页面尚未逐行审。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
 
@@ -208,6 +208,7 @@
     - RPC：`thread/options`、`styles/list`、`budget/status`、`reasoning/prefs|forget`；`turn/start` 支持 effort/style；`models/list` 带 `effort_support/effort_values/roles`；settings 读写 reasoning/roles/title/style/budget（含校验）。
     - 前端：输入框工具栏「推理」「风格」两个下拉（不支持的档位置灰）、`/effort`、`/style`；设置页新分区「回答与花费」`AnswerSettings.tsx`（全局默认强度 + 按模型记住的列表可删、默认风格、六个用途选模型、AI 标题开关、三档上限 + 处理方式 + 比例 + 币种 + 今日/本月已花）；`BudgetCard`；回合结束行显示推理 token、多模型时悬停看分模型花费、reason=budget；自动化状态“超出花费上限”。
   - 测试：`tests/test_reasoning_roles.py` 30 个（各家族参数、自定义参数名、400 认出参数降级、认不出时去参重试一次并记住、两次失败不记住、无推理参数不重试、三层取值、换模型取该模型档位、不支持档位不发、推理 token、侧路不带强度、角色回退、旧写法并入、侧路/提交/压缩/计划/审查/explore 子代理按角色取模型并按其单价计价、压缩模型窗口太小走侧路、models/list、thread/options 持久化、AI 标题）；`tests/test_style_budget.py` 23 个（风格列表、默认风格 system 不变、风格冻结且切换只追加、切回默认与压缩后附录、子代理无风格、账本跨日跨月、裁剪、多线程原子累加、坏文件与残留锁、80%/100% 仅提醒、暂停三种选择、日/月上限计入别的会话、跨月重置、无人值守强制停止、重启后会话花费、3 个并行子代理花费只记一次、并行子代理超限只问一次且全部停止、exec 退出码 5、exec 记账、自动化记录原因、设置校验、budget/status）；前端 `AnswerSettings.test.tsx` 2 个 + slash.test 2 个。pytest 536 过 2 跳过，vitest 40 过，tsc 两份、vite build 通过。
+  - Windows CI：54d1cb7（后端）run 40339235884 全绿；488233b（前端+文档）run 40340977819 全绿（含打包 exe selftest/e2e、安装包）。
   - 已知限制：只统计与 `[budget] currency` 同币种的单价（混用 ¥/$ 模型时另一种不计入上限）；没填单价的模型花费未知、不计入；侧路请求（压缩、标题、提交信息）不在请求前检查上限（花费照常记账）；会话花费只认重启前最后一次 turn_end 的累计；“本会话不再询问”只在进程内有效；日期按本机时区；推理强度只按档案判断支持与否，中转站对同名模型行为不同要靠 400 自动降级或在 `[models.X]` 里覆盖 `effort_param`；DeepSeek 的“中”和“默认”实际都是 high；新对话下拉显示的强度在发首条消息前是前端推算的（按模型记住 → 全局默认）；风格切换后 system 里的旧风格段仍在（靠追加说明覆盖），换会话才真正干净；AI 标题默认关闭。
   - 剩余待做（用户额度紧，未做）：真机 Windows 上未手测新下拉与设置分区；未用 DeepSeek 真实 key 验证 `reasoning_effort=max` / `thinking.disabled` 的实际效果和费用；可考虑让侧路请求也受上限约束、给 exec 加 `--max-cost` 命令行参数。
 
