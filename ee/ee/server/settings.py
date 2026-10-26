@@ -19,7 +19,7 @@ from ee.tools.web import deepseek_key as web_deepseek_key
 
 THEMES = ["system", "dark", "light"]
 FAMILIES = ["auto", *FAMILY_ORDER, "default"]
-MODEL_KEYS = {"provider", "model", "family", "context_window", "price"}
+MODEL_KEYS = {"provider", "model", "family", "context_window", "price", "vision"}
 PROVIDER_KEYS = {"base_url", "api_key_env", "api_key"}
 
 
@@ -53,6 +53,8 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "default_price": {"input": prof.price.input, "output": prof.price.output,
                               "cache_read": prof.price.cache_read, "currency": prof.price.currency},
             "default_context_window": prof.context_window,
+            "vision": m.get("vision"),                  # None = 按模型档案自动
+            "default_vision": prof.vision,
             "builtin": name in DEFAULTS["models"],
         }
     return {
@@ -288,6 +290,8 @@ def set_settings(new: dict) -> dict:
                 if fam not in FAMILIES:
                     raise ValueError(f"未知模型家族：{fam}")
                 entry["family"] = fam
+            if m.get("vision") is not None and m.get("vision") != "auto":
+                entry["vision"] = bool(m["vision"])
             cw = _num(m.get("context_window"))
             if cw:
                 entry["context_window"] = int(cw)

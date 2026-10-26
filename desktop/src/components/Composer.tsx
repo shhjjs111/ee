@@ -1,6 +1,7 @@
 import clsx from "clsx";
-import { ArrowUp, AtSign, Cpu, File, Shield, ShieldCheck, ShieldOff, Square } from "lucide-react";
+import { ArrowUp, AtSign, Cpu, File, ImagePlus, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
+import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import { parseSlash, resolveMode, slashItems, type PromptInfo, type SlashItem } from "../lib/slash";
 import { useApp } from "../lib/store";
 import { SlashMenu } from "./SlashMenu";
@@ -62,6 +63,10 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const [prompts, setPrompts] = useState<PromptInfo[]>([]);
   const [slashSel, setSlashSel] = useState(0);
   const [slashClosed, setSlashClosed] = useState(false);
+  const [atts, setAtts] = useState<Attachment[]>([]);
+  const [attBusy, setAttBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
   const cwd = detail?.cwd ?? s.activeWorkspace;
   const model = s.draftModel ?? detail?.model ?? s.defaultModel;
@@ -130,6 +135,32 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     setText("");
     setMention(null);
     setSlashClosed(false);
+    setAtts([]);
+  }
+
+  async function addFiles(list: FileList | File[]) {
+    const files = Array.from(list).filter(isImageFile);
+    if (!files.length) return;
+    const room = MAX_ATTACHMENTS - atts.length;
+    if (room <= 0) {
+      s.showToast(`一条消息最多 ${MAX_ATTACHMENTS} 张图片`, "error");
+      return;
+    }
+    setAttBusy(true);
+    try {
+      const out: Attachment[] = [];
+      for (const f of files.slice(0, room)) {
+        try {
+          out.push(await prepareImage(f));
+        } catch (e) {
+          s.showToast(`${f.name}：${(e as Error).message}`, "error");
+        }
+      }
+      setAtts((cur) => [...cur, ...out].slice(0, MAX_ATTACHMENTS));
+      if (files.length > room) s.showToast(`一条消息最多 ${MAX_ATTACHMENTS} 张图片，多出的没有加入`, "error");
+    } finally {
+      setAttBusy(false);
+    }
   }
 
   /** 执行斜杠命令；返回 false 表示不是已知命令（当普通消息发送）。 */
@@ -245,8 +276,24 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
 
   async function submit() {
     const t = text.trim();
-    if (!t) return;
-    if (t.startsWith("/") && (await runSlash(t))) return;
+    if (!t && !atts.length) return;
+    if (attBusy) return;
+    if (!atts.length && t.startsWith("/") && (await runSlash(t))) return;
+    if (atts.length) {
+      if (running) {
+        s.showToast("ee 正在工作，等这一回合结束再发图片", "error");
+        return;
+      }
+      const sending = atts;
+      setText("");
+      setAtts([]);
+      const ok = await s.send(t, sending);
+      if (!ok) {
+        setText(t);
+        setAtts(sending);
+      }
+      return;
+    }
     s.send(t);
     clearInput();
   }
@@ -343,9 +390,43 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       <div
         className={clsx(
           "rounded-[20px] border bg-elev shadow-[var(--shadow)] transition-colors",
-          "border-line focus-within:border-line-strong",
+          dragOver ? "border-accent" : "border-line focus-within:border-line-strong",
         )}
+        onDragOver={(e) => {
+          if (Array.from(e.dataTransfer.items).some((i) => i.kind === "file")) {
+            e.preventDefault();
+            setDragOver(true);
+          }
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          setDragOver(false);
+          if (e.dataTransfer.files.length) {
+            e.preventDefault();
+            addFiles(e.dataTransfer.files);
+          }
+        }}
       >
+        {(atts.length > 0 || attBusy) && (
+          <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
+            {atts.map((a) => (
+              <div key={a.key} className="group/att relative h-14 w-14 overflow-hidden rounded-lg border border-line bg-soft">
+                <img src={a.thumb} alt={a.name} title={a.name} className="h-full w-full object-cover" />
+                <button
+                  onClick={() => setAtts((cur) => cur.filter((x) => x.key !== a.key))}
+                  className="absolute right-0.5 top-0.5 hidden h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white group-hover/att:flex"
+                  title="移除"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+            {attBusy && <Spinner size={14} className="text-muted" />}
+            {atts.length > 0 && s.models.find((m) => m.name === model)?.vision === false && (
+              <span className="text-[11.5px] text-warn">当前模型不支持看图，图片不会发给模型</span>
+            )}
+          </div>
+        )}
         <textarea
           ref={ta}
           value={text}
@@ -359,6 +440,13 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           }}
           onClick={(e) => updateMention(text, (e.target as HTMLTextAreaElement).selectionStart)}
           onKeyDown={onKeyDown}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files).filter(isImageFile);
+            if (files.length) {
+              e.preventDefault();
+              addFiles(files);
+            }
+          }}
           className="block max-h-[260px] w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[14px] leading-[1.6] text-fg outline-none placeholder:text-faint"
         />
         <div className="flex items-center gap-1 px-2 pb-2 pt-1">
@@ -375,6 +463,25 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
               <AtSign size={15} />
             </button>
           </Tip>
+          <Tip label="添加图片（也可以粘贴或拖进来）">
+            <button
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg"
+              onClick={() => fileInput.current?.click()}
+            >
+              <ImagePlus size={15} />
+            </button>
+          </Tip>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
           <Select
             value={model}
             options={modelOptions}
@@ -411,7 +518,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             <Tip label="发送（Enter）· 换行（Shift+Enter）">
               <button
                 onClick={submit}
-                disabled={!text.trim()}
+                disabled={(!text.trim() && !atts.length) || attBusy}
                 className="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg transition hover:opacity-85 disabled:opacity-25"
               >
                 <ArrowUp size={16} strokeWidth={2.4} />

@@ -6,7 +6,8 @@ context_window = 1000000
 max_output = 64000
 request_max_tokens = 64000
 parallel_tools = true
-vision = false
+# deepseek-flash（V4.1-Flash）支持图片输入（官方 Vision 文档 2026-10）；deepseek-v4-pro 不支持，见下方 variants
+vision = true
 reasoning = true
 # 带工具调用的助手轮次始终回传 reasoning_content（缺失补 ""）；纯文本轮不回传。规则确定 → 历史字节稳定。
 reasoning_passback = "tool_turns"
@@ -24,6 +25,7 @@ cache_read = 0.04
 # deepseek-v4-pro：命中 0.30 / 未命中 9 / 输出 27 元每百万 token
 [[variants]]
 match = ["deepseek-v4-pro", "deepseek-pro"]
+vision = false
 
 [variants.price]
 input = 9.0

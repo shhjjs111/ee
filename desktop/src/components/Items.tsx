@@ -178,6 +178,17 @@ export function UserMessage({ item }: { item: UserItem }) {
 
   return (
     <div className="group fadein flex flex-col items-end">
+      {item.attachments && item.attachments.length > 0 && (
+        <div className="mb-1.5 flex max-w-[80%] flex-wrap justify-end gap-1.5">
+          {item.attachments.map((a) =>
+            a.thumb ? (
+              <img key={a.id} src={a.thumb} alt={a.name} title={a.name} className="h-20 max-w-[160px] rounded-xl border border-line object-cover" />
+            ) : (
+              <span key={a.id} className="rounded-lg border border-line px-2 py-1 text-[12px] text-muted">{a.name}</span>
+            ),
+          )}
+        </div>
+      )}
       <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
         {item.text}
         {item.queued && <div className="mt-1 text-[11.5px] text-faint">已排队，当前步骤结束后送入</div>}

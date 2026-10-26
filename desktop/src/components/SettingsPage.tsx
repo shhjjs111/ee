@@ -238,6 +238,18 @@ function ModelEditor({
             />
           </div>
         </Field>
+        <Field label="看图（图片输入）">
+          <Select
+            value={m.vision === true ? "on" : m.vision === false ? "off" : "auto"}
+            options={[
+              { value: "auto", label: `自动（${m.default_vision ? "支持" : "不支持"}）` },
+              { value: "on", label: "支持" },
+              { value: "off", label: "不支持" },
+            ]}
+            onChange={(v) => onChange({ ...m, vision: v === "on" ? true : v === "off" ? false : null })}
+            className="h-8 w-full justify-between border border-line bg-bg px-2.5 text-fg"
+          />
+        </Field>
       </div>
     </div>
   );

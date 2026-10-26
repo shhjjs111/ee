@@ -279,15 +279,19 @@ class Session:
         self.history.append(msg)
         self.store.message(msg)
 
-    def _add_user(self, text: str) -> None:
-        """调用前先 `await asyncio.to_thread(self.refresh_git)`（git 子进程不能在事件循环上跑）。"""
+    def _add_user(self, text: str, images: list[str] | None = None) -> None:
+        """调用前先 `await asyncio.to_thread(self.refresh_git)`（git 子进程不能在事件循环上跑）。
+        images：附件图片的绝对路径（D3-D），记在消息的 _images 上，发送时由 wire_messages 处理。"""
         parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode))
         appendix = self.updates.build(parts)
         body = text
         if self.notes:
             body = "\n\n".join(self.notes) + "\n\n" + text
             self.notes = []
-        self._append({"role": "user", "content": body + "\n\n" + appendix})
+        msg = {"role": "user", "content": body + "\n\n" + appendix}
+        if images:
+            msg["_images"] = list(images)
+        self._append(msg)
 
     async def _ensure_instructions_async(self) -> None:
         if self.history:
@@ -333,10 +337,10 @@ class Session:
         self._results.clear()
 
     # ------------------------------------------------------------ 回合
-    async def run_turn(self, text: str) -> AsyncIterator:
+    async def run_turn(self, text: str, images: list[str] | None = None) -> AsyncIterator:
         q: asyncio.Queue = asyncio.Queue()
         self.running = True
-        self._task = asyncio.create_task(self._turn(text, q.put_nowait))
+        self._task = asyncio.create_task(self._turn(text, q.put_nowait, images))
         try:
             while True:
                 ev = await q.get()
@@ -352,7 +356,7 @@ class Session:
                 except BaseException:
                     pass
 
-    async def _turn(self, text: str, emit) -> None:
+    async def _turn(self, text: str, emit, images: list[str] | None = None) -> None:
         final = ""
         try:
             self.turns += 1
@@ -363,7 +367,9 @@ class Session:
             await self._maybe_auto_compact(emit)
             self.turn_starts.append(len(self.history))
             await asyncio.to_thread(self.refresh_git)
-            self._add_user(text)
+            self._add_user(text, images)
+            if images and not self.profile.vision:
+                emit(Notice(f"当前模型 {self.spec.alias} 不支持看图，这 {len(images)} 张图片没有发给模型（换支持图像的模型，例如 deepseek-flash）。", "warn"))
             emit(TurnStart(self.turns))
             step = 0
             max_steps = max(1, self.config.max_steps)

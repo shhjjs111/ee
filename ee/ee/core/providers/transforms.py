@@ -108,6 +108,9 @@ def wire_messages(history: list[dict], profile) -> list[dict]:
                 w["content"] = None if profile.empty_assistant_content == "null" and has_tools else ""
             if not has_tools:
                 w.pop("tool_calls", None)
+        elif role == "user" and m.get("_images"):
+            from ee.core.attachments import wire_content
+            w["content"] = wire_content(w.get("content") or "", list(m["_images"]), bool(profile.vision))
         elif role == "tool":
             if not w.get("tool_call_id"):
                 w["tool_call_id"] = "call_" + uuid.uuid4().hex[:12]

@@ -193,15 +193,22 @@ class Thread:
         self.notify("item/delta", {"thread_id": self.id, "item_id": it["id"], "field": field, "delta": text})
 
     # ------------------------------------------------------------ 回合
-    def start_turn(self, text: str, model: str | None = None, mode: str | None = None) -> dict:
+    def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
+                   images: list[str] | None = None, attachments: list[dict] | None = None) -> dict:
+        """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。"""
         s = self.ensure_session()
+        if images and self.running:
+            raise ValueError("ee 正在工作，等这一回合结束再发图片")
         if model and model != s.spec.alias:
             s.set_model(model)
             self.meta["model"] = s.spec.alias
         if mode and mode != s.policy.mode:
             s.set_mode(mode)
             self.meta["mode"] = mode
-        user = self._add({"type": "user", "text": text})
+        user_item = {"type": "user", "text": text}
+        if attachments:
+            user_item["attachments"] = attachments
+        user = self._add(user_item)
         if self.running:
             s.queue_input(text)
             user["queued"] = True
@@ -211,7 +218,7 @@ class Thread:
             self.meta["title"] = _title(text)
         self.save_meta()
         self.notify("thread/updated", {"thread": self.summary()})
-        self.task = asyncio.create_task(self._consume(text))
+        self.task = asyncio.create_task(self._consume(text, images))
         self.notify("thread/updated", {"thread": self.summary()})
         return {"queued": False, "item_id": user["id"]}
 
@@ -236,7 +243,7 @@ class Thread:
         self.notify("thread/updated", {"thread": self.summary()})
         return {"ok": True}
 
-    async def _consume(self, text: str) -> None:
+    async def _consume(self, text: str, images: list[str] | None = None) -> None:
         s = self.session
         assert s is not None
         self.turn_started_at = time.monotonic()
@@ -244,7 +251,7 @@ class Thread:
         self.plan_item = None
         reason = "error"
         try:
-            async for ev in s.run_turn(text):
+            async for ev in s.run_turn(text, images):
                 if isinstance(ev, TurnDone):
                     reason = ev.reason
                 self._on_event(ev)

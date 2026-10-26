@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:15（Asia/Shanghai）
+最后更新：2026-10-26 14:30（Asia/Shanghai，D 完成）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -85,7 +85,20 @@
 - [x] B 斜杠命令与自定义提示（2026-10-26 14:50）：后端 `ee/ee/core/prompts.py`（内置 `core/builtin_prompts/*.md` ← `~/.ee/prompts/*.md` ← `<项目根>/.ee/prompts/*.md`，frontmatter description/argument-hint，`$ARGUMENTS` 替换，无占位符则追加；保留名不可覆盖）+ `server/prompts_rpc.py`（prompts/list、prompts/expand）；内置 /init 生成 AGENTS.md。前端 `desktop/src/lib/slash.ts`（纯函数 + vitest）、`components/SlashMenu.tsx`；Composer：/compact /new /undo /model <名> /mode 只读|默认|全自动（二级菜单）/memory [文字]（无文字打开设置）/mcp（暂时打开「工具与记忆」，A 做完改成 MCP 分区，代码里有 TODO(D3-A)）+ 自定义提示（展开后作为用户消息发送）；store 加 `undo()`、`openSettings(section)`、`settingsSection`。未知 /xxx 当普通文字发送。测试 tests/test_prompts.py、src/lib/slash.test.ts（pytest 223、vitest 9 通过，vite build 通过）。
 - [x] E 分叉 / 编辑重发（2026-10-26 15:15）：`ee/ee/server/branch.py`（RPC `thread/fork {thread_id,item_id}`→{thread,draft}、`thread/edit_resend {thread_id,item_id,text,revert_files=true,model?,mode?}`）。回合开始时用户条目记 `hist`（history 下标）和 `snap`（快照层号）（threads.py `_mark_turn_start`）；用前用 history[hist] 原文核对（压缩过/老会话报错）。Session 加 `user_text_at`、`truncate_to`、`revert_files_from(layer)`（倒序逐层恢复）；store 新增 `truncate {from_seq}` 记录；重启后从条目 hist 重建 `turn_starts`。快照只在内存：重启后编辑重发只截历史、出提示不动文件。分叉复制历史+条目（+ sessions/<id>/attachments，给 D 用），meta.parent_id，summary 带 parent_id；thread/delete 连同 sessions/<id>/ 目录删除。前端：用户气泡悬停出「编辑」「分叉」，内联编辑框；store `forkFrom`/`editResend`/`composerDraft`（分叉后预填输入框）；左栏分叉图标。测试 tests/test_branch.py（pytest 226 通过）。
   - 已知：/undo 弹出快照层后层号会错位（编辑重发可能恢复错层），概率低，未处理；编辑排队中插入的消息不支持。
-- [ ] D 附件（需先确认 DeepSeek 哪些模型 vision=true）
+- [x] D 图片附件（2026-10-26）：`ee/ee/core/attachments.py`（按文件头识别 JPEG/PNG/GIF/WebP；每条 ≤8 张、单张 ≤20MiB；存 `~/.ee/sessions/<id>/attachments/`）；turn/start 加 `attachments:[{name,data(base64),thumb}]`，可只发图；历史用户消息带 `_images`（路径），`transforms.wire_messages` 发送时 vision=true 转 `image_url` data URL 分块，vision=false 降级为文字说明 + 界面提示条目；用户条目带 attachments 元数据（缩略图）。DeepSeek 官方 Vision 文档（2026-10）：deepseek-flash 支持图片、deepseek-v4-pro 不支持 → deepseek.toml vision=true，pro variant vision=false。设置：模型可设「看图 自动/支持/不支持」（MODEL_KEYS 加 vision），models/list 返回 vision。分叉时 `_images` 路径换到新会话目录并复制附件。前端 `lib/attachments.ts`（canvas 压缩：长边≤2048，PNG>1.5MB 转 JPEG，GIF 原样，160px 缩略图）；Composer 粘贴/拖放/按钮加图、托盘可删、不支持看图时提示；气泡显示缩略图。测试 tests/test_attachments.py（pytest 231、vitest 9、vite build 通过）。
+  - 已知：编辑重发只带新文字，原消息的图片不会重发；运行中不能追加图片（后端拒绝并提示）。
 - [ ] A MCP
 - [ ] F API key 安全存储
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
+
+## 借鉴其他 agent 的原则（用户 2026-10-26 授权）
+- 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说私人学习使用，代码里不用逐处注明出处；仓库根目录维护一份 THIRD_PARTY_NOTICES.md 列出用过的项目和许可即可（安装包分发时 MIT/Apache 需要）。
+- Claude Code、Cursor 等闭源产品只借思路，不抄代码。
+
+## D4 计划（D3 完成后按顺序做，用户 2026-10-26 看过建议）
+1. 磁盘快照：参考 OpenCode 的影子 git 仓库 / Codex ghost commit / Cline checkpoints，每回合前后快照工作区（含 shell 改的文件），重启后仍能 /undo 和编辑重发恢复文件；顺便解决 /undo 后层号错位。
+2. Windows 沙箱：参考 Codex Windows sandbox（restricted token + ACL），全自动模式下命令只能写工作区、可选禁网。
+3. 子代理并行 + git worktree 隔离。
+4. LSP 诊断：改文件后把类型/语法错误回给模型（参考 OpenCode）。
+5. Hooks：改文件后格式化、回合结束通知等（借 Claude Code 思路）。
+6. Plan 模式；/review 代码审查命令；仓库地图（参考 Aider repo map）；会话全文搜索。

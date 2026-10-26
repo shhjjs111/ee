@@ -265,16 +265,24 @@ class Backend:
                 "tokens_before": res.get("tokens_before", 0), "tokens_after": res.get("tokens_after", 0),
                 "context_left": t.context_left}
 
-    async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None) -> dict:
-        if not (text or "").strip():
+    async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
+                         attachments: list | None = None) -> dict:
+        if not (text or "").strip() and not attachments:
             raise RpcError("消息不能为空")
+        text = text or ""
         t = await self._athread(thread_id)
         if t.compacting:
             raise RpcError("正在压缩上下文，稍等片刻再发送")
         try:
             await t.ensure_session_async()   # 首次建会话要跑 git 等子进程：放到工作线程
-            log.info("turn/start 会话 %s：%d 字", thread_id, len(text))
-            return t.start_turn(text, model=model, mode=mode)
+            images, meta = [], []
+            if attachments:
+                if t.running:
+                    raise RpcError("ee 正在工作，等这一回合结束再发图片")
+                from ee.core.attachments import save_all
+                images, meta = await asyncio.to_thread(save_all, self.home, thread_id, list(attachments))
+            log.info("turn/start 会话 %s：%d 字，%d 张图片", thread_id, len(text), len(images))
+            return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images, attachments=meta)
         except ValueError as e:
             raise RpcError(str(e))
 
@@ -317,7 +325,8 @@ class Backend:
                 continue
             out.append({"name": name, "provider": spec.provider, "model": spec.model,
                         "family": spec.profile.family, "context_window": spec.profile.context_window,
-                        "reasoning": spec.profile.reasoning, "has_key": bool(spec.api_key()),
+                        "reasoning": spec.profile.reasoning, "vision": spec.profile.vision,
+                        "has_key": bool(spec.api_key()),
                         "price": vars(spec.profile.price)})
         return {"models": out, "default": cfg.default_model}
 

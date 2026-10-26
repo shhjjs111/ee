@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
+import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
 
 export type View = "chat" | "settings";
@@ -44,7 +45,7 @@ type Actions = {
   newThread(cwd?: string | null): void;
   addWorkspace(path: string): Promise<void>;
   removeWorkspace(path: string): Promise<void>;
-  send(text: string): Promise<void>;
+  send(text: string, attachments?: Attachment[]): Promise<boolean>;
   interrupt(): Promise<void>;
   compact(): Promise<void>;
   undo(): Promise<void>;
@@ -184,7 +185,7 @@ export const useApp = create<State & Actions>((set, get) => ({
     set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
   },
 
-  async send(text) {
+  async send(text, attachments) {
     const s = get();
     const rpc = s.rpc!;
     let id = s.activeThreadId;
@@ -194,7 +195,7 @@ export const useApp = create<State & Actions>((set, get) => ({
       if (!id) {
         if (!s.activeWorkspace) {
           s.showToast("先在左侧选择或添加一个项目文件夹", "error");
-          return;
+          return false;
         }
         const r = await rpc.call("thread/start", { cwd: s.activeWorkspace, model, mode });
         const t = r.thread as ThreadDetail;
@@ -208,7 +209,9 @@ export const useApp = create<State & Actions>((set, get) => ({
       set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: st.turnStartedAt[id!] ?? Date.now() } }));
       setStatus(id, "running");
       setStatusText(id, "正在发送…");
-      await rpc.call("turn/start", { thread_id: id, text, model, mode });
+      const atts = attachments?.length ? attachments.map((a) => ({ name: a.name, data: a.data, thumb: a.thumb })) : undefined;
+      await rpc.call("turn/start", { thread_id: id, text, model, mode, attachments: atts }, atts ? 120000 : undefined);
+      return true;
     } catch (e) {
       const msg = (e as Error).message;
       get().showToast(msg, "error");
@@ -225,6 +228,7 @@ export const useApp = create<State & Actions>((set, get) => ({
           return { details: { ...st.details, [id!]: { ...d, items: [...d.items, err] } }, turnStartedAt: rest };
         });
       }
+      return false;
     }
   },
 

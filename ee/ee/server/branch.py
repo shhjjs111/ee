@@ -69,6 +69,11 @@ def register(methods: dict, backend) -> None:
             messages = copy.deepcopy(s.history[:hist])
             items = [copy.deepcopy(x) for x in t.items if int(x.get("seq", 0)) < cut]
             store = SessionStore(backend.home, enabled=backend.persist)
+            from ee.core.attachments import attachments_dir, rebase
+            old_dir, new_dir = attachments_dir(backend.home, t.id), attachments_dir(backend.home, store.id)
+            for m in messages:
+                if m.get("_images"):
+                    m["_images"] = rebase(m["_images"], old_dir, new_dir)
             meta = {"cwd": t.meta["cwd"], "model": t.meta.get("model", ""), "mode": t.meta.get("mode", ""),
                     "title": "分叉：" + (t.meta.get("title") or _title(it.get("text") or "")),
                     "created": time.time(), "parent_id": t.id, "parent_item": item_id}

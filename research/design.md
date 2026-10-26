@@ -146,4 +146,5 @@ ee/
 - [x] D3-C 配置迁移 + 单价（2026-10-26）：ee/ee/core/migrate.py 版本链（config_version，缺省=1），load_user_file/load_config 读前迁移，逐键 write_setting 写回保留注释，原文件备份 config.toml.pre-v2.bak；v2：web.search_backend "deepseek"→"exa"、fetch_backend "auto"→"direct"；settings/set 写出时带 config_version，所以之后用户主动选 deepseek 不会被改回。设置页加「出错时改用」(web.search_fallback)。Profile 加 variants（按模型名覆盖），deepseek-v4-pro 单价 0.30/9/27 元每百万。测试 tests/test_migrate.py。
 - [x] D3-B 斜杠命令与自定义提示（2026-10-26）：core/prompts.py + server/prompts_rpc.py，前端 lib/slash.ts + SlashMenu；内置 /init。
 - [x] D3-E 分叉 / 编辑重发（2026-10-26）：server/branch.py，用户条目 hist/snap，store truncate 记录。
-- [ ] D3 其余：A MCP、D 附件、F key 安全存储（方案见 research/d3-plan.md）
+- [x] D3-D 图片附件（2026-10-26）：core/attachments.py，_images + wire_messages 分块，deepseek-flash vision=true。
+- [ ] D3 其余：A MCP、F key 安全存储（方案见 research/d3-plan.md）
