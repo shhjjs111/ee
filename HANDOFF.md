@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 16:45（Asia/Shanghai，D4-4 会话全文搜索完成，等 Windows CI；下一步 D4-5 桌面通知 + 托盘）
+最后更新：2026-10-26 16:45（Asia/Shanghai，D4-4 会话全文搜索完成，Windows CI 全绿（run 40292571917）；下一步 D4-5 桌面通知 + 托盘）
 
-> **接手第一步（2026-10-26 16:45）**：查最新提交的 Windows Actions（D4-4，失败就先修）；然后做 D4-5 桌面通知 + 托盘常驻。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 16:45）**：D4-4 Windows CI 已全绿（351358b）；直接做 D4-5 桌面通知 + 托盘常驻。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
