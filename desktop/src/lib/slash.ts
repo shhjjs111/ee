@@ -1,13 +1,24 @@
-// 斜杠命令（D3-B）：内置命令 + 后端 prompts/list 的自定义提示。纯函数，便于测试。
+// 斜杠命令（D3-B）：内置命令 + 后端 prompts/list 的自定义提示 + skills/list 的技能（D5-5）。纯函数，便于测试。
 
 export type PromptInfo = { name: string; description: string; argument_hint: string; source: string; path: string };
+/** skills/list 返回的一个技能（ee/core/skills.py Skill.summary）。 */
+export type SkillInfo = {
+  name: string;
+  description: string;
+  path: string;
+  dir: string;
+  source: "user" | "project" | string;
+  origin: "ee" | "claude" | "agents" | string;
+  enabled: boolean;
+  shadows?: string[];
+};
 
 export type SlashCommand = {
   name: string;
   description: string;
   argHint?: string;
   takesArgs: boolean; // true：选中后补成 "/name " 等用户继续输入；false：选中即执行
-  kind: "builtin" | "prompt";
+  kind: "builtin" | "prompt" | "skill";
   source?: string;
 };
 
@@ -40,7 +51,7 @@ export const MODE_OPTIONS = [
   { value: "plan", label: "计划", hint: "只调研出方案，批准后再改" },
 ];
 
-export function allCommands(prompts: PromptInfo[]): SlashCommand[] {
+export function allCommands(prompts: PromptInfo[], skills: SkillInfo[] = []): SlashCommand[] {
   const builtinNames = new Set(BUILTIN.map((c) => c.name));
   const custom: SlashCommand[] = prompts
     .filter((p) => !builtinNames.has(p.name))
@@ -52,7 +63,17 @@ export function allCommands(prompts: PromptInfo[]): SlashCommand[] {
       kind: "prompt",
       source: p.source,
     }));
-  return [...BUILTIN, ...custom];
+  // 技能：/名字 原样发给后端，后端把 SKILL.md 全文附在消息前（与内置命令、自定义提示同名时让给它们，可改用 $名字）
+  const taken = new Set([...builtinNames, ...custom.map((c) => c.name)]);
+  const sk: SlashCommand[] = skills
+    .filter((x) => x.enabled && !taken.has(x.name))
+    .map((x) => ({ name: x.name, description: x.description, argHint: "[任务]", takesArgs: true, kind: "skill", source: x.source }));
+  return [...BUILTIN, ...custom, ...sk];
+}
+
+/** 是否是会发给后端的技能命令（/名字 不是内置命令或自定义提示，而是已启用的技能）。 */
+export function isSkillCommand(name: string, prompts: PromptInfo[], skills: SkillInfo[]): boolean {
+  return allCommands(prompts, skills).some((c) => c.kind === "skill" && c.name === name);
 }
 
 /** 解析 "/name 参数"；不是斜杠命令返回 null。 */
@@ -72,12 +93,17 @@ export function resolveMode(arg: string): string | null {
 const SOURCE_BADGE: Record<string, string> = { builtin: "内置", user: "我的", project: "项目" };
 
 /** 输入框内容 → 菜单项；不该显示菜单时返回 null。 */
-export function slashItems(text: string, prompts: PromptInfo[], models: { name: string; hint?: string }[]): SlashItem[] | null {
+export function slashItems(
+  text: string,
+  prompts: PromptInfo[],
+  models: { name: string; hint?: string }[],
+  skills: SkillInfo[] = [],
+): SlashItem[] | null {
   if (!text.startsWith("/") || text.includes("\n")) return null;
-  const head = /^\/([A-Za-z0-9_-]*)$/.exec(text);
+  const head = /^\/([\p{L}\p{N}_.-]*)$/u.exec(text); // 技能名可以是中文
   if (head) {
     const q = head[1].toLowerCase();
-    const all = allCommands(prompts);
+    const all = allCommands(prompts, skills);
     const pre = all.filter((c) => c.name.toLowerCase().startsWith(q));
     const mid = q.length > 1 ? all.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q)) : [];
     const cmds = [...pre, ...mid];
@@ -85,7 +111,7 @@ export function slashItems(text: string, prompts: PromptInfo[], models: { name: 
       key: `${c.kind}:${c.name}`,
       label: `/${c.name}` + (c.argHint ? ` ${c.argHint}` : ""),
       hint: c.description,
-      badge: c.kind === "prompt" ? SOURCE_BADGE[c.source ?? ""] ?? c.source : undefined,
+      badge: c.kind === "prompt" ? SOURCE_BADGE[c.source ?? ""] ?? c.source : c.kind === "skill" ? "技能" : undefined,
       action: c.takesArgs ? { fill: `/${c.name} ` } : { run: `/${c.name}` },
     }));
   }

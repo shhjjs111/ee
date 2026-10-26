@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSlash, resolveMode, slashItems } from "./slash";
+import { isSkillCommand, parseSlash, resolveMode, slashItems, type SkillInfo } from "./slash";
 
 const prompts = [
   { name: "init", description: "生成 AGENTS.md", argument_hint: "", source: "builtin", path: "builtin:init.md" },
@@ -44,6 +44,30 @@ describe("slash", () => {
     expect(slashItems("hi", prompts, models)).toBeNull();
     expect(slashItems("/review a.py", prompts, models)).toBeNull();
     expect(slashItems("/mo\nx", prompts, models)).toBeNull();
+  });
+
+  it("lists enabled skills after prompts with a badge", () => {
+    const skills: SkillInfo[] = [
+      { name: "pdf-tools", description: "处理 PDF", path: "/h/skills/pdf-tools/SKILL.md", dir: "/h/skills/pdf-tools", source: "user", origin: "ee", enabled: true },
+      { name: "init", description: "和自定义提示同名", path: "x", dir: "x", source: "project", origin: "claude", enabled: true },
+      { name: "undo", description: "和内置命令同名", path: "x", dir: "x", source: "user", origin: "ee", enabled: true },
+      { name: "off", description: "已禁用", path: "x", dir: "x", source: "user", origin: "ee", enabled: false },
+      { name: "中文技能", description: "中文名", path: "x", dir: "x", source: "project", origin: "ee", enabled: true },
+    ];
+    const all = slashItems("/", prompts, models, skills)!;
+    expect(all.slice(-3).map((i) => i.key)).toEqual(["prompt:init", "skill:pdf-tools", "skill:中文技能"]);
+    const pdf = all.find((i) => i.key === "skill:pdf-tools")!;
+    expect(pdf.badge).toBe("技能");
+    expect(pdf.hint).toBe("处理 PDF");
+    expect(pdf.action).toEqual({ fill: "/pdf-tools " });
+    expect(slashItems("/pd", prompts, models, skills)!.map((i) => i.key)).toEqual(["skill:pdf-tools"]);
+    expect(slashItems("/中", prompts, models, skills)!.map((i) => i.key)).toEqual(["skill:中文技能"]);
+    expect(slashItems("/off", prompts, models, skills)).toEqual([]);
+    expect(isSkillCommand("pdf-tools", prompts, skills)).toBe(true);
+    expect(isSkillCommand("init", prompts, skills)).toBe(false);
+    expect(isSkillCommand("off", prompts, skills)).toBe(false);
+    // 不传技能时和以前一样
+    expect(slashItems("/", prompts, models)!.some((i) => i.key.startsWith("skill:"))).toBe(false);
   });
 
   it("resolves modes", () => {

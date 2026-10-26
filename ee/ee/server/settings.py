@@ -128,7 +128,33 @@ def _d2_out(data: dict) -> dict:
         "subagent": {"enabled": bool(sa.get("enabled", True)), "max_steps": int(sa.get("max_steps", 30))},
         "memory": {"enabled": bool(mem.get("enabled", True)), "workspace": bool(mem.get("workspace", True)),
                    "max_bytes": int(mem.get("max_bytes", 8192))},
+        "skills": _skills_out(data),
     }
+
+
+def _skills_out(data: dict) -> dict:
+    from ee.core.skills import settings as skills_settings
+    sk = skills_settings(data)
+    return {"enabled": bool(sk.get("enabled", True)), "compat": bool(sk.get("compat", True)),
+            "disabled": list(sk["disabled"]), "max_chars": int(sk.get("max_chars") or 8000)}
+
+
+def _skills_in(n: dict, out: dict) -> None:
+    """[skills]：enabled / compat 开关、disabled 名字列表、清单长度上限 max_chars。"""
+    sk = dict(out.get("skills") or {})
+    for k in ("enabled", "compat"):
+        if n.get(k) is not None:
+            sk[k] = bool(n[k])
+    if n.get("disabled") is not None:
+        if not isinstance(n["disabled"], list):
+            raise ValueError("skills.disabled 必须是技能名列表")
+        sk["disabled"] = sorted({str(x).strip() for x in n["disabled"] if str(x).strip()})
+    if n.get("max_chars") not in (None, ""):
+        v = int(float(n["max_chars"]))
+        if not 1000 <= v <= 50000:
+            raise ValueError("技能清单长度上限必须在 1000～50000 字符之间")
+        sk["max_chars"] = v
+    out["skills"] = sk
 
 
 def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
@@ -198,6 +224,8 @@ def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
                 raise ValueError("记忆大小上限必须在 512～65536 字节之间")
             mem["max_bytes"] = v
         out["memory"] = mem
+    if isinstance(new.get("skills"), dict):
+        _skills_in(new["skills"], out)
 
 
 SERVER_KEYS = ("command", "args", "env", "cwd", "url", "headers", "type", "enabled", "trusted")

@@ -28,7 +28,7 @@ import { splitReview } from "../lib/review";
 import { PlanProposalCard, ReviewCard } from "./ReviewDialogs";
 import { useApp } from "../lib/store";
 import type { ApprovalItem, AssistantItem, Item, PlanItem, ToolItem, TurnEndItem, UserItem } from "../types";
-import { SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
+import { SkillCard, SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
 import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
@@ -428,6 +428,7 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   if (item.name === "task" || item.meta?.kind === "subagent") return <SubagentCard item={item} />;
   if (item.name === "web_search") return <WebSearchCard item={item} />;
   if (item.name === "web_fetch") return <WebFetchCard item={item} />;
+  if (item.name === "skill") return <SkillCard item={item} />;
 
   const mcp = item.meta?.kind === "mcp";
   return (

@@ -38,6 +38,8 @@ DEFAULTS: dict = {
     "subagent": {"enabled": True, "max_steps": 30, "max_steps_limit": 100},
     # 长期记忆：~/.ee/memory.md + 工作区 .ee/memory.md，会话开始时注入（总大小上限）
     "memory": {"enabled": True, "workspace": True, "max_bytes": 8192},
+    # 技能：~/.ee/skills、<项目>/.ee/skills（compat 时兼容 .claude/skills、.agents/skills）；清单总长上限 max_chars
+    "skills": {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     "network": {"proxy": "system", "connect_timeout": 15, "read_timeout": 90, "retries": 2},
     "providers": {

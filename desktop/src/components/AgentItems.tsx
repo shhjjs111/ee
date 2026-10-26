@@ -1,6 +1,6 @@
-// 子代理卡片、网页搜索/抓取卡片（task / web_search / web_fetch 工具条目的专用渲染）。
+// 子代理卡片、网页搜索/抓取卡片、技能卡片（task / web_search / web_fetch / skill 工具条目的专用渲染）。
 import clsx from "clsx";
-import { Ban, Bot, Check, ChevronRight, Circle, Globe, Search, X } from "lucide-react";
+import { Ban, BookOpen, Bot, Check, ChevronRight, Circle, Globe, Search, X } from "lucide-react";
 import React, { useState } from "react";
 import type { SubagentRecord, ToolItem } from "../types";
 import { Markdown } from "./Markdown";
@@ -203,6 +203,43 @@ export function WebFetchCard({ item }: { item: ToolItem }) {
           </button>
           <pre className="mono max-h-[260px] overflow-auto whitespace-pre-wrap break-all rounded-xl border border-line bg-code px-3 py-2.5 text-[12px] leading-[1.55] text-fg">
             {(item.output || "").slice(0, 6000) || "（无输出）"}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** skill 工具（D5-5）：「加载了技能 xxx」，展开看 SKILL.md 全文和文件列表。 */
+export function SkillCard({ item }: { item: ToolItem }) {
+  const running = item.status === "running";
+  const [open, setOpen] = useState(false);
+  const failed = item.status === "error" || item.status === "denied";
+  const name = String(item.meta?.name ?? item.args?.name ?? "");
+  const path = item.meta?.path as string | undefined;
+  return (
+    <div className="fadein">
+      <Head
+        icon={<BookOpen size={14} />}
+        title={
+          <>
+            {running ? "正在加载技能" : failed ? "加载技能失败" : "加载了技能"} <span className="mono text-fg/90">{name}</span>
+          </>
+        }
+        active={running}
+        tone={failed ? "error" : undefined}
+        open={open}
+        onToggle={() => setOpen(!open)}
+      />
+      {open && (
+        <div className="mb-2 ml-6 mt-1 space-y-1.5">
+          {path && (
+            <button className="mono max-w-full truncate text-[12px] text-accent hover:underline" onClick={() => window.ee?.openPath(path)} title={path}>
+              {path}
+            </button>
+          )}
+          <pre className="mono max-h-[260px] overflow-auto whitespace-pre-wrap break-all rounded-xl border border-line bg-code px-3 py-2.5 text-[12px] leading-[1.55] text-fg">
+            {(item.output || "").slice(0, 8000) || "（无输出）"}
           </pre>
         </div>
       )}

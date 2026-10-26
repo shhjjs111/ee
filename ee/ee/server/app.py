@@ -29,6 +29,7 @@ from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
 from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, shell_rpc
+from ee.server import skills_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -84,6 +85,7 @@ class Backend:
         mcp_rpc.register(self.methods, self)           # mcp/list|test
         review_rpc.register(self.methods, self)        # review/targets|start, git/commit_message|commit
         shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
+        skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
