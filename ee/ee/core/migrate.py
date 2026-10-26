@@ -92,7 +92,7 @@ def migrate_user_file(path: Path | None = None) -> bool:
     try:
         bak = path.parent / f"{path.name}.pre-v{CURRENT_VERSION}.bak"
         if not bak.exists():
-            bak.write_text(strip_secret_lines(raw.decode("utf-8")), encoding="utf-8")   # 备份不留明文 key
+            bak.write_bytes(strip_secret_lines(raw.decode("utf-8")).encode("utf-8"))   # 备份不留明文 key；按字节写，保留原换行
         for dotted, value in writes:
             if dotted == STRIP_SECRETS:
                 path.write_text(strip_secret_lines(path.read_text(encoding="utf-8"), value), encoding="utf-8")

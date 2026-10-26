@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:12（Asia/Shanghai，D3-F API key 安全存储完成，等 Windows CI；下一步 D4-1 磁盘快照）
+最后更新：2026-10-26 15:20（Asia/Shanghai，D3-F 完成；修 Windows 上 .pre-v3.bak 换行翻倍；下一步 D4-1 磁盘快照）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -96,6 +96,7 @@
   - 设置：settings/get 返回 `api_key_source`（store/plain/env）+ 末四位 + `secrets`（backend/label/secure），绝不回传明文；set 先校验，再删除被清除/被删供应商的 key，再把新 key 存进凭据存储，存不进去报错且不写文件。前端供应商和搜索 key 显示来源，占位提示「保存在 Windows 凭据管理器」。
   - 脱敏：日志 handler 挂 RedactFilter（含异常堆栈），SessionStore.append、session._friendly_error、net.describe_error、RPC 错误统一 redact（已知 key 值 + `sk-…`/`tvly-…`/`Bearer …`/`api_key=…`）。
   - 自检：`ee-backend.exe selftest --secrets`（凭据管理器写读删 + DPAPI 往返），Windows workflow 已改为带此参数。测试 `tests/test_secrets.py`（Windows 上额外跑真实凭据管理器/DPAPI）；pytest 252 通过 2 跳过（Windows 专用），vitest 13、tsc、vite build 通过。
+  - Windows CI（2caf068）：真实凭据管理器/DPAPI 测试与打包 exe `selftest --secrets`（wincred、dpapi ok）均通过；唯一失败是迁移备份按文本写导致 CRLF 变 CR CR LF，已改为按字节写。
   - 已知：bash 输出里的 key（如 `echo $DEEPSEEK_API_KEY`）仍会进模型上下文；MCP env/headers 里的 token 仍是明文；项目级 `.ee/config.toml` 里的明文 key 不迁移。
 - [ ] 全部完成后：Windows CI 全绿 → 告诉用户装新安装包验证
 
