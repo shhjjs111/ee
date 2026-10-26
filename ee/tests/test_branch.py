@@ -56,11 +56,33 @@ def test_edit_resend_reverts_files_and_history(ee_home, workspace):
         assert [it["id"] for it in d2["items"]] == [it["id"] for it in d["items"]]
         s2 = b2.threads[tid].session
         assert "改成 v2" not in str(s2.history) and s2.turn_starts == [u["hist"] for u in _users(d2["items"])]
-        # 重启后快照没了：编辑第二条只截历史，文件不动并提示
+        # 重启后（D4-1 磁盘快照）：编辑第二条照样恢复文件——b.txt 是那一回合新建的，被删掉
         b3, _, ev3 = make_backend(ee_home, [text_chunks("好") + finish("stop")])
         d3 = (await b3.call("thread/get", {"thread_id": tid}))["thread"]
+        assert _users(d3["items"])[1].get("tree") and _users(d3["items"])[1].get("tree_after")
         r = await b3.call("thread/edit_resend", {"thread_id": tid, "item_id": _users(d3["items"])[1]["id"], "text": "算了"})
-        assert r["files_reverted"] is False and (workspace / "b.txt").read_text() == "v3"
+        assert r["files_reverted"] is True and not (workspace / "b.txt").exists()
+        assert (workspace / "a.txt").read_text() == "v1"
+        await wait_for(ev3, "turn/completed")
+        assert not any(it["type"] == "notice" and "无法自动恢复" in it["text"] for it in b3.threads[tid].items)
+    asyncio.run(go())
+
+
+def test_edit_resend_after_restart_without_disk_snapshot(ee_home, workspace):
+    """关掉磁盘快照（[snapshot] disk=false）时回退内存快照：重启后只截历史，文件不动并提示。"""
+    (ee_home / "config.toml").write_text("[snapshot]\ndisk = false\n", encoding="utf-8")
+    script = [_write("c1", "v1"), text_chunks("ok") + finish("stop"), text_chunks("好") + finish("stop")]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 a"})
+        await wait_for(ev, "turn/completed")
+        b3, _, ev3 = make_backend(ee_home, [text_chunks("好") + finish("stop")])
+        d3 = (await b3.call("thread/get", {"thread_id": tid}))["thread"]
+        assert "tree" not in _users(d3["items"])[0]
+        r = await b3.call("thread/edit_resend", {"thread_id": tid, "item_id": _users(d3["items"])[0]["id"], "text": "算了"})
+        assert r["files_reverted"] is False and (workspace / "a.txt").read_text() == "v1"
         await wait_for(ev3, "turn/completed")
         assert any(it["type"] == "notice" and "无法自动恢复" in it["text"] for it in b3.threads[tid].items)
     asyncio.run(go())

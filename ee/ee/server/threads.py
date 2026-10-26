@@ -94,6 +94,9 @@ class Thread:
             s.turn_starts = sorted({int(it["hist"]) for it in self.items
                                     if it.get("type") == "user" and isinstance(it.get("hist"), int)
                                     and s.user_text_at(int(it["hist"])) is not None})
+        # 磁盘快照（D4-1）：从用户条目重建每回合前后 tree，重启后 /undo、编辑重发照样能恢复文件
+        s.turn_trees = [{"before": it["tree"], "after": it.get("tree_after"), "undone": bool(it.get("undone"))}
+                        for it in self.items if it.get("type") == "user" and it.get("tree")]
         self.meta["model"] = s.spec.alias
         self.meta["mode"] = s.policy.mode
         self.session = s
@@ -254,6 +257,8 @@ class Thread:
             async for ev in s.run_turn(text, images):
                 if isinstance(ev, TurnDone):
                     reason = ev.reason
+                    if ev.tree_after:
+                        self._mark_tree_after(ev.tree_after)
                 self._on_event(ev)
         except Exception as e:  # noqa: BLE001
             log.error("回合异常（会话 %s）", self.id, exc_info=True)
@@ -293,7 +298,7 @@ class Thread:
                                        "instructions": self.instructions()})
         self.notify("thread/updated", {"thread": {**self.summary(), "status": "idle"}})
 
-    def _mark_turn_start(self) -> None:
+    def _mark_turn_start(self, tree: str | None = None) -> None:
         """给本回合的用户条目记下它在历史里的位置和文件快照层号（编辑重发 / 分叉用，D3-E）。"""
         s = self.session
         if s is None or not s.turn_starts:
@@ -303,7 +308,26 @@ class Thread:
                 if not it.get("queued") and "hist" not in it:
                     it["hist"] = s.turn_starts[-1]
                     it["snap"] = len(s.state.snapshots) - 1
+                    it["snap_epoch"] = s.snap_epoch
+                    if tree:
+                        it["tree"] = tree
                     self._update(it)
+                break
+
+    def _mark_tree_after(self, tree: str) -> None:
+        for it in reversed(self.items):
+            if it.get("type") == "user" and it.get("tree"):
+                if "tree_after" not in it:
+                    it["tree_after"] = tree
+                    self._update(it)
+                break
+
+    def mark_undone(self, tree: str) -> None:
+        """/undo 走磁盘快照时，把对应用户条目标成已撤销（持久化，重启后不会再撤一次）。"""
+        for it in reversed(self.items):
+            if it.get("type") == "user" and it.get("tree") == tree:
+                it["undone"] = True
+                self._update(it)
                 break
 
     def _assistant(self) -> dict:
@@ -318,7 +342,7 @@ class Thread:
                 self.status_text = ev.text
                 self.notify("turn/status", {"thread_id": self.id, "text": ev.text})
         elif isinstance(ev, TurnStart):
-            self._mark_turn_start()
+            self._mark_turn_start(ev.tree)
             self.notify("turn/started", {"thread_id": self.id, "turn": ev.turn})
         elif isinstance(ev, StepStart):
             self.cur_assistant = None

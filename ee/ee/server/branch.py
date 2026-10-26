@@ -113,8 +113,14 @@ def register(methods: dict, backend) -> None:
         restored: list[str] = []
         reverted = False
         if revert_files:
+            res = None
+            if it.get("tree"):          # D4-1 磁盘快照：重启后也能恢复，含 shell 改的文件
+                entries = [(x["tree"], x.get("tree_after")) for x in t.items
+                           if x.get("type") == "user" and x.get("tree") and int(x.get("seq", 0)) >= cut]
+                res = await asyncio.to_thread(s.revert_trees, entries)
             snap = it.get("snap")
-            res = await asyncio.to_thread(s.revert_files_from, int(snap)) if isinstance(snap, int) else None
+            if res is None and isinstance(snap, int) and it.get("snap_epoch") == s.snap_epoch:
+                res = await asyncio.to_thread(s.revert_files_from, snap)
             if res is not None:
                 restored, reverted = res, True
         s.truncate_to(hist)

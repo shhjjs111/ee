@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:28（Asia/Shanghai，D3-F 完成且 Windows CI 绿（55908ef）；D4-1 磁盘快照进行中）
+最后更新：2026-10-26 15:40（Asia/Shanghai，D4-1 磁盘快照完成，等 Windows CI；下一步 D4-2 /review 与 /commit）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -109,9 +109,13 @@
 对照审计 research/parity-audit.md：95 项，已有 23、部分 19、缺 53，每项有价值/难度/实现要点/参考实现路径。用户要求：磁盘快照仍排第一；/review、/commit、Plan 模式、会话搜索这些小活前移；加入桌面通知+托盘、后台长命令、PDF/Word/Excel 读取；LSP 推到 D6。
 
 **D4 — 地基 + 小而高价值**（按顺序）
-1. [~] ★磁盘快照：影子 git 仓库替换内存快照，每回合前后快照工作区（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复文件；修 /undo 后层号错位
-   - 进行中（2026-10-26 15:28 开始）。做法参考 OpenCode 的 snapshot 并适配 ee：独立 git 目录 `~/.ee/snapshot/<工作区路径哈希>`，work-tree 指向工作区（不碰项目自己的 .git），回合开始 `add -A` + `write-tree` 得到 tree 哈希，回合结束再取一次；/undo = 把「该回合前后 tree 的差异文件」恢复成回合前版本（树里没有的删除），编辑重发 = 把该消息及之后各回合改过的文件恢复到该消息前的 tree。tree 哈希记在用户条目（tree / tree_after / undone）里，重启后照样能用。未跟踪的大于 2MB 文件不收；遵守项目 .gitignore；非 git 项目额外排除 node_modules/.venv 等。没装 git 或抓取失败时回退原来的内存快照。
-   - 文件：`ee/ee/core/snapshot.py`（新）、session.py（turn_trees、undo/回退走磁盘）、events.py（TurnStart.tree、TurnDone.tree_after）、server/threads.py、server/branch.py、app.py thread_undo。
+1. [x] ★磁盘快照（2026-10-26 15:40）：影子 git 仓库替换内存快照，每回合前后快照工作区（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复文件
+   - 做法：参考 OpenCode 的 snapshot（独立 git 目录 + work-tree 指向工作区、write-tree 得到内容寻址的 tree、按差异文件恢复），按 ee 适配：tree 记在用户条目上持久化、/undo 按回合栈逐个撤销、编辑重发恢复到该消息之前、非 git 项目也能用、失败回退内存快照。
+   - `ee/ee/core/snapshot.py`：`DiskSnapshot(worktree, home)`，git 目录 `~/.ee/snapshot/<工作区真实路径 sha1 前 16 位>`（里面有 ee-worktree.txt 记录对应目录）；git 调用一律带 `core.autocrlf=false`（字节原样，CRLF 不变）、`core.quotepath=false`、`core.longpaths=true`、禁用 hooks，环境清掉 GIT_*。`capture()`=`add -A`+`write-tree`（60 秒超时，超时后本次运行停用）；`changed(a,b)`=`diff --name-only -z --no-renames`；`restore(tree, paths)`=树里有的 `checkout -f tree -- 路径`，没有的删除（并清理空目录），只动给定文件。排除：工作区 .gitignore + 项目 .git/info/exclude；非 git 项目默认排除 node_modules/.venv/__pycache__ 等；未跟踪且 >2MB 的文件写进影子仓库 info/exclude。工作区是用户目录或盘根、没装 git 时不可用。`for_dir()` 同目录共用实例并加锁。
+   - Session：`turn_trees`（每回合 before/after/undone）、`disk()`、`disk_capture()`；回合开始在发 TurnStart 前抓 before（TurnStart.tree），`run_turn` 收到 TurnDone 时抓 after（TurnDone.tree_after）。`undo()` 先走磁盘：从最近的未撤销回合往前找第一个有差异的，恢复后标 undone（`last_undo_tree`）；磁盘不可用才用旧内存快照。`revert_trees(entries)` 给编辑重发用。恢复后清内存快照层和已读缓存，并给模型加系统提示。子代理 `disk_enabled=False`（改动算在主会话这一回合里）。
+   - threads：用户条目记 `tree`、`tree_after`、`undone`（及 `snap_epoch`）；重启时从条目重建 `turn_trees`。app `thread/undo` 撤销后 `mark_undone`。branch `edit_resend` 有 tree 优先磁盘恢复，否则旧内存快照；修复：旧内存快照层号只在同一进程（`snap_epoch` 相同）才用，之前重启后层号 0 会误报“已恢复”。
+   - 配置：`[snapshot] disk = false` 可关闭（回退内存快照）。测试 `tests/test_snapshot.py`（7 个：增删改/中文路径、CRLF 字节、.gitignore 与大文件、非 git 默认排除、用户目录不可用、shell 改动可撤销且重启后可用不重复、用户手改的其他文件不受影响），`test_branch.py` 改为重启后也能恢复 + 新增关闭磁盘快照的回退用例；pytest 260 通过 2 跳过。
+   - 已知/后续：影子仓库不自动 gc（gc.auto=0），长期使用会变大，D5 检查点时间线时加清理；大仓库每回合 `add -A` 有开销（同 OpenCode）；/undo 后层号错位的旧问题在磁盘模式下不再存在，内存回退模式仍有；暂无设置页开关（只能改 config.toml）。
 2. [ ] ★/review 代码审查命令 + /commit（改动审阅栏「提交」按钮：模型写提交信息，用户确认后 git commit）
 3. [ ] ★Plan 模式：只读出方案 → 点「按此执行」切到默认/全自动继续
 4. [ ] ★会话全文搜索：sqlite FTS5 索引条目文本，store.append 增量写；RPC thread/search 返回命中片段；左栏搜索框改走它

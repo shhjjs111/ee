@@ -14,6 +14,7 @@ class Event:
 @dataclass
 class TurnStart(Event):
     turn: int
+    tree: str | None = None     # 回合开始时的磁盘快照（D4-1），没有则 None
 
 
 @dataclass
@@ -154,6 +155,7 @@ class SubagentEnd(Event):
 class TurnDone(Event):
     reason: str             # completed | max_steps | interrupted | error | loop
     text: str = ""
+    tree_after: str | None = None   # 回合结束时的磁盘快照（D4-1）
 
 
 @dataclass

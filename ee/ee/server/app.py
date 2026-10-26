@@ -238,6 +238,8 @@ class Backend:
         if s.running:
             raise RpcError("运行中不能撤销")
         restored = await asyncio.to_thread(s.undo)
+        if s.last_undo_tree:
+            t.mark_undone(s.last_undo_tree)
         if restored:
             t._add({"type": "notice", "text": "已撤销上一回合的文件改动：\n" + "\n".join(restored), "level": "info"})
         return {"restored": restored}

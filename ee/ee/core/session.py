@@ -79,6 +79,13 @@ class Session:
         self.notes: list[str] = []           # 例如用户 !命令 的输出，随下一条消息发给模型
         self.turns = 0
         self.turn_starts: list[int] = []     # 每个回合首条 user 消息在 history 里的位置（回退用）
+        # D4-1 磁盘快照：每回合 {"before": tree, "after": tree|None, "undone": bool}；重启后由 threads 从条目重建
+        self.turn_trees: list[dict] = []
+        self.disk_enabled = bool((config.data.get("snapshot") or {}).get("disk", True))
+        self._disk_obj = None
+        self.last_undo_tree: str | None = None
+        import uuid
+        self.snap_epoch = uuid.uuid4().hex[:8]   # 内存快照层号只在本次进程内有效（重启后层号会撞）
         self.store = SessionStore(self.home, enabled=persist)
         self._task: asyncio.Task | None = None
         self._open_calls: list[str] = []
@@ -165,6 +172,7 @@ class Session:
         self.notes.clear()
         self.turns = 0
         self.turn_starts = []
+        self.turn_trees = []
         self.instruction_sources = []
         self.memory_sources = []
         self._fresh_usage = False
@@ -228,8 +236,90 @@ class Session:
         layers.append({})
         return restored
 
+    # ------------------------------------------------------------ 磁盘快照（D4-1）
+    def disk(self):
+        """可用的磁盘快照（影子 git 仓库），不可用返回 None。"""
+        if not self.disk_enabled:
+            return None
+        if self._disk_obj is None:
+            from ee.core import snapshot
+            self._disk_obj = snapshot.for_dir(self.cwd, self.home)
+            if not self._disk_obj.available:
+                log.info("磁盘快照不可用（%s），改用内存快照", self._disk_obj.disabled)
+        return self._disk_obj if self._disk_obj.available else None
+
+    def disk_capture(self) -> str | None:
+        d = self.disk()
+        return d.capture() if d else None
+
+    def _after_restore(self, restored: list[str], note: str) -> None:
+        for path in restored:
+            self.state.files.pop(path, None)
+        self.state.snapshots = [{}]          # 内存快照已过时，避免二次恢复
+        if restored:
+            self.add_note(note + "\n" + "\n".join(restored))
+
+    def revert_trees(self, entries: list[tuple[str, str | None]]) -> list[str] | None:
+        """编辑重发：entries = 被撤回的各回合 (回合前 tree, 回合后 tree)，第一项是被编辑的那条消息。
+        把这些回合改过的文件恢复到第一项的回合前版本。磁盘快照不可用返回 None。"""
+        d = self.disk()
+        if d is None or not entries or not entries[0][0]:
+            return None
+        base = entries[0][0]
+        now = None
+        paths: list[str] = []
+        try:
+            for before, after in entries:
+                if not before:
+                    continue
+                if not after:
+                    now = now or d.capture()
+                    after = now
+                paths += d.changed(before, after) if after else []
+            restored = d.restore(base, paths)
+        except Exception as e:  # noqa: BLE001
+            log.warning("磁盘快照恢复失败：%s", e)
+            return None
+        for i, e in enumerate(self.turn_trees):
+            if e.get("before") == base:
+                del self.turn_trees[i:]
+                break
+        self._after_restore(restored, "[系统提示] 用户编辑并重发了之前的消息，以下文件已恢复到那条消息之前的内容（如需再改请重新 read）：")
+        return restored
+
+    def _disk_undo(self) -> list[str] | None:
+        d = self.disk()
+        if d is None or not any(e.get("before") for e in self.turn_trees):
+            return None
+        now = None
+        for e in reversed(self.turn_trees):
+            if e.get("undone") or not e.get("before"):
+                continue
+            after = e.get("after")
+            if not after:
+                now = now or d.capture()
+                after = now
+            try:
+                paths = d.changed(e["before"], after) if after else []
+                if not paths:
+                    continue
+                restored = d.restore(e["before"], paths)
+            except Exception as ex:  # noqa: BLE001
+                log.warning("磁盘快照撤销失败：%s", ex)
+                return None
+            e["undone"] = True
+            self.last_undo_tree = e["before"]
+            self._after_restore(restored, "[系统提示] 用户执行了 /undo，以下文件已恢复到你上一回合修改之前的内容（如需再改请重新 read）：")
+            return restored
+        return []
+
     def undo(self) -> list[str]:
-        """/undo：把最近一个有改动的回合里 ee 写过的文件恢复成改动前。"""
+        """/undo：把最近一个有改动、还没撤销过的回合的文件改动恢复成改动前。
+        有磁盘快照时按回合前后 tree 的差异恢复（含 shell 改的文件，重启后也行）；否则用内存快照。"""
+        self.last_undo_tree = None
+        res = self._disk_undo()
+        if res is not None:
+            return res
         layers = self.state.snapshots
         while layers and not layers[-1]:
             layers.pop()
@@ -403,6 +493,12 @@ class Session:
         try:
             while True:
                 ev = await q.get()
+                if isinstance(ev, TurnDone) and self.turn_trees and self.turn_trees[-1].get("after") is None:
+                    try:
+                        ev.tree_after = await asyncio.to_thread(self.disk_capture)
+                    except Exception:  # noqa: BLE001
+                        ev.tree_after = None
+                    self.turn_trees[-1]["after"] = ev.tree_after
                 yield ev
                 if isinstance(ev, TurnDone):
                     break
@@ -430,7 +526,10 @@ class Session:
             self._add_user(text, images)
             if images and not self.profile.vision:
                 emit(Notice(f"当前模型 {self.spec.alias} 不支持看图，这 {len(images)} 张图片没有发给模型（换支持图像的模型，例如 deepseek-flash）。", "warn"))
-            emit(TurnStart(self.turns))
+            tree = await asyncio.to_thread(self.disk_capture)
+            if tree:
+                self.turn_trees.append({"before": tree, "after": None, "undone": False})
+            emit(TurnStart(self.turns, tree))
             step = 0
             max_steps = max(1, self.config.max_steps)
             while True:
