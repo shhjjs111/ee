@@ -1087,6 +1087,8 @@ class Session:
         return self.context_tokens() >= float(cfg.get("threshold", 0.8)) * window
 
     async def _maybe_auto_compact(self, emit) -> None:
+        from ee.core import prune as _prune
+        await _prune.maybe_prune(self, emit)      # D5-10：先成批修剪旧工具输出（阈值低于压缩）
         if self.needs_compaction() and any(m.get("_kind") != "agents" for m in self.history):
             await self._compact(emit, "auto")
 

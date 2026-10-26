@@ -15,10 +15,8 @@ class MemoryTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["add", "list", "remove"],
-                       "description": "add 新增 / list 列出 / remove 删除"},
-            "scope": {"type": "string", "enum": ["user", "workspace"],
-                      "description": "user（默认）/ workspace"},
+            "action": {"type": "string", "enum": ["add", "list", "remove"]},
+            "scope": {"type": "string", "enum": ["user", "workspace"]},
             "text": {"type": "string", "description": "add：要记住的一句话"},
             "index": {"type": "integer", "description": "remove：list 里的序号"},
             "match": {"type": "string", "description": "remove：或给唯一匹配的内容片段"},

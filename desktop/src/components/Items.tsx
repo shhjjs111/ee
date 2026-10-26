@@ -750,6 +750,7 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
   if (u.hit_rate !== undefined && u.hit_rate !== null) bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%`);
   if (u.reasoning) bits.push(`推理 ${u.reasoning.toLocaleString()} tokens`);
+  if (u.pruned) bits.push(`修剪省 ~${u.pruned.toLocaleString()} tokens`);
   if (u.cost !== undefined && u.cost !== null) bits.push(`累计 ${u.currency ?? ""}${u.cost.toFixed(4)}`);
   const models = Object.entries(u.by_model ?? {});
   const tip =

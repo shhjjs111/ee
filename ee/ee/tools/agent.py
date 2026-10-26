@@ -19,6 +19,8 @@ class TaskTool(Tool):
             "model": {"type": "string", "description": "子代理用的模型，默认同你"},
             "isolation": {"type": "string", "enum": ["auto", "worktree", "none"],
                           "description": "auto（默认）/ worktree / none（主目录顺序执行）"},
+            "fork": {"type": "boolean",
+                     "description": "true = 分支子代理：继承你的完整上下文（prompt 不用重复背景），只支持 general / explore"},
         },
         "required": ["description", "prompt"],
     }
@@ -29,7 +31,7 @@ class TaskTool(Tool):
         return access(session, args)
 
     def summary(self, args: dict) -> str:
-        return f"Task {args.get('description', '')}".strip()
+        return f"Task{' (fork)' if args.get('fork') is True else ''} {args.get('description', '')}".strip()
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
         from ee.core.subagent import run_subagent

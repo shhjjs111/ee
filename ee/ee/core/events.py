@@ -141,6 +141,7 @@ class SubagentStart(Event):
     max_steps: int = 0
     status: str = "running"         # running | queued（并发名额已满，排队等待，D5-2）
     worktree: dict = field(default_factory=dict)   # 在独立 git worktree 里写时：{path, branch, base}
+    fork: bool = False              # fork 模式：继承主会话上下文（D5-10）
 
 
 @dataclass

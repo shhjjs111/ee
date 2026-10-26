@@ -3,10 +3,10 @@
 计数用字符数近似：中文工具 JSON 按约 2.2 字符/token（偏保守；DeepSeek-V3 tokenizer 实测本仓库的
 system+tools 约 2.4～2.6 字符/token），这样 CI 不依赖 tokenizer 文件。tools 按 json.dumps(ensure_ascii=False) 计。
 
-实测（2026-10-26，全新安装、无 MCP、仓库地图可用，DeepSeek-V3 tokenizer）：
-  改前 full  18 个工具：system 903 + tools 6,344 = 7,247 token（15,964 字符）
-  改后 full  18 个工具：system 1,167 + tools 2,568 = 3,735 token（9,477 字符，近似 4,308）
-  改后 lean   4 个工具：system   456 + tools   572 = 1,028 token（2,460 字符，近似 1,118）
+实测（2026-10-26，全新安装、无 MCP、仓库地图可用，DeepSeek-V3 tokenizer；以 main 4e69340 为改前）：
+  改前 full  18 个工具：system   903 + tools 6,555 = 7,458 token（16,423 字符）
+  改后 full  18 个工具：system 1,178 + tools 2,644 = 3,822 token（9,675 字符，近似 4,398）
+  改后 lean   4 个工具：system   467 + tools   621 = 1,088 token（2,606 字符，近似 1,185）
 """
 import json
 import math
@@ -16,7 +16,7 @@ from conftest import make_session
 
 APPROX_CHARS_PER_TOKEN = 2.2
 LEAN_LIMIT = 1200        # 近似 token
-FULL_LIMIT = 4400        # 近似 token（实测约 4,308；真实 tokenizer 约 3,735）
+FULL_LIMIT = 4500        # 近似 token（实测约 4,398；真实 tokenizer 约 3,822）
 
 
 def _prefix(workspace, **data):
