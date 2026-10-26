@@ -14,14 +14,17 @@ from conftest import FakeError, finish, text_chunks, tool_chunks
 
 from ee.core import parallel
 from ee.core.events import (ApprovalDecision, ApprovalRequest, Notice, SubagentEnd, SubagentStart, SubagentUpdate,
-                            ToolEnd, ToolStart, TurnDone)
+                            ToolEnd, TurnDone)
 from ee.tools.base import Tool, ToolResult
 
 
 class RouterClient:
-    def __init__(self, routes: dict, delays: dict | None = None):
+    def __init__(self, routes: dict, delays: dict | None = None, rendezvous: dict | None = None):
         self.routes = {k: list(v) for k, v in routes.items()}
         self.delays = delays or {}
+        # rendezvous={A: B}：A 的第一次请求要等 B 也开始请求后才返回（串行执行就会等满超时 → missed）
+        self.rendezvous = dict(rendezvous or {})
+        self.missed: list[str] = []
         self.calls: list[tuple[str, dict]] = []
         self.spans: dict[str, list[list[float]]] = {}
         self.active = 0
@@ -67,6 +70,13 @@ class _Stream:
         o.active += 1
         o.peak = max(o.peak, o.active)
         try:
+            other = o.rendezvous.pop(self.key, None)
+            if other is not None:
+                deadline = time.monotonic() + 30
+                while other not in o.spans and time.monotonic() < deadline:
+                    await asyncio.sleep(0.02)
+                if other not in o.spans:
+                    o.missed.append(self.key)
             if self.delay:
                 await asyncio.sleep(self.delay)
             for c in self.chunks:
@@ -226,14 +236,10 @@ def test_readonly_subagents_run_concurrently_and_keep_order(ee_home, workspace):
     parent = sum((task_call(i, f"p{i}", n) for i, n in enumerate(names)), []) + finish("tool_calls")
     client = RouterClient({"parent": [parent, report("汇总完毕")],
                            **{n: [report(f"{n}的报告")] for n in names}},
-                          delays={n: 0.8 for n in names})
+                          rendezvous={"甲": "乙", "乙": "丙", "丙": "甲"})
     s = session(workspace, client)
-    t0 = time.monotonic()
-    ev = run(collect(s, "go"))
-    total = time.monotonic() - t0
-    sp = [client.spans[n][0] for n in names]
-    assert overlap(sp[0], sp[1]) and overlap(sp[1], sp[2])
-    assert total < 2.0                       # 串行要 2.4s 以上
+    ev = run(collect(s, "go"), timeout=120)
+    assert client.missed == []               # 三个子代理同时在请求模型（串行会互等到超时）
     res = tool_results(s)
     assert [cid for cid, _ in res] == ["p0", "p1", "p2"]
     for (cid, out), n in zip(res, names):
@@ -360,13 +366,13 @@ def test_write_subagents_run_in_parallel_worktrees(ee_home, workspace):
                tool_chunks(0, "k2", "write", {"path": "b.txt", "content": "B\n"}) + finish("tool_calls"),
                report("写了 b")],
         "不改": [report("没改")],
-    }, delays={"写甲": 0.3, "写乙": 0.3, "不改": 0.3})
+    }, rendezvous={"写甲": "写乙", "写乙": "写甲"})
     s = session(workspace, client, mode="auto")
-    ev = run(collect(s, "go"), timeout=60)
+    ev = run(collect(s, "go"), timeout=120)
     assert [e for e in ev if isinstance(e, TurnDone)][-1].reason == "completed"
     starts = {e.call_id: e for e in ev if isinstance(e, SubagentStart) and e.status == "running"}
     assert all(starts[c].worktree.get("branch", "").startswith("ee/agent-") for c in ("p0", "p1", "p2"))
-    assert overlap(client.spans["写甲"][0], client.spans["写乙"][0])          # 真的并行
+    assert client.missed == []        # 两个写型子代理同时在请求模型（串行的话会互等到超时）
     # 主目录没被子代理碰过
     assert not (workspace / "a.txt").exists() and not (workspace / "b.txt").exists()
     assert (workspace / "edit.txt").read_bytes() == b"v2-dirty\n"
