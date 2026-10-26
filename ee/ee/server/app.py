@@ -55,6 +55,7 @@ class Backend:
         self.methods: dict[str, Callable] = {
             "app/info": self.app_info,
             "thread/list": self.thread_list,
+            "thread/search": self.thread_search,
             "thread/start": self.thread_start,
             "thread/get": self.thread_get,
             "thread/rename": self.thread_rename,
@@ -177,6 +178,30 @@ class Backend:
         out.sort(key=lambda t: t.get("updated") or 0, reverse=True)
         return {"threads": out[:limit]}
 
+    async def thread_search(self, query: str, cwd: str | None = None, limit: int = 50) -> dict:
+        return await asyncio.to_thread(self._thread_search, query, cwd, limit)
+
+    def _thread_search(self, query: str, cwd: str | None = None, limit: int = 50) -> dict:
+        """全文搜索会话内容（D4-4）：返回命中的会话摘要 + 每个会话最多 3 条命中片段。"""
+        from ee.core.search_index import get_index
+        groups = get_index(self.home).search(query, limit=limit * 2)
+        norm = os.path.normcase(os.path.abspath(cwd)) if cwd else None
+        out = []
+        for g in groups:
+            sid = g["thread_id"]
+            t = self.threads.get(sid)
+            try:
+                summ = t.summary() if t is not None else {
+                    **SessionStore.summary(self.home / "sessions" / f"{sid}.jsonl"), "status": "idle"}
+            except Exception:  # noqa: BLE001
+                continue
+            if norm and not (summ.get("cwd") and os.path.normcase(os.path.abspath(summ["cwd"])) == norm):
+                continue
+            out.append({"thread": summ, "hits": g["hits"]})
+            if len(out) >= limit:
+                break
+        return {"results": out}
+
     async def thread_start(self, cwd: str, model: str | None = None, mode: str | None = None) -> dict:
         if mode and mode not in MODES:
             raise RpcError(f"未知权限模式：{mode}")
@@ -230,6 +255,11 @@ class Backend:
         if extra.is_dir():
             import shutil
             shutil.rmtree(extra, ignore_errors=True)
+        try:
+            from ee.core.search_index import get_index
+            get_index(self.home).forget(thread_id)
+        except Exception:  # noqa: BLE001
+            pass
         self.notify("thread/deleted", {"thread_id": thread_id})
         return {"ok": True}
 
