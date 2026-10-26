@@ -12,7 +12,7 @@ from ee.tools.write import WriteTool
 
 __all__ = ["Tool", "ToolContext", "ToolError", "ToolResult", "ToolState", "build_tools"]
 
-# 可选工具按配置追加到末尾，顺序固定：web_search、web_fetch、task（子代理）、memory。
+# 可选工具按配置追加到末尾，顺序固定：web_search、web_fetch、task（子代理）、memory、skill。
 # 配置在会话开始时决定工具表（之后冻结进前缀）；设置页改开关从新会话起生效。
 
 
@@ -45,4 +45,7 @@ def build_tools(profile, config=None) -> list[Tool]:
     if mem.get("enabled", True):
         from ee.tools.memory import MemoryTool
         tools.append(MemoryTool(workspace_enabled=bool(mem.get("workspace", True))))
+    if (data.get("skills") or {}).get("enabled", True):      # 技能（D5-5）
+        from ee.tools.skill import SkillTool
+        tools.append(SkillTool())
     return tools

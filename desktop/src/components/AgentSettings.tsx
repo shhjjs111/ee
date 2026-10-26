@@ -1,8 +1,10 @@
-// 设置页「工具与记忆」：网页搜索后端与 key、子代理默认最大步数、记忆开关与编辑。
+// 设置页「工具与记忆」：网页搜索后端与 key、子代理默认最大步数、记忆开关与编辑、技能列表（D5-5）。
 import clsx from "clsx";
-import React, { useEffect, useState } from "react";
+import { FolderOpen, RefreshCw } from "lucide-react";
+import React, { useCallback, useEffect, useState } from "react";
+import type { SkillInfo } from "../lib/slash";
 import { useApp } from "../lib/store";
-import type { MemoryInfo, Settings, SettingsResponse, WebKeySettings, WebSettings } from "../types";
+import type { MemoryInfo, Settings, SettingsResponse, SkillsSettings, WebKeySettings, WebSettings } from "../types";
 import { keySourceText } from "../types";
 import { Button, Input, Select, Spinner, Toggle } from "./ui";
 
@@ -76,6 +78,132 @@ function KeyInput({ k, onChange }: { k: WebKeySettings; onChange: (k: WebKeySett
         </Button>
       )}
     </div>
+  );
+}
+
+type SkillsList = {
+  enabled: boolean;
+  compat: boolean;
+  skills: SkillInfo[];
+  errors: { path: string; error: string }[];
+  dirs: { user: string; project: string | null };
+};
+const SOURCE_LABEL: Record<string, string> = { user: "我的", project: "项目" };
+const DEFAULT_SKILLS: SkillsSettings = { enabled: true, compat: true, disabled: [], max_chars: 8000 };
+
+/** 技能：列出 ~/.ee/skills、<项目>/.ee/skills（及兼容的 .claude/.agents）里的技能，逐个启用/禁用（写进 config，新对话生效）。 */
+function SkillsCard({ draft, up, cwd }: { draft: Settings; up: (p: Partial<Settings>) => void; cwd: string | null }) {
+  const s = useApp();
+  const sk = { ...DEFAULT_SKILLS, ...(draft.skills ?? {}) };
+  const [list, setList] = useState<SkillsList | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    if (!s.rpc) return;
+    setBusy(true);
+    s.rpc
+      .call("skills/list", { cwd })
+      .then((r: SkillsList) => {
+        setList(r);
+        setErr(null);
+      })
+      .catch((e: Error) => setErr(`读取技能失败：${e.message}`))
+      .finally(() => setBusy(false));
+  }, [s.rpc, cwd]);
+  useEffect(load, [load]);
+
+  const openDir = async (scope: "user" | "project") => {
+    try {
+      const r: { path: string } = await s.rpc!.call("skills/dir", { scope, cwd });
+      if (window.ee?.openPath) await window.ee.openPath(r.path);
+      else s.showToast(r.path);
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+  };
+  const setSk = (p: Partial<SkillsSettings>) => up({ skills: { ...sk, ...p } });
+  const toggle = (name: string, on: boolean) =>
+    setSk({ disabled: on ? sk.disabled.filter((n) => n !== name) : [...new Set([...sk.disabled, name])] });
+
+  return (
+    <Card
+      title="技能"
+      desc={
+        <>
+          技能是一个文件夹 + SKILL.md（开头写 name 和 description），可以带脚本和参考资料。新对话开始时模型只看到名字和说明，用到时才读全文；也可以在输入框用 <span className="mono">/名字</span> 或 <span className="mono">$名字</span> 点名使用。
+        </>
+      }
+      action={
+        <Button variant="outline" size="sm" disabled={busy} onClick={load}>
+          <RefreshCw size={13} className={clsx(busy && "animate-spin")} /> 刷新
+        </Button>
+      }
+    >
+      <Row label="启用技能" desc="关闭后新对话不读入技能清单，也不提供 skill 工具">
+        <Toggle on={sk.enabled} onChange={(v) => setSk({ enabled: v })} />
+      </Row>
+      <Row label="兼容 .claude / .agents 目录" desc="同时读取 ~/.claude/skills、~/.agents/skills 和项目里的 .claude/skills、.agents/skills（保存后点刷新）">
+        <Toggle on={sk.compat} onChange={(v) => setSk({ compat: v })} />
+      </Row>
+      <Row label="技能目录" desc={list ? `我的：${list.dirs.user}` + (list.dirs.project ? `；项目：${list.dirs.project}` : "") : undefined}>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => openDir("user")}>
+            <FolderOpen size={13} /> 我的技能目录
+          </Button>
+          {cwd && (
+            <Button variant="outline" size="sm" onClick={() => openDir("project")}>
+              <FolderOpen size={13} /> 项目技能目录
+            </Button>
+          )}
+        </div>
+      </Row>
+      {!list ? (
+        <div className="py-3">{err ? <span className="text-[12.5px] text-danger">{err}</span> : <Spinner />}</div>
+      ) : (
+        <div className="pt-3">
+          {list.skills.length === 0 ? (
+            <div className="text-[12.5px] text-faint">还没有技能。在技能目录里新建「名字/SKILL.md」即可，ee 也会读取 Claude Code、Codex 等放在 .claude/skills、.agents/skills 里的技能。</div>
+          ) : (
+            <ul className="divide-y divide-line rounded-xl border border-line">
+              {list.skills.map((x) => {
+                const on = !sk.disabled.includes(x.name);
+                return (
+                  <li key={x.name} className="flex items-start gap-3 px-3 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className={clsx("mono text-[13px]", on ? "text-fg" : "text-faint line-through")}>{x.name}</span>
+                        <span className="shrink-0 rounded border border-line px-1 text-[10.5px] text-faint">
+                          {SOURCE_LABEL[x.source] ?? x.source} · .{x.origin}
+                        </span>
+                        {(x.shadows?.length ?? 0) > 0 && <span className="shrink-0 text-[11px] text-faint">覆盖了 {x.shadows!.length} 个同名技能</span>}
+                      </div>
+                      <div className="mt-0.5 line-clamp-2 text-[12px] text-muted">{x.description}</div>
+                      <button className="mono mt-0.5 block max-w-full truncate text-left text-[11.5px] text-faint hover:text-fg" onClick={() => window.ee?.openPath(x.path)} title="打开 SKILL.md">
+                        {x.path}
+                      </button>
+                    </div>
+                    <div className={clsx("shrink-0 pt-0.5", !sk.enabled && "pointer-events-none opacity-50")}>
+                      <Toggle on={on} onChange={(v) => toggle(x.name, v)} />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {list.errors.length > 0 && (
+            <div className="mt-3 space-y-1">
+              <div className="text-[12.5px] text-danger">以下技能没有加载：</div>
+              {list.errors.map((e) => (
+                <div key={e.path} className="text-[12px] text-muted">
+                  <span className="mono text-faint">{e.path}</span>：{e.error}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -240,6 +368,8 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
           </div>
         )}
       </Card>
+
+      <SkillsCard draft={draft} up={up} cwd={cwd} />
 
       <PermanentRules />
     </>

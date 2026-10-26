@@ -3,7 +3,7 @@ import { BgCommands } from "./BgCommands";
 import { GitBranch, ArrowUp, AtSign, Cpu, File, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
-import { parseSlash, resolveMode, slashItems, type PromptInfo, type SlashItem } from "../lib/slash";
+import { isSkillCommand, parseSlash, resolveMode, slashItems, type PromptInfo, type SkillInfo, type SlashItem } from "../lib/slash";
 import { useApp } from "../lib/store";
 import { SlashMenu } from "./SlashMenu";
 import { Select, Spinner, Tip } from "./ui";
@@ -63,6 +63,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const [files, setFiles] = useState<string[]>([]);
   const [sel, setSel] = useState(0);
   const [prompts, setPrompts] = useState<PromptInfo[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [slashSel, setSlashSel] = useState(0);
   const [slashClosed, setSlashClosed] = useState(false);
   const [atts, setAtts] = useState<Attachment[]>([]);
@@ -123,13 +124,17 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       .call("prompts/list", { cwd })
       .then((r) => alive && setPrompts(r.prompts))
       .catch(() => undefined);
+    s.rpc
+      .call("skills/list", { cwd })
+      .then((r) => alive && setSkills(r.skills ?? []))
+      .catch(() => undefined);
     return () => {
       alive = false;
     };
   }, [slashing, cwd, s.rpc]);
 
   const modelHints = s.models.map((m) => ({ name: m.name, hint: `${m.provider} · ${m.model}` }));
-  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints);
+  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints, skills);
   const showSlash = !!slashList && slashList.length > 0 && !mention;
   useEffect(() => setSlashSel(0), [slashList?.length, text.split(" ")[0]]);
 
@@ -239,6 +244,8 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         s.set({ dialog: { kind: "commit" } });
         return true;
     }
+    // 技能：/名字 原样发送，后端把 SKILL.md 全文附在消息前
+    if (isSkillCommand(name, prompts, skills)) return false;
     if (!prompts.some((x) => x.name === name)) {
       // 可能还没拉到列表：再问一次后端
       try {

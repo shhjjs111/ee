@@ -159,7 +159,7 @@ def test_build_tools_respects_config():
     from ee.core.providers.profiles import profile_for
     prof = profile_for("deepseek-flash")
     names = [t.name for t in build_tools(prof, {"web": {"search_backend": "deepseek"}})]
-    assert names[-4:] == ["web_search", "web_fetch", "task", "memory"]
+    assert names[-5:] == ["web_search", "web_fetch", "task", "memory", "skill"]
     names = [t.name for t in build_tools(prof, {"web": {"search_backend": "off", "fetch_backend": "off"},
                                                 "subagent": {"enabled": False}, "memory": {"enabled": False}})]
     assert not {"web_search", "web_fetch", "task", "memory"} & set(names)

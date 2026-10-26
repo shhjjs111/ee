@@ -20,7 +20,7 @@ MODES = ["read-only", "default", "auto", "plan"]
 MODE_LABEL = {"read-only": "只读", "default": "默认", "auto": "全自动", "plan": "计划"}
 READONLY_MODES = ("read-only", "plan")
 
-READ_TOOLS = {"read", "grep", "glob", "todo", "present_plan", "ask_user"}
+READ_TOOLS = {"read", "grep", "glob", "todo", "present_plan", "ask_user", "skill"}
 WRITE_TOOLS = {"write", "edit", "apply_patch"}
 NET_TOOLS = {"web_search", "web_fetch"}
 
@@ -336,7 +336,7 @@ class PermissionPolicy:
         if tool in WRITE_TOOLS:
             return self._check_write(tool, args)
         if tool in READ_TOOLS:
-            subject = str(args.get("path") or args.get("pattern") or "")
+            subject = str(args.get("path") or args.get("pattern") or args.get("name") or "")
             if any(_match_rule(r, tool, subject) for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
             return Decision("allow")

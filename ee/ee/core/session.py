@@ -104,6 +104,8 @@ class Session:
         self.running = False
         self.instruction_sources: list[str] = []   # 本会话加载的 AGENTS.md 路径（界面可显示）
         self.memory_sources: list[str] = []        # 本会话注入的记忆文件
+        self.skill_names: list[str] = []           # 本会话清单里列出的技能（D5-5）
+        self._skills_cat = None
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
         self.compactions = 0
@@ -183,6 +185,8 @@ class Session:
         self.turn_trees = []
         self.instruction_sources = []
         self.memory_sources = []
+        self.skill_names = []
+        self._skills_cat = None
         self._fresh_usage = False
         self.store = SessionStore(self.home, enabled=self.store.enabled)
 
@@ -460,7 +464,8 @@ class Session:
             if msg is not None and not self.history:
                 self._append(msg)
                 self.instruction_sources = [str(p) for p in ins.sources]
-        if any(m.get("_sub") == "memory" for m in self.history) or any(m.get("_kind") != "agents" for m in self.history):
+        if any(m.get("_sub") in ("memory", "skills") for m in self.history) \
+                or any(m.get("_kind") != "agents" for m in self.history):
             return
         # 长期记忆：紧跟 AGENTS.md 的固定 user 消息，会话内不再改动（保住前缀缓存）
         mem = await asyncio.to_thread(load_memory, self.home, self.cwd, self.config.data.get("memory") or {})
@@ -468,6 +473,10 @@ class Session:
         if mmsg is not None:
             self._append(mmsg)
             self.memory_sources = list(mem.sources)
+        # 技能清单（D5-5）：紧跟记忆，同样固定不变
+        smsg = await asyncio.to_thread(self._skills_message)
+        if smsg is not None and not any(m.get("_kind") != "agents" for m in self.history):
+            self._append(smsg)
 
     def _ensure_instructions(self) -> None:
         """会话开始（历史为空）时加载 AGENTS.md，作为固定 user 消息放在 system 之后；之后不再改动。"""
@@ -486,6 +495,45 @@ class Session:
         if mmsg is not None:
             self._append(mmsg)
             self.memory_sources = list(mem.sources)
+        smsg = self._skills_message()
+        if smsg is not None:
+            self._append(smsg)
+
+    # ------------------------------------------------------------ 技能（D5-5）
+    def skill_catalog(self, refresh: bool = False):
+        """本会话的技能目录：首次用到时扫描并缓存（skill 工具找不到名字时会 refresh 重扫一次）。会在线程里调用。"""
+        if self._skills_cat is None or refresh:
+            from ee.core import skills as K
+            self._skills_cat = K.discover(self.home, self.cwd, self.config.data)
+        return self._skills_cat
+
+    def _skills_message(self) -> dict | None:
+        from ee.core import skills as K
+        if not K.settings(self.config.data).get("enabled", True):
+            return None
+        blk = K.load_block(self.home, self.cwd, self.config.data, catalog=self.skill_catalog())
+        self.skill_names = list(blk.names)
+        return blk.message()
+
+    def skill_mention_notes(self, text: str) -> list[tuple[str, str]]:
+        """用户消息里显式点名（开头 /名字 或 $名字）的已启用技能 → [(名字, 附在消息前的全文提示)]。"""
+        from ee.core import skills as K
+        if "$" not in (text or "") and not (text or "").lstrip().startswith("/"):
+            return []
+        if not K.settings(self.config.data).get("enabled", True):
+            return []
+        cat = self.skill_catalog()
+        found = K.mentions(text, {s.name for s in cat.enabled()})
+        if not found:                       # 可能是会话开始后新建的技能
+            cat = self.skill_catalog(refresh=True)
+            found = K.mentions(text, {s.name for s in cat.enabled()})
+        out = []
+        for n in found:
+            try:
+                out.append((n, K.mention_note(cat.skills[n])))
+            except OSError as e:
+                log.warning("读取技能 %s 失败：%s", n, e)
+        return out
 
     def _fill_missing(self, why: str) -> None:
         for cid in list(self._open_calls):
@@ -531,6 +579,9 @@ class Session:
             await self._maybe_auto_compact(emit)
             self.turn_starts.append(len(self.history))
             await asyncio.to_thread(self.refresh_git)
+            for sname, snote in await asyncio.to_thread(self.skill_mention_notes, text):   # 显式调用技能（D5-5）
+                self.notes.append(snote)
+                emit(Notice(f"已加载技能 {sname}", "info"))
             self._add_user(text, images)
             if images and not self.profile.vision:
                 emit(Notice(f"当前模型 {self.spec.alias} 不支持看图，这 {len(images)} 张图片没有发给模型（换支持图像的模型，例如 deepseek-flash）。", "warn"))
