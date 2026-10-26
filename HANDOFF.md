@@ -1,8 +1,15 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 19:15（Asia/Shanghai，全仓审查：修只读白名单 3 类绕过；pytest 382 过 2 跳过、vitest 27；下一步 D5-2）
+最后更新：2026-10-26 20:45（Asia/Shanghai，全仓审查第三轮：分 4 块并行审完剩余模块，修 34 个 bug；pytest 465 过 2 跳过；下一步 D5-2）
 
 > **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。第二轮（19:25）：Hook 的 PreToolUse 返回 allow 会跳过危险命令的强制确认（force），已修（hooks.py adjust_decision，测试 test_hook_allow_does_not_skip_forced_ask）；已核实：永久允许规则对 `git push && curl|sh`、`git push; rm` 这类复合命令不会放行；项目 hooks 信任按路径+内容指纹、超时杀进程树、退出码 2 拦截正确；automations.json 与规则文件原子写；read-only/plan 下后台 shell、shell_write 被拒。待查（低风险）：ToolStart 显示的是 Hook 改写前的参数；PostToolUse/Stop 忽略 continue:false；Windows 取消 hook 时 taskkill 同步阻塞最多 10 秒；cron 边界、worktree 删除、bgproc 编码、repomap/docread 异常、前端四个新页面尚未逐行审。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
+
+> **审查第三轮（2026-10-26 20:45，4 块并行，每个 bug 先写失败测试再修）**：
+> - 调度/自动化：夏令时回拨时 next_run 早于当前导致每 tick 连续误触发；日期/星期字段以 `*`（含 `*/n`）开头时按 cron 惯例取“且”；非 ASCII 数字报中文错误；运行中删除自动化不再写回幽灵记录；启动时把遗留“运行中”记录标为已中断；前端预览丢弃过期结果、重开清空、每天时间非法禁止保存（tests/test_automations_review.py、AutomationsPage.test.tsx）。
+> - worktree/快照：git status 失败/超时不再被当成干净而 --force 删除（会丢未提交文件）；.git 指针失效的目录不再 rmtree；删不掉时保留登记、如实报告分支是否删除；Windows 保留名加 wt- 前缀、core.longpaths；运行中对话（含子目录）拒绝合并/删除；`git worktree remove --force` 强制确认；影子仓库屏蔽项目 .gitattributes 换行/过滤；大文件排除规则转义 glob；前端切项目丢弃迟到列表（tests/test_review_worktree.py、WorktreeDialog.test.tsx）。
+> - 后台命令/Hooks：ToolStart 改为显示 Hook 改写后的参数；PreToolUse/PostToolUse 的 continue:false 结束回合，Stop 的 continue:false 优先于 block 并显示原因；取消 Hook 时 Windows taskkill 放到线程不阻塞事件循环；跨块 `\r\n` 归一；删 worktree 前先结束其后台命令；前端后台输出/Hook 测试运行丢弃乱序旧结果。
+> - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
+> - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
 > **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；所有并行分支已合并（feat/* 可删）。之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
