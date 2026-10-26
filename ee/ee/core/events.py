@@ -177,6 +177,19 @@ class TurnDone(Event):
 
 
 @dataclass
+class QueueDelivered(Event):
+    """排队的用户消息送进了模型上下文（ids 是送入的条目，kind = steer | follow）。"""
+    ids: list[str]
+    kind: str
+
+
+@dataclass
+class QueueReturned(Event):
+    """回合结束时还没送入的排队消息，退回界面输入框：[{id, text, queue}]。"""
+    items: list[dict]
+
+
+@dataclass
 class Error(Event):
     message: str
     fatal: bool = False

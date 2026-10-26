@@ -12,6 +12,7 @@ import copy
 import os
 
 from ee.config import DEFAULTS, ROLES, deep_merge, load_user_file, normalize_roles, save_user_file, user_config_path
+from ee.core import queue as Q
 from ee.core import reasoning as RZ
 from ee.core import secrets
 from ee.core.migrate import CURRENT_VERSION
@@ -81,6 +82,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             **_d2_out(data),
             "mcp": _mcp_out(data),
             "hooks": _hooks_out(data),
+            "queue": Q.mode_settings(data),             # 运行中排队消息的送入方式（one / all）
             **_answer_out(data),
             "secrets": _secrets_out(),
             "providers": providers,
@@ -568,6 +570,7 @@ def set_settings(new: dict) -> dict:
     _d2_in(new, out, deletes)
     _mcp_in(new, out)
     _hooks_in(new, out)
+    Q.settings_in(new, out)
     _answer_in(new, out, final.get("models") or {})
     out["config_version"] = CURRENT_VERSION
     # 校验都过了：先删要清除的，再把新填的 key 存进凭据存储（config.toml 里不留明文）

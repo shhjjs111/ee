@@ -11,7 +11,7 @@
 > - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
 > - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
-> **并行进行中（2026-10-26 23:15）**：3 个分支开发中（A3 edit、D5-10 已合并），未合并：`feat/pi-lean`（A1/A2/A7/A8 精简模式、工具描述压缩、开关、前缀预算测试、真实对比脚本 eval_profiles.py）、`feat/pi-system-md`（A4 SYSTEM.md/APPEND_SYSTEM.md + A10 错误分类）、`feat/pi-queue`（A5 插话/追加两条队列）。沙箱无 DeepSeek key：新功能默认关、可选开，真实对比留到打包时用户用 key 跑 eval_profiles.py 再决定默认。接手时看各分支最新提交信息（WIP 写了已完成/还差），做完后逐个合并、全量测试、在此打勾。
+> **并行进行中（2026-10-26 23:15）**：1 个分支开发中（A3 edit、A4+A10、A5、D5-10 已合并），未合并：`feat/pi-lean`（A1/A2/A7/A8 精简模式、工具描述压缩、开关、前缀预算测试、真实对比脚本 eval_profiles.py）。沙箱无 DeepSeek key：新功能默认关、可选开，真实对比留到打包时用户用 key 跑 eval_profiles.py 再决定默认。接手时看各分支最新提交信息（WIP 写了已完成/还差），做完后逐个合并、全量测试、在此打勾。
 
 > **接手第一步（2026-10-26 22:58 更新）**：先确认最新 Windows CI 绿（最新提交 b41f6a5「回答风格只留默认/简洁」，推送时 CI 还在跑；上一个 488233b 已绿）。用户原则：Pi 只作参考、不强行适配，没实用价值的功能宁可不要（已删内置「讲解」「作业辅导」风格）；平时不催用户真机测试，攒齐功能后统一打包测。**下一步：按 `research/pi.md` 落地 Pi 借鉴项，第一批 = 精简模式、工具描述压缩、edit 改进、SYSTEM.md / APPEND_SYSTEM.md、两条消息队列**。用户决定：自动压缩保持 80% 阈值，不加 128k 上限。每一项都必须用 DeepSeek 真实任务实测（对比改前改后的成功率 / token / 花费），不好用就不合入。之后再按路线做 D5-10（修剪旧工具输出 + fork 式子代理）、D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话。D5-9 遗留待做见「D5 进度 · D5-9 · 剩余待做」。**用户决定（22:48）：暂不出安装包，先攒功能；Windows 真机手测（含 D5-9 新界面、真实 DeepSeek key 的推理强度/关闭思考）统一放到功能差不多后打包时一起做。**
 > （旧）**接手第一步（2026-10-26 21:20）**：确认最新 Windows CI 绿（D5-2 的提交）。下一步 D5-9：回答风格（讲解/作业辅导）、按用途分模型（`[models.roles]` compact/title/explore/plan/review）、推理强度、预算告警；之后 D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话（依赖 D5-2 已就绪）。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
@@ -195,6 +195,18 @@
 1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」）
 
 **D5 进度**
+
+- **Pi A4 SYSTEM.md / APPEND_SYSTEM.md + A10 错误分类与重试**（合并自 feat/pi-system-md，2026-10-26 23:35）
+  - 参考：Pi 的系统提示词文件发现规则（项目级信任后才生效，否则全局；APPEND 同规则）与重试分类（可重试/余额不重试/上下文溢出交给压缩），只借思路。
+  - A4：`core/sysprompt.py`。顺序 `<项目>/.ee/SYSTEM.md`（cwd 往上到 git 根取最近，需信任）→ `~/.ee/SYSTEM.md` → 内置 base（`context.builtin_base(profile)`）；APPEND 同规则二选一；最终 = 基础 → 模型补丁（`[system_prompt] model_patch` 可关）→ 追加 → 回答风格。信任复用 hooks 的“路径指纹:内容指纹”（`hooks.file_allow_id`），单独存 `[system_prompt] allowed_project`，只认用户级配置，内容一改需重新信任；未信任/空/>64KiB/非 UTF-8 不生效并发 Notice。会话开始冻结；无自定义时 system 逐字节不变。RPC `sysprompt/info|preview|trust|untrust|set`；设置页「系统提示词」分区；文档 `ee/docs/system-prompt.md`（系统提示词不是安全边界）。
+  - A10：`net.classify` 分 rate_limit/server/timeout/network（重试）与 quota/auth/overflow/bad_request/not_found/other（不重试）；遵守 Retry-After/retry-after-ms（>60 秒不等）；余额不足、key 无效、上下文超长给中文指引；回合中上下文超长自动压缩一次再重试（尊重 compact.auto）；`ModelError.kind`。
+  - 测试：test_sysprompt 11、test_errors 38、SystemPromptSettings.test。
+  - 已知：项目信任按绝对路径，worktree 需单独信任；报错文本匹配靠积累；未用真实 key 实测。
+- **Pi A5 两条消息队列**（合并自 feat/pi-queue，2026-10-26 23:35）
+  - 参考：Pi 的 steering/follow-up，取“两条队列、one/all、中断退回输入框”。
+  - 做法：`core/queue.py` InputQueue。插话在每步工具后或模型不再调工具时送入；待追加只在回合本该结束时送入（插话之后、Stop Hook 之前）；present_plan 有插话继续、仅有追加则结束并退回；审批期间插话不绕过审批。`[queue] steering_mode=all, follow_up_mode=one`（插话多是即时纠正、追加多是独立任务），设置页「常规 → 执行」可改。回合结束未送入的一律经 `QueueReturned` 退回（中断、出错、上限、Hook 等）。RPC：`turn/start` 加 `queue: steer|follow`、新增 `turn/withdraw`、通知 `turn/queue_returned`；送入后才落盘。前端：运行中 Enter 插话、Ctrl/⌘+Enter 完成后再做（发送下拉也可选），输入框上方托盘可撤回，退回内容回填输入框。顺手修：排队消息一直显示“已排队”、回合开始前排队的首条消息缺 hist。
+  - 测试：test_queue 20、queue.test、QueueTray.test、e2e_ws.py 加排队/撤回/退回检查。合并后 pytest 648 过 2 跳过、vitest 50、两份 tsc 与 build 通过。
+  - 已知：送入后的排队消息不能编辑重发/分叉；运行中不能排队发图片；后端崩溃时未送入的排队消息会丢；未用真实 key 做体验对比。
 
 - **D5-10 修剪旧工具输出 + fork 式子代理**（合并自 feat/d5-10，2026-10-26 23:30）
   - 参考：修剪取自 OpenCode prune（不调模型、保护最近 2 个用户回合和约 40k token 工具输出、一批不足 20k 不修剪、不越过压缩摘要、指定工具不修剪），针对其固定 token 触发的问题改为按窗口比例且低于压缩阈值；占位写工具名/参数摘要/原长度是 ee 自加；修剪后需新用量再涨一批才再修剪，为 DeepSeek 前缀缓存设计。fork 取自 Codex fork_context 思路（继承父历史、复用缓存、只回传结果）；工具表与父逐字节相同、嵌套与提问调用时报错是为保缓存。

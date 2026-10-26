@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ArrowLeft, Check, Cpu, Gauge, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
+import { ArrowLeft, Check, Cpu, FileText, Gauge, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { pushDesktopPrefs, useApp, type Theme } from "../lib/store";
 import type { ModelSettings, NetworkSettings, ProviderSettings, Settings, SettingsResponse } from "../types";
@@ -8,9 +8,10 @@ import { AgentSettings } from "./AgentSettings";
 import { AnswerSettings } from "./AnswerSettings";
 import { HooksSettings } from "./HooksSettings";
 import { McpSettings } from "./McpSettings";
+import { SystemPromptSettings } from "./SystemPromptSettings";
 import { Button, Field, Input, Select, Spinner, Tip, Toggle } from "./ui";
 
-const SECTIONS = ["general", "models", "answer", "tools", "mcp", "hooks", "about"] as const;
+const SECTIONS = ["general", "models", "answer", "tools", "mcp", "hooks", "prompt", "about"] as const;
 type Section = (typeof SECTIONS)[number];
 
 const SHELL_LABEL: Record<string, string> = {
@@ -374,6 +375,7 @@ export function SettingsPage() {
     { id: "tools", label: "工具与记忆", icon: <Wrench size={15} /> },
     { id: "mcp", label: "MCP", icon: <Plug size={15} /> },
     { id: "hooks", label: "Hooks", icon: <Webhook size={15} /> },
+    { id: "prompt", label: "系统提示词", icon: <FileText size={15} /> },
     { id: "about", label: "关于", icon: <Info size={15} /> },
   ];
   const providerNames = Object.keys(draft.providers);
@@ -469,6 +471,26 @@ export function SettingsPage() {
                   </SettingRow>
                   <SettingRow label="命令超时（秒）" desc="单条命令的默认超时">
                     <Input className="w-24 text-right" inputMode="numeric" value={draft.bash_timeout} onChange={(e) => up({ bash_timeout: Number(e.target.value) || 0 })} />
+                  </SettingRow>
+                  <SettingRow label="运行中插话的送入方式" desc="ee 工作时按 Enter 发的消息在当前步骤结束后送入：攒下的几条合成一条一起送，或每次只送最早的一条">
+                    <Segmented<"one" | "all">
+                      value={draft.queue?.steering_mode ?? "all"}
+                      onChange={(v) => up({ queue: { steering_mode: v, follow_up_mode: draft.queue?.follow_up_mode ?? "one" } })}
+                      options={[
+                        { value: "all", label: "一起送" },
+                        { value: "one", label: "逐条" },
+                      ]}
+                    />
+                  </SettingRow>
+                  <SettingRow label="完成后追加的送入方式" desc="Ctrl+Enter 排队的消息等这一轮做完再送：逐条（一件做完再做下一件），或合成一条一起送">
+                    <Segmented<"one" | "all">
+                      value={draft.queue?.follow_up_mode ?? "one"}
+                      onChange={(v) => up({ queue: { steering_mode: draft.queue?.steering_mode ?? "all", follow_up_mode: v } })}
+                      options={[
+                        { value: "one", label: "逐条" },
+                        { value: "all", label: "一起送" },
+                      ]}
+                    />
                   </SettingRow>
                 </Card>
               </>
@@ -586,6 +608,7 @@ export function SettingsPage() {
 
             {section === "mcp" && <McpSettings draft={draft} resp={resp} up={up} />}
             {section === "hooks" && <HooksSettings draft={draft} resp={resp} up={up} />}
+            {section === "prompt" && <SystemPromptSettings />}
 
             {section === "about" && (
               <>

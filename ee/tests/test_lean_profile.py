@@ -58,14 +58,14 @@ def test_default_is_full_and_unknown_falls_back(ee_home, workspace):
 
 def test_rules_follow_enabled_tools_and_dedupe(ee_home, workspace):
     s, _ = session(workspace)
-    text = system_prompt(s.profile, "", s.tools, "full")
+    text = system_prompt(s.profile, "", None, s.tools, "full")
     shared = "搜内容用 grep、找文件用 glob，不要用 shell 代替。"
     assert text.count(shared) == 1                     # grep 和 glob 带同一条规则，只出现一次
     assert text.count("用到网页内容时附上来源 URL。") == 1
     assert "todo 列计划" in text and "shell_kill" in text
     s2, _ = session(workspace, todo=False, present_plan=False, background_shell=False)
     assert "todo" not in names(s2) and "present_plan" not in names(s2) and "shell_output" not in names(s2)
-    t2 = system_prompt(s2.profile, "", s2.tools, "full")
+    t2 = system_prompt(s2.profile, "", None, s2.tools, "full")
     assert "todo 列计划" not in t2 and "shell_kill" not in t2
     # 没有后台命令工具时，shell 的 background 说明不再提 shell_output
     bg = s2.tool_map["shell"].parameters["properties"]["background"]["description"]
@@ -76,7 +76,7 @@ def test_rules_follow_enabled_tools_and_dedupe(ee_home, workspace):
 def test_base_prompt_has_no_tool_specific_lines(ee_home, workspace):
     """工具专属的细则只在规则段里出现：关掉 todo 后整个 system 不再提 todo。"""
     s, _ = session(workspace, todo=False)
-    assert "todo" not in system_prompt(s.profile, "", s.tools, "full")
+    assert "todo" not in system_prompt(s.profile, "", None, s.tools, "full")
 
 
 def test_edit_description_is_truthful():
@@ -208,3 +208,30 @@ def test_exec_profile_and_resume_keeps_it(ee_home, workspace):
     # 不带 --profile 的新会话按配置（默认 full）
     code, out, _, fake = run_exec(ee_home, [text_chunks("好") + finish("stop")], ["-C", str(workspace), "--json", "x"])
     assert events_of(out)[0]["profile"] == "full" and len(fake.calls[0]["tools"]) > 4
+
+
+def test_builtin_base_and_system_md_in_lean(ee_home, workspace):
+    from ee.core.context import builtin_base, load_prompt
+    assert builtin_base(None, "lean") == load_prompt("system/lean.md")
+    assert builtin_base() == load_prompt("system/base.md")
+    s, fake = session(workspace, [text_chunks("好") + finish("stop")], profile="lean")
+    run(collect(s, "hi"))
+    assert fake.calls[0]["messages"][0]["content"].startswith(builtin_base(None, "lean"))
+    # SYSTEM.md 替换「内置基础段 + 工具使用规则」：精简模式也一样，工具表仍是 4 个
+    (ee_home / "SYSTEM.md").write_text("我的提示词", encoding="utf-8")
+    s2, fake2 = session(workspace, [text_chunks("好") + finish("stop")], profile="lean")
+    run(collect(s2, "hi"))
+    text = fake2.calls[0]["messages"][0]["content"]
+    assert text.startswith("我的提示词\n") and "# 工具使用规则" not in text and len(fake2.calls[0]["tools"]) == 4
+
+
+def test_sysprompt_preview_uses_profile(ee_home, workspace):
+    from test_server import make_backend
+    (ee_home / "config.toml").write_text('profile = "lean"\n', encoding="utf-8")
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        return await b.call("sysprompt/preview", {"cwd": str(workspace)})
+    pv = asyncio.run(go())
+    from ee.core.context import builtin_base
+    assert pv["text"].startswith(builtin_base(None, "lean")) and "# 工具使用规则" in pv["text"]

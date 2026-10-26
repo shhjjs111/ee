@@ -24,22 +24,39 @@ def load_prompt(rel_path: str) -> str:
     return f.read_text(encoding="utf-8").strip()
 
 
-def system_prompt(profile, style_segment: str = "", tools=None, agent: str = "full") -> str:
+def builtin_base(profile=None, agent: str = "full") -> str:
+    """内置基础段：agent=full 用 system/base.md，lean（精简模式）用 system/lean.md。用户的 SYSTEM.md（core/sysprompt.py）替换的就是这一段。"""
+    return load_prompt("system/lean.md" if agent == "lean" else "system/base.md")
+
+
+def system_prompt(profile, style_segment: str = "", custom=None, tools=None, agent: str = "full") -> str:
     """style_segment：回答风格段（core/styles.py），附在最末尾；默认风格为空，system 与没有风格时逐字节相同。
-    tools：本会话启用的工具，它们各自的使用规则（prompts/tools/*.md 的「## 规则」）去重后拼成「工具使用规则」段；
-    agent：full 用 system/base.md，lean（精简模式）用 system/lean.md。"""
-    base = load_prompt("system/lean.md" if agent == "lean" else "system/base.md")
+    custom：sysprompt.SystemSources（SYSTEM.md 替换基础段、APPEND_SYSTEM.md 追加、模型补丁开关）；
+    None 或没有任何自定义时与原来逐字节相同。
+    tools：本会话启用的工具，它们各自的使用规则（prompts/tools/*.md 的「## 规则」）去重后拼成「工具使用规则」段，
+    紧跟内置基础段；SYSTEM.md 替换的是「内置基础段 + 工具使用规则」整体（用户完全接管，工具描述本身仍在 tools 里）。
+    agent：full / lean，决定内置基础段用哪份。"""
+    base = builtin_base(profile, agent)
     if tools:
         from ee.tools import tool_rules
         rules = tool_rules(tools)
         if rules:
             base += "\n\n# 工具使用规则\n" + "\n".join(f"- {r}" for r in rules)
-    patch_name = getattr(profile, "prompt_patch", "default") or "default"
-    try:
-        patch = load_prompt(f"system/{patch_name}.md")
-    except (FileNotFoundError, OSError):
-        patch = load_prompt("system/default.md")
-    text = base + "\n\n" + patch + "\n"
+    use_patch = True
+    if custom is not None:
+        if custom.system is not None:
+            base = custom.system.text
+        use_patch = custom.model_patch
+    text = base + "\n"
+    if use_patch:
+        patch_name = getattr(profile, "prompt_patch", "default") or "default"
+        try:
+            patch = load_prompt(f"system/{patch_name}.md")
+        except (FileNotFoundError, OSError):
+            patch = load_prompt("system/default.md")
+        text = base + "\n\n" + patch + "\n"
+    if custom is not None and custom.append is not None:
+        text += "\n" + custom.append.text + "\n"
     if style_segment:
         text += "\n" + style_segment.strip() + "\n"
     return text

@@ -67,6 +67,7 @@ class Backend:
             "thread/compact": self.thread_compact,
             "turn/start": self.turn_start,
             "turn/interrupt": self.turn_interrupt,
+            "turn/withdraw": self.turn_withdraw,
             "approval/respond": self.approval_respond,
             "question/respond": self.question_respond,
             "settings/get": self.settings_get,
@@ -92,6 +93,8 @@ class Backend:
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
+        from ee.server import sysprompt_rpc
+        sysprompt_rpc.register(self.methods, self)     # sysprompt/info|preview|trust|untrust|set（SYSTEM.md）
         from ee.server import answer_rpc
         answer_rpc.register(self.methods, self)        # thread/options、styles/list、budget/status、reasoning/*（D5-9）
         from ee.server import automations as automations_rpc
@@ -337,7 +340,8 @@ class Backend:
                 "context_left": t.context_left}
 
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
-                         attachments: list | None = None, effort: str | None = None, style: str | None = None) -> dict:
+                         attachments: list | None = None, effort: str | None = None, style: str | None = None,
+                         queue: str | None = None) -> dict:
         if not (text or "").strip() and not attachments:
             raise RpcError("消息不能为空")
         text = text or ""
@@ -354,7 +358,15 @@ class Backend:
                 images, meta = await asyncio.to_thread(save_all, self.home, thread_id, list(attachments))
             log.info("turn/start 会话 %s：%d 字，%d 张图片", thread_id, len(text), len(images))
             return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images, attachments=meta,
-                                effort=effort, style=style)
+                                effort=effort, style=style, queue=queue)
+        except ValueError as e:
+            raise RpcError(str(e))
+
+    async def turn_withdraw(self, thread_id: str, item_id: str) -> dict:
+        """撤回还没送入的排队消息（插话 / 待追加），返回 {text, queue}。"""
+        t = await self._athread(thread_id)
+        try:
+            return t.withdraw(item_id)
         except ValueError as e:
             raise RpcError(str(e))
 

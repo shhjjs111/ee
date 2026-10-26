@@ -3,7 +3,7 @@
 export type ItemBase = { id: string; ts?: number; seq?: number };
 
 export type AttachmentMeta = { id: string; name: string; mime: string; size: number; thumb?: string };
-export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review"; queued?: boolean; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
+export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
 export type AssistantItem = ItemBase & { type: "assistant"; text: string; reasoning: string; streaming?: boolean };
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 export type ToolItem = ItemBase & {
@@ -174,6 +174,7 @@ export type Settings = {
   title?: { ai: boolean };
   style?: { default: string };
   budget?: BudgetSettings;
+  queue?: { steering_mode: "one" | "all"; follow_up_mode: "one" | "all" }; // 运行中排队消息的送入方式
 };
 
 /** key 来源：store=凭据存储（Windows 凭据管理器），plain=旧版 config.toml 明文（启动时迁移），env=环境变量 */
