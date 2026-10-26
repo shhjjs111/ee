@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 15:10（Asia/Shanghai，D3-A 完成，开始 F）
+最后更新：2026-10-26 15:25（Asia/Shanghai，按用户要求调整 D4 顺序：磁盘快照第一；D3-F 进行中）
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
 
@@ -97,20 +97,20 @@
 - 可以直接拿开源 agent 的好代码改编：Codex（Apache-2.0）、OpenCode（MIT）、Cline、Aider、Goose、Continue（均 Apache-2.0）等。用户说仅自己学习使用：代码、文档里都不写出处，也不要第三方声明文件（用户 2026-10-26 明确要求清理已有的）。
 - Claude Code、Cursor 等闭源产品只借思路，不抄代码。
 
-## D4–D6 路线（2026-10-26 15:20 按 research/parity-audit.md 功能对标审计重排；★=用户点名或原计划项）
-原则：价值/成本比优先，先做地基（通知+托盘、磁盘快照、headless 执行器、worktree）。与原 D4 顺序的差异：LSP 后移到 D6；/review、Plan 模式、会话搜索提前到 D4。各项可参考的开源实现路径见审计 (b) 节。
+## D4–D6 路线（2026-10-26 15:25 按 research/parity-audit.md 和用户要求重排；★=用户点名或原计划项；D3-F 完成后从 D4-1 开始）
+对照审计 research/parity-audit.md：95 项，已有 23、部分 19、缺 53，每项有价值/难度/实现要点/参考实现路径。用户要求：磁盘快照仍排第一；/review、/commit、Plan 模式、会话搜索这些小活前移；加入桌面通知+托盘、后台长命令、PDF/Word/Excel 读取；LSP 推到 D6。
 
 **D4 — 地基 + 小而高价值**（按顺序）
-1. [ ] 系统通知 + 托盘常驻（Electron；通知三档设置）
-2. [ ] ★磁盘快照：影子 git 仓库替换内存快照，每回合前后快照（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复；修 /undo 后层号错位
-3. [ ] ★/review 代码审查 + /commit
-4. [ ] ★Plan 模式（只出方案 → 「按此执行」）
-5. [ ] ★会话全文搜索（sqlite FTS5）
-6. [ ] PDF / Word / Excel 读取（pypdf / python-docx / openpyxl）
-7. [ ] 后台命令 + shell_output / kill 工具
-8. [ ] 永久允许规则 + ask_user 提问工具 + .eeignore
+1. [ ] ★磁盘快照：影子 git 仓库替换内存快照，每回合前后快照工作区（含 shell 改的文件），重启后 /undo、编辑重发仍能恢复文件；修 /undo 后层号错位
+2. [ ] ★/review 代码审查命令 + /commit（改动审阅栏「提交」按钮：模型写提交信息，用户确认后 git commit）
+3. [ ] ★Plan 模式：只读出方案 → 点「按此执行」切到默认/全自动继续
+4. [ ] ★会话全文搜索：sqlite FTS5 索引条目文本，store.append 增量写；RPC thread/search 返回命中片段；左栏搜索框改走它
+5. [ ] 桌面通知 + 托盘常驻：回合完成 / 需要审批时 Windows 通知（从不 / 窗口不在前台 / 总是）；关窗后托盘常驻（自动化前置）
+6. [ ] 后台长命令：bash 工具可后台启动（dev server、watch、长测试），返回进程会话 id；新工具 shell_output（读增量输出）、shell_write（写 stdin，支持交互程序）、shell_kill；回合结束不杀，会话关闭时杀进程树；UI 列出后台命令
+7. [ ] PDF / Word / Excel 读取：read 工具按扩展名分派 pypdf / python-docx / openpyxl，带页码/表名；打包 spec 加依赖
+8. [ ] 永久允许规则（审批“以后都允许”写进配置）+ ask_user 提问工具 + .eeignore
 9. [ ] headless `ee exec --json`（自动化执行器的基础）
-10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史
+10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）
 
 **D5 — 并行与扩展**
 1. ★git worktree 管理（.worktreeinclude、删除前快照） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. ★Hooks（6 个核心事件，退出码 2 拦截，信任表复用 MCP） 5. Skills（SKILL.md，兼容 .claude/.agents） 6. ★仓库地图（tree-sitter tags） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理

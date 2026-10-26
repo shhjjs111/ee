@@ -153,15 +153,17 @@
 
 ## (b) 优先路线图
 
+> 2026-10-26 用户调整：磁盘快照仍排 D4 第一，其后 /review+/commit、Plan 模式、会话搜索、通知+托盘、后台长命令（含写 stdin）、PDF/Word/Excel；LSP 在 D6。以 HANDOFF.md「D4–D6 路线」的顺序为准，下表是审计原始排序。
+
 排序原则：价值/成本比优先；先做别的功能的地基（通知+托盘、磁盘快照、headless 执行器、worktree）。HANDOFF 里已计划的 10 项全部放入，标 ★。与 HANDOFF D4 原顺序的差异：LSP（L 级）后移到 D6，/review、Plan 模式、会话搜索（都是 S）提前到 D4。
 
 前置：D3 收尾（A MCP、F key 安全存储）。
 
 ### D4 — 地基 + 小而高价值
-| 顺序 | 项目 | 难度 | 依赖 | 可改编的开源代码（许可证 / 路径） |
+| 顺序 | 项目 | 难度 | 依赖 | 可参考的实现路径 |
 |---|---|---|---|---|
 | 1 | 系统通知 + 托盘常驻 | S | 无 | 无需（Electron API）；设置项参照 CX notifications 三档 |
-| 2 | ★磁盘快照（影子 git，替换内存快照，修层号错位） | M | 无 | OpenCode MIT：`packages/opencode/src/snapshot/index.ts`（v1.19.4）、新版 `packages/core/src/snapshot.ts`；Cline Apache-2.0：`sdk/packages/core/src/session/checkpoint-restore.ts`、`checkpoint-diff.ts`；Codex Apache-2.0：`codex-rs/git-utils/src/baseline.rs` |
+| 2 | ★磁盘快照（影子 git，替换内存快照，修层号错位） | M | 无 | OpenCode：`packages/opencode/src/snapshot/index.ts`（v1.19.4）、新版 `packages/core/src/snapshot.ts`；Cline：`sdk/packages/core/src/session/checkpoint-restore.ts`、`checkpoint-diff.ts`；Codex：`codex-rs/git-utils/src/baseline.rs` |
 | 3 | ★/review 接入 + /commit 接入 | S | 无 | Codex：`codex-rs/core/src/tasks/review.rs`、`codex-rs/prompts/templates/review/rubric.md`、`codex-rs/core/src/session/review.rs`；OpenCode：`packages/core/src/plugin/command/review.txt` |
 | 4 | ★Plan 模式（出方案→按此执行） | S | 无 | OpenCode：`packages/core/src/plugin/plan.ts`、v1 `session/prompt/plan.txt` 思路；Cline：`docs/core-workflows/plan-and-act.mdx` 行为 |
 | 5 | ★会话全文搜索（FTS5） | S–M | 无 | Codex：`codex-rs/rollout/src/search.rs`、`session_index.rs`（思路，Python 自写 sqlite3） |
@@ -169,24 +171,24 @@
 | 7 | 后台命令 + shell_output/kill | M | 无 | Codex：`codex-rs/core/src/tools/handlers/unified_exec.rs`、`shell_spec.rs` |
 | 8 | 永久允许规则 + ask_user 提问工具 + .eeignore | S | 无 | Codex：`codex-rs/core/src/exec_policy.rs`、`tools/handlers/request_user_input.rs`；OpenCode：`packages/core/src/permission/saved.ts`；Cline：`sdk/examples/hooks/PreToolUse_ClineignoreGuard.sh` |
 | 9 | headless `ee exec --json` | S | 无 | Codex：`codex-rs/exec/src/lib.rs`、`event_processor_with_jsonl_output.rs` |
-| 10 | ★自动化/定时任务 v1（本地目录、默认只读、收件箱、补跑） | L | 1、2、9 | Goose Apache-2.0：`crates/goose/src/scheduler/full.rs`、`scheduler/common.rs`；Cline：`apps/cli/src/commands/schedule/handlers.ts`、`apps/cli/src/wizards/schedule/cron-presets.ts`；行为参照 CX Scheduled（RRULE、收件箱未读） |
+| 10 | ★自动化/定时任务 v1（本地目录、默认只读、收件箱、补跑） | L | 1、2、9 | Goose：`crates/goose/src/scheduler/full.rs`、`scheduler/common.rs`；Cline：`apps/cli/src/commands/schedule/handlers.ts`、`apps/cli/src/wizards/schedule/cron-presets.ts`；行为参照 CX Scheduled（RRULE、收件箱未读） |
 
 ### D5 — 并行与扩展
-| 顺序 | 项目 | 难度 | 依赖 | 可改编的开源代码 |
+| 顺序 | 项目 | 难度 | 依赖 | 可参考的实现路径 |
 |---|---|---|---|---|
 | 1 | ★git worktree 管理（含 .worktreeinclude、删除前快照） | M | D4-2 | Codex：`codex-rs/worktree/src/{git,lib,metadata,paths}.rs`、`codex-rs/git-utils/src/worktree.rs`；OpenCode：`packages/opencode/src/worktree/index.ts` |
 | 2 | ★子代理并行（只读并发；写型走 worktree） | M | 1 | Codex：`codex-rs/core/src/tools/parallel.rs`（读写锁思路）、`tools/handlers/multi_agents/spawn.rs` |
 | 3 | 自动化 v2：worktree 模式 + 会话内 /loop | S | D4-10、1 | 同 D4-10 |
 | 4 | ★Hooks（6 个核心事件，退出码 2 拦截） | M | 无（信任表复用 MCP） | Codex：`codex-rs/hooks/src/engine/{dispatcher,matcher,command_runner,output_parser}.rs`、`events/*.rs`；Cline：`apps/vscode/src/core/hooks/HookProcess.ts`、`hook-factory.ts` |
 | 5 | Skills（SKILL.md，兼容 .claude/.agents） | M | 无 | Codex：`codex-rs/ext/skills/src/loader/{discovery,metadata}.rs`、`render.rs`；OpenCode：`packages/core/src/skill.ts` |
-| 6 | ★仓库地图 | M | 无 | Aider Apache-2.0：`aider/repomap.py`、`aider/queries/tree-sitter-language-pack/*-tags.scm`（可直接搬，Python 同语言） |
+| 6 | ★仓库地图 | M | 无 | Aider：`aider/repomap.py`、`aider/queries/tree-sitter-language-pack/*-tags.scm`（可直接搬，Python 同语言） |
 | 7 | 检查点时间线 UI + 非 git 项目审阅 + 按块接受 | M | D4-2 | Cline：`apps/vscode/src/core/controller/checkpoints/checkpointRestore.ts`（三种恢复方式） |
 | 8 | ★Windows 沙箱 v1（unelevated：受限令牌+ACL）+ 可选禁网 | L | 无（自动化全自动模式强烈建议先有） | Codex：`codex-rs/windows-sandbox-rs/src/{acl,allow,cap,process,env,path_normalization}.rs`、`codex-rs/core/src/windows_sandbox.rs` |
 | 9 | 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 | S×4 | 无 | 无需 |
 | 10 | prune 旧工具输出、fork 式子代理 | S×2 | 无 | OpenCode v1：`packages/opencode/src/session/compaction.ts`（prune 段）|
 
 ### D6 — 编排与深度理解
-| 顺序 | 项目 | 难度 | 依赖 | 可改编的开源代码 |
+| 顺序 | 项目 | 难度 | 依赖 | 可参考的实现路径 |
 |---|---|---|---|---|
 | 1 | ★指挥会话（threads_* 工具、审批冒泡、树形左栏、进度卡片） | L | D5-1、D5-2 | Codex：`codex-rs/core/src/tools/handlers/multi_agents_v2/{spawn,send_message,wait,list_agents,interrupt_agent,followup_task}.rs`、`multi_agents_spec.rs`（工具描述里的纪律）；Cline：`docs/sdk/guides/multi-agent-teams.mdx` |
 | 2 | ★LSP 诊断回灌（pyright、typescript-language-server 先行）+ LSP 工具 | L | 无 | OpenCode：`packages/opencode/src/lsp/{client,server,diagnostic,launch,language}.ts`（v1.19.4） |
@@ -196,18 +198,6 @@
 | 6 | 命令面板/快捷键自定义、Activity 视图、会话归档置顶、导出 | M | 无 | Codex：`codex-rs/tui/src/keymap/`（思路）；OpenCode：`packages/tui/src/config/keybind.ts` |
 | 7 | 自动记忆提取（待确认） | M | 无 | Codex：`codex-rs/ext/memories/src/`（`local/`、`prompts.rs`） |
 | 8 | 自动更新、GBK 解码回退、PAC、PR 工作流、lint/test 循环 | S–M | 无 | Aider：`aider/linter.py`（lint 循环）；electron-updater |
-| 后置 | 插件包、浏览器（经 MCP）、语音、自定义工具、WSL、云任务、向量索引 | — | — | Cline `apps/vscode/src/services/browser/`；Continue `core/indexing/`（Apache-2.0，不建议做） |
+| 后置 | 插件包、浏览器（经 MCP）、语音、自定义工具、WSL、云任务、向量索引 | — | — | Cline `apps/vscode/src/services/browser/`；Continue `core/indexing/`（，不建议做） |
 
 关键依赖链：通知+托盘 → 自动化；磁盘快照 → 自动化 / worktree 删除前快照 / 时间线 UI / 编辑重发可靠恢复；headless exec → 自动化执行器；worktree → 并行写型子代理 → 指挥会话 / best-of-n / 自动化 worktree 模式；Windows 沙箱 → 放心开全自动 + 无人值守自动化。
-
-## 调研来源（2026-10-26 访问）
-- Codex 文档：https://developers.openai.com/codex/app/automations 、/codex/notifications.md、/codex/long-running-work.md、/codex/reference/slash-commands.md、/codex/environments/git-worktrees.md、/codex/windows/windows-sandbox.md、/codex/hooks.md、/codex/code-review.md、/codex/agent-configuration/subagents.md、/codex/agent-configuration/rules.md、/codex/customization/memories.md、/codex/sandboxing/auto-review.md（均在 developers.openai.com 下）
-- Codex 源码树：https://github.com/openai/codex （main，Apache-2.0）
-- Claude Code 文档：https://code.claude.com/docs/en/ 下 hooks、checkpointing、output-styles、scheduled-tasks、agent-teams、desktop、interactive-mode；CHANGELOG：https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
-- OpenCode：https://github.com/anomalyco/opencode （原 sst/opencode，MIT；tag v1.19.4 与 dev），文档 `packages/web/src/content/docs/{lsp,keybinds,themes,plugins,agents,formatters,permissions,custom-tools}.mdx`
-- Cline：https://github.com/cline/cline （Apache-2.0），`docs/core-workflows/{checkpoints,plan-and-act}.mdx`、`docs/customization/{hooks,clineignore,cline-rules}.mdx`、`docs/usage/kanban.mdx`、`docs/features/auto-approve.mdx`
-- Aider：https://aider.chat/docs/repomap.html 、/docs/git.html、/docs/usage/lint-test.html、/docs/usage/watch.html、/docs/usage/modes.html；源码 https://github.com/Aider-AI/aider （Apache-2.0）
-- Cursor：https://cursor.com/docs/cloud-agent 、https://cursor.com/docs/bugbot 、https://cursor.com/docs/rules 、https://cursor.com/docs/configuration/worktrees 、https://cursor.com/changelog/3-0 、https://cursor.com/blog/projects
-- Goose：https://github.com/aaif-goose/goose （原 block/goose，Apache-2.0）；Continue：https://github.com/continuedev/continue （Apache-2.0）
-
-未核实/说明：Windsurf 未单独调研（功能与 Cursor 重叠）；表中开源路径来自 2026-10-26 的 GitHub 文件树，未逐个读代码确认实现细节（baseline.rs、snapshot/index.ts 已打开确认）；Claude Code、Cursor 为闭源，只列行为。

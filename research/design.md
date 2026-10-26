@@ -149,3 +149,4 @@ ee/
 - [x] D3-D 图片附件（2026-10-26）：core/attachments.py，_images + wire_messages 分块，deepseek-flash vision=true。
 - [x] D3-A MCP（2026-10-26）：ee/ee/mcp/（config/client/schema/manager/tool），RPC mcp/list、mcp/test，权限 mcp__ 分支，设置页 McpSettings.tsx。
 - [ ] D3-F key 安全存储（方案见 research/d3-plan.md F 节）
+- [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）

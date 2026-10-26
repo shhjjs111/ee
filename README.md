@@ -21,4 +21,4 @@ API key：在设置页填写（明文存于 `%USERPROFILE%\.ee\config.toml`）�
 
 ## 状态（2026-10-26）
 - 已完成：D1（后端、桌面界面、设置页、审批、改动审阅、Windows 安装包 + GitHub Actions）、D2（终端、文件预览、上下文压缩、AGENTS.md、防死循环、网页搜索、子代理、记忆）、D3-C（配置迁移、模型单价细分）、D3-B（斜杠命令 /compact /new /undo /model /mode /memory /init 与自定义提示 `~/.ee/prompts/*.md`）、D3-E（消息编辑重发、分叉对话）、D3-D（图片附件：粘贴/拖放，deepseek-flash 可看图）、D3-A（MCP：stdio/HTTP/SSE 服务器，设置页「MCP」分区管理和测试，支持项目 .mcp.json）
-- 进行中：D3-F（API key 安全存储），之后 D4（磁盘快照、Windows 沙箱、并行子代理、LSP 等），方案见 `research/d3-plan.md`，接手进度见 `HANDOFF.md`
+- 进行中：D3-F（API key 安全存储），之后 D4（磁盘快照、/review 与 /commit、Plan 模式、会话搜索、通知托盘、后台长命令、PDF/Word/Excel、自动化）→ D5（worktree、并行子代理、Hooks、Skills、Windows 沙箱）→ D6（指挥会话、LSP），路线见 `HANDOFF.md`，对照审计见 `research/parity-audit.md`
