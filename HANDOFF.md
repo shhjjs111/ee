@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 19:00（Asia/Shanghai，D5-1 worktree 完成；并行分支 feat/d4-9-exec（已完成待合并）、feat/d5-skills、feat/d5-hooks、feat/d5-repomap 进行中）
+最后更新：2026-10-26 19:00（Asia/Shanghai，D5-1 worktree 完成；D4-9 exec 已合并；并行分支 feat/d5-skills、feat/d5-hooks、feat/d5-repomap 进行中）
 
 > **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；检查远端分支 feat/d4-9-exec、feat/d5-skills、feat/d5-hooks（并行开发中，各自测完后合并进 main 并在下面对应项打勾），然后做 D4-10 自动化。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
@@ -165,7 +165,13 @@
    - .eeignore：`ee/core/eeignore.py`（gitignore 子集：注释、!、目录 /、锚定、* ? [] **；工作区到 git 根之间的多个 .eeignore 叠加，近的优先；按文件 mtime 缓存）。permissions 对 read/write/edit/apply_patch 命中直接拒绝（原因写明“被 .eeignore 排除，也不要用 shell 绕过”）；glob/grep 结果过滤。设置页说明里提到。
    - 测试：`tests/test_rules_ask_ignore.py` 8 个（规则推导/存取/子目录/删除、裸前缀命中、forever 全流程含新会话生效与删除同步、ask_user 全流程与中断取消、子代理无 ask_user、.eeignore 匹配与叠加、工具拦截与搜索过滤与缓存失效）；notify.test 加提问通知；pytest 295 通过 2 跳过，vitest 20。
    - 已知/后续：.eeignore 拦不住 shell 命令（只靠提示）；文件面板还不标 .eeignore；永久规则只有 allow，没有界面添加 deny；ask_user 不支持一次问多个问题。
-9. [ ] headless `ee exec --json`（自动化执行器的基础）
+9. [x] headless `ee exec --json`（2026-10-26，并行分支 feat/d4-9-exec 合并）：无界面跑一个回合就退出，给脚本、CI 和自动化（D4-10）当执行器
+   - 参考了谁、取了哪点：子命令 `exec`、`--json` 输出 JSONL 事件流（第一行会话信息，最后一行回合结果）、`-o/--output-last-message`、`--resume <id>` / `--last` 续接、Ctrl+C 中断回合取自 Codex exec；不加 `--json` 时 stdout 只打最终回答、进度走 stderr 也取自 Codex；最后一行 `turn_done` 带最终文字、会话 id、用量、耗时、退出码，`--max-steps` 和 `--allow/--deny` 追加权限规则取自 Claude Code `-p` 的 result 消息与 `--max-turns`、`--allowedTools/--disallowedTools`；提示词可在参数里或用 `-`（或不写）从 stdin 读取自 Codex 与 OpenCode run；`--no-persist` 取自 Goose run。没取 Codex 的 `--skip-git-repo-check`（ee 默认只读，非 git 项目有磁盘快照兜底）。
+   - 后端 `ee/ee/headless.py`：复用桌面端 `Thread`（子类 ExecThread），条目格式、落盘、磁盘快照、AGENTS.md、记忆、MCP 与桌面端一致；会话存 ~/.ee/sessions，meta `source="exec"`（thread/list 返回 source），桌面端能接着聊、能 /undo。建会话前 `Thread(configure=...)` 改配置：ask_user=false、--max-steps、追加 allow/deny。`--mode` 默认 read-only；default/auto 下审批由 `--approve` 决定：deny（默认）自动拒绝并告诉模型“无人值守”；auto 自动批准但强制询问类危险命令一律拒绝（ApprovalRequest 新增 `force`）。
+   - JSONL 事件：session、turn_start、assistant（每步完整文字）、assistant_delta（--stream）、tool_start、tool_end（输出首尾共 4000 字）、approval、plan、subagent_start/end、notice、usage、error、turn_done{reason,text,session_id,duration_ms,usage,exit_code}。
+   - 细节：计划模式最终回答 = present_plan 的方案；stdin 按 utf-8-sig 解码（去 PowerShell BOM）；`-o` UTF-8 自动建目录；退出码 0 完成 / 1 出错 / 2 参数错误 / 3 步数上限 / 4 防死循环 / 130 Ctrl+C；Ctrl+C 第一次中断回合、第二次立即退出，结束后恢复原处理器；结束时一律 `session.bg.close()` 并关闭 MCP；`--resume` 校验 id 防路径穿越。
+   - 测试 `tests/test_exec.py` 11 个（纯文本/stdout 与 stderr 分离/落盘 source=exec/无 ask_user；--json --stream 事件序列；只读拒写；--approve deny/auto 与危险命令；-o 与 stdin（BOM、空输入=2）；resume/--last 与非法 id；--no-persist；退出码；Ctrl+C=130；退出时结束后台命令）。合并后 pytest 311 通过 2 跳过。
+   - 已知/后续：续接时 --mode 会改写会话模式；桌面端同时开着同一会话时要重新加载才看到 exec 追加的内容；exec 不把目录加进桌面端工作区列表；暂不支持 -i 图片、--output-schema、管道内容与参数合并；一次只跑一个回合；Windows 真机 Ctrl+C/控制台编码待 CI 与用户验证。
 10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）
 
 **D5 — 并行与扩展**

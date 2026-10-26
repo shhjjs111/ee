@@ -74,6 +74,7 @@ class ApprovalRequest(Event):
     detail: str = ""        # 命令全文 / diff
     prefix: str = ""        # “以后都行”选项要记住的前缀（bash 命令前缀或工具名）
     future: asyncio.Future | None = None
+    force: bool = False     # 危险操作的强制询问（全自动模式下也问；ee exec --approve auto 也不自动批）
 
 
 @dataclass

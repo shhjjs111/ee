@@ -1,6 +1,7 @@
-"""命令行入口（只给桌面端和排错用，没有终端交互界面）：
+"""命令行入口（给桌面端、排错和自动化用，没有终端交互界面）：
 
   ee serve [--port N] [--host 127.0.0.1] [--exit-on-stdin-eof]   桌面端后端（token 从环境变量 EE_SERVE_TOKEN 读）
+  ee exec [提示词|-] [--json] [-C 目录] [--mode …] [--resume id|--last] …  无界面跑一个回合（见 ee/headless.py）
   ee doctor [模型]                                               自检某个模型的兼容性（会真实调用 API）
 """
 from __future__ import annotations
@@ -34,6 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--exit-on-stdin-eof", action="store_true", help="stdin 关闭时退出（由 Electron 拉起时用）")
     t = sub.add_parser("selftest", help="检查打包是否完整（openai/httpx/证书/编码），不联网，输出 JSON")
     t.add_argument("--secrets", action="store_true", help="另外测一次凭据存储读写删（写入临时项后立即删除）")
+    from ee.headless import add_arguments as exec_arguments
+    x = sub.add_parser("exec", help="无界面跑一个回合就退出（脚本 / CI / 定时任务用）",
+                       description="无界面执行：跑完一个回合就退出。会话与桌面端共用，默认只读。",
+                       epilog="退出码：0 完成；1 出错；2 参数错误；3 到达步数上限；4 防死循环停下；130 被 Ctrl+C 中断。"
+                              " 不加 --json 时 stdout 只有最终回答，进度在 stderr。",
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    exec_arguments(x)
     d = sub.add_parser("doctor", help="自检某个模型的兼容性（会真实调用 API）")
     d.add_argument("model_name", nargs="?", help="模型名，默认用默认模型")
     d.add_argument("-C", "--cd", help="按这个目录加载项目级配置")
@@ -61,6 +69,12 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
         return 0
+    if args.cmd == "exec":
+        from ee import log as eelog
+        eelog.setup()
+        _migrate_secrets()
+        from ee.headless import run as run_exec
+        return run_exec(args)
     if args.cmd == "selftest":
         return _selftest(secrets_check=args.secrets)
     if args.cmd == "doctor":

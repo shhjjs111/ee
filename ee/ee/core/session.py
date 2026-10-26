@@ -764,7 +764,7 @@ class Session:
             else:
                 title, detail = f"使用工具 {tool.name}", json.dumps(args, ensure_ascii=False)[:2000]
             fut = asyncio.get_running_loop().create_future()
-            emit(ApprovalRequest(cid, tool.name, title, detail, d.prefix, fut, ))
+            emit(ApprovalRequest(cid, tool.name, title, detail, d.prefix, fut, force=d.force))
             return await fut
 
     # ------------------------------------------------------------ 侧路请求（不碰主会话）

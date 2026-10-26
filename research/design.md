@@ -157,5 +157,6 @@ ee/
 - [x] D4-6 后台长命令（2026-10-26：ee/core/bgproc.py + tools/bgshell.py，shell background=true、shell_output/shell_write/shell_kill，RPC shell/list|read|kill，输入框「后台」按钮；参考 Claude Code 后台 Bash、Codex unified exec，详见 HANDOFF.md）
 - [x] D4-7 文档读取（2026-10-26：ee/core/docread.py，read 工具 pages/sheet 参数，PDF/docx/xlsx/pptx 转文字，文件预览；参考 Cline 抽取、Claude Code PDF 选页、Goose xlsx，详见 HANDOFF.md）
 - [x] D4-8 永久允许规则 / ask_user / .eeignore（2026-10-26：core/rules.py ~/.ee/permissions.json、tools/ask.py + QuestionRequest、core/eeignore.py；详见 HANDOFF.md）
+- [x] D4-9 headless exec（2026-10-26：ee/headless.py，`ee exec [--json] [--resume|--last]`；详见 HANDOFF.md）
 - [x] D5-1 git worktree（2026-10-26：core/worktree.py、worktree/* RPC、thread/start worktree、WorktreeDialog；详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）
