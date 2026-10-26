@@ -69,6 +69,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "ui": {"theme": (data.get("ui") or {}).get("theme", "system")},
             "network": _network_out(data.get("network") or {}),
             **_d2_out(data),
+            "mcp": _mcp_out(data),
             "providers": providers,
             "models": models,
         },
@@ -166,6 +167,70 @@ def _d2_in(new: dict, out: dict) -> None:
                 raise ValueError("记忆大小上限必须在 512～65536 字节之间")
             mem["max_bytes"] = v
         out["memory"] = mem
+
+
+SERVER_KEYS = ("command", "args", "env", "cwd", "url", "headers", "type", "enabled", "trusted")
+
+
+def _mcp_out(data: dict) -> dict:
+    from ee.mcp.config import mcp_settings
+    m = mcp_settings(data)
+    servers = {}
+    for name, d in (m.get("servers") or {}).items():
+        d = d or {}
+        servers[name] = {"command": d.get("command", ""), "args": list(d.get("args") or []),
+                         "env": dict(d.get("env") or {}), "cwd": d.get("cwd", ""), "url": d.get("url", ""),
+                         "headers": dict(d.get("headers") or {}), "type": d.get("type", ""),
+                         "enabled": bool(d.get("enabled", True)), "trusted": bool(d.get("trusted", False))}
+    return {"enabled": bool(m.get("enabled", True)), "startup_timeout": m.get("startup_timeout", 20),
+            "tool_timeout": m.get("tool_timeout", 120), "project_json": bool(m.get("project_json", True)),
+            "allowed_project": list(m.get("allowed_project") or []), "servers": servers}
+
+
+def _mcp_in(new: dict, out: dict) -> None:
+    n = new.get("mcp")
+    if not isinstance(n, dict):
+        return
+    from ee.mcp.config import parse_server
+    m = dict(out.get("mcp") or {})
+    for k in ("enabled", "project_json"):
+        if n.get(k) is not None:
+            m[k] = bool(n[k])
+    for k, lo, hi in (("startup_timeout", 3, 300), ("tool_timeout", 5, 3600)):
+        v = _num(n.get(k))
+        if v is not None:
+            if not lo <= v <= hi:
+                raise ValueError(f"mcp.{k} 应在 {lo}–{hi} 秒之间")
+            m[k] = int(v)
+    if n.get("allowed_project") is not None:
+        m["allowed_project"] = [str(x) for x in n["allowed_project"] if str(x).strip()]
+    if isinstance(n.get("servers"), dict):
+        servers = {}
+        for name, d in n["servers"].items():
+            name = str(name).strip()
+            d = {k: v for k, v in (d or {}).items() if k in SERVER_KEYS}
+            for k in ("command", "cwd", "url", "type"):
+                if k in d:
+                    d[k] = str(d[k] or "").strip()
+                    if not d[k]:
+                        d.pop(k)
+            for k in ("env", "headers"):
+                if k in d:
+                    d[k] = {str(a).strip(): str(b) for a, b in (d[k] or {}).items() if str(a).strip()}
+                    if not d[k]:
+                        d.pop(k)
+            if "args" in d:
+                a = d["args"]
+                d["args"] = a.split() if isinstance(a, str) else [str(x) for x in (a or [])]
+                if not d["args"]:
+                    d.pop("args")
+            for k in ("enabled", "trusted"):
+                if k in d:
+                    d[k] = bool(d[k])
+            parse_server(name, d)                  # 校验（名字、command/url）
+            servers[name] = d
+        m["servers"] = servers
+    out["mcp"] = m
 
 
 def _network_out(n: dict) -> dict:
@@ -314,6 +379,7 @@ def set_settings(new: dict) -> dict:
         if m.get("provider") not in (final.get("providers") or {}):
             raise ValueError(f"模型 {name} 引用了不存在的供应商：{m.get('provider')}")
     _d2_in(new, out)
+    _mcp_in(new, out)
     out["config_version"] = CURRENT_VERSION
     save_user_file(out)
     return get_settings()

@@ -302,7 +302,9 @@ class PermissionPolicy:
         elif d.prefix:
             self.session_tools.add(f"{tool}:{d.prefix}")
 
-    def check(self, tool: str, args: dict) -> Decision:
+    def check(self, tool: str, args: dict, info: dict | None = None) -> Decision:
+        if tool.startswith("mcp__"):
+            return self._check_mcp(tool, args, info or {})
         if tool == "shell":
             return self._check_shell(args.get("command") or "")
         if tool in WRITE_TOOLS:
@@ -329,12 +331,48 @@ class PermissionPolicy:
             if any(_match_rule(r, tool, "") for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
             return Decision("allow")
-        # 未知/扩展工具（M2+：web_fetch、task、MCP）：只读模式拒绝，默认模式问
+        # 未知/扩展工具：只读模式拒绝，默认模式问（“以后都行”记在 session_tools）
         if self.mode == "read-only":
             return Decision("deny", "只读模式")
-        if self.mode == "auto" or any(_match_rule(r, tool, "") for r in self.allow):
+        if self.mode == "auto" or any(_match_rule(r, tool, "") for r in self.allow) \
+                or f"{tool}:{tool}" in self.session_tools:
             return Decision("allow")
         return Decision("ask", f"使用工具 {tool}", prefix=tool)
+
+    # ---- MCP 工具：mcp__<服务器>__<工具>
+    def _check_mcp(self, tool: str, args: dict, info: dict) -> Decision:
+        import json as _json
+        subject = _json.dumps(args or {}, ensure_ascii=False)
+        server = tool.split("__")[1] if tool.count("__") >= 2 else ""
+
+        def rule_hit(rules: list[str]) -> bool:
+            for r in rules:
+                m = re.match(r"^\s*([\w\-*]+)\s*(?:\((.*)\))?\s*$", r)
+                if not m:
+                    continue
+                rt = m.group(1)
+                if not rt.lower().startswith("mcp__") or not fnmatch.fnmatch(tool.lower(), rt.lower()):
+                    continue
+                pat = m.group(2)
+                if pat is None or pat.strip() in ("", "*") or fnmatch.fnmatch(subject.lower(), pat.strip().lower()):
+                    return True
+            return False
+
+        if rule_hit(self.deny):
+            return Decision("deny", "命中 deny 规则")
+        trusted = bool(info.get("trusted"))
+        if self.mode == "read-only":
+            if not info.get("read_only"):
+                return Decision("deny", "只读模式下只能用标为只读的 MCP 工具")
+            if trusted or rule_hit(self.allow):
+                return Decision("allow")
+            return Decision("ask", f"MCP 只读工具 {tool}", prefix=tool)
+        if self.mode != "auto" and rule_hit(self.ask):
+            return Decision("ask", "命中 ask 规则", prefix=tool)
+        if self.mode == "auto" or trusted or rule_hit(self.allow) or f"{tool}:{tool}" in self.session_tools \
+                or f"{tool}:mcp__{server}__*" in self.session_tools:
+            return Decision("allow")
+        return Decision("ask", f"调用 MCP 工具 {server} · {tool.split('__', 2)[-1]}", prefix=tool)
 
     # ---- 写文件
     def _paths(self, tool: str, args: dict) -> list[str]:

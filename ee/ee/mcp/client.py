@@ -273,6 +273,15 @@ def _iter_sse(text: str):
         yield event, "\n".join(data)
 
 
+def _new_http(url: str, read):
+    """本机地址永远直连（不走系统代理），其余跟随环境变量代理。"""
+    import httpx
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    local = host in ("localhost", "::1") or host.startswith("127.")
+    return httpx.AsyncClient(timeout=httpx.Timeout(30, read=read), follow_redirects=True, trust_env=not local)
+
+
 class HttpClient(_Base):
     """streamable HTTP。"""
 
@@ -285,8 +294,7 @@ class HttpClient(_Base):
 
     async def start(self) -> None:
         if self._http is None:
-            import httpx
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(30, read=300), follow_redirects=True)
+            self._http = _new_http(self.cfg.url, 300)
 
     def _headers(self) -> dict:
         h = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
@@ -352,8 +360,7 @@ class SseClient(_Base):
 
     async def start(self) -> None:
         if self._http is None:
-            import httpx
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(30, read=None), follow_redirects=True)
+            self._http = _new_http(self.cfg.url, None)
         self._ready = asyncio.get_running_loop().create_future()
         self._task = asyncio.create_task(self._listen())
         try:

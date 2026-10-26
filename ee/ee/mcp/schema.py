@@ -12,6 +12,8 @@ MAX_DEPTH = 24
 
 
 def _resolve_ref(ref: str, root: dict) -> dict:
+    if ref == "#":
+        return root
     if not ref.startswith("#/"):
         return {}
     cur = root

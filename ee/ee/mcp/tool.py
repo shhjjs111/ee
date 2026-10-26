@@ -17,7 +17,7 @@ def tool_name(server: str, tool: str) -> str:
 
 
 class McpTool(Tool):
-    def __init__(self, manager, server: str, spec: dict, trusted: bool = False):   # 不调用父类（没有内置描述文件）
+    def __init__(self, manager, server: str, spec: dict, trusted: bool = False, timeout: float = 120):   # 不调用父类（没有内置描述文件）
         self.manager = manager
         self.server = server
         self.remote_name = str(spec.get("name"))
@@ -25,6 +25,7 @@ class McpTool(Tool):
         ann = spec.get("annotations") or {}
         self.read_only = bool(ann.get("readOnlyHint", False))
         self.trusted = trusted
+        self.timeout = timeout
         desc = str(spec.get("description") or ann.get("title") or self.remote_name).strip()
         if len(desc) > MAX_DESC:
             desc = desc[:MAX_DESC] + "…"
@@ -39,7 +40,7 @@ class McpTool(Tool):
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
         try:
-            res = await self.manager.call(self.server, self.remote_name, args or {})
+            res = await self.manager.call(self.server, self.remote_name, args or {}, timeout=self.timeout)
         except Exception as e:  # noqa: BLE001
             return ToolResult(f"MCP 调用失败（{self.server}.{self.remote_name}）：{e}", ok=False,
                               meta={"kind": "mcp", "server": self.server, "tool": self.remote_name})

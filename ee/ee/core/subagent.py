@@ -161,10 +161,14 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),
                                             ask=list(p.ask), deny=list(p.deny))
         child.state = _SharedSnapshots(parent.state)
+        child._mcp_done = True                     # 子代理不自己连 MCP：沿用父会话已连好的工具
         if adef.tools:
             keep = set(adef.tools)
             child.tools = [t for t in child.tools if t.name in keep]
             child.tool_map = {t.name: t for t in child.tools}
+        else:
+            child.mcp_tools = list(parent.mcp_tools)
+            child._install_mcp()
         if child.spec.alias == parent.spec.alias and parent._client is not None:
             child._client = parent._client          # 同模型直接复用客户端（含已学到的怪癖降级）
         else:

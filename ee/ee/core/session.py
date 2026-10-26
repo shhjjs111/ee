@@ -92,6 +92,11 @@ class Session:
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
         self.compactions = 0
+        # MCP（D3-A）：首次冻结前缀前连接服务器，工具追加在工具表末尾，会话内不变
+        self.mcp_enabled = True
+        self.mcp_tools: list = []
+        self.mcp_states: list[dict] = []
+        self._mcp_done = False
 
     # ------------------------------------------------------------ 配置切换
     @property
@@ -122,6 +127,7 @@ class Session:
         self.spec = spec
         self.tools = build_tools(spec.profile, self.config)
         self.tool_map = {t.name: t for t in self.tools}
+        self._install_mcp()
         self._client = None
         if not same_prefix:
             self.prefix = None
@@ -252,6 +258,59 @@ class Session:
                           + "\n".join(restored))
         return restored
 
+    # ------------------------------------------------------------ MCP
+    def _install_mcp(self) -> None:
+        self.tools = [t for t in self.tools if not t.name.startswith("mcp__")] + list(self.mcp_tools)
+        self.tool_map = {t.name: t for t in self.tools}
+
+    async def _attach_mcp(self, emit) -> None:
+        """首次冻结前缀前连接 MCP 服务器（只做一次）；失败只出提示，不影响回合。"""
+        if self._mcp_done or self.prefix is not None or not self.mcp_enabled:
+            return
+        self._mcp_done = True
+        from ee.mcp.config import load_servers, mcp_settings
+        data = self.config.data
+        m = mcp_settings(data)
+        if not m.get("enabled", True):
+            return
+        try:
+            servers, errors = await asyncio.to_thread(load_servers, data, self.cwd)
+        except Exception as e:  # noqa: BLE001
+            emit(Notice(f"读取 MCP 配置失败：{e}", "warn"))
+            return
+        for err in errors:
+            emit(Notice(f"MCP 配置：{err}", "warn"))
+        if not servers:
+            return
+        from ee.mcp.manager import get_manager
+        from ee.mcp.tool import McpTool
+        if any(sc.enabled for sc in servers):
+            emit(Status("正在连接 MCP 服务器…"))
+        mgr = get_manager()
+        try:
+            states = await mgr.connect_all(data, self.cwd)
+        finally:
+            emit(Status(""))
+        tools, seen = [], set(self.tool_map)
+        timeout = float(m.get("tool_timeout") or 120)
+        for st in states:
+            if st.status == "ready":
+                for spec in st.tools:
+                    t = McpTool(mgr, st.cfg.name, spec, trusted=st.cfg.trusted, timeout=timeout)
+                    if t.name in seen:
+                        continue
+                    seen.add(t.name)
+                    tools.append(t)
+            elif st.status == "error":
+                first = (st.error or "").splitlines()[0][:300] if st.error else "未知错误"
+                emit(Notice(f"MCP 服务器 {st.cfg.name} 连接失败：{first}", "warn"))
+            elif st.status == "needs_approval":
+                emit(Notice(f"项目 .mcp.json 里的 MCP 服务器 {st.cfg.name} 还没被允许，在 设置 → MCP 里允许后，新对话生效。",
+                            "info"))
+        self.mcp_states = [st.summary() for st in states]
+        self.mcp_tools = tools
+        self._install_mcp()
+
     def refresh_git(self) -> None:
         self.git = gitinfo.status(self.cwd)
 
@@ -364,6 +423,7 @@ class Session:
             self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
             log.info("回合开始：会话 %s 第 %d 回合 模型 %s cwd=%s", self.store.id, self.turns, self.spec.alias, self.cwd)
             await self._ensure_instructions_async()
+            await self._attach_mcp(emit)
             await self._maybe_auto_compact(emit)
             self.turn_starts.append(len(self.history))
             await asyncio.to_thread(self.refresh_git)
@@ -538,7 +598,8 @@ class Session:
             emit(PlanUpdate(res.meta.get("items", [])))
 
     async def _guarded_run(self, cid: str, tool, args: dict, emit) -> ToolResult:
-        d: Decision = self.policy.check(tool.name, args)
+        d: Decision = self.policy.check(tool.name, args, info={"read_only": bool(getattr(tool, "read_only", False)),
+                                                              "trusted": bool(getattr(tool, "trusted", False))})
         if d.action == "deny":
             return ToolResult(f"被权限规则拒绝，未执行：{d.reason}", ok=False, meta={"denied": True})
         if d.action == "ask":

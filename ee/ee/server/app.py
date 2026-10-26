@@ -27,7 +27,7 @@ from ee.core.permissions import MODE_LABEL, MODES
 from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
-from ee.server import branch, memory_rpc, prompts_rpc
+from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -79,6 +79,7 @@ class Backend:
         memory_rpc.register(self.methods, self.home)   # memory/get|add|remove|save
         prompts_rpc.register(self.methods, self.home)  # prompts/list|expand
         branch.register(self.methods, self)            # thread/fork|edit_resend
+        mcp_rpc.register(self.methods, self)           # mcp/list|test
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -549,6 +550,11 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     watchdog.stop()
     for t in backend.threads.values():
         t.interrupt()
+    try:
+        from ee.mcp.manager import shutdown as mcp_shutdown
+        await asyncio.wait_for(mcp_shutdown(), 8)       # 关掉 MCP 子进程
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _detach_stdin() -> int | None:
