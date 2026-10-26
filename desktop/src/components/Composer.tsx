@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
 import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import {
   EFFORT_OPTIONS,
@@ -19,6 +19,8 @@ import {
 import type { StyleInfo } from "../types";
 import { useApp } from "../lib/store";
 import { SlashMenu } from "./SlashMenu";
+import { mergeDraft, queueKindForKey, splitQueued, type QueueKind } from "../lib/queue";
+import { QueueSendButton, QueueTray } from "./QueueTray";
 import { Select, Spinner, Tip } from "./ui";
 
 const MODES = [
@@ -71,6 +73,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const s = useApp();
   const detail = s.activeThreadId ? s.details[s.activeThreadId] : null;
   const running = !!detail && detail.status !== "idle";
+  const queued = useMemo(() => (detail ? splitQueued(detail.items).queued : []), [detail?.items]);
   const [text, setText] = useState("");
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [files, setFiles] = useState<string[]>([]);
@@ -118,6 +121,15 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       ta.current?.focus();
     });
   }, [s.composerDraft?.nonce]);
+
+  // 中断 / 撤回退回的排队消息放回输入框（排在正在写的文字前面）
+  useEffect(() => {
+    const r = s.returnedDraft;
+    if (!r || r.threadId !== s.activeThreadId) return;
+    s.set({ returnedDraft: null });
+    setText((cur) => mergeDraft(r.texts, cur));
+    requestAnimationFrame(() => ta.current?.focus());
+  }, [s.returnedDraft?.nonce, s.activeThreadId]);
 
   useEffect(() => {
     const el = ta.current;
@@ -348,7 +360,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     });
   }
 
-  async function submit() {
+  async function submit(queue?: QueueKind) {
     const t = text.trim();
     if (!t && !atts.length) return;
     if (attBusy) return;
@@ -368,7 +380,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       }
       return;
     }
-    s.send(t);
+    s.send(t, undefined, running ? (queue ?? "steer") : undefined);
     clearInput();
   }
 
@@ -432,7 +444,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      submit();
+      submit(running ? queueKindForKey(e) : undefined); // 运行中：Enter 插话，Ctrl+Enter 完成后再做
     } else if (e.key === "Escape" && running) {
       s.interrupt();
     }
@@ -491,6 +503,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           }
         }}
       >
+        <QueueTray items={queued} onWithdraw={(id) => s.withdrawQueued(id)} />
         {(atts.length > 0 || attBusy) && (
           <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
             {atts.map((a) => (
@@ -516,7 +529,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           value={text}
           rows={1}
           spellCheck={false}
-          placeholder={running ? "继续输入，会在当前步骤结束后送给 ee…" : "让 ee 帮你写代码、改 bug、解释项目…  输入 @ 引用文件，/ 使用命令"}
+          placeholder={running ? "继续输入：Enter 插话（当前步骤结束后送入），Ctrl+Enter 等这一轮做完再做…" : "让 ee 帮你写代码、改 bug、解释项目…  输入 @ 引用文件，/ 使用命令"}
           onChange={(e) => {
             setText(e.target.value);
             if (!e.target.value.startsWith("/")) setSlashClosed(false);
@@ -631,6 +644,9 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             compacting={detail?.status === "compacting"}
             onCompact={() => s.compact()}
           />
+          {running && detail?.status !== "compacting" && text.trim() && !text.trim().startsWith("/") && (
+            <QueueSendButton disabled={attBusy} onSend={(k) => submit(k)} />
+          )}
           {detail?.status === "compacting" ? null : running ? (
             <Tip label="停止（Esc）">
               <button
@@ -643,7 +659,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           ) : (
             <Tip label="发送（Enter）· 换行（Shift+Enter）">
               <button
-                onClick={submit}
+                onClick={() => submit()}
                 disabled={(!text.trim() && !atts.length) || attBusy}
                 className="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg transition hover:opacity-85 disabled:opacity-25"
               >
