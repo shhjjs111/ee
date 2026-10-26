@@ -32,7 +32,7 @@ export type AutomationRun = {
   trigger: "schedule" | "manual" | "catchup";
   started: number;
   finished: number | null;
-  status: string; // running | completed | error | max_steps | loop | interrupted | skipped | failed
+  status: string; // running | completed | error | max_steps | loop | budget | interrupted | skipped | failed
   thread_id: string | null;
   summary: string;
   unread: boolean;
@@ -96,6 +96,7 @@ const STATUS: Record<string, { label: string; tone: "ok" | "warn" | "error" | "m
   failed: { label: "启动失败", tone: "error" },
   max_steps: { label: "到达步数上限", tone: "warn" },
   loop: { label: "重复操作已停止", tone: "warn" },
+  budget: { label: "超出花费上限", tone: "warn" },
   interrupted: { label: "已中断", tone: "warn" },
   skipped: { label: "已跳过", tone: "muted" },
 };

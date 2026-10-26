@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 22:10（Asia/Shanghai，D5-2 子代理并行完成并推送：pytest 483 过 2 跳过、vitest 36 过；Windows CI run 40333619262（37b3484）全绿；下一步 D5-9）
+最后更新：2026-10-26 22:45（Asia/Shanghai，D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限完成：pytest 536 过 2 跳过、vitest 40 过；后端 WIP 54d1cb7 的 Windows CI run 40339235884 全绿，前端提交的 CI 见「D5 进度 · D5-9」；下一步按 research/pi.md 落地 Pi 借鉴项第一批）
 
 > **仓库审查（2026-10-26 19:15）**：全量 pytest/tsc（两份）/vitest/vite build 全过；ruff 只有未用导入（已清）。发现并修复只读白名单绕过：`git -c`（注入配置执行命令）、`git diff --output`/`--ext-diff`/`git grep -O`、`rg --pre`、`sort -o`/`uniq IN OUT`/`tree -o`/`find -fprintf` 被当成只读放行，现在都拒（`tests/test_permissions.py::test_readonly_whitelist_bypass_flags`）。第二轮（19:25）：Hook 的 PreToolUse 返回 allow 会跳过危险命令的强制确认（force），已修（hooks.py adjust_decision，测试 test_hook_allow_does_not_skip_forced_ask）；已核实：永久允许规则对 `git push && curl|sh`、`git push; rm` 这类复合命令不会放行；项目 hooks 信任按路径+内容指纹、超时杀进程树、退出码 2 拦截正确；automations.json 与规则文件原子写；read-only/plan 下后台 shell、shell_write 被拒。待查（低风险）：ToolStart 显示的是 Hook 改写前的参数；PostToolUse/Stop 忽略 continue:false；Windows 取消 hook 时 taskkill 同步阻塞最多 10 秒；cron 边界、worktree 删除、bgproc 编码、repomap/docread 异常、前端四个新页面尚未逐行审。注：本文件里 18:30 之后的时间戳是并行账号写的，比实际时间超前，以 git 提交时间为准。
 
@@ -11,7 +11,8 @@
 > - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
 > - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
-> **接手第一步（2026-10-26 21:20）**：确认最新 Windows CI 绿（D5-2 的提交）。下一步 D5-9：回答风格（讲解/作业辅导）、按用途分模型（`[models.roles]` compact/title/explore/plan/review）、推理强度、预算告警；之后 D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话（依赖 D5-2 已就绪）。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 22:45）**：先确认最新 Windows CI 绿（D5-9 的提交，run 号见「D5 进度 · D5-9」）。**下一步：按 `research/pi.md` 落地 Pi 借鉴项，第一批 = 精简模式、工具描述压缩、edit 改进、SYSTEM.md / APPEND_SYSTEM.md、两条消息队列**。用户决定：自动压缩保持 80% 阈值，不加 128k 上限。每一项都必须用 DeepSeek 真实任务实测（对比改前改后的成功率 / token / 花费），不好用就不合入。之后再按路线做 D5-10（修剪旧工具输出 + fork 式子代理）、D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话。D5-9 遗留待做见「D5 进度 · D5-9 · 剩余待做」。
+> （旧）**接手第一步（2026-10-26 21:20）**：确认最新 Windows CI 绿（D5-2 的提交）。下一步 D5-9：回答风格（讲解/作业辅导）、按用途分模型（`[models.roles]` compact/title/explore/plan/review）、推理强度、预算告警；之后 D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、D6-1 指挥会话（依赖 D5-2 已就绪）。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -189,9 +190,26 @@
    - 已知/后续：管理入口在左栏自动化页而非设置页；只在 ee 运行（含托盘）时调度，无开机自启；一次运行一个回合；worktree 模式分支不自动清理；无会话内 /loop、RRULE（D5-3）；启动补跑早于桌面端连上时那条通知会漏（角标/收件箱正常）；真机 Windows 通知与托盘调度待验证。
 
 **D5 — 并行与扩展**
-1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理
+1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. 修剪旧工具输出、fork 式子代理
 
 **D5 进度**
+
+- [x] D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限（2026-10-26 22:45）
+  - 参考了谁、取了哪点：
+    - 推理强度：档位 + `/model` 里选强度、会话可切、写回配置按模型生效取自 Codex 的 `model_reasoning_effort`；“模型声明接受哪些推理参数、不接受就不发并提示，可配置强制”取自 Aider 的 `accepts_settings` / `--reasoning-effort`；侧路请求（标题/提交信息/压缩）不带主会话的强度参数，取自 OpenCode 修过的坑（主模型 variant 漏到 small_model 导致 400）。DeepSeek 参数按官方文档（2026-10，Thinking Mode）：`reasoning_effort` low/high/max（medium→high），关闭思考 `extra_body={"thinking":{"type":"disabled"}}`。
+    - 按用途分模型：用途表的形态取自 Continue 的 roles（chat/edit/apply/summarize）与审计建议；标题用小模型取自 OpenCode `small_model`；提交信息/摘要用弱模型取自 Aider `weak_model`；计划模式单独模型取自 Cline plan/act 分模型；子代理按角色取模型取自 OpenCode agent 级 model。
+    - 回答风格：讲解 / 作业辅导的思路借 Claude Code output styles（Explanatory / Learning，闭源只借思路）与 Codex Personality；注入方式是 ee 自己为 DeepSeek 前缀缓存设计的。
+    - 花费上限：“达到上限暂停并问是否继续”借 Cline 系的自动批准花费上限思路与 Cursor 的 spend limit（闭源只借思路）；80% 预警、跨会话日/月账本是 ee 自己的组合。
+  - 做法：
+    - 推理强度（`core/reasoning.py`、档案字段 `effort_param` / `effort_values` / `thinking_param`）：档位 默认 / 低 / 中 / 高 / 关闭思考；取值优先级 会话里选的 → 按模型记住（`~/.ee/state/model_prefs.json`，原子写）→ `[models.X] reasoning_effort` → 全局 `[reasoning] effort`。DeepSeek 低/中/高 → low/high/max、可关闭思考；GPT o 系 / gpt-5、Gemini 发 `reasoning_effort`；Qwen（`enable_thinking`）、GLM / 豆包（`thinking.type`）只能关闭思考；其它不支持 → 不发、界面置灰。`openai_chat`：400 能认出参数名（reasoning_effort / thinking / enable_thinking）就记住不再发；认不出且这次带了推理参数 → 去掉推理参数重试一次，成功才写进 quirks.json 记住，再失败照常报错。用量解析 `completion_tokens_details.reasoning_tokens`，回合结束行显示“推理 N tokens”。
+    - 按用途分模型：`[roles] title/compact/explore/plan/review/commit`（旧写法 `[models.roles]` 读取时并入，不会被当成模型）；`Config.role_model` 没配或配了不存在的模型 → 跟随主模型。`Session.role_spec/role_client`（按别名缓存客户端）；主循环在计划模式用 plan、/review 回合用 review（同一冻结前缀）；压缩用 compact（历史放不进它的窗口就走侧路精简记录）；提交信息 commit；只读子代理 explore（调用时指定 model 优先）；标题 title（`[title] ai=true` 时第一回合结束后生成，exec/自动化不生成）。每次请求按实际模型单价计价，`UsageStats` 改为逐条记录 + `by_model` 细分，子代理并入主会话时按条复制不重算。
+    - 回答风格（`core/styles.py`、`prompts/styles/{concise,explain,tutor}.md`，用户可放 `~/.ee/styles/<名>.md`）：会话首个请求时风格段附在 system 末尾随前缀冻结（默认风格时 system 与以前逐字节相同）；会话中途切换不动 system，而是在下一条用户消息的 `<context-update>` 里加 `<response-style>` 子块（只追加，缓存不失效），压缩后全量附录里仍带当前风格；子代理不套风格。设置默认 `[style] default`，会话级存在 thread meta。
+    - 花费上限（`core/budget.py`）：`[budget] session/daily/monthly/action(warn|pause)/warn_ratio/currency`。每日/每月账本 `~/.ee/state/spend.json`：进程内锁 + O_EXCL 锁文件（残留锁 30 秒清掉）+ 临时文件 os.replace，Windows 上读写遇 PermissionError 重试；按本机日期、只保留 62 天 / 24 个月。主会话和子代理每次模型请求前检查：到比例提示一次；100% 时 warn 提示一次继续，pause 发 `tool="budget"` 的审批卡片（继续这一回合 / 本会话不再询问 / 停止，拒绝 → TurnDone reason="budget"）。子代理共用主会话的 BudgetGuard（并行子代理同时到线只问一次）。会话花费 = 主会话含子代理合计 + 重启前最后一次 turn_end 的花费。ee exec / 自动化（`unattended_configure` 标记无人值守）到 100% 一律停止：exec 退出码 5、turn_done 带 `stop_reason`；自动化运行记录 status="budget"、摘要写原因。
+    - RPC：`thread/options`、`styles/list`、`budget/status`、`reasoning/prefs|forget`；`turn/start` 支持 effort/style；`models/list` 带 `effort_support/effort_values/roles`；settings 读写 reasoning/roles/title/style/budget（含校验）。
+    - 前端：输入框工具栏「推理」「风格」两个下拉（不支持的档位置灰）、`/effort`、`/style`；设置页新分区「回答与花费」`AnswerSettings.tsx`（全局默认强度 + 按模型记住的列表可删、默认风格、六个用途选模型、AI 标题开关、三档上限 + 处理方式 + 比例 + 币种 + 今日/本月已花）；`BudgetCard`；回合结束行显示推理 token、多模型时悬停看分模型花费、reason=budget；自动化状态“超出花费上限”。
+  - 测试：`tests/test_reasoning_roles.py` 30 个（各家族参数、自定义参数名、400 认出参数降级、认不出时去参重试一次并记住、两次失败不记住、无推理参数不重试、三层取值、换模型取该模型档位、不支持档位不发、推理 token、侧路不带强度、角色回退、旧写法并入、侧路/提交/压缩/计划/审查/explore 子代理按角色取模型并按其单价计价、压缩模型窗口太小走侧路、models/list、thread/options 持久化、AI 标题）；`tests/test_style_budget.py` 23 个（风格列表、默认风格 system 不变、风格冻结且切换只追加、切回默认与压缩后附录、子代理无风格、账本跨日跨月、裁剪、多线程原子累加、坏文件与残留锁、80%/100% 仅提醒、暂停三种选择、日/月上限计入别的会话、跨月重置、无人值守强制停止、重启后会话花费、3 个并行子代理花费只记一次、并行子代理超限只问一次且全部停止、exec 退出码 5、exec 记账、自动化记录原因、设置校验、budget/status）；前端 `AnswerSettings.test.tsx` 2 个 + slash.test 2 个。pytest 536 过 2 跳过，vitest 40 过，tsc 两份、vite build 通过。
+  - 已知限制：只统计与 `[budget] currency` 同币种的单价（混用 ¥/$ 模型时另一种不计入上限）；没填单价的模型花费未知、不计入；侧路请求（压缩、标题、提交信息）不在请求前检查上限（花费照常记账）；会话花费只认重启前最后一次 turn_end 的累计；“本会话不再询问”只在进程内有效；日期按本机时区；推理强度只按档案判断支持与否，中转站对同名模型行为不同要靠 400 自动降级或在 `[models.X]` 里覆盖 `effort_param`；DeepSeek 的“中”和“默认”实际都是 high；新对话下拉显示的强度在发首条消息前是前端推算的（按模型记住 → 全局默认）；风格切换后 system 里的旧风格段仍在（靠追加说明覆盖），换会话才真正干净；AI 标题默认关闭。
+  - 剩余待做（用户额度紧，未做）：真机 Windows 上未手测新下拉与设置分区；未用 DeepSeek 真实 key 验证 `reasoning_effort=max` / `thinking.disabled` 的实际效果和费用；可考虑让侧路请求也受上限约束、给 exec 加 `--max-cost` 命令行参数。
 
 - [x] D5-2 ★子代理并行（2026-10-26 21:20）
   - 参考了谁、取了哪点：一步内所有工具调用同时派发、每个调用按“能否并行”拿共享读写锁的读锁或写锁、tokio RwLock 先到先得（写不会被后来的读饿死，读写读不会被重排）、结果按原顺序收集、中断时给每个未完成调用补“已中断”结果取自 Codex `tools/parallel.rs`；子代理并发上限（Codex `agents.max_threads` 默认 6，超出排队而不是报错）取自 Codex multi_agents，ee 默认 3（DeepSeek 并发和花费更敏感）；每个 task 调用就是一个独立子会话、审批按子会话区分、同一步多个 task 直接并发取自 OpenCode 的 task 工具；只读子代理放心并行、每个子代理单独统计 token/花费并实时汇总到任务总花费、界面逐个显示进度取自 Cline 的 use_subagents；写型并行“每个任务一个 worktree、结束后人决定合并”取自 Cline Kanban / Codex 桌面版的 worktree 线程。没取：OpenCode 让写型子代理直接在同一目录并发（会互相踩文件），Codex 的 spawn/wait 异步模型（留给 D6-1 指挥会话）。

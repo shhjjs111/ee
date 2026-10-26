@@ -1,9 +1,22 @@
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
-import { GitBranch, ArrowUp, AtSign, Cpu, File, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
+import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
-import { isSkillCommand, parseSlash, resolveMode, slashItems, type PromptInfo, type SkillInfo, type SlashItem } from "../lib/slash";
+import {
+  EFFORT_OPTIONS,
+  effortLabel,
+  isSkillCommand,
+  parseSlash,
+  resolveEffort,
+  resolveMode,
+  resolveStyle,
+  slashItems,
+  type PromptInfo,
+  type SkillInfo,
+  type SlashItem,
+} from "../lib/slash";
+import type { StyleInfo } from "../types";
 import { useApp } from "../lib/store";
 import { SlashMenu } from "./SlashMenu";
 import { Select, Spinner, Tip } from "./ui";
@@ -74,6 +87,21 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const cwd = detail?.cwd ?? s.activeWorkspace;
   const model = s.draftModel ?? detail?.model ?? s.defaultModel;
   const mode = s.draftMode;
+  // D5-9：推理强度 / 回答风格（有对话时取会话的；新对话取草稿，否则取按模型记住的 / 设置里的默认）
+  const [styles, setStyles] = useState<StyleInfo[]>([]);
+  const [remembered, setRemembered] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!s.rpc) return;
+    let alive = true;
+    s.rpc.call("styles/list").then((r) => alive && setStyles(r.styles ?? [])).catch(() => undefined);
+    s.rpc.call("reasoning/prefs").then((r) => alive && setRemembered(r.remembered ?? {})).catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [s.rpc, s.activeThreadId, detail?.effort]);
+  const effort = (detail ? detail.effort : s.draftEffort) ?? remembered[model] ?? s.defaultEffort ?? "";
+  const style = (detail ? detail.style : s.draftStyle) ?? s.defaultStyle ?? "default";
+  const support = detail?.effort_support ?? s.models.find((m) => m.name === model)?.effort_support ?? { effort: false, off: false };
 
   useEffect(() => {
     if (autoFocus) ta.current?.focus();
@@ -134,7 +162,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   }, [slashing, cwd, s.rpc]);
 
   const modelHints = s.models.map((m) => ({ name: m.name, hint: `${m.provider} · ${m.model}` }));
-  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints, skills);
+  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints, skills, styles);
   const showSlash = !!slashList && slashList.length > 0 && !mention;
   useEffect(() => setSlashSel(0), [slashList?.length, text.split(" ")[0]]);
 
@@ -209,6 +237,28 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         localStorage.setItem("ee.mode", m);
         s.set({ draftMode: m });
         s.showToast(`权限模式：${modeLabel(m)}`);
+        return true;
+      }
+      case "effort": {
+        const v = resolveEffort(args);
+        if (v === null || !args) {
+          s.showToast("用法：/effort 默认 | 低 | 中 | 高 | 关闭", "error");
+          return true;
+        }
+        clearInput();
+        const unsupported = (v === "off" && !support.off) || (["low", "medium", "high"].includes(v) && !support.effort);
+        if (await s.setOptions({ effort: v }))
+          s.showToast(`推理强度：${effortLabel(v)}` + (unsupported ? "（当前模型不支持，请求里不会发送）" : ""));
+        return true;
+      }
+      case "style": {
+        const id = resolveStyle(args, styles);
+        if (!id) {
+          s.showToast(`用法：/style ${styles.map((x) => x.label).join(" | ") || "默认 | 简洁 | 讲解 | 作业辅导"}`, "error");
+          return true;
+        }
+        clearInput();
+        if (await s.setOptions({ style: id })) s.showToast(`回答风格：${styles.find((x) => x.id === id)?.label ?? id}`);
         return true;
       }
       case "memory":
@@ -532,6 +582,34 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             }}
             icon={MODES.find((m) => m.value === mode)?.icon}
             title="权限模式"
+          />
+          <Select
+            value={effort}
+            options={EFFORT_OPTIONS.map((o) => ({
+              ...o,
+              disabled: (o.value === "off" && !support.off) || (["low", "medium", "high"].includes(o.value) && !support.effort),
+              hint:
+                (o.value === "off" && !support.off) || (["low", "medium", "high"].includes(o.value) && !support.effort)
+                  ? "当前模型不支持"
+                  : o.hint,
+            }))}
+            onChange={(v) => s.setOptions({ effort: v })}
+            icon={<Brain size={13} />}
+            renderLabel={(o) => (o && o.value ? o.label : "推理")}
+            title={support.effort || support.off ? "推理强度（本会话，按模型记住；/effort）" : "当前模型不支持调节推理强度"}
+            className={clsx(!support.effort && !support.off && "opacity-50")}
+          />
+          <Select
+            value={style}
+            options={(styles.length ? styles : [{ id: "default", label: "默认", description: "" } as StyleInfo]).map((x) => ({
+              value: x.id,
+              label: x.label,
+              hint: x.description || (x.id === "default" ? "常规回答" : undefined),
+            }))}
+            onChange={(v) => s.setOptions({ style: v })}
+            icon={<GraduationCap size={13} />}
+            renderLabel={(o) => (o && o.value !== "default" ? o.label : "风格")}
+            title="回答风格（本会话；/style）"
           />
           {!s.activeThreadId && (
             <Tip label={s.draftWorktree ? "将在新的 git worktree（独立目录 + ee/ 分支）里开始，不动主目录；完成后在左栏项目菜单「Worktree」里合并或删除" : "在新的 git worktree 里开始（独立目录和分支，适合并行做多件事）"}>

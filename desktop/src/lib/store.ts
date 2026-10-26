@@ -8,7 +8,7 @@ import { RpcClient, type ConnState } from "./rpc";
 export type View = "chat" | "settings" | "automations";
 export type Theme = "system" | "dark" | "light";
 export type RightTab = "review" | "terminal" | "files";
-export type SettingsSection = "general" | "models" | "tools" | "mcp" | "about";
+export type SettingsSection = "general" | "models" | "answer" | "tools" | "mcp" | "hooks" | "about";
 
 type State = {
   conn: ConnState;
@@ -27,6 +27,10 @@ type State = {
   defaultModel: string;
   draftModel: string | null;
   draftMode: string;
+  draftEffort: string | null; // D5-9：新对话首条消息前选的推理强度（null = 按模型默认）
+  draftStyle: string | null; // D5-9：新对话首条消息前选的回答风格（null = 设置里的默认）
+  defaultEffort: string; // 设置里的全局默认推理强度
+  defaultStyle: string; // 设置里的默认回答风格
   draftWorktree: boolean; // 新对话在新 worktree 里开始（D5-1）
   worktreeDialog: string | null; // 打开 worktree 管理的项目路径
   rightOpen: boolean;
@@ -57,6 +61,8 @@ type Actions = {
   interrupt(): Promise<void>;
   compact(): Promise<void>;
   undo(): Promise<void>;
+  /** D5-9：切换推理强度 / 回答风格。有对话时立即生效（推理强度同时按模型记住），没有对话时记为新对话的初始值。 */
+  setOptions(o: { effort?: string; style?: string }): Promise<boolean>;
   forkFrom(itemId: string): Promise<void>;
   editResend(itemId: string, text: string): Promise<boolean>;
   openSettings(section?: SettingsSection): void;
@@ -85,6 +91,10 @@ export const useApp = create<State & Actions>((set, get) => ({
   defaultModel: "",
   draftModel: null,
   draftMode: localStorage.getItem("ee.mode") || "default",
+  draftEffort: null,
+  draftStyle: null,
+  defaultEffort: "",
+  defaultStyle: "default",
   draftWorktree: false,
   worktreeDialog: null,
   rightOpen: localStorage.getItem("ee.right") !== "0",
@@ -148,6 +158,7 @@ export const useApp = create<State & Actions>((set, get) => ({
       get().setTheme(theme);
       pushDesktopPrefs(s.settings.ui);
       if (!localStorage.getItem("ee.mode")) set({ draftMode: s.settings.permissions.mode });
+      set({ defaultEffort: s.settings.reasoning?.effort ?? "", defaultStyle: s.settings.style?.default ?? "default" });
     } catch {
       /* ignore */
     }
@@ -228,7 +239,10 @@ export const useApp = create<State & Actions>((set, get) => ({
       setStatus(id, "running");
       setStatusText(id, "正在发送…");
       const atts = attachments?.length ? attachments.map((a) => ({ name: a.name, data: a.data, thumb: a.thumb })) : undefined;
-      await rpc.call("turn/start", { thread_id: id, text, model, mode, attachments: atts }, atts ? 120000 : undefined);
+      const effort = s.activeThreadId ? undefined : (s.draftEffort ?? undefined);
+      const style = s.activeThreadId ? undefined : (s.draftStyle ?? undefined);
+      if (!s.activeThreadId) set({ draftEffort: null, draftStyle: null });
+      await rpc.call("turn/start", { thread_id: id, text, model, mode, attachments: atts, effort, style }, atts ? 120000 : undefined);
       return true;
     } catch (e) {
       const msg = (e as Error).message;
@@ -308,6 +322,30 @@ export const useApp = create<State & Actions>((set, get) => ({
       get().showToast((e as Error).message, "error");
     } finally {
       setStatus(id, "idle");
+    }
+  },
+
+  async setOptions(o) {
+    const s = get();
+    const id = s.activeThreadId;
+    if (!id) {
+      set({ ...(o.effort !== undefined ? { draftEffort: o.effort } : {}), ...(o.style !== undefined ? { draftStyle: o.style } : {}) });
+      return true;
+    }
+    try {
+      const r = await s.rpc!.call("thread/options", { thread_id: id, ...o });
+      useApp.setState((st) => {
+        const d = st.details[id];
+        const patch = { effort: r.effort, style: r.style, effort_support: r.effort_support };
+        return {
+          details: d ? { ...st.details, [id]: { ...d, ...patch } } : st.details,
+          threads: st.threads.map((x) => (x.id === id ? { ...x, ...patch } : x)),
+        };
+      });
+      return true;
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+      return false;
     }
   },
 
@@ -463,6 +501,8 @@ function onNotification(method: string, p: any) {
   }
   if (method === "settings/changed") {
     st.refreshModels().catch(() => undefined);
+    const ss = (p as any)?.settings;
+    if (ss) useApp.setState({ defaultEffort: ss.reasoning?.effort ?? "", defaultStyle: ss.style?.default ?? "default" });
     return;
   }
   if (method === "turn/started") {

@@ -523,6 +523,7 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
   }
   const always =
     isCmd && item.prefix ? `允许，本会话内 ${item.prefix} 开头的命令不再询问` : "允许，本会话内同类操作不再询问";
+  if (item.tool === "budget") return <BudgetCard item={item} />;
   return (
     <div className="fadein overflow-hidden rounded-xl border border-warn/40 bg-elev shadow-[var(--shadow)]">
       <div className="flex items-center gap-2 border-b border-line px-4 py-2.5 text-[13px] font-medium">
@@ -596,6 +597,33 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
             </Button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ 花费上限（D5-9）：达到上限时暂停询问
+export function BudgetCard({ item }: { item: ApprovalItem }) {
+  const respond = useApp((s) => s.respond);
+  return (
+    <div data-testid="budget-card" className="fadein overflow-hidden rounded-xl border border-warn/40 bg-elev shadow-[var(--shadow)]">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5 text-[13px] font-medium">
+        <ShieldAlert size={15} className="text-warn" />
+        已达到花费上限
+      </div>
+      <div className="px-4 py-3 text-[13px] text-fg">{item.title}</div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-line bg-soft/60 px-4 py-2.5">
+        <Button variant="primary" size="sm" onClick={() => respond(item.call_id, "once")}>
+          继续这一回合
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => respond(item.call_id, "always")} title="直到关闭这个对话都不再询问">
+          本会话不再询问
+        </Button>
+        <div className="flex-1" />
+        <span className="text-[11.5px] text-faint">上限在 设置 → 回答与花费 里修改</span>
+        <Button variant="danger" size="sm" onClick={() => respond(item.call_id, "deny")}>
+          停止
+        </Button>
       </div>
     </div>
   );
@@ -716,14 +744,25 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
             ? "检测到重复操作，已停止"
             : item.reason === "blocked"
               ? "消息被 Hook 拦截"
-              : "完成";
+              : item.reason === "budget"
+                ? "达到花费上限，已停止"
+                : "完成";
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
   if (u.hit_rate !== undefined && u.hit_rate !== null) bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%`);
+  if (u.reasoning) bits.push(`推理 ${u.reasoning.toLocaleString()} tokens`);
   if (u.cost !== undefined && u.cost !== null) bits.push(`累计 ${u.currency ?? ""}${u.cost.toFixed(4)}`);
+  const models = Object.entries(u.by_model ?? {});
+  const tip =
+    models.length > 1
+      ? models.map(([m, b]) => `${m}：${b.requests} 次 · ${b.cost === null ? "价格未知" : `${b.currency}${b.cost.toFixed(4)}`}`).join("\n")
+      : undefined;
   return (
     <div className="flex items-center gap-3 py-1 text-[11.5px] text-faint">
       <div className="h-px flex-1 bg-line" />
-      <span className={clsx(item.reason === "loop" && "text-warn")}>{bits.join(" · ")}</span>
+      <span title={tip} className={clsx((item.reason === "loop" || item.reason === "budget") && "text-warn")}>
+        {bits.join(" · ")}
+        {models.length > 1 ? ` · ${models.length} 个模型` : ""}
+      </span>
       <div className="h-px flex-1 bg-line" />
     </div>
   );

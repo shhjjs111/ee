@@ -37,6 +37,8 @@ export const BUILTIN: SlashCommand[] = [
   { name: "undo", description: "撤销上一回合的文件改动", takesArgs: false, kind: "builtin" },
   { name: "model", description: "切换模型", argHint: "<模型名>", takesArgs: true, kind: "builtin" },
   { name: "mode", description: "切换权限模式", argHint: "只读 | 默认 | 全自动 | 计划", takesArgs: true, kind: "builtin" },
+  { name: "effort", description: "推理强度（本会话，并按模型记住）", argHint: "默认 | 低 | 中 | 高 | 关闭", takesArgs: true, kind: "builtin" },
+  { name: "style", description: "回答风格（本会话）", argHint: "默认 | 简洁 | 讲解 | 作业辅导", takesArgs: true, kind: "builtin" },
   { name: "plan", description: "计划模式：先调研出方案，批准后再改（可直接跟任务）", argHint: "[任务]", takesArgs: true, kind: "builtin" },
   { name: "memory", description: "记住一句话（不带文字则打开记忆设置）", argHint: "[要记住的话]", takesArgs: true, kind: "builtin" },
   { name: "review", description: "代码审查：未提交的改动、相对分支、某个提交或按要求（只读）", argHint: "[额外要求]", takesArgs: true, kind: "builtin" },
@@ -50,6 +52,35 @@ export const MODE_OPTIONS = [
   { value: "auto", label: "全自动", hint: "都不问（deny 规则和危险命令仍会拦）" },
   { value: "plan", label: "计划", hint: "只调研出方案，批准后再改" },
 ];
+
+export const EFFORT_OPTIONS = [
+  { value: "", label: "默认", hint: "不指定，用模型自己的默认强度" },
+  { value: "low", label: "低", hint: "想得少、快、省 token" },
+  { value: "medium", label: "中", hint: "平衡" },
+  { value: "high", label: "高", hint: "想得更久，适合难题" },
+  { value: "off", label: "关闭思考", hint: "不输出思考过程（模型支持时）" },
+];
+
+export function effortLabel(v: string | undefined | null): string {
+  return EFFORT_OPTIONS.find((o) => o.value === (v ?? ""))?.label ?? String(v);
+}
+
+/** /effort 的参数 → 档位；认不出返回 null。 */
+export function resolveEffort(arg: string): string | null {
+  const a = arg.trim().toLowerCase();
+  const hit = EFFORT_OPTIONS.find((o) => o.value === a || o.label === arg.trim());
+  if (hit) return hit.value;
+  const alias: Record<string, string> = { default: "", auto: "", "": "", 关: "off", 关闭: "off", none: "off", max: "high", minimal: "low" };
+  return a in alias ? alias[a] : arg.trim() in alias ? alias[arg.trim()] : null;
+}
+
+/** /style 的参数 → 风格 id（按 id 或显示名）；认不出返回 null。 */
+export function resolveStyle(arg: string, styles: { id: string; label: string }[]): string | null {
+  const a = arg.trim();
+  if (!a) return null;
+  const hit = styles.find((s) => s.id === a || s.label === a) ?? styles.find((s) => s.id.toLowerCase() === a.toLowerCase());
+  return hit ? hit.id : null;
+}
 
 export function allCommands(prompts: PromptInfo[], skills: SkillInfo[] = []): SlashCommand[] {
   const builtinNames = new Set(BUILTIN.map((c) => c.name));
@@ -98,6 +129,7 @@ export function slashItems(
   prompts: PromptInfo[],
   models: { name: string; hint?: string }[],
   skills: SkillInfo[] = [],
+  styles: { id: string; label: string; description?: string }[] = [],
 ): SlashItem[] | null {
   if (!text.startsWith("/") || text.includes("\n")) return null;
   const head = /^\/([\p{L}\p{N}_.-]*)$/u.exec(text); // 技能名可以是中文
@@ -115,9 +147,22 @@ export function slashItems(
       action: c.takesArgs ? { fill: `/${c.name} ` } : { run: `/${c.name}` },
     }));
   }
-  const sub = /^\/(model|mode)\s+(\S*)$/.exec(text);
+  const sub = /^\/(model|mode|effort|style)\s+(\S*)$/.exec(text);
   if (sub) {
     const q = sub[2].toLowerCase();
+    if (sub[1] === "effort") {
+      return EFFORT_OPTIONS.filter((o) => !q || o.value.includes(q) || o.label.includes(sub[2])).map((o) => ({
+        key: `effort:${o.value || "default"}`,
+        label: o.label,
+        hint: o.hint,
+        action: { run: `/effort ${o.value || "默认"}` },
+      }));
+    }
+    if (sub[1] === "style") {
+      return styles
+        .filter((x) => !q || x.id.toLowerCase().includes(q) || x.label.includes(sub[2]))
+        .map((x) => ({ key: `style:${x.id}`, label: x.label, hint: x.description, action: { run: `/style ${x.id}` } }));
+    }
     if (sub[1] === "model") {
       return models
         .filter((m) => m.name.toLowerCase().includes(q))

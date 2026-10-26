@@ -159,6 +159,7 @@ ee/
 - [x] D4-8 永久允许规则 / ask_user / .eeignore（2026-10-26：core/rules.py ~/.ee/permissions.json、tools/ask.py + QuestionRequest、core/eeignore.py；详见 HANDOFF.md）
 - [x] D4-9 headless exec（2026-10-26：ee/headless.py，`ee exec [--json] [--resume|--last]`；详见 HANDOFF.md）
 - [x] D5-1 git worktree（2026-10-26：core/worktree.py、worktree/* RPC、thread/start worktree、WorktreeDialog；详见 HANDOFF.md）
+- [x] D5-9 回答风格 / 按用途分模型 / 推理强度 / 花费上限（2026-10-26：core/reasoning.py、core/styles.py、core/budget.py、prompts/styles/、server/answer_rpc.py、AnswerSettings.tsx；[roles]、[reasoning]、[style]、[budget]、[title]；详见 HANDOFF.md）
 - [x] D5-4 Hooks（core/hooks.py、hooks/* RPC、HooksSettings）、D5-5 Skills（core/skills.py、tools/skill.py、skills/* RPC）（2026-10-26；详见 HANDOFF.md）
 - [x] D5-2 子代理并行（2026-10-26：core/parallel.py FIFO 读写闸门，一步内调用同时派发、只读并发、写独占保序、结果按原顺序回填；只读子代理并发，[subagent] max_parallel 默认 3、超出排队；同一步多个写型子代理在 git 仓库里各进独立 worktree（带主目录未提交改动作基线）并行，结束提交到 ee/agent-* 分支并汇报改动，否则按顺序；审批带来源、用量实时并入；界面子代理组卡片；详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）

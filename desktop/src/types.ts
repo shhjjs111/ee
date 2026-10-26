@@ -58,7 +58,13 @@ export type Usage = {
   hit_rate?: number | null;
   cost?: number | null;
   currency?: string;
+  reasoning?: number; // 推理 token（服务端给了才有，D5-9）
+  by_model?: Record<string, { requests: number; prompt: number; completion: number; reasoning: number; cost: number | null; currency: string }>;
 };
+
+/** 推理强度档位（D5-9）：""=默认（不发参数）| low | medium | high | off（关闭思考） */
+export type Effort = "" | "low" | "medium" | "high" | "off";
+export type EffortSupport = { effort: boolean; off: boolean };
 
 export type ThreadStatus = "idle" | "running" | "waiting_approval" | "compacting";
 
@@ -74,6 +80,9 @@ export type ThreadSummary = {
   parent_id?: string | null; // 分叉来源（D3-E）
   worktree?: { path: string; branch: string; repo: string; name: string } | null; // D5-1
   workspace?: string; // 归属的项目目录（worktree 对话归到主仓库）
+  effort?: Effort | string; // D5-9：会话级推理强度
+  effort_support?: EffortSupport | null;
+  style?: string; // D5-9：会话级回答风格
 };
 
 export type ThreadDetail = ThreadSummary & {
@@ -98,7 +107,14 @@ export type ModelInfo = {
   vision?: boolean;
   has_key: boolean;
   price: { input: number | null; output: number | null; cache_read: number | null; currency: string };
+  effort_support?: EffortSupport;
+  effort_values?: Record<string, string>;
 };
+
+/** styles/list 的一项（D5-9） */
+export type StyleInfo = { id: string; label: string; description: string; source: string; path: string };
+export type BudgetSettings = { session: number | string; daily: number | string; monthly: number | string; action: "warn" | "pause" | string; warn_ratio: number | string; currency: string };
+export type BudgetStatus = { currency: string; action: string; warn_ratio: number; scopes: Record<"session" | "daily" | "monthly", { spent: number; limit: number }> };
 
 export type ProviderSettings = {
   base_url: string;
@@ -148,6 +164,11 @@ export type Settings = {
   secrets?: SecretsInfo; // 只读：凭据存储后端说明
   providers: Record<string, ProviderSettings>;
   models: Record<string, ModelSettings>;
+  reasoning?: { effort: Effort | string };
+  roles?: Record<string, string>;
+  title?: { ai: boolean };
+  style?: { default: string };
+  budget?: BudgetSettings;
 };
 
 /** key 来源：store=凭据存储（Windows 凭据管理器），plain=旧版 config.toml 明文（启动时迁移），env=环境变量 */
@@ -266,7 +287,18 @@ export type SettingsResponse = {
   path: string;
   project_sources: string[];
   settings: Settings;
-  choices: { shells: string[]; modes: string[]; families: string[]; themes: string[]; search_backends?: string[]; fetch_backends?: string[] };
+  choices: {
+    shells: string[];
+    modes: string[];
+    families: string[];
+    themes: string[];
+    search_backends?: string[];
+    fetch_backends?: string[];
+    efforts?: string[];
+    roles?: string[];
+    budget_actions?: string[];
+    styles?: StyleInfo[];
+  };
 };
 
 export type DiffFile = {

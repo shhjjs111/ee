@@ -20,7 +20,7 @@ describe("slash", () => {
   it("lists commands by prefix, prompts after builtins, no duplicates", () => {
     const all = slashItems("/", prompts, models)!;
     expect(all.map((i) => i.key)).toEqual([
-      "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:plan", "builtin:memory",
+      "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:effort", "builtin:style", "builtin:plan", "builtin:memory",
       "builtin:review", "builtin:commit", "builtin:mcp",
       "prompt:init",
     ]);
@@ -74,5 +74,31 @@ describe("slash", () => {
     expect(resolveMode("只读")).toBe("read-only");
     expect(resolveMode("AUTO")).toBe("auto");
     expect(resolveMode("xx")).toBeNull();
+  });
+});
+
+describe("D5-9 /effort 与 /style", () => {
+  it("解析推理强度与风格", async () => {
+    const { resolveEffort, resolveStyle, effortLabel } = await import("./slash");
+    expect(resolveEffort("高")).toBe("high");
+    expect(resolveEffort("low")).toBe("low");
+    expect(resolveEffort("默认")).toBe("");
+    expect(resolveEffort("关闭")).toBe("off");
+    expect(resolveEffort("超级")).toBeNull();
+    expect(effortLabel("medium")).toBe("中");
+    const styles = [{ id: "default", label: "默认" }, { id: "tutor", label: "作业辅导" }];
+    expect(resolveStyle("作业辅导", styles)).toBe("tutor");
+    expect(resolveStyle("tutor", styles)).toBe("tutor");
+    expect(resolveStyle("nope", styles)).toBeNull();
+  });
+  it("子菜单列出档位和风格", async () => {
+    const { slashItems } = await import("./slash");
+    const eff = slashItems("/effort ", [], [], [], [])!;
+    expect(eff.map((x) => x.label)).toEqual(["默认", "低", "中", "高", "关闭思考"]);
+    expect(eff[3].action).toEqual({ run: "/effort high" });
+    const st = slashItems("/style 作业", [], [], [], [{ id: "tutor", label: "作业辅导", description: "引导" }])!;
+    expect(st).toHaveLength(1);
+    expect(st[0].action).toEqual({ run: "/style tutor" });
+    expect(slashItems("/eff", [], [])!.some((x) => x.label.startsWith("/effort"))).toBe(true);
   });
 });
