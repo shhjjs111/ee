@@ -687,7 +687,7 @@ async def pre_tool_use(session, call_id: str, tool, args: dict, emit) -> PreResu
 def adjust_decision(d, pre: PreResult):
     """PreToolUse 的 permissionDecision：allow 把“要问”变成“允许”（deny 规则不受影响）；ask 把“允许”变成“要问”。"""
     from ee.core.permissions import Decision
-    if pre.permission == "allow" and d.action == "ask":
+    if pre.permission == "allow" and d.action == "ask" and not getattr(d, "force", False):
         return Decision("allow", "Hook 允许", d.prefix)
     if pre.permission == "ask" and d.action == "allow":
         return Decision("ask", "Hook 要求确认", d.prefix, force=True)

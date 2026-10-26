@@ -443,3 +443,13 @@ def test_rpc_list_test_and_notice_items(ee_home, workspace, hook_py, tmp_path):
         assert any("还没被允许" in x for x in texts)
         assert not fake.calls
     asyncio.run(go())
+
+
+def test_hook_allow_does_not_skip_forced_ask():
+    """Hook 返回 allow 不能跳过危险命令的强制确认（2026-10-26 审查补）。"""
+    from ee.core.hooks import PreResult, adjust_decision
+    from ee.core.permissions import Decision
+    forced = Decision("ask", "危险", "", force=True)
+    assert adjust_decision(forced, PreResult(args={}, permission="allow")).action == "ask"
+    normal = Decision("ask", "要问", "npm run")
+    assert adjust_decision(normal, PreResult(args={}, permission="allow")).action == "allow"
