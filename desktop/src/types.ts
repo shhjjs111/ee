@@ -161,6 +161,10 @@ export type Settings = {
   subagent?: SubagentSettings;
   memory?: MemorySettings;
   skills?: SkillsSettings;
+  /** 精简模式：full 完整（默认）/ lean 只有 read/write/edit/shell + 短提示词；新对话生效 */
+  profile?: "full" | "lean";
+  todo?: boolean;
+  present_plan?: boolean;
   mcp?: McpSettings;
   secrets?: SecretsInfo; // 只读：凭据存储后端说明
   providers: Record<string, ProviderSettings>;
@@ -240,7 +244,7 @@ export type McpServerStatus = {
 };
 export type McpListResponse = { enabled: boolean; servers: McpServerStatus[]; errors: string[]; project_json: string | null };
 export type SubagentSettings = { enabled: boolean; max_steps: number; max_parallel?: number; worktree?: boolean };
-export type MemorySettings = { enabled: boolean; workspace: boolean; max_bytes: number };
+export type MemorySettings = { enabled: boolean; workspace: boolean; max_bytes: number; inject?: boolean; tool?: boolean };
 /** [skills]：总开关、兼容 .claude/.agents 目录、禁用的技能名、清单长度上限（D5-5）。 */
 export type SkillsSettings = { enabled: boolean; compat: boolean; disabled: string[]; max_chars: number };
 export type MemoryFile = { path: string; exists: boolean; text: string; entries: string[] };

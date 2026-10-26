@@ -209,8 +209,12 @@ def _d2_out(data: dict) -> dict:
         "subagent": {"enabled": bool(sa.get("enabled", True)), "max_steps": int(sa.get("max_steps", 30)),
                      "max_parallel": int(sa.get("max_parallel", 3) or 3), "worktree": bool(sa.get("worktree", True))},
         "memory": {"enabled": bool(mem.get("enabled", True)), "workspace": bool(mem.get("workspace", True)),
-                   "max_bytes": int(mem.get("max_bytes", 8192))},
+                   "max_bytes": int(mem.get("max_bytes", 8192)),
+                   "inject": bool(mem.get("inject", True)), "tool": bool(mem.get("tool", True))},
         "skills": _skills_out(data),
+        "profile": _agent_profile(data),                       # 精简模式 full / lean（新对话生效）
+        "todo": bool(data.get("todo", True)),
+        "present_plan": bool(data.get("present_plan", True)),
     }
 
 
@@ -239,7 +243,21 @@ def _skills_in(n: dict, out: dict) -> None:
     out["skills"] = sk
 
 
+def _agent_profile(data: dict) -> str:
+    from ee.tools import agent_profile
+    return agent_profile(data)
+
+
 def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
+    from ee.tools import AGENT_PROFILES
+    if new.get("profile") is not None:
+        v = str(new["profile"]).strip().lower()
+        if v not in AGENT_PROFILES:
+            raise ValueError(f"未知模式：{new['profile']}（可选 full / lean）")
+        out["profile"] = v
+    for k in ("todo", "present_plan"):
+        if new.get(k) is not None:
+            out[k] = bool(new[k])
     if isinstance(new.get("web"), dict):
         n = new["web"]
         w = dict(out.get("web") or {})
@@ -304,7 +322,7 @@ def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
     if isinstance(new.get("memory"), dict):
         n = new["memory"]
         mem = dict(out.get("memory") or {})
-        for k in ("enabled", "workspace"):
+        for k in ("enabled", "workspace", "inject", "tool"):
             if n.get(k) is not None:
                 mem[k] = bool(n[k])
         if n.get("max_bytes") not in (None, ""):

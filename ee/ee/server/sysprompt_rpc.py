@@ -56,7 +56,13 @@ def register(methods: dict, backend) -> None:
             style = s.style if s is not None else (sdef if ST.exists(backend.home, sdef) else "default")
             seg = ST.system_segment(ST.get(backend.home, style))
             custom = SP.resolve(where, backend.home, cfg.data)
-            text = system_prompt(spec.profile, seg, custom)
+            if s is not None:
+                tools, agent = s.tools, s.agent_profile
+            else:     # 新对话会用的工具表与模式
+                from ee.tools import agent_profile, build_tools
+                agent = agent_profile(cfg)
+                tools = build_tools(spec.profile, cfg, agent=agent)
+            text = system_prompt(spec.profile, seg, custom, tools, agent)
             return {"text": text, "frozen": False, "model": spec.alias, "chars": len(text)}
         try:
             return await asyncio.to_thread(run)

@@ -9,8 +9,8 @@ class WriteTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "文件路径（绝对路径或相对工作目录）"},
-            "content": {"type": "string", "description": "完整文件内容"},
+            "path": {"type": "string"},
+            "content": {"type": "string"},
         },
         "required": ["path", "content"],
     }

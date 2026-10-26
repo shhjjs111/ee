@@ -32,7 +32,7 @@ def _turn(workspace, script_n=1):
 def test_default_is_byte_identical(ee_home, workspace):
     s, fake, ev = _turn(workspace)
     from ee.core import styles as ST
-    expect = system_prompt(s.profile, ST.system_segment(ST.get(ee_home, "default")))
+    expect = system_prompt(s.profile, ST.system_segment(ST.get(ee_home, "default")), None, s.tools, s.agent_profile)
     assert _sent_system(fake) == expect
     assert _sent_system(fake).startswith(builtin_base())
     assert not s.system_sources().customized
@@ -60,7 +60,8 @@ def test_append_after_patch_and_patch_switch(ee_home, workspace):
     (ee_home / "config.toml").write_text("[system_prompt]\nmodel_patch = false\n", encoding="utf-8")
     s2, fake2, _ = _turn(workspace)
     t2 = _sent_system(fake2)
-    assert patch not in t2 and t2 == builtin_base() + "\n\n追加：回答末尾写“完”。\n"
+    assert patch not in t2 and t2.startswith(builtin_base()) and t2.endswith("\n\n追加：回答末尾写“完”。\n")
+    assert t2 == system_prompt(s2.profile, "", s2.system_sources(), s2.tools, s2.agent_profile)
 
 
 def test_untrusted_project_file_ignored_with_notice(ee_home, workspace):

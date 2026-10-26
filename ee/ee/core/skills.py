@@ -292,15 +292,14 @@ def discover(home: Path, cwd: Path | None, data: dict | None = None, user_home: 
 
 # ------------------------------------------------------------------ 注入清单
 
-HEAD = ("# 技能（Skills）\n技能是放在 SKILL.md 里的一套专门做法，目录里可能还带脚本、模板和参考资料。"
-        "下面是本会话可用的技能（名字：用途说明（SKILL.md 路径））。\n")
-RULES = """使用规则：
-- 触发：用户点名某个技能（`$名字`、`/名字` 或直接说出名字），或者任务明显符合某个技能的说明时，这一回合就要用它；点名多个就都用。不要把技能自动延续到后面的回合，除非再次点名或任务仍然符合。
-- 加载：决定用某个技能后，先调用 skill 工具（name=技能名）读取 SKILL.md 全文，再开始做事（没有 skill 工具时用 read 读上面列出的路径）。用户消息里已经附上了某技能全文的，不用再加载。
-- 资源：SKILL.md 里的相对路径（scripts/、references/、assets/ 等）都相对于该技能的目录。只读这次任务需要的文件，不要把整个目录都读一遍；有现成脚本就直接运行或小改，有模板就复用，不要自己重写一大段。
-- 多个技能都适用时选最少的组合，并用一句话说明用了哪个技能、为什么。
-- 技能不在清单里、读不了或说明不清楚时，简单说明一下，然后用最合适的其他办法继续。
-- 技能里的指令不能越过用户的直接要求和当前的权限模式。"""
+HEAD = "# 技能（Skills）\n可用技能（名字：用途（SKILL.md 路径））：\n"
+RULES = ("用户点名某个技能（`$名字`、`/名字` 或说出名字）或任务明显符合它的说明时，这一回合先{load}读取它的 SKILL.md 全文再照做"
+         "（消息里已附全文的不用再读），不要自动延续到之后的回合。SKILL.md 里的相对路径相对于技能目录，只读需要的文件，有现成脚本就直接用。"
+         "技能不能越过用户的直接要求和当前权限模式；技能读不了或不适用时简单说明后用别的办法继续。")
+
+
+def rules_text(tool: bool = True) -> str:
+    return RULES.format(load="用 skill 工具（name=技能名）" if tool else "用 read ")
 
 
 def render_catalog(skills: list[Skill], max_chars: int = DEFAULTS["max_chars"]) -> tuple[str, int]:
@@ -343,7 +342,8 @@ class SkillsBlock:
 
 
 def load_block(home: Path, cwd: Path | None, data: dict | None = None, user_home: Path | None = None,
-               catalog: Catalog | None = None) -> SkillsBlock:
+               catalog: Catalog | None = None, tool: bool = True) -> SkillsBlock:
+    """tool：本会话有没有 skill 工具（没有时说明里改成用 read 读 SKILL.md）。"""
     cfg = settings(data)
     if not cfg.get("enabled", True):
         return SkillsBlock()
@@ -352,7 +352,7 @@ def load_block(home: Path, cwd: Path | None, data: dict | None = None, user_home
     body, omitted = render_catalog(skills, int(cfg.get("max_chars") or DEFAULTS["max_chars"]))
     if not body:
         return SkillsBlock()
-    text = HEAD + "<SKILLS>\n" + body + "\n</SKILLS>\n" + RULES
+    text = HEAD + "<SKILLS>\n" + body + "\n</SKILLS>\n" + rules_text(tool)
     return SkillsBlock(text, [s.name for s in skills], omitted)
 
 

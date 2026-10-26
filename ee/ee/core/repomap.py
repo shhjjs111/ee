@@ -818,8 +818,7 @@ def build_map(cwd: Path, home: Path, max_tokens: int, focus: list[str] | None = 
     return text, info
 
 
-INJECT_HEAD = ("<repo-map>\n以下是会话开始时生成的仓库地图：按引用关系排名的关键定义（行号│签名行），"
-               "只是索引，代码可能已变；要细节请 read 对应文件，要换个范围或关注点请调用 repo_map。\n")
+INJECT_HEAD = "<repo-map>\n会话开始时的仓库地图（关键定义，行号│签名行；只是索引，要细节请 read）：\n"
 
 
 def startup_message(cwd: Path, home: Path, data: dict | None) -> dict | None:

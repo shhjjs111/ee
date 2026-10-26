@@ -19,10 +19,10 @@ class AskUserTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "question": {"type": "string", "description": "要问用户的问题（一句话说清楚，必要时附背景）"},
+            "question": {"type": "string", "description": "问题（一句话，必要时附背景）"},
             "options": {"type": "array", "items": {"type": "string"},
-                        "description": f"可选的答案（2～{MAX_OPTIONS} 个，简短）；推荐的放第一个并在后面写“（推荐）”。不给就是开放式问题"},
-            "multiple": {"type": "boolean", "description": "是否可以多选，默认单选"},
+                        "description": f"候选答案（2～{MAX_OPTIONS} 个）；不给就是开放式问题"},
+            "multiple": {"type": "boolean"},
         },
         "required": ["question"],
     }

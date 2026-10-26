@@ -85,9 +85,25 @@ def _normpath(p: Path) -> str:
     return os.path.normpath(str(p))
 
 
-def load_description(name: str) -> str:
+RULES_MARK = "## 规则"
+
+
+def _tool_doc(name: str) -> tuple[str, list[str]]:
+    """prompts/tools/<name>.md：「## 规则」之前是工具描述（进 tool schema），之后每个 `- ` 开头的行是一条规则
+    （只在工具启用时拼进系统提示词的「工具使用规则」段，见 core/context.py）。"""
     f = resources.files("ee") / "prompts" / "tools" / f"{name}.md"
-    return f.read_text(encoding="utf-8").strip()
+    text = f.read_text(encoding="utf-8")
+    desc, _, rest = text.partition("\n" + RULES_MARK)
+    rules = [ln[2:].strip() for ln in rest.splitlines() if ln.startswith("- ") and ln[2:].strip()]
+    return desc.strip(), rules
+
+
+def load_description(name: str) -> str:
+    return _tool_doc(name)[0]
+
+
+def load_rules(name: str) -> list[str]:
+    return _tool_doc(name)[1]
 
 
 class Tool:
@@ -96,7 +112,7 @@ class Tool:
     parameters: dict = {}
 
     def __init__(self) -> None:
-        self.description = load_description(self.name)
+        self.description, self.rules = _tool_doc(self.name)
 
     def schema(self) -> dict:
         return {"type": "function",

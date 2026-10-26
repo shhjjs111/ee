@@ -10,18 +10,36 @@ from ee.tools.shell import ShellTool
 from ee.tools.todo import TodoTool
 from ee.tools.write import WriteTool
 
-__all__ = ["Tool", "ToolContext", "ToolError", "ToolResult", "ToolState", "build_tools"]
+__all__ = ["AGENT_PROFILES", "Tool", "ToolContext", "ToolError", "ToolResult", "ToolState", "agent_profile", "build_tools",
+           "tool_rules"]
 
 # 可选工具按配置追加到末尾，顺序固定：web_search、web_fetch、task（子代理）、memory、skill。
 # 配置在会话开始时决定工具表（之后冻结进前缀）；设置页改开关从新会话起生效。
 
 
-def build_tools(profile, config=None) -> list[Tool]:
+AGENT_PROFILES = ("full", "lean")
+
+
+def agent_profile(config=None) -> str:
+    """配置 profile：full（默认，完整工具表）| lean（精简：只有 read/write/edit/shell + 短系统提示词）。"""
+    data = getattr(config, "data", config) or {}
+    v = str(data.get("profile") or "full").strip().lower()
+    return v if v in AGENT_PROFILES else "full"
+
+
+def build_tools(profile, config=None, agent: str | None = None) -> list[Tool]:
+    """agent：full / lean，默认取配置；会话开始时决定，之后冻结。lean 的工具表与 full 的前四个逐字节相同（除 shell 的 background 说明）。"""
     from ee.tools.plan import PresentPlanTool
-    tools: list[Tool] = [ReadTool(), WriteTool(), EditTool(), ShellTool(), GrepTool(), GlobTool(), TodoTool(),
-                         PresentPlanTool()]
     data0 = getattr(config, "data", config) or {}
-    if data0.get("background_shell", True):
+    if (agent or agent_profile(config)) == "lean":
+        return [ReadTool(), WriteTool(), EditTool(), ShellTool(bg_tools=False)]
+    bg = bool(data0.get("background_shell", True))
+    tools: list[Tool] = [ReadTool(), WriteTool(), EditTool(), ShellTool(bg_tools=bg), GrepTool(), GlobTool()]
+    if data0.get("todo", True):                  # 开关：todo 计划清单（默认开）
+        tools.append(TodoTool())
+    if data0.get("present_plan", True):          # 开关：计划模式的 present_plan（默认开；关掉时计划模式用文字给方案）
+        tools.append(PresentPlanTool())
+    if bg:
         from ee.tools.bgshell import ShellKillTool, ShellOutputTool, ShellWriteTool
         tools += [ShellOutputTool(), ShellWriteTool(), ShellKillTool()]
     if data0.get("ask_user", True):
@@ -48,10 +66,20 @@ def build_tools(profile, config=None) -> list[Tool]:
         from ee.tools.agent import TaskTool
         tools.append(TaskTool())
     mem = data.get("memory") or {}
-    if mem.get("enabled", True):
+    if mem.get("enabled", True) and mem.get("tool", True):     # memory.tool：只关工具、保留注入
         from ee.tools.memory import MemoryTool
         tools.append(MemoryTool(workspace_enabled=bool(mem.get("workspace", True))))
     if (data.get("skills") or {}).get("enabled", True):      # 技能（D5-5）
         from ee.tools.skill import SkillTool
         tools.append(SkillTool())
     return tools
+
+
+def tool_rules(tools) -> list[str]:
+    """启用的工具各自带的使用规则，按工具顺序拼接、去重（拼进系统提示词，见 core/context.system_prompt）。"""
+    out: list[str] = []
+    for t in tools:
+        for r in getattr(t, "rules", None) or []:
+            if r not in out:
+                out.append(r)
+    return out

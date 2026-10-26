@@ -24,16 +24,24 @@ def load_prompt(rel_path: str) -> str:
     return f.read_text(encoding="utf-8").strip()
 
 
-def builtin_base(profile=None) -> str:
-    """内置基础段。用户的 SYSTEM.md（core/sysprompt.py）替换的就是这一段。"""
-    return load_prompt("system/base.md")
+def builtin_base(profile=None, agent: str = "full") -> str:
+    """内置基础段：agent=full 用 system/base.md，lean（精简模式）用 system/lean.md。用户的 SYSTEM.md（core/sysprompt.py）替换的就是这一段。"""
+    return load_prompt("system/lean.md" if agent == "lean" else "system/base.md")
 
 
-def system_prompt(profile, style_segment: str = "", custom=None) -> str:
+def system_prompt(profile, style_segment: str = "", custom=None, tools=None, agent: str = "full") -> str:
     """style_segment：回答风格段（core/styles.py），附在最末尾；默认风格为空，system 与没有风格时逐字节相同。
     custom：sysprompt.SystemSources（SYSTEM.md 替换基础段、APPEND_SYSTEM.md 追加、模型补丁开关）；
-    None 或没有任何自定义时与原来逐字节相同。"""
-    base = builtin_base(profile)
+    None 或没有任何自定义时与原来逐字节相同。
+    tools：本会话启用的工具，它们各自的使用规则（prompts/tools/*.md 的「## 规则」）去重后拼成「工具使用规则」段，
+    紧跟内置基础段；SYSTEM.md 替换的是「内置基础段 + 工具使用规则」整体（用户完全接管，工具描述本身仍在 tools 里）。
+    agent：full / lean，决定内置基础段用哪份。"""
+    base = builtin_base(profile, agent)
+    if tools:
+        from ee.tools import tool_rules
+        rules = tool_rules(tools)
+        if rules:
+            base += "\n\n# 工具使用规则\n" + "\n".join(f"- {r}" for r in rules)
     use_patch = True
     if custom is not None:
         if custom.system is not None:
@@ -84,16 +92,22 @@ PLAN_NOTE = ("计划模式：现在只调研、出方案，不修改任何文件
              "3. 提交后本回合结束，等用户批准；用户可能提修改意见，按意见改完再次 present_plan。\n")
 
 
+PLAN_NOTE_TEXT = ("计划模式：现在只调研、出方案，不修改任何文件（写文件和非只读命令都会被拒绝）。"
+                  "先读代码弄清要改哪里、为什么；想清楚后直接用文字给出方案（目标、要改的文件和改法、步骤、风险和验证方法），"
+                  "然后结束回合，等用户批准并切换到可写模式后再动手。\n")
+
+
 def env_parts(cwd: Path, shell, git: gitinfo.GitStatus | None, gh_available: bool, mode_label: str,
-              today: str | None = None) -> dict[str, str]:
-    """返回 name → 内容。每个子块独立比较变化；量化到“天”，避免无谓抖动。"""
+              today: str | None = None, plan_tool: bool = True) -> dict[str, str]:
+    """返回 name → 内容。每个子块独立比较变化；量化到“天”，避免无谓抖动。
+    plan_tool=False：没有 present_plan 工具（关掉或精简模式），计划模式改为用文字给方案。"""
     osname = {"Windows": "Windows", "Darwin": "macOS", "Linux": "Linux"}.get(platform.system(), platform.system())
     parts = {
         "env": (f"<env>\n工作目录：{cwd}\n操作系统：{osname} {platform.release()}\n"
                 f"日期：{today or time.strftime('%Y-%m-%d')}\n</env>"),
         "shell": (f"<shell>\n当前 shell：{shell.display}（{_syntax_hint(shell)}）\n</shell>" if shell else
                   "<shell>\n当前 shell：未知\n</shell>"),
-        "permissions": f"<permissions>\n权限模式：{mode_label}\n{PLAN_NOTE if mode_label == '计划' else ''}</permissions>",
+        "permissions": f"<permissions>\n权限模式：{mode_label}\n{(PLAN_NOTE if plan_tool else PLAN_NOTE_TEXT) if mode_label == '计划' else ''}</permissions>",
     }
     if git is not None and git.is_repo:
         dirty = f"{git.changed} 个已跟踪文件有改动，{git.untracked} 个未跟踪文件" if git.dirty else "工作区干净"

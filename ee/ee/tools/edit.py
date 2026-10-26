@@ -12,16 +12,15 @@ class EditTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "要修改的文件路径"},
+            "path": {"type": "string"},
             "edits": {
                 "type": "array",
-                "description": "一处或多处替换，每处都对照原文件匹配，不能重叠",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "old_string": {"type": "string", "description": "要被替换的原文（逐字复制，不含行号前缀）"},
-                        "new_string": {"type": "string", "description": "替换成的新文本"},
-                        "replace_all": {"type": "boolean", "description": "替换所有匹配处，默认 false"},
+                        "old_string": {"type": "string", "description": "原文（逐字复制，不含行号前缀）"},
+                        "new_string": {"type": "string"},
+                        "replace_all": {"type": "boolean"},
                     },
                     "required": ["old_string", "new_string"],
                 },

@@ -14,9 +14,9 @@ class RepoMapTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "只看这个子目录（相对工作目录），默认整个项目"},
+            "path": {"type": "string", "description": "只看这个子目录，默认整个项目"},
             "focus": {"type": "array", "items": {"type": "string"},
-                      "description": "关注的文件或符号名，相关定义排在前面，如 [\"session.py\", \"run_turn\"]"},
+                      "description": "关注的文件或符号名，相关定义排在前面"},
             "max_tokens": {"type": "integer", "description": "输出预算（token），默认约 1500，最大 8000"},
         },
     }

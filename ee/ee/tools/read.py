@@ -16,11 +16,11 @@ class ReadTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "文件路径（绝对路径或相对工作目录）"},
-            "offset": {"type": "integer", "description": "从第几行开始读（1 起），默认 1"},
+            "path": {"type": "string"},
+            "offset": {"type": "integer", "description": "起始行（从 1 起）"},
             "limit": {"type": "integer", "description": "最多读多少行，默认 2000"},
-            "pages": {"type": "string", "description": "PDF / PPTX 读哪些页，如 \"3\"、\"2-5\"、\"1,3,7-9\"；默认 PDF 前 50 页、PPTX 全部"},
-            "sheet": {"type": "string", "description": "Excel 工作表名或序号（1 起），默认第一个"},
+            "pages": {"type": "string", "description": "PDF/PPTX 页码，如 \"2-5\""},
+            "sheet": {"type": "string", "description": "Excel 工作表名或序号"},
         },
         "required": ["path"],
     }

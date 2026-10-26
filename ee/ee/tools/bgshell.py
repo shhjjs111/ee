@@ -56,9 +56,9 @@ class ShellOutputTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "后台命令 id（如 b1）"},
-            "wait": {"type": "integer", "description": f"没有新输出时最多等几秒（0～{MAX_WAIT}，默认 0）；进程结束或有新输出就立刻返回"},
-            "filter": {"type": "string", "description": "可选正则：只返回匹配的行（不匹配的新输出也算已读）"},
+            "id": {"type": "string"},
+            "wait": {"type": "integer", "description": f"没有新输出时最多等几秒（0～{MAX_WAIT}）"},
+            "filter": {"type": "string", "description": "只返回匹配这个正则的行"},
         },
         "required": ["id"],
     }
@@ -91,10 +91,10 @@ class ShellWriteTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "后台命令 id"},
-            "input": {"type": "string", "description": "写入 stdin 的文字；要回车就自己带 \\n"},
-            "close_stdin": {"type": "boolean", "description": "写完后关闭 stdin（发送 EOF）"},
-            "wait": {"type": "integer", "description": "写完后最多等几秒收集回应（默认 2）"},
+            "id": {"type": "string"},
+            "input": {"type": "string"},
+            "close_stdin": {"type": "boolean", "description": "写完后发送 EOF"},
+            "wait": {"type": "integer", "description": "写完后等几秒收集回应，默认 2"},
         },
         "required": ["id"],
     }
@@ -129,7 +129,7 @@ class ShellKillTool(Tool):
     read_only = True          # 只能结束 ee 自己启动的后台命令，不改文件
     parameters = {
         "type": "object",
-        "properties": {"id": {"type": "string", "description": "后台命令 id"}},
+        "properties": {"id": {"type": "string"}},
         "required": ["id"],
     }
 
