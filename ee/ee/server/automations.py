@@ -301,9 +301,34 @@ class Automations:
     def start(self) -> asyncio.Task:
         """在当前事件循环里起调度循环（ee serve 启动后调用）。"""
         if self._loop_task is None or self._loop_task.done():
+            try:
+                self._recover_stale_runs()
+            except Exception:  # noqa: BLE001
+                log.warning("清理遗留的运行中记录失败", exc_info=True)
             self._wake = asyncio.Event()
             self._loop_task = asyncio.create_task(self._loop(), name="ee-automations")
         return self._loop_task
+
+    def _recover_stale_runs(self) -> None:
+        """上次进程没正常结束时留在文件里的 status=running 记录（本进程里没在跑的）标为已中断。"""
+        if not self.store.path.exists():
+            return
+        now = self.clock()
+        live = set(self.running.values())
+
+        def fn(d):
+            stale = set()
+            for r in d["runs"]:
+                if r.get("status") == "running" and r["id"] not in live:
+                    r.update({"status": "interrupted", "finished": now,
+                              "summary": r.get("summary") or "ee 上次退出时这次运行还没结束，已中断"})
+                    stale.add(r["id"])
+            for x in d["automations"]:
+                if x.get("last_status") == "running" and (x.get("last_run_id") in stale or x["id"] not in self.running):
+                    x["last_status"] = "interrupted"
+            return stale
+        if self.store.update(fn):
+            log.info("已把上次遗留的运行中记录标为已中断")
 
     async def stop(self) -> None:
         if self._loop_task is not None:
@@ -530,11 +555,11 @@ class Automations:
             log.error("保存自动化运行结果失败", exc_info=True)
             unread = 0
         log.info("自动化 %s（%s）运行结束：%s", a["name"], a["id"], status)
+        if not view:                    # 运行中被删除：记录已随自动化删掉，不再推给桌面端
+            return
         self._notify("automation/run_updated", {"run": dict(run)})
-        if view:
-            self._notify("automation/updated", {"automation": self.view(view)})
-        self._notify("automation/run_done", {"run": dict(run), "unread": unread,
-                                             "automation": self.view(view) if view else None})
+        self._notify("automation/updated", {"automation": self.view(view)})
+        self._notify("automation/run_done", {"run": dict(run), "unread": unread, "automation": self.view(view)})
 
     async def wait_idle(self, timeout: float = 30) -> None:
         """等所有正在跑的运行结束（测试用）。"""
@@ -548,7 +573,9 @@ def _patch_run(d: dict, run: dict) -> None:
         if r["id"] == run["id"]:
             d["runs"][i] = dict(run)
             return
-    d["runs"].append(dict(run))
+    # 记录不在了：自动化已被删除（运行中删掉）就不再写回，免得留下没有归属的未读记录
+    if any(a.get("id") == run.get("automation_id") for a in d["automations"]):
+        d["runs"].append(dict(run))
 
 
 # ------------------------------------------------------------------ RPC
