@@ -144,6 +144,41 @@ class Printer:
             pass
 
 
+# ------------------------------------------------------------------ 无人值守的公共部分（ee exec 与自动化 D4-10 共用）
+def unattended_configure(max_steps: int | None = None, allow=(), deny=()) -> Callable:
+    """建会话前改配置：关掉 ask_user（没人回答）、可选步数上限、追加 allow/deny 规则。"""
+    allow, deny = list(allow or []), list(deny or [])
+
+    def configure(cfg) -> None:
+        d = cfg.data
+        d["ask_user"] = False                          # 没人回答问题
+        if max_steps:
+            d["max_steps"] = max(1, int(max_steps))
+        if allow or deny:
+            perms = dict(d.get("permissions") or {})
+            perms["allow"] = list(perms.get("allow") or []) + allow
+            perms["deny"] = list(perms.get("deny") or []) + deny
+            d["permissions"] = perms
+    return configure
+
+
+def auto_approve(thread, ev, approve: str, deny_reason: str = DENY_REASON,
+                 force_reason: str = FORCE_DENY_REASON) -> tuple[str, str]:
+    """无人值守时立即处理审批请求（Thread._on_event 已经登记好审批条目之后调用）。
+    approve="auto"：自动批准，强制询问类危险命令仍拒绝；其他一律拒绝并把原因告诉模型。
+    返回 (approved|denied, 原因)。"""
+    if approve == "auto" and not ev.force:
+        choice, reason = "once", ""
+    else:
+        choice, reason = "deny", (force_reason if ev.force else deny_reason)
+    if ev.call_id in thread.approvals:
+        thread.respond(ev.call_id, choice, reason)
+    elif ev.future is not None and not ev.future.done():
+        from ee.core.events import ApprovalDecision
+        ev.future.set_result(ApprovalDecision("deny_with_reason" if choice == "deny" else choice, reason))
+    return ("approved" if choice == "once" else "denied"), reason
+
+
 # ------------------------------------------------------------------ 线程（复用桌面端的 Thread：条目格式、落盘完全一致）
 def _make_thread_class():
     from ee.server.threads import Thread
@@ -198,16 +233,7 @@ def _make_thread_class():
                     first = (ev.output or "").strip().splitlines()[:1]
                     p.progress(f"  {'已拒绝' if status == 'denied' else '失败'}：{first[0][:200] if first else ''}")
             elif isinstance(ev, ApprovalRequest):
-                if self.approve == "auto" and not ev.force:
-                    choice, reason = "once", ""
-                else:
-                    choice, reason = "deny", (FORCE_DENY_REASON if ev.force else DENY_REASON)
-                if ev.call_id in self.approvals:
-                    self.respond(ev.call_id, choice, reason)
-                elif ev.future is not None and not ev.future.done():
-                    from ee.core.events import ApprovalDecision
-                    ev.future.set_result(ApprovalDecision("deny_with_reason" if choice == "deny" else choice, reason))
-                decision = "approved" if choice == "once" else "denied"
+                decision, reason = auto_approve(self, ev, self.approve)
                 p.event("approval", call_id=ev.call_id, tool=ev.tool, title=ev.title, decision=decision,
                         reason=reason)
                 p.progress(f"[审批] {'自动批准' if decision == 'approved' else '自动拒绝'}：{ev.title}")
@@ -273,17 +299,7 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
 
     cls = _make_thread_class()
 
-    def configure(cfg) -> None:
-        d = cfg.data
-        d["ask_user"] = False                          # 没人回答问题
-        if args.max_steps:
-            d["max_steps"] = max(1, int(args.max_steps))
-        if args.allow or args.deny:
-            perms = dict(d.get("permissions") or {})
-            perms["allow"] = list(perms.get("allow") or []) + list(args.allow)
-            perms["deny"] = list(perms.get("deny") or []) + list(args.deny)
-            d["permissions"] = perms
-
+    configure = unattended_configure(args.max_steps, args.allow, args.deny)
     kw = dict(client_factory=client_factory, persist=not args.no_persist, configure=configure)
     resumed = bool(args.resume or args.last)
     if resumed:

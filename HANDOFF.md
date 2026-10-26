@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-26 20:00（Asia/Shanghai，D5-6 仓库地图合并；pytest 356 过 2 跳过；并行分支 feat/d4-10-automations 进行中）
+最后更新：2026-10-26 20:10（Asia/Shanghai，D4-10 自动化、D5-6 仓库地图合并；pytest 381 过 2 跳过、vitest 27；无未合并并行分支）
 
-> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；远端还有一个并行分支未合并：`feat/d4-10-automations`（D4-10 自动化/定时任务）。它可能只推了 WIP，看分支最新提交信息里的“已完成/还差”继续做完；合并方法：`git merge --no-ff origin/<分支>`，冲突多在 app.py / settings.py / session.py / tools/__init__.py / SettingsPage.tsx / Sidebar.tsx，两边都是插入式改动，保留双方即可；合并后跑全量 pytest + 两个 tsc + vitest + build，在 HANDOFF 对应项打勾写做法（参考了谁、取了哪点），推 main 看 CI。之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
+> **接手第一步（2026-10-26 18:30）**：确认最新 Windows CI 绿；所有并行分支已合并（feat/* 可删）。之后 D5-2 子代理并行、D5-9 推理强度/按用途分模型。每个功能先对比 OpenCode/Codex/Cline/Aider/Goose/Continue 的做法，HANDOFF 写参考来源。
 > 2026-10-26 16:45 起由 Hark 项目「AI Agent 工作台」接手（同一 GitHub 账号 shhjjs111），用户要求火力全开按本文件路线推进、有问题就改。
 
 > 2026-10-26 14:10 起由新账号（GitHub shhjjs111 的 Hark）接手。接手者：先读最下面「D3 进度」，从第一个 [ ] 继续。
@@ -172,7 +172,12 @@
    - 细节：计划模式最终回答 = present_plan 的方案；stdin 按 utf-8-sig 解码（去 PowerShell BOM）；`-o` UTF-8 自动建目录；退出码 0 完成 / 1 出错 / 2 参数错误 / 3 步数上限 / 4 防死循环 / 130 Ctrl+C；Ctrl+C 第一次中断回合、第二次立即退出，结束后恢复原处理器；结束时一律 `session.bg.close()` 并关闭 MCP；`--resume` 校验 id 防路径穿越。
    - 测试 `tests/test_exec.py` 11 个（纯文本/stdout 与 stderr 分离/落盘 source=exec/无 ask_user；--json --stream 事件序列；只读拒写；--approve deny/auto 与危险命令；-o 与 stdin（BOM、空输入=2）；resume/--last 与非法 id；--no-persist；退出码；Ctrl+C=130；退出时结束后台命令）。合并后 pytest 311 通过 2 跳过。
    - 已知/后续：续接时 --mode 会改写会话模式；桌面端同时开着同一会话时要重新加载才看到 exec 追加的内容；exec 不把目录加进桌面端工作区列表；暂不支持 -i 图片、--output-schema、管道内容与参数合并；一次只跑一个回合；Windows 真机 Ctrl+C/控制台编码待 CI 与用户验证。
-10. [ ] ★自动化 / 定时任务 v1：项目上按 cron/间隔/每天几点跑提示词；ee serve 内调度器，持久化 ~/.ee/automations.json；每次新建会话、默认只读；结果进左栏「自动化」收件箱 + Windows 通知；关窗后托盘继续调度；错过的开机补跑一次；设置页增删改、立即运行、运行历史（依赖 1、5、9）
+10. [x] ★自动化 / 定时任务 v1（2026-10-26 20:10）
+   - 参考：每次运行新建对话、左栏「自动化」收件箱加未读、可选新 worktree、默认最窄权限取自 Codex 桌面版；5 段 cron、按自动化存运行历史、立即运行、暂停启用取自 Goose scheduler；调度三选一并预览接下来几次取自 Cline 的 cron 预设；上次没跑完跳过本次、错过只补跑一次借 Claude Code 思路；执行器复用 D4-9 无人值守逻辑；cron 自己解析，不加依赖。
+   - 后端：`core/schedule.py` 5 段 cron（`*`、范围、列表、步长、月/星期名、0 和 7 都是周日，日与星期同时限定取“或”），本地时间求下次，5 年内无触发报错；“每天”转 cron，“间隔”从上次开始运行起算。`server/automations.py`：`~/.ee/automations.json` 原子写（Windows 占用重试，坏文件改名 .bad），历史每个最多 100 条、总 1000 条；字段含项目、提示词、模型、权限模式（默认只读）、自动审批 deny/auto、worktree、超时（默认 60 分钟）、调度、启用、上次/下次时间；`ee serve` 启动 5 秒后起 asyncio 循环（最多睡 30 秒，增删改立即唤醒）；不并发（记 skipped）；next_run 已过只补跑一次（trigger=catchup）；每次新建 AutomationThread（meta source=automation、automation_id），用 `headless.unattended_configure` 关 ask_user、`headless.auto_approve` 自动审批；历史记状态、会话 id、摘要、未读，推送 `automation/*` 通知。RPC `automations/list|create|update|delete|run_now|runs|mark_read|preview`。
+   - 前端：左栏「自动化」入口带未读角标；`AutomationsPage.tsx` 列表（调度说明、下次运行、上次结果、启用、立即运行、编辑、删除）+ 运行收件箱（点开会话并标已读、全部已读）+ 新建/编辑弹窗（调度三选一实时预览 3 次、模型、权限、审批、超时、worktree）；`automationStore.ts` 订阅通知，运行结束 `window.ee.notify` 弹通知；自动化产生的对话不进左栏项目列表（正在看的、搜索结果除外）。
+   - 测试：`tests/test_automations.py` 25 个、`schedule.test.ts` 3 个；合并后 pytest 381 过 2 跳过、vitest 27。
+   - 已知/后续：管理入口在左栏自动化页而非设置页；只在 ee 运行（含托盘）时调度，无开机自启；一次运行一个回合；worktree 模式分支不自动清理；无会话内 /loop、RRULE（D5-3）；启动补跑早于桌面端连上时那条通知会漏（角标/收件箱正常）；真机 Windows 通知与托盘调度待验证。
 
 **D5 — 并行与扩展**
 1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. ★子代理并行（只读并发，写型走 worktree） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警 10. 修剪旧工具输出、fork 式子代理

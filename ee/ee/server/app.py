@@ -90,6 +90,8 @@ class Backend:
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
+        from ee.server import automations as automations_rpc
+        self.automations = automations_rpc.register(self.methods, self)   # automations/*（自动化 D4-10）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -617,8 +619,10 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             ready(real_port)
         else:
             print("EE_SERVE_READY " + json.dumps({"port": real_port, "pid": os.getpid()}), flush=True)
+        backend.automations.start()                    # 自动化调度（D4-10）：错过的启动后补跑一次
         await stop
     watchdog.stop()
+    await backend.automations.stop()
     for t in backend.threads.values():
         t.interrupt()
     try:

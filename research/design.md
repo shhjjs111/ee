@@ -162,3 +162,4 @@ ee/
 - [x] D5-4 Hooks（core/hooks.py、hooks/* RPC、HooksSettings）、D5-5 Skills（core/skills.py、tools/skill.py、skills/* RPC）（2026-10-26；详见 HANDOFF.md）
 - [ ] D4–D6（2026-10-26 重排，见 HANDOFF.md「D4–D6 路线」与 research/parity-audit.md）
 - 2026-10-26：D5-6 仓库地图（tree-sitter 定义/引用图排名，repo_map 只读工具，可选会话开始注入）合并。
+- 2026-10-26：D4-10 自动化 v1（ee serve 内调度，cron/每天/间隔，收件箱与通知）合并。

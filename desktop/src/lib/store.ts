@@ -5,7 +5,7 @@ import { applyItemNotification } from "./reduce";
 import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
 
-export type View = "chat" | "settings";
+export type View = "chat" | "settings" | "automations";
 export type Theme = "system" | "dark" | "light";
 export type RightTab = "review" | "terminal" | "files";
 export type SettingsSection = "general" | "models" | "tools" | "mcp" | "about";
