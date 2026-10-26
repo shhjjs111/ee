@@ -126,6 +126,7 @@ export type Settings = {
   web?: WebSettings;
   subagent?: SubagentSettings;
   memory?: MemorySettings;
+  mcp?: McpSettings;
   providers: Record<string, ProviderSettings>;
   models: Record<string, ModelSettings>;
 };
@@ -146,6 +147,44 @@ export type WebSettings = {
   deepseek_key_available?: boolean;
   keys: { tavily: WebKeySettings; brave: WebKeySettings };
 };
+/** 设置里的一个 MCP 服务器（[mcp.servers.<名>]）。stdio 用 command/args/env/cwd；远程用 url/headers/type。 */
+export type McpServerSettings = {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  type?: "" | "http" | "sse" | string;
+  enabled: boolean;
+  trusted: boolean;
+};
+export type McpSettings = {
+  enabled: boolean;
+  startup_timeout: number;
+  tool_timeout: number;
+  project_json: boolean;
+  allowed_project: string[];
+  servers: Record<string, McpServerSettings>;
+};
+export type McpToolInfo = { name: string; description: string; read_only: boolean };
+/** mcp/list、mcp/test 返回的一行。 */
+export type McpServerStatus = {
+  name: string;
+  transport: "stdio" | "http" | "sse" | string;
+  command: string;
+  args: string[];
+  url: string;
+  enabled: boolean;
+  trusted: boolean;
+  source: "user" | "project" | string;
+  allow_id: string;
+  status: "idle" | "connecting" | "ready" | "error" | "disabled" | "needs_approval" | string;
+  error: string;
+  tools: McpToolInfo[];
+  server_info?: { name?: string; version?: string } | null;
+};
+export type McpListResponse = { enabled: boolean; servers: McpServerStatus[]; errors: string[]; project_json: string | null };
 export type SubagentSettings = { enabled: boolean; max_steps: number };
 export type MemorySettings = { enabled: boolean; workspace: boolean; max_bytes: number };
 export type MemoryFile = { path: string; exists: boolean; text: string; entries: string[] };

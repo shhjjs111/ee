@@ -147,4 +147,5 @@ ee/
 - [x] D3-B 斜杠命令与自定义提示（2026-10-26）：core/prompts.py + server/prompts_rpc.py，前端 lib/slash.ts + SlashMenu；内置 /init。
 - [x] D3-E 分叉 / 编辑重发（2026-10-26）：server/branch.py，用户条目 hist/snap，store truncate 记录。
 - [x] D3-D 图片附件（2026-10-26）：core/attachments.py，_images + wire_messages 分块，deepseek-flash vision=true。
-- [ ] D3 其余：A MCP、F key 安全存储（方案见 research/d3-plan.md）
+- [x] D3-A MCP（2026-10-26）：ee/ee/mcp/（config/client/schema/manager/tool），RPC mcp/list、mcp/test，权限 mcp__ 分支，设置页 McpSettings.tsx。
+- [ ] D3-F key 安全存储（方案见 research/d3-plan.md F 节）

@@ -219,7 +219,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         return true;
       case "mcp":
         clearInput();
-        s.openSettings("tools"); // TODO(D3-A)：MCP 设置分区做好后改成 "mcp"
+        s.openSettings("mcp");
         return true;
     }
     if (!prompts.some((x) => x.name === name)) {

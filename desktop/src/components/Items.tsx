@@ -19,6 +19,7 @@ import {
   SquareTerminal,
   Wrench,
   X,
+  Plug,
 } from "lucide-react";
 import React, { useState } from "react";
 import { diffStat, formatDuration, shortPath } from "../lib/reduce";
@@ -388,13 +389,21 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   if (item.name === "web_search") return <WebSearchCard item={item} />;
   if (item.name === "web_fetch") return <WebFetchCard item={item} />;
 
+  const mcp = item.meta?.kind === "mcp";
   return (
     <Row
-      icon={<Wrench size={14} />}
+      icon={mcp ? <Plug size={14} /> : <Wrench size={14} />}
       title={
-        <>
-          {running ? "正在使用" : "使用了"} <Mono>{item.name}</Mono>
-        </>
+        mcp ? (
+          <>
+            {running ? "正在调用" : "调用了"} <Mono>{String(item.meta?.tool ?? item.name)}</Mono>
+            <span className="ml-1 text-faint">（MCP · {String(item.meta?.server ?? "")}）</span>
+          </>
+        ) : (
+          <>
+            {running ? "正在使用" : "使用了"} <Mono>{item.name}</Mono>
+          </>
+        )
       }
       active={running}
       tone={failed ? "error" : undefined}
