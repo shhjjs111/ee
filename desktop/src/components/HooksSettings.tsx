@@ -1,7 +1,7 @@
 // 设置页「Hooks」分区（D5-4）：总开关、我的 Hooks（增删改、测试运行）、项目 Hooks（允许 / 撤销、测试运行）、写法说明。
 import clsx from "clsx";
 import { FlaskConical, Plus, RefreshCw, ShieldCheck, Trash2, Webhook } from "lucide-react";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   commandFromText,
   commandText,
@@ -211,22 +211,31 @@ export function HooksSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   }, [s.rpc, cwd]);
   useEffect(reload, [reload, resp]);
 
+  // 每次测试一个令牌：测试期间改了 / 删了这个 Hook，旧结果回来时丢掉（不显示在新内容下面）
+  const testGen = useRef(0);
+  const testTok = useRef<Record<string, number>>({});
   const runTest = async (key: string, event: HookEvent, hook: HookEntry | HookSummary, allowId?: string) => {
+    const tok = ++testGen.current;
+    testTok.current[key] = tok;
     setTests((t) => ({ ...t, [key]: { busy: true } }));
     try {
       const { matcher, command, timeout, shell } = hook;
       const r: HookTestResult = await s.rpc!.call("hooks/test", { event, hook: { matcher, command, timeout, shell }, cwd, allow_id: allowId ?? null }, 660_000);
+      if (testTok.current[key] !== tok) return;
       setTests((t) => ({ ...t, [key]: { busy: false, result: r } }));
     } catch (e) {
+      if (testTok.current[key] !== tok) return;
       setTests((t) => ({ ...t, [key]: { busy: false, err: (e as Error).message } }));
     }
   };
-  const clearTest = (key: string) =>
+  const clearTest = (key: string) => {
+    delete testTok.current[key];
     setTests((t) => {
       const r = { ...t };
       delete r[key];
       return r;
     });
+  };
 
   const allowed = new Set(hooks.allowed_project);
   const total = HOOK_EVENTS.reduce((n, ev) => n + (hooks.events[ev]?.length ?? 0), 0);
@@ -273,6 +282,7 @@ export function HooksSettings({ draft, resp, up }: { draft: Settings; resp: Sett
                         setEvent(ev, (hooks.events[ev] ?? []).map((x, j) => (j === i ? nh : x)));
                       }}
                       onDelete={() => {
+                        testTok.current = {};
                         setTests({});
                         setEvent(ev, (hooks.events[ev] ?? []).filter((_, j) => j !== i));
                       }}

@@ -19,22 +19,27 @@ function statusText(p: BgProc) {
   return `已退出 · ${p.exit_code ?? "?"}`;
 }
 
-function OutputDialog({ threadId, proc, onClose }: { threadId: string; proc: BgProc; onClose: () => void }) {
+export function OutputDialog({ threadId, proc, onClose }: { threadId: string; proc: BgProc; onClose: () => void }) {
   const rpc = useApp((s) => s.rpc);
   const live = useApp((s) => s.bgProcs[threadId]?.find((x) => x.id === proc.id)) ?? proc;
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const box = useRef<HTMLPreElement>(null);
+  const seq = useRef(0); // 只采用最后一次发出的读取结果（轮询和手动刷新可能乱序返回）；关闭后不再更新
   const load = async () => {
+    const my = ++seq.current;
     try {
       const r = await rpc!.call("shell/read", { thread_id: threadId, id: proc.id, tail: 60000 });
+      if (my !== seq.current) return;
       setText(r.output as string);
       setErr(null);
       requestAnimationFrame(() => box.current && (box.current.scrollTop = box.current.scrollHeight));
     } catch (e) {
+      if (my !== seq.current) return;
       setErr((e as Error).message);
     }
   };
+  useEffect(() => () => void ++seq.current, []);
   useEffect(() => {
     load();
     if (live.status !== "running") return;
