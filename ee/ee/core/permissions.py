@@ -142,6 +142,7 @@ FORCE_ASK_PATTERNS = [
     (r"\bgit\s+push\b.*--force-with-lease", "强制推送"),
     (r"\bgit\s+(checkout|restore)\b.*\s(--\s|\.\s*$|--worktree)", "丢弃工作区改动"),
     (r"\bgit\s+branch\b.*\s-D\b", "强制删除分支"),
+    (r"\bgit\b.*\bworktree\s+remove\b.*\s(--force|-f)\b", "强制删除 worktree 会丢弃其中未提交的改动"),
     (r"\bgit\s+stash\s+(drop|clear)\b", "删除 stash"),
     (r"\brm\s+.*(-[a-z]*r|--recursive)", "递归删除"),
     (r"\b(remove-item|ri)\b.*-recurse", "PowerShell 递归删除"),

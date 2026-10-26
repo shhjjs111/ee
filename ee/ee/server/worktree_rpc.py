@@ -37,18 +37,26 @@ def register(methods: dict, backend) -> None:
     async def diff(path: str) -> dict:
         return await _call(W.diff, path, backend.home)
 
+    def _in_wt(t, path: str) -> bool:    # 会话 cwd 是这个 worktree 或它的子目录
+        key, cwd = W._norm(path), W._norm(t.meta.get("cwd", "") or ".")
+        return cwd == key or cwd.startswith(key + "/")
+
+    def _refuse_running(path: str) -> None:
+        for t in list(backend.threads.values()):
+            if t.running and _in_wt(t, path):
+                raise RpcError("这个 worktree 里还有对话在运行，先停止它")
+
     async def merge(path: str, squash: bool = False) -> dict:
+        _refuse_running(path)            # 运行中合并会把改到一半的文件自动提交进主目录
         r = await _call(W.merge, path, bool(squash), backend.home)
         backend.notify("git/changed", {"cwd": r["repo"]})
         return r
 
     async def remove(path: str, delete_branch: bool = False, force: bool = False) -> dict:
-        for t in list(backend.threads.values()):     # 在这个 worktree 里还在跑的会话先停
-            if W._norm(t.meta.get("cwd", "")) == W._norm(path) and t.running:
-                raise RpcError("这个 worktree 里还有对话在运行，先停止它")
+        _refuse_running(path)            # 在这个 worktree 里还在跑的会话先停
         r = await _call(W.remove, path, bool(delete_branch), bool(force), backend.home)
         for t in list(backend.threads.values()):
-            if W._norm(t.meta.get("cwd", "")) == W._norm(path) and t.session is not None:
+            if _in_wt(t, path) and t.session is not None:
                 await t.session.bg.close()
         return r
 

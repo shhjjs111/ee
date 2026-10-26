@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -88,6 +89,16 @@ class DiskSnapshot:
                 self._run("config", k, v)
             (self.gitdir / "ee-worktree.txt").write_text(str(self.worktree), encoding="utf-8")
         self._write_excludes([])
+        # 影子仓库的 info/attributes 优先级最高：屏蔽项目 .gitattributes 里的 text/eol/filter（LFS）/编码转换，
+        # 快照和恢复都按原始字节，否则 eol=crlf 之类会让恢复出来的文件换行符和快照时不一样
+        attrs = self.gitdir / "info" / "attributes"
+        want = "* -text -eol -filter -ident -working-tree-encoding\n"
+        try:
+            cur = attrs.read_text(encoding="utf-8")
+        except OSError:
+            cur = ""
+        if cur != want:
+            attrs.write_text(want, encoding="utf-8")
         self._ready = True
 
     def _write_excludes(self, big: list[str]) -> None:
@@ -101,7 +112,7 @@ class DiskSnapshot:
         else:
             lines += DEFAULT_EXCLUDES
         if big:
-            lines += [_BEGIN, *("/" + p.replace("\\", "/") for p in big), _END]
+            lines += [_BEGIN, *("/" + _literal(p.replace("\\", "/")) for p in big), _END]
         f = self.gitdir / "info" / "exclude"
         f.parent.mkdir(parents=True, exist_ok=True)
         text = "\n".join(lines) + "\n"
@@ -179,6 +190,13 @@ class DiskSnapshot:
     def _inside(self, rel: str) -> bool:
         full = os.path.realpath(self.worktree / rel)
         return full == str(self.worktree) or full.startswith(str(self.worktree) + os.sep)
+
+
+def _literal(rel: str) -> str:
+    """把文件名转成只匹配它自己的 gitignore 规则（转义 * ? [ \\ 和行尾空格；调用方会在前面加 /）。"""
+    s = re.sub(r"([\\*?\[])", r"\\\1", rel)
+    n = len(s) - len(s.rstrip(" "))
+    return s[:len(s) - n] + "\\ " * n if n else s
 
 
 def _chunks(xs: list[str], n: int):

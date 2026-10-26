@@ -37,7 +37,7 @@ def _git(args: list[str], cwd: Path | str, timeout: float = 60, check: bool = Tr
     exe = gitinfo.git_exe()
     if not exe:
         raise WorktreeError("没有找到 git，worktree 需要安装 Git")
-    code, out, err = run_capture([exe, "-c", "core.quotepath=false", *args], cwd=cwd, timeout=timeout)
+    code, out, err = run_capture([exe, "-c", "core.quotepath=false", "-c", "core.longpaths=true", *args], cwd=cwd, timeout=timeout)
     if check and code != 0:
         msg = (err or out).decode("utf-8", "replace").strip() or f"git {' '.join(args[:2])} 失败（{code}）"
         raise WorktreeError(msg[:2000])
@@ -84,10 +84,16 @@ def repo_root(cwd: Path | str) -> Path:
     return Path(out).resolve()
 
 
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def _slug(name: str) -> str:
     s = re.sub(r"[^\w\-.]+", "-", name.strip(), flags=re.UNICODE).strip("-.")
     s = re.sub(r"-{2,}", "-", s)
-    return s[:48]
+    s = s[:48].rstrip("-.")
+    if s.split(".")[0].upper() in _WIN_RESERVED:     # Windows 下 CON、NUL.txt 这类名字建不了目录
+        s = "wt-" + s
+    return s
 
 
 def _auto_name() -> str:
@@ -226,10 +232,20 @@ def _ident(cwd: Path) -> list[str]:
     return [] if (name and email) else ["-c", "user.name=ee", "-c", "user.email=ee@localhost"]
 
 
+def _dirty(p: Path) -> bool:
+    """严格版的“有没有未提交改动”：git 出错/超时直接报错，不当成干净。"""
+    return bool(_git(["status", "--porcelain", "-z", "--untracked-files=normal"], p, timeout=120).strip("\0 \n"))
+
+
 def _autosave(p: Path, msg: str) -> str | None:
     """有未提交改动就在 worktree 自己的分支上提交一次，返回提交 sha。"""
-    st = gitinfo.status(p)
-    if not st.dirty:
+    # 不用 gitinfo.status：它在超时/出错时返回“干净”，接下来的 --force 删除就会丢掉未提交的改动
+    top = _git(["rev-parse", "--show-toplevel"], p, timeout=30, check=False).strip()
+    if not top or _norm(top) != _norm(p):
+        if any(p.iterdir()):
+            raise WorktreeError(f"{p} 已不是有效的 git worktree，里面的文件没法自动保存；为免丢失没有删除，请手动检查后处理")
+        return None
+    if not _dirty(p):
         return None
     _git(["add", "-A"], p, timeout=120)
     _git([*_ident(p), "commit", "--no-verify", "-q", "-m", msg], p, timeout=120)
@@ -251,11 +267,14 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
         _git(["worktree", "remove", "--force", str(p).replace("\\", "/")], root, timeout=120, check=False)
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
+        if p.exists():                   # 有文件被占用：保留登记，别留下列表里看不到的孤儿目录
+            raise WorktreeError(f"目录没能删干净（可能有文件被其他程序占用）：{p}\n改动已保存在分支 {info['branch']} 上；关掉占用的程序后再删一次")
     _git(["worktree", "prune"], root, timeout=60, check=False)
     branch_deleted = False
     if delete_branch:
         _git(["branch", "-D", info["branch"]], root, timeout=30, check=False)
-        branch_deleted = True
+        branch_deleted = not _git(["rev-parse", "--verify", "-q", f"refs/heads/{info['branch']}"], root,
+                                  timeout=10, check=False).strip()
     with _LOCK:
         _save([x for x in _load(home) if _norm(x["path"]) != _norm(p)], home)
     return {"removed": True, "autosaved": saved, "branch": info["branch"], "branch_deleted": branch_deleted}
@@ -265,7 +284,7 @@ def merge(path: Path | str, squash: bool = False, home: Path | None = None) -> d
     """把 worktree 的分支合并回主目录当前分支。主目录必须没有未提交改动。"""
     info = _find(path, home)
     p, root = Path(info["path"]), Path(info["repo"])
-    if gitinfo.status(root).dirty:
+    if _dirty(root):
         raise WorktreeError("主目录有未提交的改动，先提交或暂存后再合并")
     saved = _autosave(p, "ee：合并前保存 worktree 改动") if p.is_dir() else None
     try:
