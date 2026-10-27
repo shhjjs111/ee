@@ -65,6 +65,7 @@ class Backend:
             "thread/delete": self.thread_delete,
             "thread/undo": self.thread_undo,
             "thread/compact": self.thread_compact,
+            "thread/context_breakdown": self.thread_context_breakdown,
             "turn/start": self.turn_start,
             "turn/interrupt": self.turn_interrupt,
             "turn/withdraw": self.turn_withdraw,
@@ -338,6 +339,16 @@ class Backend:
         return {"ok": bool(res.get("ok")), "message": res.get("message", ""),
                 "tokens_before": res.get("tokens_before", 0), "tokens_after": res.get("tokens_after", 0),
                 "context_left": t.context_left}
+
+    async def thread_context_breakdown(self, thread_id: str) -> dict:
+        """上下文构成（A12）：各部分 token 与占比、修剪/压缩节省。只读，不冻结前缀、不动历史。"""
+        from ee.core import breakdown
+        t = await self._athread(thread_id)
+        try:
+            s = await t.ensure_session_async()
+        except ValueError as e:
+            raise RpcError(f"配置错误：{e}")
+        return await asyncio.to_thread(breakdown.for_session, s)
 
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
                          attachments: list | None = None, effort: str | None = None, style: str | None = None,

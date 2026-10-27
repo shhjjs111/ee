@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
+import { ContextRing } from "./ContextPanel";
 import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
@@ -32,41 +33,6 @@ const MODES = [
 
 export function modeLabel(m: string) {
   return MODES.find((x) => x.value === m)?.label ?? m;
-}
-
-function ContextRing({ left, onCompact, compacting }: { left: number | null; onCompact: () => void; compacting: boolean }) {
-  if (compacting) {
-    return (
-      <span className="flex h-7 items-center gap-1.5 px-1.5 text-[12px] text-muted">
-        <Spinner size={12} /> 正在压缩上下文…
-      </span>
-    );
-  }
-  if (left === null || left === undefined) return null;
-  const used = 1 - left;
-  if (used < 0.05) return null; // 用得很少时不显示，免得像加载圈
-  const r = 7;
-  const c = 2 * Math.PI * r;
-  return (
-    <Tip label={`上下文剩余 ${Math.round(left * 100)}% · 点击压缩（/compact）`}>
-      <button onClick={onCompact} className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-hover">
-      <svg width="18" height="18" viewBox="0 0 18 18" className="text-faint">
-        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
-        <circle
-          cx="9"
-          cy="9"
-          r={r}
-          fill="none"
-          stroke={used > 0.85 ? "var(--danger)" : "var(--fg-muted)"}
-          strokeWidth="2"
-          strokeDasharray={`${c * used} ${c}`}
-          transform="rotate(-90 9 9)"
-          strokeLinecap="round"
-        />
-      </svg>
-      </button>
-    </Tip>
-  );
 }
 
 export function Composer({ autoFocus }: { autoFocus?: boolean }) {
@@ -640,8 +606,10 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           <div className="flex-1" />
           <BgCommands threadId={s.activeThreadId} />
           <ContextRing
+            threadId={s.activeThreadId}
             left={detail?.context_left ?? null}
             compacting={detail?.status === "compacting"}
+            canCompact={!running}
             onCompact={() => s.compact()}
           />
           {running && detail?.status !== "compacting" && text.trim() && !text.trim().startsWith("/") && (

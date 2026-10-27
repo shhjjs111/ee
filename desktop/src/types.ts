@@ -448,3 +448,21 @@ export type WorktreeInfo = {
   untracked?: number;
   commits?: number;
 };
+
+/** thread/context_breakdown（后端 ee/core/breakdown.py）：上下文构成。token 为估算。 */
+export type ContextBreakdown = {
+  items: { key: string; label: string; tokens: number; percent: number }[];
+  tools: { name: string; tokens: number }[];
+  total: number;
+  window: number;
+  used: number;
+  actual: boolean;
+  images: number;
+  messages: number;
+  savings: { pruned: number; prunes: number; pruned_outputs: number; compacted: number };
+  compactions: number;
+  frozen: boolean;
+  thresholds: { compact: number | null; prune: number | null };
+  model: string;
+  estimated: boolean;
+};
