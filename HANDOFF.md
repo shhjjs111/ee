@@ -1,7 +1,10 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 21:45（Asia/Shanghai，审查修复 6 个分支重做并合并：pytest **1035 passed / 5 skipped**、vitest 138、两份 tsc、build、e2e_ws 通过；D5-8 沙箱在 feat/d5-8 重做中；Windows CI 见推送后记录）
+最后更新：2026-10-27 22:25（Asia/Shanghai，D5-8 Windows 命令沙箱 v1 后端合并：pytest **1049 passed / 14 skipped**；分支 CI run 40517539751 沙箱 Windows 实测全绿；审查修复重做见下；下一步 D5-8 设置页开关 → D6）
 
+
+
+> **D5-8 Windows 命令沙箱 v1（后端，2026-10-27 22:25 合并 feat/d5-8）**：参考 Codex 的受限令牌 + ACL 思路。`[sandbox] enabled=false, network=true`。开启后 shell 前台/后台命令经隐藏子命令 `ee __sandbox_exec` 启动器运行：CreateRestrictedToken(DISABLE_MAX_PRIVILEGE|LUA_TOKEN|WRITE_RESTRICTED，限制 SID = 工作区能力 SID、登录 SID、Everyone)，CreateProcessAsUserW 挂起创建、放入 KILL_ON_JOB_CLOSE 的 Job 后恢复。只有工作区和 `~/.ee/sandbox/tmp/<id>`（TEMP/TMP）可写，读不限制；能力 SID 存 `~/.ee/sandbox/sandbox.json`，ACE 不撤销（随机 SID 只此工作区持有；每条命令撤加会很慢且并发互撤），`sandbox.revoke()` 可清理。network=false 只用环境变量尽力而为（死代理、pip/npm/cargo/uv 离线、GIT_SSH_COMMAND=false）。非 Windows 开启时结果末尾提示“未生效”；Windows 上失败报“沙箱启动失败”不回退。hooks 不纳入。项目层只能开沙箱、只能关联网（sanitize_project_layer）。Windows CI 实测：写工作区内成功/外拒绝（关沙箱对照可写）、TEMP 可写、禁网生效、子进程继承限制、后台命令受限、cmd/pwsh 工作目录正确（tests/test_sandbox.py）。已知限制：不是安全边界（Everyone/登录会话可写处仍可写）；直连不走代理的程序可联网；ee 以管理员运行时只授权 Administrators 的目录在沙箱内不可读；每条命令多一个启动器进程约 0.1–0.3s。待办：设置页开关。
 
 > **审查修复重做（2026-10-27 21:45，合并 fix/redo-*）**：另一会话的 6 路审查修复（audit4）未推送丢失，按审查报告逐项重做，每个 bug 先写失败测试再修。
 > - **fix/redo-security-config**：`config.sanitize_project_layer` 让项目 `.ee/config.toml` 只能收紧：丢 providers/hooks、web/network 的地址/key/代理字段、未知 provider 的模型与 headers、mcp.servers/allowed_project；更宽松的 permissions.mode 与 allow 丢弃，ask/deny 只追加，mcp.enabled/project_json 只能关；丢弃项写日志并在设置页“常规”顶部提示（`settings/get.project_ignored`）。后端口令 `take_serve_token()` 读后从 os.environ 删除，`proc.child_environ()` 在 shell/后台命令/hooks/MCP/run_capture 子进程中剔除。限制：项目层仍可改 budget、max_steps、style、shell 枚举。测试 tests/test_redo_security_config.py。
