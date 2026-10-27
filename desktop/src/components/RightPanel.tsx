@@ -74,16 +74,21 @@ function Review() {
   const [data, setData] = useState<GitReview | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // 回合中改文件会频繁触发刷新、也可能切换项目：只认最后一次请求的结果
+  const gen = useRef(0);
   const load = useCallback(async () => {
     if (!cwd || !s.rpc) return;
+    const tok = ++gen.current;
     setLoading(true);
     try {
-      setData(await s.rpc.call("git/diff", { cwd }));
+      const r = await s.rpc.call("git/diff", { cwd });
+      if (tok === gen.current) setData(r);
     } catch (e) {
+      if (tok !== gen.current) return;
       setData(null);
       s.showToast((e as Error).message, "error");
     } finally {
-      setLoading(false);
+      if (tok === gen.current) setLoading(false);
     }
   }, [cwd, s.rpc]);
 

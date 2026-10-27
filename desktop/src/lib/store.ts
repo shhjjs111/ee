@@ -56,8 +56,11 @@ type Actions = {
   refreshModels(): Promise<void>;
   openThread(id: string): Promise<void>;
   newThread(cwd?: string | null): void;
-  addWorkspace(path: string): Promise<void>;
-  removeWorkspace(path: string): Promise<void>;
+  /** 失败时提示错误并返回 false（不抛）。 */
+  addWorkspace(path: string): Promise<boolean>;
+  removeWorkspace(path: string): Promise<boolean>;
+  renameThread(id: string, title: string): Promise<boolean>;
+  deleteThread(id: string): Promise<boolean>;
   /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
   withdrawQueued(itemId: string): Promise<void>;
@@ -214,16 +217,47 @@ export const useApp = create<State & Actions>((set, get) => ({
   },
 
   async addWorkspace(path) {
-    const rpc = get().rpc!;
-    const r = await rpc.call("workspace/open", { path });
-    localStorage.setItem("ee.workspace", path);
-    set({ workspaces: r.workspaces, activeWorkspace: r.workspaces[0]?.path ?? path, activeThreadId: null, view: "chat" });
+    try {
+      const r = await get().rpc!.call("workspace/open", { path });
+      const p = r.workspaces[0]?.path ?? path; // 后端规范化后的路径（Windows 上盘符 / 分隔符）
+      localStorage.setItem("ee.workspace", p);
+      set({ workspaces: r.workspaces, activeWorkspace: p, activeThreadId: null, view: "chat" });
+      return true;
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+      return false;
+    }
   },
 
   async removeWorkspace(path) {
-    const rpc = get().rpc!;
-    const r = await rpc.call("workspace/remove", { path });
-    set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
+    try {
+      const r = await get().rpc!.call("workspace/remove", { path });
+      set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
+      return true;
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+      return false;
+    }
+  },
+
+  async renameThread(id, title) {
+    try {
+      await get().rpc!.call("thread/rename", { thread_id: id, title });
+      return true;
+    } catch (e) {
+      get().showToast(`重命名失败：${(e as Error).message}`, "error");
+      return false;
+    }
+  },
+
+  async deleteThread(id) {
+    try {
+      await get().rpc!.call("thread/delete", { thread_id: id });
+      return true;
+    } catch (e) {
+      get().showToast(`删除失败：${(e as Error).message}`, "error");
+      return false;
+    }
   },
 
   async send(text, attachments, queue) {

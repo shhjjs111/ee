@@ -15,7 +15,7 @@ import {
   RefreshCw,
   SquareArrowOutUpRight,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { highlight, langFromPath } from "../lib/highlight";
 import { useApp } from "../lib/store";
@@ -41,6 +41,7 @@ async function loadDir(cwd: string, path: string) {
     if (useTree.getState().cwd !== cwd) return;
     useTree.setState((s) => ({ children: { ...s.children, [path]: r.entries } }));
   } catch (e) {
+    if (useTree.getState().cwd !== cwd) return;
     useTree.setState((s) => ({ children: { ...s.children, [path]: { error: (e as Error).message } } }));
   }
 }
@@ -192,17 +193,21 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState(false);
 
+  const gen = useRef(0); // agent 改文件时会连续刷新：只认最后一次请求的结果
   const load = useCallback(async () => {
     if (!s.rpc) return;
+    const tok = ++gen.current;
     setLoading(true);
     setErr(null);
     try {
-      setData(await s.rpc.call("files/read", { cwd, path }));
+      const r = await s.rpc.call("files/read", { cwd, path });
+      if (tok === gen.current) setData(r);
     } catch (e) {
+      if (tok !== gen.current) return;
       setData(null);
       setErr((e as Error).message);
     } finally {
-      setLoading(false);
+      if (tok === gen.current) setLoading(false);
     }
   }, [cwd, path, s.rpc]);
 
