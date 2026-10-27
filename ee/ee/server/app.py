@@ -364,10 +364,20 @@ class Backend:
         def keep(tree: str) -> None:
             box["rp"] = add_restore_point(t, tree, "执行 /undo 前的文件（含你手改的内容）")
 
+        from ee.core.snapshot import RestoreBlocked, RestorePartial
         try:
             restored = await asyncio.to_thread(s.undo, bool(force), keep)
         except RestoreConflict as e:
             return {"restored": [], "needs_confirm": True, "conflicts": e.conflicts}
+        except RestoreBlocked as e:          # 预检没过：一个文件都没动
+            raise RpcError(f"撤销失败：{e}\n关掉占用这些文件的程序后再撤销一次。")
+        except RestorePartial as e:          # 恢复到一半：如实报告，这一回合不标已撤销，可再撤一次
+            t._add({"type": "notice", "level": "warn",
+                    "text": f"撤销只完成了一部分：{e}\n已恢复：\n" + "\n".join(e.restored)
+                            + "\n关掉占用这些文件的程序后再撤销一次即可补上。"})
+            self.notify("git/changed", {"cwd": t.meta.get("cwd")})
+            return {"restored": e.restored, "failed": [{"path": p, "reason": why} for p, why in e.failed],
+                    "partial": True, "restore_point": restore_point_view(box.get("rp"))}
         if s.last_undo_tree:
             t.mark_undone(s.last_undo_tree)
         if restored:

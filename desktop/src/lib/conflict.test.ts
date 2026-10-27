@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conflictPrompt } from "./store";
+import { conflictPrompt, partialToast } from "./store";
 
 describe("conflictPrompt", () => {
   it("列出被手改过的文件并说明会先存恢复点", () => {
@@ -14,5 +14,13 @@ describe("conflictPrompt", () => {
     expect(t).toContain("f9.txt");
     expect(t).not.toContain("f10.txt");
     expect(t).toContain("等 12 个文件");
+  });
+});
+
+describe("partialToast", () => {
+  it("如实说出恢复了几个、哪些没恢复", () => {
+    const t = partialToast(2, [{ path: "b.txt", reason: "被占用" }]);
+    expect(t).toContain("只恢复了 2 个文件");
+    expect(t).toContain("b.txt");
   });
 });

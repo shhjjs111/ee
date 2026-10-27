@@ -46,6 +46,7 @@ def _locate(t, item_id: str) -> tuple[dict, int]:
 
 def register(methods: dict, backend) -> None:
     from ee.core.session import RestoreConflict
+    from ee.core.snapshot import RestoreBlocked, RestorePartial
     from ee.server.app import RpcError
     from ee.server.checkpoint_rpc import add_restore_point, restore_point_view
     from ee.server.threads import Thread
@@ -118,6 +119,7 @@ def register(methods: dict, backend) -> None:
         restored: list[str] = []
         reverted = False
         box: dict = {}
+        failed: list[tuple[str, str]] = []
         if revert_files:
             res = None
             if it.get("tree"):          # D4-1 磁盘快照：重启后也能恢复，含 shell 改的文件
@@ -132,6 +134,10 @@ def register(methods: dict, backend) -> None:
                 except RestoreConflict as e:   # 用户在回合后手改过要恢复的文件：先让界面确认，什么都不动
                     return {"thread": None, "restored": [], "files_reverted": False,
                             "needs_confirm": True, "conflicts": e.conflicts}
+                except RestoreBlocked as e:    # 预检没过：文件、历史都不动
+                    raise RpcError(f"编辑重发失败：{e}\n关掉占用这些文件的程序后再试。")
+                except RestorePartial as e:    # 恢复到一半：照常重发，但如实列出没恢复的文件
+                    res, failed = e.restored, e.failed
             snap = it.get("snap")
             if res is None and isinstance(snap, int) and it.get("snap_epoch") == s.snap_epoch:
                 res = await asyncio.to_thread(s.revert_files_from, snap)
@@ -149,10 +155,16 @@ def register(methods: dict, backend) -> None:
         if revert_files and not reverted:
             t._add({"type": "notice", "level": "warn",
                     "text": "这条消息之后的文件改动无法自动恢复（后端重启过，快照已丢失），如需恢复请用 git。"})
+        elif failed:
+            t._add({"type": "notice", "level": "warn",
+                    "text": "编辑重发：这些文件没能恢复（可能被其他程序占用），仍是改动后的内容：\n"
+                            + "\n".join(f"{p}（{why}）" for p, why in failed)
+                            + ("\n已恢复：\n" + "\n".join(restored) if restored else "")})
         elif restored:
             t._add({"type": "notice", "level": "info", "text": "编辑重发：已恢复这些文件：\n" + "\n".join(restored)})
         t.start_turn(text, model=model, mode=mode)
         return {"thread": t.detail(), "restored": restored, "files_reverted": reverted,
+                "failed": [{"path": p, "reason": why} for p, why in failed],
                 "restore_point": restore_point_view(box.get("rp"))}
 
     methods.update({"thread/fork": fork, "thread/edit_resend": edit_resend})

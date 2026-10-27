@@ -479,19 +479,36 @@ class Session:
             raise RestoreConflict(conflicts, cur)
         if force and cur and on_restore_point is not None and paths:
             on_restore_point(cur)
-        restored = self._disk_restore(d, base, paths)
+        note = "[系统提示] 用户编辑并重发了之前的消息，以下文件已恢复到那条消息之前的内容（如需再改请重新 read）："
+        from ee.core.snapshot import RestorePartial
+        try:
+            restored = self._disk_restore(d, base, paths, note)
+        except RestorePartial:
+            self._drop_turn_trees(base)      # 编辑重发照常进行（调用方如实报告没恢复的文件）
+            raise
         if restored is None:
             return None
+        self._drop_turn_trees(base)
+        self._after_restore(restored, note)
+        return restored
+
+    def _drop_turn_trees(self, base: str) -> None:
         for i, e in enumerate(self.turn_trees):
             if e.get("before") == base:
                 del self.turn_trees[i:]
                 break
-        self._after_restore(restored, "[系统提示] 用户编辑并重发了之前的消息，以下文件已恢复到那条消息之前的内容（如需再改请重新 read）：")
-        return restored
 
-    def _disk_restore(self, d, tree: str, paths: list[str]) -> list[str] | None:
+    def _disk_restore(self, d, tree: str, paths: list[str], note: str = "") -> list[str] | None:
+        """预检没过（RestoreBlocked，一个没动）/ 恢复到一半（RestorePartial）原样抛给调用方如实报告；
+        其他失败（git 出错）返回 None，调用方回退内存快照。"""
+        from ee.core.snapshot import RestoreBlocked, RestorePartial
         try:
             return d.restore(tree, paths)
+        except RestoreBlocked:
+            raise
+        except RestorePartial as e:
+            self._after_restore(e.restored, note or "[系统提示] 以下文件已被恢复成之前的内容（如需再改请重新 read）：")
+            raise
         except Exception as e:  # noqa: BLE001
             log.warning("磁盘快照恢复失败：%s", e)
             return None
@@ -508,6 +525,8 @@ class Session:
             nxt = entries[i + 1][0] if i + 1 < len(entries) else cur
             if after and nxt and after != nxt:
                 hit |= want & set(d.changed(after, nxt))
+        if hit and cur and entries[0][0]:     # 当前内容已经和恢复目标一样的（比如上次恢复到一半已写好的）不会丢东西
+            hit &= set(d.changed(entries[0][0], cur))
         return sorted(hit)
 
     def _disk_undo(self, force: bool = False, on_restore_point=None) -> list[str] | None:
@@ -532,12 +551,13 @@ class Session:
                 raise RestoreConflict(conflicts, cur)
             if force and cur and on_restore_point is not None:
                 on_restore_point(cur)
-            restored = self._disk_restore(d, e["before"], paths)
+            note = "[系统提示] 用户执行了 /undo，以下文件已恢复到你上一回合修改之前的内容（如需再改请重新 read）："
+            restored = self._disk_restore(d, e["before"], paths, note)   # 恢复到一半：不标已撤销，关掉占用后可再撤一次
             if restored is None:
                 return None
             e["undone"] = True
             self.last_undo_tree = e["before"]
-            self._after_restore(restored, "[系统提示] 用户执行了 /undo，以下文件已恢复到你上一回合修改之前的内容（如需再改请重新 read）：")
+            self._after_restore(restored, note)
             return restored
         return []
 
