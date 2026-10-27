@@ -1,10 +1,90 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 22:35（Asia/Shanghai，D5-8 命令沙箱完成：后端 + 设置页开关；pytest **1050 passed / 14 skipped**、vitest 139、两份 tsc、build 通过；按用户要求在此暂停，下一步 D6）
+最后更新：2026-10-28（Asia/Shanghai，`fix/edit-safety` 分支：**六轮安全/正确性修复**已全部推送；本分支 pytest 相关面 593 passed / 6 skipped；D6 按用户要求暂停中）
 
+> **接手第一步（2026-10-28）**：当前工作在 **`fix/edit-safety` 分支**（不是 main），已推送 `fb3a019`。
+> 这一轮修的是"静默改错/静默放行"类问题（详见下面「本轮：安全与正确性六连修」）。
+> **恢复主线的路径**：① 确认 Windows CI 绿；② 把 `fix/edit-safety` 合进 main（或先开 PR 审阅）；
+> ③ 回到 D6（手册 `research/d6-plan.md`），第一项是 D6-1 指挥会话——**注意 `feat/d6-1-orchestrator`
+> 分支上有半成品，已按用户要求撤出，备份在 `.rivet/scratch/d6-1-wip/`（不进仓库）**。
+> 真实 DeepSeek 评测仍需用户自己的 key（`eval_profiles.py --preset a2/a3 --runs 3`）。
 
+> **本轮：安全与正确性六连修（2026-10-28，分支 `fix/edit-safety`，全部先写失败测试再修）**
+>
+> 起因：用户逐条报缺陷（问题 1–4），我每条都先用探针复现再改，过程中又自查出两处。六个提交：
+>
+> - **`3efbbe3` apply_patch 会误改**（问题 1）：`seek()` 逐级放宽 精确→rstrip→**strip**，取第一处
+>   命中且不查歧义。实测：重复代码静默改第一处且**缩进被吞掉**（`    x = 1` → `x = 2`）；
+>   `-return 1` 命中 `        return 1` 后 new 原样写入 → `return 2`，产出的 Python 直接语法错误。
+>   修法：`seek()` 拆 `seek_hits()`/`seek()`，多处命中报歧义并列全部行号；删 strip 级；
+>   新增 `_indent_hits()`/`_reindent_new()`（与 `fileops._indent_shift_matches` 同规则：只接受
+>   整块统一平移）把 new 按 old→原文 偏移对齐；`@@` 定位行也要求唯一。
+>   **测试 `tests/test_apply_patch_safety.py`（14 例）**。
+>
+> - **`d2b9aff` 动态表达式不能当 PowerShell 管道成员名**：我上一轮说"变量间接由上游 `# 接手说明（给接手的 AI / 另一个账号）
 
-> **接手第一步（2026-10-27 22:35）**：用户要求做完沙箱先暂停。恢复时先确认最新 Windows CI 绿，再进 D6（**详细操作手册见 `research/d6-plan.md`**）；真实 DeepSeek 评测等用户自己的 key（`eval_profiles.py --preset a2/a3 --runs 3`）。遗留：apply_patch 的 trim 模糊匹配有与 edit 同类风险；`~/.claude` 技能无设置页开关。
+ 检查拦着"
+>   **是错的**——`_has_code_syntax` 只查 `( ) { }`，从不查 `# 接手说明（给接手的 AI / 另一个账号）
+
+。实测放行
+>   `ForEach-Object $env:MYACTION` / `$x.Kill` / `% $env:X`。修法：新增 `_is_dynamic()`（`# 接手说明（给接手的 AI / 另一个账号）
+
+ 开头、
+>   `(`/`{` 开头、字符串含 `${`/`$(`），`_looks_like_action` 遇到动态值直接判 True（fail-closed）。
+>   **测试 `tests/test_readonly_ps_pipeline.py`（93 例）**。
+>
+> - **`0495fd3` 补上参数冒号形式**：`-MemberName:Kill` 绕过——上一版 `low.split(":",1)[0]` 只拿
+>   base 比对选项名，**冒号后的值被丢弃**。修法：base/val 分别处理；新增 `_resolve_member_opt()`
+>   支持前缀缩写（≥4 字符，`-m` 会同时命中 `-MemberName`/`-Match`，不能猜）。
+>
+> - **`56b3c44` PowerShell 管道操作符不再放行动作**：`_READ_ONLY` 里有 `foreach-object` 等，
+>   `_segment_safe` 对它们直接返回 True（`SAFE_COMMANDS[name] is None` 就放行），**完全不看参数**。
+>   `Get-ChildItem C:\ -Recurse -File | ForEach-Object Delete` 只读模式直接删光。
+>   修法：`_ps_pipeline_safe()` 逐参数判，`-MemberName`/`-Process`/`-ExpandProperty`/`-Begin`/`-End`
+>   的值按动作判，裸词命中动词表或 Verb-Noun 即拒。`{ }` 脚本块原本就被 `_has_code_syntax` 拦着
+>   （既有保守设计，未改动）。
+>
+> - **`9872374` 危险长选项按 GNU 前缀缩写匹配**（问题 4）：`git grep --out=` 这类写法绕过——
+>   原来是 `a.startswith("--output")`，方向反了（只能匹配完整写法）。实测 13 条里 **11 条放行**，
+>   含 `git log --out=`（原代码只对 diff 子命令做了判断）。修法：`_opt_is()`/`_any_opt()`，
+>   方向改成 `危险选项.startswith(用户写法)`；顺带把 `--paginate` 纳入（实测当前不可利用——
+>   `child_env()` 强制 `GIT_PAGER=cat`，但作为纵深防御）。
+>   **测试 `tests/test_options_abbrev.py`（93 例）**。
+>
+> - **`fb3a019` 改为按命令的参数白名单**（问题 4 的彻底做法，用户指定）：黑名单要穷举所有危险
+>   写法，白名单只要保证"里面没有能执行/写文件的选项"。新增 `SAFE_OPTS[cmd]`（50+ 命令，含
+>   30 个 PowerShell cmdlet）+ `_check_opts()`/`_opt_allowed()`（GNU 唯一前缀匹配、短选项合并写、
+>   `-5` 简写、PowerShell 参数大小写不敏感）。接线在 `_segment_safe` 的 `SAFE_COMMANDS` 校验之后，
+>   作为前置门，不替代各命令原有的专项检查。**测试 `tests/test_safe_options.py`（171 例）**。
+>
+> - **`5f66f14` 写文件改为原子替换**（问题 3）：`fileops.write_text()` 直接 `open(path,"wb")`，
+>   `O_TRUNC` 先清零再写——探针实测 "原始 6800 字节 → 中途失败 → 只剩 4 字节"。
+>   write/edit/apply_patch 三个工具共用它。修法：改用已有的 `core.atomic.write_bytes`
+>   （临时文件 + fsync + os.replace）——基础设施早就存在（`fix/redo-data` 引入，
+>   config/permissions/记忆/桌面设置都在用），fileops 是漏网的一处。
+>   **测试 `tests/test_write_atomic.py`（7 例）**。
+>
+> - **`68fa0e5` / `9fa8566` / `29d7050` 只读模式默认开沙箱 + 默认禁网 + 临时目录提示**：
+>   白名单补不到底（上面四轮各补一种语法），真正的隔离是 `[sandbox]`（限制**写**，而只读模式的
+>   威胁正是写）。只读/计划模式下即使 `enabled=false` 也开沙箱（`readonly_default`，默认 true），
+>   默认禁网（`readonly_network_default`，默认 false=禁）。**`web_search`/`web_fetch` 不经沙箱，
+>   不受影响**（有测试钉住这个前提）。工作区在 `%TEMP%` 下时给出明确提示，别让用户对着
+>   "拒绝访问。"猜。**测试 `test_sandbox_readonly_default.py`(8) / `test_sandbox_readonly_network.py`(9) /
+>   `test_sandbox_preflight.py`(4)**。
+>
+> **本轮验收**：`test_safe_options + test_options_abbrev + test_permissions + test_review_tools +
+> test_redo_shell_split + test_readonly_ps_pipeline + test_hooks` = **593 passed / 6 skipped**；
+> 另：沙箱相关 44 passed / 2 skipped、编辑相关 91 passed、hunks 31 passed。
+> **未跑全量 pytest**（约 15 分钟）——合并前建议跑一遍。
+>
+> **本轮踩的坑（都是我自己引入又修掉的）**：① hunks 第一版只加 MAX_DRIFT=200 无效（实际距离仅
+> 10 行，在上限内）；② 第二版改 drift=0 误伤正常场景；③ 最终按"hunk 是否有上下文行"区分才对；
+> ④ `SAFE_OPTS` 初版漏了整段 PowerShell cmdlet，导致 `Get-ChildItem -Recurse | Select-Object Name`
+> 被拒（6 个既有测试抓住）；⑤ `_opt_allowed` 忘了 PowerShell 参数大小写不敏感。
+>
+> **已知未做**：全量 pytest 未重跑；`WinError 10106`（受限令牌下 `python -m ee` 在 `%TEMP%` 起不来）
+> 未根治，只在正常目录下不触发、且失败时有 `[沙箱启动失败]` 报错不会静默；`hunks._find` 的
+> 相邻重复命中问题已按上下文行缓解，但内容完全重复时仍可能命中邻近处（有 8 例测试覆盖已知场景）。
 
 > **[x] D5-8 Windows 命令沙箱 v1（2026-10-27 22:25 合并 feat/d5-8，22:35 加设置页开关）**：参考 Codex 的受限令牌 + ACL 思路。`[sandbox] enabled=false, network=true`。开启后 shell 前台/后台命令经隐藏子命令 `ee __sandbox_exec` 启动器运行：CreateRestrictedToken(DISABLE_MAX_PRIVILEGE|LUA_TOKEN|WRITE_RESTRICTED，限制 SID = 工作区能力 SID、登录 SID、Everyone)，CreateProcessAsUserW 挂起创建、放入 KILL_ON_JOB_CLOSE 的 Job 后恢复。只有工作区和 `~/.ee/sandbox/tmp/<id>`（TEMP/TMP）可写，读不限制；能力 SID 存 `~/.ee/sandbox/sandbox.json`，ACE 不撤销（随机 SID 只此工作区持有；每条命令撤加会很慢且并发互撤），`sandbox.revoke()` 可清理。network=false 只用环境变量尽力而为（死代理、pip/npm/cargo/uv 离线、GIT_SSH_COMMAND=false）。非 Windows 开启时结果末尾提示“未生效”；Windows 上失败报“沙箱启动失败”不回退。hooks 不纳入。项目层只能开沙箱、只能关联网（sanitize_project_layer）。Windows CI 实测：写工作区内成功/外拒绝（关沙箱对照可写）、TEMP 可写、禁网生效、子进程继承限制、后台命令受限、cmd/pwsh 工作目录正确（tests/test_sandbox.py）。设置页「工具与记忆 → 命令沙箱」：启用沙箱、允许联网两个开关，非 Windows 显示“不支持，未生效”；保存后对空闲对话立即生效、运行中的回合结束后生效（AgentSettings.test.tsx）。已知限制：不是安全边界（Everyone/登录会话可写处仍可写）；直连不走代理的程序可联网；ee 以管理员运行时只授权 Administrators 的目录在沙箱内不可读；每条命令多一个启动器进程约 0.1–0.3s。
 
