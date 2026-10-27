@@ -50,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    if raw[:1] == ["__sandbox_exec"]:              # 内部用：沙箱启动器（见 ee/core/sandbox.py），不进帮助
+        from ee.core.sandbox import helper_main
+        return helper_main(raw[1:])
     _fix_windows_console()
     parser = build_parser()
     args = parser.parse_args(argv)
