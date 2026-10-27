@@ -49,11 +49,17 @@ class Profile:
     request_max_tokens: int | None = None   # 设了才在请求里发 max_tokens
     extra_body: dict = field(default_factory=dict)
     # 推理强度（D5-9）：effort_param = 请求里控制强度的参数名（"" = 不支持；reasoning_effort 走顶层，其它名字放 extra_body）；
-    # effort_values = ee 档位 low/medium/high → 发给服务端的值（缺省原样）；
+    # effort_values = ee 档位 low/medium/high/max → 发给服务端的值（缺省原样）；
     # thinking_param = 关闭思考的写法：thinking_type（{"thinking": {"type": "disabled"}}）| enable_thinking（false）| ""
     effort_param: str = ""
     effort_values: dict = field(default_factory=dict)
     thinking_param: str = ""
+    # effort_levels = 界面可选的强度档（缺省 low/medium/high；DeepSeek 只有 low/max，默认即 high）；
+    # effort_aliases = 不在 effort_levels 里的旧档位怎么换（DeepSeek：medium → ""、high → max）；
+    # effort_labels = 档位文字覆盖（"" 键是“默认”档）
+    effort_levels: list = field(default_factory=list)
+    effort_aliases: dict = field(default_factory=dict)
+    effort_labels: dict = field(default_factory=dict)
     # 同家族内按模型名细分的覆盖项（[[variants]] match=[...] + 任意档案字段，price 按键合并）
     variants: list = field(default_factory=list)
 
@@ -77,6 +83,9 @@ class Profile:
         d["quirks"] = list(self.quirks)
         d["extra_body"] = dict(self.extra_body)
         d["effort_values"] = dict(self.effort_values)
+        d["effort_levels"] = list(self.effort_levels)
+        d["effort_aliases"] = dict(self.effort_aliases)
+        d["effort_labels"] = dict(self.effort_labels)
         d["variants"] = [dict(v) for v in self.variants]
         return d
 

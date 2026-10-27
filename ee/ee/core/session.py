@@ -137,7 +137,7 @@ class Session:
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
         self.compactions = 0
         # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
-        self.effort = RZ.resolve(config.data, self.home, self.spec.alias)
+        self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data, self.home, self.spec.alias))
         sdef = str((config.data.get("style") or {}).get("default") or "default")
         self.style = sdef if ST.exists(self.home, sdef) else "default"
         self._prefix_style: str | None = None      # 冻结进 system 的风格
@@ -188,7 +188,7 @@ class Session:
         if not same_prefix:
             self.prefix = None
         self.updates.reset()
-        self.effort = RZ.resolve(self.config.data, self.home, spec.alias)
+        self.effort = RZ.canonical(spec.profile, RZ.resolve(self.config.data, self.home, spec.alias))
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"
                 "换模型后服务端缓存会从零开始。")
 
@@ -200,7 +200,9 @@ class Session:
         """切换本会话的推理强度；remember 时同时按模型记住（下次用这个模型默认就是它）。"""
         lv = RZ.normalize(level)
         if lv is None:
-            raise ValueError(f"未知推理强度：{level}（可选 默认 / 低 / 中 / 高 / 关闭思考）")
+            opts = " / ".join(RZ.labels(self.profile)[x] for x in ["", *RZ.levels(self.profile), "off"])
+            raise ValueError(f"未知推理强度：{level}（可选 {opts}）")
+        lv = RZ.canonical(self.profile, lv)       # DeepSeek：旧写法 中/高 → 默认/最高
         self.effort = lv
         if remember:
             try:
@@ -209,7 +211,7 @@ class Session:
                 pass
         eff = RZ.effective(self.profile, lv)
         note = "" if eff == lv else "（当前模型不支持这个档位，请求里不会发送）"
-        return f"推理强度：{RZ.LABEL[lv]}{note}"
+        return f"推理强度：{RZ.labels(self.profile)[lv]}{note}"
 
     def effort_support(self) -> dict:
         return RZ.support(self.profile)

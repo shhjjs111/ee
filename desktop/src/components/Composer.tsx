@@ -5,8 +5,9 @@ import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ImagePlus,
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import {
-  EFFORT_OPTIONS,
   effortLabel,
+  effortOptionsFor,
+  effortSupported,
   isSkillCommand,
   parseSlash,
   resolveEffort,
@@ -76,7 +77,10 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   }, [s.rpc, s.activeThreadId, detail?.effort]);
   const effort = (detail ? detail.effort : s.draftEffort) ?? remembered[model] ?? s.defaultEffort ?? "";
   const style = (detail ? detail.style : s.draftStyle) ?? s.defaultStyle ?? "default";
-  const support = detail?.effort_support ?? s.models.find((m) => m.name === model)?.effort_support ?? { effort: false, off: false };
+  // 草稿里换了模型时按草稿模型的能力显示（DeepSeek：默认（high）/ 低 / 最高（max）/ 关闭思考）
+  const support =
+    (s.draftModel && detail?.model !== s.draftModel ? undefined : detail?.effort_support) ??
+    s.models.find((m) => m.name === model)?.effort_support ?? { effort: false, off: false };
 
   useEffect(() => {
     if (autoFocus) ta.current?.focus();
@@ -146,7 +150,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   }, [slashing, cwd, s.rpc]);
 
   const modelHints = s.models.map((m) => ({ name: m.name, hint: `${m.provider} · ${m.model}` }));
-  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints, skills, styles);
+  const slashList = slashClosed ? null : slashItems(text, prompts, modelHints, skills, styles, support);
   const showSlash = !!slashList && slashList.length > 0 && !mention;
   useEffect(() => setSlashSel(0), [slashList?.length, text.split(" ")[0]]);
 
@@ -226,13 +230,14 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       case "effort": {
         const v = resolveEffort(args);
         if (v === null || !args) {
-          s.showToast("用法：/effort 默认 | 低 | 中 | 高 | 关闭", "error");
+          s.showToast(`用法：/effort ${effortOptionsFor(support).map((o) => o.label).join(" | ")}`, "error");
           return true;
         }
         clearInput();
-        const unsupported = (v === "off" && !support.off) || (["low", "medium", "high"].includes(v) && !support.effort);
+        // DeepSeek 没有 中 / 高 档：后端会规整成 默认 / 最高，这里提示用后端回来的档位
+        const unsupported = !effortSupported(v, support) && !(support.effort && ["medium", "high"].includes(v));
         if (await s.setOptions({ effort: v }))
-          s.showToast(`推理强度：${effortLabel(v)}` + (unsupported ? "（当前模型不支持，请求里不会发送）" : ""));
+          s.showToast(`推理强度：${effortLabel(v, support)}` + (unsupported ? "（当前模型不支持，请求里不会发送）" : ""));
         return true;
       }
       case "style": {
@@ -630,13 +635,10 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           />
           <Select
             value={effort}
-            options={EFFORT_OPTIONS.map((o) => ({
+            options={effortOptionsFor(support).map((o) => ({
               ...o,
-              disabled: (o.value === "off" && !support.off) || (["low", "medium", "high"].includes(o.value) && !support.effort),
-              hint:
-                (o.value === "off" && !support.off) || (["low", "medium", "high"].includes(o.value) && !support.effort)
-                  ? "当前模型不支持"
-                  : o.hint,
+              disabled: !effortSupported(o.value, support),
+              hint: effortSupported(o.value, support) ? o.hint : "当前模型不支持",
             }))}
             onChange={(v) => s.setOptions({ effort: v })}
             icon={<Brain size={13} />}

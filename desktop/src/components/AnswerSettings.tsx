@@ -1,7 +1,7 @@
 // 设置页「回答与花费」（D5-9）：推理强度默认值与按模型记住的档位、回答风格、按用途分模型、花费上限。
 import { Trash2 } from "lucide-react";
 import React, { useEffect, useState } from "react";
-import { EFFORT_OPTIONS, effortLabel } from "../lib/slash";
+import { effortLabel, effortOptionsFor } from "../lib/slash";
 import { useApp } from "../lib/store";
 import type { BudgetSettings, BudgetStatus, Settings, SettingsResponse } from "../types";
 import { Button, Input, Select, Toggle } from "./ui";
@@ -61,6 +61,15 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
   }, [s.rpc, resp]);
 
   const effort = draft.reasoning?.effort ?? "";
+  // 档位跟默认模型走（DeepSeek：默认（high）/ 低 / 最高（max）/ 关闭思考；其它 provider：默认 / 低 / 中 / 高 / 关闭思考）
+  const supportOf = (name: string) => s.models.find((m) => m.name === name)?.effort_support;
+  const defaultSupport = supportOf(draft.default_model || s.defaultModel || "");
+  const effortOptions = (() => {
+    const opts = effortOptionsFor(defaultSupport);
+    if (effort && !opts.some((o) => o.value === effort))
+      opts.splice(opts.length - 1, 0, { value: effort, label: effortLabel(effort), hint: "当前设置（默认模型没有这一档）" });
+    return opts;
+  })();
   const roles = draft.roles ?? {};
   const budget = { ...DEFAULT_BUDGET, ...(draft.budget ?? {}) };
   const styles = resp.choices.styles ?? [{ id: "default", label: "默认", description: "", source: "builtin", path: "" }];
@@ -75,7 +84,7 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
         <Row label="全局默认" desc="“默认”= 不指定，用模型自己的默认；模型不支持的档位不会发送（输入框里置灰）">
           <Select
             value={effort}
-            options={EFFORT_OPTIONS}
+            options={effortOptions}
             onChange={(v) => up({ reasoning: { effort: v } })}
             side="bottom"
             align="end"
@@ -89,7 +98,7 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
           <div className="flex max-w-[360px] flex-wrap justify-end gap-1.5">
             {Object.entries(remembered).map(([m, v]) => (
               <span key={m} className="inline-flex items-center gap-1 rounded-md bg-soft px-2 py-0.5 text-[12px] text-muted">
-                {m} · {effortLabel(v)}
+                {m} · {effortLabel(v, supportOf(m))}
                 <button
                   title="忘掉，跟随全局默认"
                   className="text-faint hover:text-danger"

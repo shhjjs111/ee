@@ -166,3 +166,56 @@ def test_think_literal_end_to_end(ee_home, workspace):
     s, fake = make_session(workspace, [text_chunks(body, 2) + finish("stop")])
     run(collect(s, "问"))
     assert s.history[-1]["content"] == body and not s.history[-1].get("reasoning")
+
+
+# ---------------------------------------------------------------- 5) 推理强度档位：DeepSeek 只有 默认（high）/ 低 / 最高（max）/ 关闭思考
+# 依据：https://api-docs.deepseek.com/guides/thinking_mode —— 开关 extra_body {"thinking": {"type": "enabled|disabled"}}，
+# 强度 reasoning_effort = low | high | max，思考默认开启、默认强度 high。
+
+def _params(model, effort):
+    from ee.config import load_config
+    from ee.core.providers.openai_chat import ChatClient
+    import pathlib
+    spec = load_config(pathlib.Path(".")).resolve_model(model)
+    c = ChatClient(spec, client=FakeClient([]))
+    return c.build_params([{"role": "user", "content": "hi"}], None, effort)
+
+
+def test_deepseek_effort_levels_and_params():
+    from ee.core import reasoning as RZ
+    prof = profile_for("deepseek-flash")
+    sup = RZ.support(prof)
+    assert sup["effort"] and sup["off"]
+    assert sup["levels"] == ["low", "max"]                       # 界面只显示 默认 / 低 / 最高 / 关闭思考
+    assert sup["labels"][""] == "默认（high）" and sup["labels"]["max"] == "最高（max）"
+    assert RZ.normalize("最高") == "max" and RZ.normalize("max") == "max"
+    p = _params("deepseek-flash", "max")
+    assert p["reasoning_effort"] == "max"
+    p = _params("deepseek-flash", "low")
+    assert p["reasoning_effort"] == "low"
+    p = _params("deepseek-flash", "")
+    assert "reasoning_effort" not in p and "thinking" not in (p.get("extra_body") or {})   # 默认：服务端默认 high
+    p = _params("deepseek-flash", "off")
+    assert p["extra_body"]["thinking"] == {"type": "disabled"} and "reasoning_effort" not in p
+    # 旧版记住的 中 / 高：中 = 服务端默认 high，高 = 以前就映射成 max
+    assert RZ.canonical(prof, "medium") == "" and RZ.canonical(prof, "high") == "max"
+
+
+def test_other_providers_levels_unchanged():
+    from ee.core import reasoning as RZ
+    gpt = profile_for("gpt-5.1")
+    assert RZ.support(gpt)["levels"] == ["low", "medium", "high"]
+    assert _params("gpt-5.1", "medium")["reasoning_effort"] == "medium"
+    assert _params("gpt-5.1", "max")["reasoning_effort"] == "high"   # 没有 max 档的模型按最高的 high 发
+    assert RZ.support(profile_for("gpt-4o"))["levels"] == []
+
+
+def test_session_set_effort_deepseek_max(ee_home, workspace):
+    s, fake = make_session(workspace, [text_chunks("a") + finish("stop")])
+    assert s.spec.profile.family == "deepseek"
+    msg = s.set_effort("最高", remember=False)
+    assert s.effort == "max" and "最高" in msg and "不支持" not in msg
+    run(collect(s, "x"))
+    assert fake.calls[0]["reasoning_effort"] == "max"
+    s.set_effort("高", remember=False)                 # 旧写法：DeepSeek 上规整成 最高
+    assert s.effort == "max"

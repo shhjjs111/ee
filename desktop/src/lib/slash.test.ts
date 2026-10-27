@@ -102,3 +102,25 @@ describe("D5-9 /effort 与 /style", () => {
     expect(slashItems("/eff", [], [])!.some((x) => x.label.startsWith("/effort"))).toBe(true);
   });
 });
+
+describe("推理强度档位按模型显示（DeepSeek：默认（high）/ 低 / 最高（max）/ 关闭思考）", () => {
+  const ds = { effort: true, off: true, levels: ["low", "max"], labels: { "": "默认（high）", max: "最高（max）" } };
+  const gpt = { effort: true, off: false, levels: ["low", "medium", "high"] };
+  it("DeepSeek 只有四档，其它 provider 不变", async () => {
+    const { effortOptionsFor, effortSupported, effortLabel, resolveEffort } = await import("./slash");
+    expect(effortOptionsFor(ds).map((o) => o.label)).toEqual(["默认（high）", "低", "最高（max）", "关闭思考"]);
+    expect(effortOptionsFor(gpt).map((o) => o.value)).toEqual(["", "low", "medium", "high", "off"]);
+    expect(effortOptionsFor({ effort: true, off: true }).map((o) => o.value)).toEqual(["", "low", "medium", "high", "off"]);
+    expect(effortSupported("max", ds)).toBe(true);
+    expect(effortSupported("medium", ds)).toBe(false);
+    expect(effortSupported("off", gpt)).toBe(false);
+    expect(effortLabel("max", ds)).toBe("最高（max）");
+    expect(resolveEffort("最高")).toBe("max");
+    expect(resolveEffort("max")).toBe("max");
+  });
+  it("/effort 子菜单按当前模型列档位", async () => {
+    const { slashItems } = await import("./slash");
+    const items = slashItems("/effort ", [], [], [], [], ds) ?? [];
+    expect(items.map((i) => i.label)).toEqual(["默认（high）", "低", "最高（max）", "关闭思考"]);
+  });
+});
