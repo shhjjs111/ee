@@ -81,7 +81,8 @@ def register(methods: dict, backend) -> None:
             for x in items:
                 store.item(x)
             nt = Thread(store.id, backend.home, backend.notify, meta, messages=messages, items=items,
-                        client_factory=backend.client_factory, persist=backend.persist)
+                        client_factory=backend.client_factory, persist=backend.persist,
+                        user_home=backend.user_home)
             nt.ensure_session()
             nt.usage = {}
             nt.save_meta()

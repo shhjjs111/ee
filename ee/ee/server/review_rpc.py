@@ -56,7 +56,7 @@ def register(methods: dict, backend) -> None:
         def build():   # Session 初始化会跑 git 子进程：放到工作线程
             cfg = load_config(Path(cwd))
             return Session(cfg, model=model, cwd=Path(cwd), client_factory=backend.client_factory, persist=False,
-                           home=backend.home)
+                           home=backend.home, user_home=backend.user_home)
         return await asyncio.to_thread(build)
 
     async def commit_message(cwd: str, thread_id: str | None = None, model: str | None = None) -> dict:

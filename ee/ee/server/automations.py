@@ -482,7 +482,8 @@ class Automations:
             meta["worktree"] = {"path": wt["path"], "branch": wt["branch"], "repo": wt["repo"], "name": wt["name"]}
         store = SessionStore(self.home)
         th = AutomationThread(store.id, self.home, b.notify, meta, client_factory=b.client_factory,
-                              persist=b.persist, configure=unattended_configure())
+                              persist=b.persist, configure=unattended_configure(),
+                              user_home=b.user_home)
         th.ensure_session()
         th.save_meta()
         return th, wt, note

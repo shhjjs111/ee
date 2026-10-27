@@ -346,7 +346,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
         def build() -> Session:
             child = Session(cfg, model=model, cwd=child_cwd, mode="read-only" if read_only else parent.policy.mode,
                             client=parent._client_override, client_factory=parent._client_factory, persist=False,
-                            home=parent.home, shell=parent.shell_name)
+                            home=parent.home, shell=parent.shell_name, user_home=parent.user_home)
             p = parent.policy
             if read_only:
                 child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),

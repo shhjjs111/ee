@@ -73,9 +73,10 @@ class Thread:
     def __init__(self, tid: str, home: Path, notify: Callable[[str, dict], None], meta: dict,
                  messages: list[dict] | None = None, items: list[dict] | None = None,
                  client_factory: Callable | None = None, persist: bool = True,
-                 configure: Callable | None = None):
+                 configure: Callable | None = None, user_home: Path | None = None):
         self.id = tid
         self.home = home
+        self.user_home = Path(user_home) if user_home is not None else Path.home()
         self.notify = notify
         self.meta = dict(meta)
         self.items: list[dict] = list(items or [])
@@ -119,7 +120,7 @@ class Thread:
         # 精简模式（profile）跟着对话走：记在 meta 里，设置页切换只影响新对话；功能上线前的旧对话按 full
         agent = self.meta.get("profile") or ("full" if self._pending_messages else None)
         s = Session(cfg, model=model, cwd=self.cwd, mode=mode, client_factory=self.client_factory,
-                    persist=self.persist, home=self.home, agent=agent)
+                    persist=self.persist, home=self.home, agent=agent, user_home=self.user_home)
         s.store = SessionStore(self.home, session_id=self.id, enabled=self.persist)
         if self._pending_messages:
             s.history = list(self._pending_messages)

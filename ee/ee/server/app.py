@@ -53,8 +53,12 @@ class RpcError(Exception):
 class Backend:
     """与传输无关的后端：方法分发 + 线程管理。测试可以直接用它（不走 WebSocket）。"""
 
-    def __init__(self, home: Path | None = None, client_factory: Callable | None = None, persist: bool = True):
+    def __init__(self, home: Path | None = None, client_factory: Callable | None = None, persist: bool = True,
+                 user_home: Path | None = None):
         self.home = home or ee_home()
+        # 真实主目录（技能兼容目录 ~/.agents/skills、~/.claude/skills 从这里找）。
+        # 测试注入隔离目录，避免开发机上装的技能影响会话开头注入的消息数量。
+        self.user_home = Path(user_home) if user_home is not None else Path.home()
         self.client_factory = client_factory
         self.persist = persist
         self.threads: dict[str, Thread] = {}
@@ -181,7 +185,7 @@ class Backend:
         if not meta.get("cwd") or not Path(meta["cwd"]).is_dir():
             meta["cwd"] = meta.get("cwd") or str(Path.home())
         t = Thread(thread_id, self.home, self.notify, meta, messages=d["messages"], items=d["items"],
-                   client_factory=self.client_factory, persist=self.persist)
+                   client_factory=self.client_factory, persist=self.persist, user_home=self.user_home)
         self.threads[thread_id] = t
         return t
 
@@ -280,7 +284,7 @@ class Backend:
             if wt:
                 meta["worktree"] = {"path": wt["path"], "branch": wt["branch"], "repo": wt["repo"], "name": wt["name"]}
             t = Thread(store.id, self.home, self.notify, meta, client_factory=self.client_factory,
-                       persist=self.persist)
+                       persist=self.persist, user_home=self.user_home)
             try:
                 t.ensure_session()
             except ValueError as e:

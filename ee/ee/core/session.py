@@ -54,10 +54,16 @@ INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执�
 class Session:
     def __init__(self, config: Config, model: str | None = None, cwd: Path | None = None, mode: str | None = None,
                  client=None, client_factory: Callable | None = None, persist: bool = True,
-                 shell: str | None = None, home: Path | None = None, agent: str | None = None):
+                 shell: str | None = None, home: Path | None = None, agent: str | None = None,
+                 user_home: Path | None = None):
         self.config = config
         self.cwd = Path(cwd or config.cwd).resolve()
         self.home = home or ee_home()
+        # 真实主目录（技能兼容目录 ~/.agents/skills、~/.claude/skills 的查找起点）。
+        # 默认取 Path.home()；测试可以注入隔离目录，否则本机装了技能就会让
+        # 「会话开头注入的那几条消息」数量随开发机变化，测试随机红。
+        self.user_home = Path(user_home) if user_home is not None else Path.home()
+
         self._client_override = client
         self._client_factory = client_factory
         self._client = None
@@ -692,14 +698,15 @@ class Session:
         """本会话的技能目录：首次用到时扫描并缓存（skill 工具找不到名字时会 refresh 重扫一次）。会在线程里调用。"""
         if self._skills_cat is None or refresh:
             from ee.core import skills as K
-            self._skills_cat = K.discover(self.home, self.cwd, self.config.data)
+            self._skills_cat = K.discover(self.home, self.cwd, self.config.data, user_home=self.user_home)
         return self._skills_cat
 
     def _skills_message(self) -> dict | None:
         from ee.core import skills as K
         if not K.settings(self.config.data).get("enabled", True):
             return None
-        blk = K.load_block(self.home, self.cwd, self.config.data, catalog=self.skill_catalog(), tool="skill" in self.tool_map)
+        blk = K.load_block(self.home, self.cwd, self.config.data, user_home=self.user_home,
+                           catalog=self.skill_catalog(), tool="skill" in self.tool_map)
         self.skill_names = list(blk.names)
         return blk.message()
 
