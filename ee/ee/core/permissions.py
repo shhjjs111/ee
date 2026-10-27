@@ -174,8 +174,6 @@ SAFE_COMMANDS: dict[str, set[str] | None] = {
     "fl": None, "out-string": None, "get-process": None, "get-filehash": None, "split-path": None,
     "join-path": None, "get-itemproperty": None, "compare-object": None, "group-object": None,
     "convertto-json": None, "convertfrom-json": None, "get-help": None, "get-history": None,
-    # 测试/版本查询
-    "pytest": None, "py.test": None,
     # 只读 git / gh 子命令
     "git": {"status", "diff", "log", "show", "branch", "blame", "rev-parse", "ls-files", "remote", "describe",
             "shortlog", "reflog", "grep", "config", "tag", "ls-tree", "cat-file", "merge-base", "rev-list",
@@ -209,9 +207,6 @@ _SED_CMD = re.compile(
     r"(?:[pdqQ=lnNgGhHxDPz]|s(?P<d>[^\\\n\sA-Za-z0-9])(?:(?!(?P=d))[^\\]|\\.)*(?P=d)(?:(?!(?P=d))[^\\]|\\.)*(?P=d)[gpiImM0-9]*)?\s*")
 _SED_FLAGS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-u",
               "--unbuffered", "-z", "--null-data", "--posix", "--debug", "--sandbox"}
-# pytest 会写文件/删目录的参数（--basetemp 会先清空该目录）
-_PYTEST_WRITE_OPTS = ("--basetemp", "--junitxml", "--junit-xml", "--result-log", "--resultlog", "--log-file",
-                      "--report-log", "--html", "-o", "--override-ini", "-p", "--rootdir", "--confcutdir")
 
 
 def _redirects_safe(seg: str) -> bool:
@@ -289,11 +284,7 @@ def _segment_safe(seg: str) -> bool:
                 "pip", "uv", "rustc", "gcc", "make", "cmake", "deno", "bun", "ruby", "php", "pwsh", "powershell"):
         if args and args[0] in _VERSION_FLAGS:
             return True
-        if name in ("python", "python3", "py") and args[:2] == ["-m", "pytest"]:
-            return _pytest_safe(args[2:])
-        return False
-    if name in ("pytest", "py.test") and not _pytest_safe(args):
-        return False
+        return False     # pytest 也不算只读：它会导入并执行仓库里的 conftest.py / 插件（任意代码）
     if name == "find":
         return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf",
                              "-fls") for a in args)
@@ -344,15 +335,6 @@ def _segment_safe(seg: str) -> bool:
             return True
         verb = rest[1] if len(rest) > 1 else ""
         return verb in _GH_READONLY_VERBS
-    return True
-
-
-def _pytest_safe(args: list[str]) -> bool:
-    for a in args:
-        if any(a == o or a.startswith(o + "=") for o in _PYTEST_WRITE_OPTS):
-            return False
-        if re.fullmatch(r"-[op]\S+", a):     # -oKEY=VAL / -pPLUGIN 连写
-            return False
     return True
 
 

@@ -224,7 +224,7 @@ def test_readonly_shell_bypasses_denied(tmp_path, cmd):
 
 @pytest.mark.parametrize("cmd", [
     "sed -n '10,20p' a.py", "sed -n 5p a.py", "sed 's/foo/bar/g' a.py", "sed -n '/def /p' a.py",
-    "sed -E 's#a/b#c#2' a.py", "sed '1d;$d' a.py", "pytest -q 2>&1", "rg foo 2>/dev/null",
+    "sed -E 's#a/b#c#2' a.py", "sed '1d;$d' a.py", "wc -l a.py 2>&1", "rg foo 2>/dev/null",
     "ls 2> /dev/null", "rg 'foo(' src", 'grep "a{2}" f', "git show HEAD@{1}", "git log -5 2>$null",
     "Get-ChildItem -Recurse | Select-Object Name",
 ])
