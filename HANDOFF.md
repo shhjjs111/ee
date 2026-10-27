@@ -1,11 +1,11 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-28（Asia/Shanghai，`fix/edit-safety` 分支：**六轮安全/正确性修复**已全部推送；本分支 pytest 相关面 593 passed / 6 skipped；D6 按用户要求暂停中）
+最后更新：2026-10-28（Asia/Shanghai，**六轮安全/正确性修复已合并进 main 并推送** `90b3512`；全量 pytest **1461 passed / 15 skipped / 0 failed**（15m30s）；下一步 D6）
 
-> **接手第一步（2026-10-28）**：当前工作在 **`fix/edit-safety` 分支**（不是 main），已推送 `fb3a019`。
-> 这一轮修的是"静默改错/静默放行"类问题（详见下面「本轮：安全与正确性六连修」）。
-> **恢复主线的路径**：① 确认 Windows CI 绿；② 把 `fix/edit-safety` 合进 main（或先开 PR 审阅）；
-> ③ 回到 D6（手册 `research/d6-plan.md`），第一项是 D6-1 指挥会话——**注意 `feat/d6-1-orchestrator`
+> **接手第一步（2026-10-28）**：这一轮的修复**已经合并到 main**（`90b3512`，快进合并，全量 0 failed）。
+> 修的是"静默改错/静默放行"类问题（详见下面「本轮：安全与正确性六连修」）。
+> **下一步**：① 确认 Windows CI 绿（推 main 会自动跑，跑完看 artifact）；② 回到 D6
+> （手册 `research/d6-plan.md`），第一项是 D6-1 指挥会话——**注意 `feat/d6-1-orchestrator`
 > 分支上有半成品，已按用户要求撤出，备份在 `.rivet/scratch/d6-1-wip/`（不进仓库）**。
 > 真实 DeepSeek 评测仍需用户自己的 key（`eval_profiles.py --preset a2/a3 --runs 3`）。
 
@@ -75,16 +75,17 @@
 > **本轮验收**：`test_safe_options + test_options_abbrev + test_permissions + test_review_tools +
 > test_redo_shell_split + test_readonly_ps_pipeline + test_hooks` = **593 passed / 6 skipped**；
 > 另：沙箱相关 44 passed / 2 skipped、编辑相关 91 passed、hunks 31 passed。
-> **未跑全量 pytest**（约 15 分钟）——合并前建议跑一遍。
+> **全量 pytest：1461 passed / 15 skipped / 0 failed**（15m30s，2026-10-28 合并前跑的，零失败）。
 >
 > **本轮踩的坑（都是我自己引入又修掉的）**：① hunks 第一版只加 MAX_DRIFT=200 无效（实际距离仅
 > 10 行，在上限内）；② 第二版改 drift=0 误伤正常场景；③ 最终按"hunk 是否有上下文行"区分才对；
 > ④ `SAFE_OPTS` 初版漏了整段 PowerShell cmdlet，导致 `Get-ChildItem -Recurse | Select-Object Name`
 > 被拒（6 个既有测试抓住）；⑤ `_opt_allowed` 忘了 PowerShell 参数大小写不敏感。
 >
-> **已知未做**：全量 pytest 未重跑；`WinError 10106`（受限令牌下 `python -m ee` 在 `%TEMP%` 起不来）
+> **已知未做**：`WinError 10106`（受限令牌下 `python -m ee` 在 `%TEMP%` 起不来）
 > 未根治，只在正常目录下不触发、且失败时有 `[沙箱启动失败]` 报错不会静默；`hunks._find` 的
-> 相邻重复命中问题已按上下文行缓解，但内容完全重复时仍可能命中邻近处（有 8 例测试覆盖已知场景）。
+> 相邻重复命中问题已按上下文行缓解，但内容完全重复时仍可能命中邻近处（有 8 例测试覆盖已知场景）；
+> 沙箱默认只在只读/计划模式开，普通模式仍需用户在设置页或 config 里显式开。
 
 > **[x] D5-8 Windows 命令沙箱 v1（2026-10-27 22:25 合并 feat/d5-8，22:35 加设置页开关）**：参考 Codex 的受限令牌 + ACL 思路。`[sandbox] enabled=false, network=true`。开启后 shell 前台/后台命令经隐藏子命令 `ee __sandbox_exec` 启动器运行：CreateRestrictedToken(DISABLE_MAX_PRIVILEGE|LUA_TOKEN|WRITE_RESTRICTED，限制 SID = 工作区能力 SID、登录 SID、Everyone)，CreateProcessAsUserW 挂起创建、放入 KILL_ON_JOB_CLOSE 的 Job 后恢复。只有工作区和 `~/.ee/sandbox/tmp/<id>`（TEMP/TMP）可写，读不限制；能力 SID 存 `~/.ee/sandbox/sandbox.json`，ACE 不撤销（随机 SID 只此工作区持有；每条命令撤加会很慢且并发互撤），`sandbox.revoke()` 可清理。network=false 只用环境变量尽力而为（死代理、pip/npm/cargo/uv 离线、GIT_SSH_COMMAND=false）。非 Windows 开启时结果末尾提示“未生效”；Windows 上失败报“沙箱启动失败”不回退。hooks 不纳入。项目层只能开沙箱、只能关联网（sanitize_project_layer）。Windows CI 实测：写工作区内成功/外拒绝（关沙箱对照可写）、TEMP 可写、禁网生效、子进程继承限制、后台命令受限、cmd/pwsh 工作目录正确（tests/test_sandbox.py）。设置页「工具与记忆 → 命令沙箱」：启用沙箱、允许联网两个开关，非 Windows 显示“不支持，未生效”；保存后对空闲对话立即生效、运行中的回合结束后生效（AgentSettings.test.tsx）。已知限制：不是安全边界（Everyone/登录会话可写处仍可写）；直连不走代理的程序可联网；ee 以管理员运行时只授权 Administrators 的目录在沙箱内不可读；每条命令多一个启动器进程约 0.1–0.3s。
 
