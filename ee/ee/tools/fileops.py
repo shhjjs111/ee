@@ -15,7 +15,6 @@ import heapq
 import json
 import os
 import re
-import unicodedata
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +22,6 @@ from pathlib import Path
 from ee.tools.base import ToolError
 
 BOM = "\ufeff"
-SIMILARITY = 0.65
 MAX_TEXT_BYTES = 32 * 1024 * 1024     # 整体按文本读入（编辑、匹配）的文件大小上限
 
 
@@ -147,70 +145,94 @@ def _block_matches(content: str, find: str, norm) -> list[tuple[int, int]]:
     return out
 
 
-def _dedent(lines: list[str]) -> list[str]:
-    ind = [len(l) - len(l.lstrip()) for l in lines if l.strip()]
-    m = min(ind) if ind else 0
-    return [l[m:] if l.strip() else "" for l in lines]
+def _lead(line: str) -> str:
+    return line[:len(line) - len(line.lstrip(" \t"))]
 
 
-def _indent_flexible(content: str, find: str) -> list[tuple[int, int]]:
+def _base_indent(lines: list[str]) -> str:
+    """非空行里缩进最短的那行的前导空白。"""
+    ind = [_lead(l) for l in lines if l.strip()]
+    return min(ind, key=len) if ind else ""
+
+
+def _indent_shift_matches(content: str, find: str) -> list[tuple[int, int]]:
+    """整体缩进平移：每个非空行都是「原文基准缩进 R + 余下部分」对「old 基准缩进 O + 同样的余下部分」。
+    只接受整块统一平移（相对缩进、缩进字符都和原文一致），这样才能把 new 按同一偏移对齐回原文。"""
     clines = content.split("\n")
     flines = find.split("\n")
     if flines and flines[-1] == "":
         flines = flines[:-1]
     n = len(flines)
-    if not n:
+    if not n or not any(l.strip() for l in flines):
         return []
-    target = _dedent(flines)
+    o = _base_indent(flines)
+    if any(l.strip() and not l.startswith(o) for l in flines):
+        return []
+    frest = [l[len(o):].rstrip() if l.strip() else "" for l in flines]
+    first = next(k for k, l in enumerate(frest) if l)
     spans = _line_spans(content)
     out = []
     for i in range(len(clines) - n + 1):
-        if [x.rstrip() for x in _dedent(clines[i:i + n])] == [x.rstrip() for x in target]:
+        if clines[i + first].strip() != frest[first].strip():
+            continue
+        win = clines[i:i + n]
+        if any(bool(w.strip()) != bool(f) for w, f in zip(win, frest)):
+            continue
+        r = _base_indent(win)
+        if all((not w.strip()) or (w.startswith(r) and w[len(r):].rstrip() == f) for w, f in zip(win, frest)):
             out.append((spans[i][0], spans[i + n - 1][1]))
     return out
 
 
-def _lev_ratio(a: str, b: str) -> float:
-    if not a and not b:
-        return 1.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
-
-
-def _block_anchor(content: str, find: str) -> list[tuple[int, int]]:
-    """首尾两行（trim 后）当锚点，中间行平均相似度 ≥0.65 时接受，取最相似的一个。"""
-    flines = find.split("\n")
-    if flines and flines[-1] == "":
-        flines = flines[:-1]
-    if len(flines) < 3:
-        return []
-    clines = content.split("\n")
-    spans = _line_spans(content)
-    first, last = flines[0].strip(), flines[-1].strip()
-    n = len(flines)
-    max_delta = max(1, n // 4)
-    best, best_score = None, -1.0
-    for i, l in enumerate(clines):
-        if l.strip() != first:
+def _reindent(text: str, o: str, r: str) -> str:
+    """把 text 每个非空行的前导缩进从以 O 为基准改成以 R 为基准；做不到（缩进比 O 浅且字符不一致）就报错。"""
+    if o == r:
+        return text
+    chars = set(o + r)
+    out = []
+    for line in text.split("\n"):
+        if not line.strip():
+            out.append(line)
             continue
-        for j in range(i + 2, min(len(clines), i + n + max_delta)):
-            if clines[j].strip() != last:
+        if line.startswith(o):
+            out.append(r + line[len(o):])
+            continue
+        lead = _lead(line)
+        if len(chars) == 1 and set(lead) <= chars:
+            k = len(lead) + len(r) - len(o)
+            if k >= 0:
+                out.append(next(iter(chars)) * k + line[len(lead):])
                 continue
-            size = j - i + 1
-            if abs(size - n) > max_delta:
-                continue
-            mid_c = [x.strip() for x in clines[i + 1:j]]
-            mid_f = [x.strip() for x in flines[1:-1]]
-            k = max(len(mid_c), len(mid_f)) or 1
-            score = sum(_lev_ratio(a, b) for a, b in zip(mid_c, mid_f)) / k
-            if score > best_score:
-                best, best_score = (spans[i][0], spans[j][1]), score
-            break
-    if best and best_score >= SIMILARITY:
-        return [best]
-    return []
+        raise ToolError(f"new_string 的这一行缩进比 old_string 的基准缩进还浅，无法按原文缩进对齐：{_clip(line)}\n"
+                        "请照原文缩进重新写 old_string/new_string。")
+    return "\n".join(out)
 
 
-# 符号归一：弯引号 → 直引号，各种破折号/连字符 → -，特殊空格 → 空格，零宽字符去掉，再做 NFKC（全角 → 半角）。
+def _merge_lines(region: str, old: str, new: str) -> str:
+    """模糊命中后生成替换文本：new 里与 old 相同的行照抄原文；真正改动的行用 new，
+    但若那一行的原文与 old 不完全一致（只差行尾空白除外），说明不知道模型想保留哪种写法，宁可报错。"""
+    r_lines, o_lines, n_lines = region.split("\n"), old.split("\n"), new.split("\n")
+    if len(r_lines) != len(o_lines):
+        raise ToolError("old_string 与原文行数对不上，无法安全替换。请先 read 再逐字复制原文。")
+    out: list[str] = []
+    sm = difflib.SequenceMatcher(None, o_lines, n_lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            out += r_lines[i1:i2]
+            continue
+        if tag == "replace":
+            for k in range(i1, i2):
+                if r_lines[k].rstrip() != o_lines[k].rstrip():
+                    raise ToolError("要改的这一行原文和 old_string 有符号差异（弯引号/全角符号/特殊空格等），"
+                                    "无法确定改后该保留哪种写法，已拒绝，文件未改动。原文是：\n"
+                                    f"{_clip(r_lines[k])}\n请把这一行照原文逐字复制到 old_string，new_string 也按原文写法改。")
+        if tag in ("replace", "insert"):
+            out += n_lines[j1:j2]
+    return "\n".join(out)
+
+
+# 符号归一（只用于定位，不写回）：弯引号 → 直引号，各种破折号/连字符 → -，特殊空格 → 空格，零宽字符去掉，
+# 全角 ASCII（！到～）→ 半角。不做 NFKC：上标、连字、兼容汉字等折叠后语义不同。
 _CHAR_MAP = {}
 for _c in "\u2018\u2019\u201a\u201b\u2032":
     _CHAR_MAP[_c] = "'"
@@ -228,9 +250,10 @@ def _norm_char(c: str) -> str:
     m = _CHAR_MAP.get(c)
     if m is not None:
         return m
-    if c.isascii():
-        return c
-    return unicodedata.normalize("NFKC", c)
+    o = ord(c)
+    if 0xFF01 <= o <= 0xFF5E:
+        return chr(o - 0xFEE0)
+    return c
 
 
 def _norm_map(text: str) -> tuple[str, list[int]]:
@@ -276,10 +299,10 @@ STRATEGIES = [
     ("exact", None, False, "精确"),
     ("rstrip", lambda c, f: _block_matches(c, f, str.rstrip), True, "去行尾空白"),
     ("unicode", _unicode_matches, False, "符号归一（引号/破折号/空格/全半角）"),
-    ("trim", lambda c, f: _block_matches(c, f, str.strip), True, "逐行 trim"),
-    ("indent", _indent_flexible, True, "缩进无关"),
-    ("anchor", _block_anchor, True, "首尾锚点相似度"),
+    ("indent", _indent_shift_matches, True, "整体缩进平移，已按原文缩进对齐"),
 ]
+# 不再有逐行 trim / 首尾锚点相似度：前者会丢相对缩进，后者会用模型记错的 old_string 覆盖原文。
+# 对不上就报错并给出最接近的原文，让模型照原文重试。
 STRATEGY_LABEL = {name: label for name, _, _, label in STRATEGIES}
 
 
@@ -496,18 +519,15 @@ def _locate(content: str, e: Edit) -> tuple[str, list[tuple[int, int]], bool]:
     raise ToolError(not_found_message(content, e.old))
 
 
-def _keep_unchanged_lines(region: str, old: str, new: str) -> str:
-    """符号归一命中时：new 里和 old 相同的行照抄文件原文（保留原来的弯引号、全角符号等），只有真正改了的行用 new。"""
-    if region.count("\n") != old.count("\n"):
+def _render_piece(strategy: str, region: str, old: str, new: str) -> str:
+    """一处命中的替换文本。精确命中直接用 new；模糊命中只改模型真正改动的行，其余照抄原文。"""
+    if strategy == "exact":
         return new
-    r_lines, o_lines, n_lines = region.split("\n"), old.split("\n"), new.split("\n")
-    out = list(n_lines)
-    sm = difflib.SequenceMatcher(None, o_lines, n_lines, autojunk=False)
-    for tag, i1, i2, j1, _j2 in sm.get_opcodes():
-        if tag == "equal":
-            for k in range(i2 - i1):
-                out[j1 + k] = r_lines[i1 + k]
-    return "\n".join(out)
+    if strategy == "indent":
+        o = _base_indent(old.split("\n"))
+        r = _base_indent(region.split("\n"))
+        old, new = _reindent(old, o, r), _reindent(new, o, r)
+    return _merge_lines(region, old, new)
 
 
 def apply_edits(content: str, edits: list[Edit]) -> tuple[str, list[EditHit]]:
@@ -518,17 +538,26 @@ def apply_edits(content: str, edits: list[Edit]) -> tuple[str, list[EditHit]]:
         return f"edits[{i}]：" if multi else ""
 
     results: list[EditHit] = []
+    pieces: dict[tuple[int, int], str] = {}
     errors: list[str] = []
     for i, e in enumerate(edits):
         try:
             name, spans, by_line = _locate(content, e)
+            fixed = []
+            for a, b in spans:
+                old, new = e.old, e.new
+                if by_line and old.endswith("\n"):
+                    if content[b:b + 1] == "\n":
+                        b += 1          # 行块匹配不含末尾换行；old 带换行时把它也算进区间，删整行才干净
+                    else:
+                        old = old[:-1]
+                        new = new[:-1] if new.endswith("\n") else new
+                pieces[(a, b)] = _render_piece(name, content[a:b], old, new)
+                fixed.append((a, b))
         except ToolError as err:
             errors.append(tag(i) + str(err))
             continue
-        new = e.new
-        if by_line and e.old.endswith("\n") and new.endswith("\n"):
-            new = new[:-1]   # 行块匹配不含末尾换行；old/new 都以 \n 结尾时去掉一个保持对齐
-        results.append(EditHit(i, name, spans, new))
+        results.append(EditHit(i, name, fixed, e.new))
     if errors:
         tail = "\n整个调用没有写入任何改动；改好出错的几处后，把全部 edits 一起重发。" if multi else ""
         raise ToolError("\n\n".join(errors) + tail)
@@ -542,10 +571,7 @@ def apply_edits(content: str, edits: list[Edit]) -> tuple[str, list[EditHit]]:
             raise ToolError(f"{who}重叠。请把重叠或相邻的改动合并成一个 edit。整个调用没有写入任何改动。")
     out = content
     for a, b, h in reversed(flat):
-        piece = h.new
-        if h.strategy == "unicode":
-            piece = _keep_unchanged_lines(content[a:b], edits[h.index].old, h.new)
-        out = out[:a] + piece + out[b:]
+        out = out[:a] + pieces[(a, b)] + out[b:]
     if out == content:
         raise ToolError("替换后文件内容没有变化。")
     return out, results

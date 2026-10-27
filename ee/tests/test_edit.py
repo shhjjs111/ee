@@ -21,23 +21,25 @@ def test_rstrip_trailing_whitespace():
     assert strat == "rstrip" and out == "a = 3\nb = 4\n"
 
 
-def test_trim_lines():
-    out, strat, _ = replace(SRC, "if x:\n return 1", "if x:\n        return 3")
-    assert strat == "trim" and "return 3" in out
+def test_relative_indent_mismatch_rejected():
+    # 相对缩进和原文不同（不是整体平移）：不再逐行 trim 硬套，报错让模型照原文重试
+    with pytest.raises(ToolError, match="最接近"):
+        replace(SRC, "if x:\n return 1", "if x:\n        return 3")
 
 
 def test_indent_flexible():
     content = "class A:\n    def g(self):\n        a = 1\n          b = 2\n"
     find = "a = 1\n  b = 2"  # 相对缩进相同、绝对缩进不同
     out, strat, _ = replace(content, find, "        a = 5\n          b = 6")
-    assert strat in ("trim", "indent") and "a = 5" in out
+    assert strat == "indent" and "a = 5" in out
 
 
-def test_block_anchor_similarity():
+def test_similar_block_not_replaced():
+    # 只是“相似”的块不再按首尾锚点替换：报错并给出最接近的原文
     content = "def h():\n    x = compute(1, 2)\n    y = x + 1\n    return y\n"
     find = "def h():\n    x = compute(1,2)\n    y = x+1\n    return y"
-    out, strat, _ = replace(content, find, "def h():\n    return 0")
-    assert strat == "anchor" and out == "def h():\n    return 0\n"
+    with pytest.raises(ToolError, match="最接近"):
+        replace(content, find, "def h():\n    return 0")
 
 
 def test_not_unique_and_replace_all():
