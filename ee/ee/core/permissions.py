@@ -673,6 +673,198 @@ SAFE_COMMANDS: dict[str, set[str] | None] = {
     "gh": {"pr", "issue", "repo", "run", "status", "release", "workflow", "search", "auth", "browse"},
 }
 
+# 每个命令允许的**选项**白名单（只读模式免问的前提）。
+# 方向：只放行明确认识的选项，不认识的一律拦。黑名单要穷举所有危险写法；
+# 白名单只需保证"里面没有能执行程序/写文件的选项"，新增绕过就没法只用白名单组合出来。
+# 缺省（命令不在表里）= 不接受任何选项。
+# 长选项按 GNU 唯一前缀匹配（--all 可写 --al），由 _opt_is 处理。
+SAFE_OPTS: dict[str, set[str]] = {
+    "ls": {"-l", "-a", "-A", "-h", "-R", "-r", "-S", "-t", "-1", "-d", "-F", "-i", "-n", "-s", "-u",
+           "--all", "--almost-all", "--long", "--human-readable", "--recursive", "--reverse", "--color",
+           "--directory", "--classify", "--inode", "--numeric-uid-gid", "--size", "--time", "--sort"},
+    "cat": {"-n", "-A", "-b", "-E", "-s", "-T", "-v", "-e", "-t", "--number", "--show-all",
+            "--number-nonblank", "--show-ends", "--squeeze-blank"},
+    "head": {"-n", "-c", "-q", "-v", "--lines", "--bytes", "--quiet", "--verbose"},
+    "tail": {"-n", "-c", "-f", "-q", "-v", "-F", "--lines", "--bytes", "--follow", "--quiet", "--verbose",
+             "--retry", "--sleep-interval"},
+    "wc": {"-l", "-c", "-w", "-m", "-L", "--lines", "--bytes", "--words", "--chars", "--max-line-length"},
+    "echo": {"-n", "-e", "-E"},
+    "printf": set(),
+    "grep": {"-n", "-i", "-r", "-R", "-E", "-F", "-G", "-P", "-v", "-c", "-l", "-L", "-o", "-w", "-x",
+             "-A", "-B", "-C", "-H", "-h", "-s", "-q", "-e", "-f", "-a", "-I", "-z",
+             "--color", "--include", "--exclude", "--exclude-dir", "--line-number", "--ignore-case",
+             "--recursive", "--extended-regexp", "--fixed-strings", "--invert-match", "--count",
+             "--files-with-matches", "--only-matching", "--word-regexp", "--line-regexp",
+             "--after-context", "--before-context", "--context", "--with-filename", "--no-filename",
+             "--no-messages", "--quiet", "--regexp", "--file"},
+    "rg": {"-n", "-i", "-S", "-s", "-v", "-c", "-l", "-w", "-x", "-o", "-F", "-z", "-u", "-uu", "-uuu",
+           "-A", "-B", "-C", "-e", "-f", "-g", "-t", "-T", "-j", "-M", "-m", "-p", "-E",
+           "--line-number", "--ignore-case", "--smart-case", "--case-sensitive", "--invert-match",
+           "--count", "--files-with-matches", "--word-regexp", "--line-regexp", "--only-matching",
+           "--fixed-strings", "--hidden", "--glob", "--iglob", "--type", "--type-not", "--type-add",
+           "--after-context", "--before-context", "--context", "--max-count", "--max-columns",
+           "--max-depth", "--threads", "--no-ignore", "--no-ignore-vcs", "--no-ignore-parent",
+           "--no-ignore-dot", "--no-ignore-global", "--unrestricted", "--color", "--json",
+           "--files", "--heading", "--no-heading", "--trim", "--no-messages", "--multiline"},
+    "tree": {"-a", "-d", "-f", "-L", "-I", "-P", "--ignore-case", "--charset", "--filelimit",
+             "--dirsfirst", "--level", "--prune", "--noreport", "--gitignore", "--color", "--nocolor"},
+    "sort": {"-n", "-r", "-u", "-f", "-b", "-h", "-V", "-k", "-t", "-s", "-z", "-m", "-c", "-C",
+             "--numeric-sort", "--reverse", "--unique", "--ignore-case", "--ignore-leading-blanks",
+             "--human-numeric-sort", "--version-sort", "--key", "--field-separator", "--stable",
+             "--zero-terminated", "--merge", "--check", "--dictionary-order", "--general-numeric-sort",
+             "--month-sort", "--random-sort"},
+    "uniq": {"-c", "-d", "-u", "-i", "-f", "-s", "-w", "-z",
+             "--count", "--repeated", "--unique", "--ignore-case", "--skip-fields", "--skip-chars",
+             "--check-chars", "--zero-terminated"},
+    "cut": {"-d", "-f", "-c", "-b", "-s", "--delimiter", "--fields", "--characters", "--bytes",
+            "--only-delimited", "--complement", "--output-delimiter"},
+    "diff": {"-u", "-q", "-r", "-N", "-a", "-b", "-i", "-w", "-B", "-c", "-e", "-y", "-U", "-C",
+             "--unified", "--brief", "--recursive", "--new-file", "--text", "--ignore-space-change",
+             "--ignore-case", "--ignore-all-space", "--ignore-blank-lines", "--context",
+             "--side-by-side", "--label", "--color", "--no-dereference"},
+    "nl": {"-b", "-n", "-s", "-w", "-v", "-i", "--number-style", "--number-format", "--separator",
+           "--starting-line-number", "--line-increment", "--body-numbering"},
+    "column": {"-t", "-s", "-c", "-x", "-n", "--table", "--separator", "--output-width",
+               "--table-columns", "--table-name"},
+    "jq": {"-r", "-c", "-n", "-s", "-e", "-j", "-a", "-R", "-C", "-M", "-S",
+           "--raw-output", "--compact-output", "--null-input", "--slurp", "--exit-status",
+           "--join-output", "--ascii-output", "--raw-input", "--color-output", "--monochrome-output",
+           "--sort-keys", "--tab", "--indent", "--arg", "--argjson"},
+    "md5sum": {"-b", "-t", "-c", "--binary", "--text", "--check", "--quiet", "--status"},
+    "sha256sum": {"-b", "-t", "-c", "--binary", "--text", "--check", "--quiet", "--status"},
+    "cmp": {"-b", "-i", "-l", "-n", "-s", "--print-bytes", "--ignore-initial", "--verbose",
+            "--bytes", "--silent"},
+    "stat": {"-c", "-f", "-L", "-t", "--format", "--file-system", "--dereference", "--terse"},
+    "file": {"-b", "-i", "-L", "-z", "-h", "-N", "-r", "-s", "--brief", "--mime", "--dereference",
+             "--uncompress", "--no-dereference", "--separator", "--readelf"},
+    "du": {"-a", "-h", "-s", "-c", "-k", "-m", "-b", "-x", "-L", "-d", "--all", "--human-readable",
+           "--summarize", "--total", "--bytes", "--one-file-system", "--dereference", "--max-depth",
+           "--apparent-size", "--exclude"},
+    "df": {"-h", "-a", "-i", "-k", "-m", "-T", "-P", "--human-readable", "--all", "--inodes",
+           "--block-size", "--type", "--portability", "--print-type"},
+    "date": {"-u", "-R", "-I", "-d", "+%s", "--utc", "--rfc-3339", "--iso-8601", "--date", "--universal"},
+    "uname": {"-a", "-s", "-n", "-r", "-v", "-m", "-p", "-i", "-o", "--all", "--kernel-name",
+              "--nodename", "--kernel-release", "--kernel-version", "--machine", "--processor",
+              "--hardware-platform", "--operating-system"},
+    "basename": {"-a", "-s", "-z", "--multiple", "--suffix", "--zero"},
+    "dirname": {"-z", "--zero"},
+    "realpath": {"-e", "-m", "-s", "-z", "--canonicalize-existing", "--canonicalize-missing",
+                 "--strip", "--zero", "--quiet", "--relative-to"},
+    "which": {"-a", "--all"},
+    "type": {"-a", "-t", "-p", "-P", "-f", "--all", "--type", "--path"},
+    "true": set(),
+    "pwd": {"-L", "-P", "--logical", "--physical"},
+    "whoami": set(),
+    "hostname": {"-s", "-f", "-i", "-I", "--short", "--fqdn", "--ip-address", "--all-ip-addresses"},
+    "less": {"-N", "-S", "-R", "-F", "-X", "-i", "-M", "--LINE-NUMBERS", "--chop-long-lines"},
+    "find": {"-name", "-iname", "-type", "-maxdepth", "-mindepth", "-path", "-ipath", "-not", "-a",
+             "-and", "-o", "-or", "!", "(", ")", "-newer", "-mtime", "-atime", "-ctime", "-size",
+             "-perm", "-user", "-group", "-empty", "-readable", "-writable", "-executable",
+             "-samefile", "-links", "-regex", "-iregex", "-print", "-print0", "-prune", "-quit"},
+    # 只读 git / gh 子命令的选项（子命令本身另有集合校验）
+    "git": {"-C", "-c", "-n", "-p", "-e", "-v", "-m", "-f", "-d", "-l", "-a", "-u", "-s", "-z", "-q",
+            "-i", "-w", "-E", "-G", "-F", "-P", "-L", "-M", "-C", "-O", "-D", "-U", "--all", "--cached",
+            "--staged", "--graph", "--oneline", "--stat", "--short", "--porcelain", "--pretty",
+            "--format", "--no-pager", "--pager", "--name-only", "--name-status", "--numstat",
+            "--decorate", "--no-decorate", "--color", "--no-color", "--verbose", "--quiet", "--branch",
+            "--tags", "--contains", "--merged", "--no-merged", "--abbrev-commit", "--no-abbrev-commit",
+            "--date", "--since", "--until", "--author", "--grep", "--count", "--max-count", "--skip",
+            "--reverse", "--first-parent", "--merges", "--no-merges", "--follow", "--unified",
+            "--word-diff", "--raw", "--patch", "--binary", "--check", "--exit-code", "--ignore-case",
+            "--word-regexp", "--line-number", "--list", "--local", "--global", "--system", "--get",
+            "--get-all", "--unset", "--add", "--replace-all", "--file", "--ignore-matching-lines",
+            "--diff-filter", "--find-renames", "--relative", "--work-tree", "--git-dir", "--bare",
+            "--long", "--dirty", "--squash", "--origin", "--set-upstream", "--show-current"},
+    "gh": {"--json", "--limit", "--state", "--label", "--author", "--assignee", "--search",
+           "--head", "--base", "--branch", "--repo", "-R", "-L", "-s", "-a", "-A", "-w", "-l",
+           "--web", "--comments", "--draft", "--merged", "--closed", "--open", "--all", "--view"},
+    # windows cmd
+    "dir": {"/a", "/b", "/o", "/s", "/w", "/p", "/t", "/q", "/n", "/d", "/x", "/c"},
+    "where": {"/r", "/q", "/f", "/t"},
+    "findstr": {"/b", "/e", "/l", "/r", "/s", "/i", "/x", "/v", "/n", "/m", "/o", "/p", "/f", "/c", "/g", "/d", "/a"},
+    "ver": set(),
+    # PowerShell：参数不区分大小写，_check_opts 里按 lower() 比对；这里统一写小写
+    "get-childitem": {"-path", "-filter", "-include", "-exclude", "-recurse", "-depth", "-force",
+                      "-name", "-file", "-directory", "-hidden", "-readonly", "-system",
+                      "-attributes", "-erroraction", "-ea"},
+    "gci": {"-path", "-filter", "-include", "-exclude", "-recurse", "-depth", "-force",
+            "-name", "-file", "-directory", "-hidden", "-readonly", "-system", "-attributes",
+            "-erroraction", "-ea"},
+    "get-content": {"-path", "-totalcount", "-head", "-tail", "-encoding", "-raw", "-delimiter",
+                    "-readcount", "-first", "-last", "-erroraction", "-ea"},
+    "gc": {"-path", "-totalcount", "-head", "-tail", "-encoding", "-raw", "-delimiter",
+           "-readcount", "-first", "-last", "-erroraction", "-ea"},
+    "get-location": {"-psprovider", "-psdrive", "-stack", "-erroraction", "-ea"},
+    "gl": {"-psprovider", "-psdrive", "-stack", "-erroraction", "-ea"},
+    "select-string": {"-pattern", "-path", "-inputobject", "-simplematch", "-casesensitive",
+                      "-notmatch", "-allmatches", "-context", "-encoding", "-list", "-quiet",
+                      "-raw", "-literalpath", "-erroraction", "-ea"},
+    "sls": {"-pattern", "-path", "-inputobject", "-simplematch", "-casesensitive",
+            "-notmatch", "-allmatches", "-context", "-encoding", "-list", "-quiet",
+            "-raw", "-literalpath", "-erroraction", "-ea"},
+    "get-item": {"-path", "-literalpath", "-force", "-stream", "-erroraction", "-ea"},
+    "gi": {"-path", "-literalpath", "-force", "-stream", "-erroraction", "-ea"},
+    "test-path": {"-path", "-literalpath", "-pathtype", "-filter", "-isvalid", "-newerthan",
+                  "-olderthan", "-erroraction", "-ea"},
+    "write-output": {"-inputobject", "-nonewline", "-noenumerate"},
+    "write-host": {"-object", "-nonewline", "-foregroundcolor", "-backgroundcolor",
+                   "-separator", "-noenumerate"},
+    "get-command": {"-name", "-commandtype", "-modulename", "-all", "-listimported",
+                    "-totalcount", "-syntax", "-argumentlist", "-erroraction", "-ea"},
+    "gcm": {"-name", "-commandtype", "-modulename", "-all", "-listimported",
+            "-totalcount", "-syntax", "-argumentlist", "-erroraction", "-ea"},
+    "measure-object": {"-property", "-inputobject", "-sum", "-average", "-maximum", "-minimum",
+                       "-count", "-standarddeviation", "-line", "-character", "-word"},
+    "measure": {"-property", "-inputobject", "-sum", "-average", "-maximum", "-minimum",
+                "-count", "-standarddeviation", "-line", "-character", "-word"},
+    "resolve-path": {"-path", "-literalpath", "-relative", "-relativebasepath",
+                     "-erroraction", "-ea"},
+    "get-date": {"-date", "-format", "-uformat", "-displayhint", "-asutc"},
+    "select-object": {"-property", "-expandproperty", "-first", "-last", "-skip", "-skipfirst",
+                      "-skiplast", "-unique", "-inputobject", "-index", "-excludeproperty",
+                      "-wait", "-descending", "-casesensitive", "-erroraction", "-ea"},
+    "select": {"-property", "-expandproperty", "-first", "-last", "-skip", "-skipfirst",
+               "-skiplast", "-unique", "-inputobject", "-index", "-excludeproperty",
+               "-wait", "-descending", "-casesensitive", "-erroraction", "-ea"},
+    "where-object": {"-filterscript", "-inputobject", "-property", "-value", "-eq", "-ne", "-gt",
+                     "-ge", "-lt", "-le", "-like", "-notlike", "-match", "-notmatch", "-contains",
+                     "-notcontains", "-in", "-notin", "-is", "-isnot", "-and", "-or", "-not",
+                     "-casesensitive", "-erroraction", "-ea"},
+    "where": {"-filterscript", "-inputobject", "-property", "-value", "-eq", "-ne", "-gt",
+              "-ge", "-lt", "-le", "-like", "-notlike", "-match", "-notmatch", "-contains",
+              "-notcontains", "-in", "-notin", "-is", "-isnot", "-and", "-or", "-not",
+              "-casesensitive", "-erroraction", "-ea"},
+    "foreach-object": {"-process", "-begin", "-end", "-membername", "-inputobject",
+                       "-parallel", "-throttlelimit", "-erroraction", "-ea"},
+    "sort-object": {"-property", "-descending", "-casesensitive", "-unique", "-inputobject",
+                    "-stable", "-top", "-bottom", "-erroraction", "-ea"},
+    "format-table": {"-property", "-autoSize", "-wrap", "-groupby", "-hideTableHeaders",
+                     "-inputobject", "-view", "-erroraction", "-ea"},
+    "ft": {"-property", "-autoSize", "-wrap", "-groupby", "-hidetableheaders",
+           "-inputobject", "-view", "-erroraction", "-ea"},
+    "format-list": {"-property", "-groupby", "-inputobject", "-view", "-force",
+                    "-erroraction", "-ea"},
+    "fl": {"-property", "-groupby", "-inputobject", "-view", "-force", "-erroraction", "-ea"},
+    "out-string": {"-inputobject", "-width", "-stream"},
+    "get-process": {"-name", "-id", "-computername", "-fileversioninfo", "-module",
+                    "-includeusername", "-erroraction", "-ea"},
+    "get-filehash": {"-path", "-literalpath", "-algorithm", "-inputobject", "-erroraction", "-ea"},
+    "split-path": {"-path", "-literalpath", "-parent", "-leaf", "-leafbase", "-extension",
+                   "-qualifier", "-noqualifier", "-isabsolute", "-resolve"},
+    "join-path": {"-path", "-childpath", "-additionalchildpath", "-resolve"},
+    "get-itemproperty": {"-path", "-literalpath", "-name", "-erroraction", "-ea"},
+    "compare-object": {"-referenceobject", "-differenceobject", "-property", "-passthru",
+                       "-includeequal", "-excludedifferent", "-syncwindow", "-casesensitive"},
+    "group-object": {"-property", "-inputobject", "-noelement", "-asstring", "-casesensitive"},
+    "convertto-json": {"-inputobject", "-depth", "-compress", "-enumsasstrings", "-asarray"},
+    "convertfrom-json": {"-inputobject", "-depth", "-asenumerable"},
+    "get-help": {"-name", "-category", "-component", "-functionality", "-role", "-module",
+                 "-detailed", "-full", "-examples", "-parameter", "-online", "-showwindow"},
+    "get-history": {"-id", "-count"},
+
+    "ver": set(),
+}
+
 # git 子命令里还要看参数才能算只读的
 _GIT_READONLY_CHECK = {
     "branch": lambda a: not any(x in a for x in ("-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move",
@@ -686,6 +878,58 @@ _GIT_READONLY_CHECK = {
 }
 _GH_READONLY_VERBS = {"view", "list", "status", "diff", "checks", "ls", "search", "watch"}
 _VERSION_FLAGS = {"--version", "-v", "-V", "version", "--help", "-h"}
+
+
+def _opt_allowed(arg: str, allowed: set[str]) -> bool:
+    """这个选项在不在白名单里（长选项按 GNU 唯一前缀匹配）。
+
+    与 `_opt_is` 的区别：这里是「用户写法是白名单项的缩写」，
+    方向是 `白名单项.startswith(用户写法)`——和危险黑名单那边的方向一致。
+
+    PowerShell 的参数不区分大小写（-Recurse / -recurse 一样），所以再按小写比一次。
+    """
+    a = arg.strip()
+    if a in allowed:
+        return True
+    low = a.lower()
+    low_allowed = {x.lower() for x in allowed} if "-" in a and a[:1] in "-/" else allowed
+    if low in low_allowed:
+        return True
+    if a.startswith("--"):
+        name = a.split("=", 1)[0]
+        return any(o.startswith(name) for o in allowed if o.startswith("--"))
+    # 短选项允许合并写：-la = -l -a；带值的 -n5 也认 -n
+    if a.startswith("-") and len(a) > 2 and not a.startswith("--"):
+        body = a[1:]
+        if all(f"-{c}" in allowed for c in body):
+            return True
+        return f"-{body[0]}" in allowed          # -n5 / -A2 这类"选项+紧贴的值"
+    return False
+
+
+def _check_opts(name: str, args: list[str]) -> bool:
+    """命令的选项是否都在白名单里。位置参数（文件名、模式串）不受限制。
+
+    一个以 `-` 开头的参数可能是负数值（`head -5` 的 -5 是"-n 5"的简写，但 `cut -1`
+    少见），也可能是选项的值（`--color=auto` 已按 = 截断）。这里只判"看起来像选项"
+    的那些，允许白名单里显式列出的写法。
+    """
+    allowed = SAFE_OPTS.get(name)
+    if allowed is None:
+        # 不在 SAFE_OPTS 里的命令不接受任何选项（git/gh 走各自的子命令集合）
+        return not any(a.startswith("-") and a != "-" for a in args)
+    for a in args:
+        if a == "-" or not a.startswith("-"):
+            continue                              # - 表示 stdin；裸参数放行
+        if a.startswith("/") and len(a) > 1 and name in ("dir", "where", "findstr"):
+            pass                                  # windows cmd 的 /x 由 SAFE_OPTS 覆盖
+        if _opt_allowed(a, allowed):
+            continue
+        # 纯数字（head -5 / tail -5）视为 -n 的简写
+        if re.fullmatch(r"-\d+", a) and ("-n" in allowed or "--lines" in allowed):
+            continue
+        return False
+    return True
 
 NETWORK_COMMANDS = {"curl", "wget", "invoke-webrequest", "iwr", "invoke-restmethod", "irm", "ssh", "scp",
                     "nc", "ncat", "telnet", "ftp", "rsync"}
@@ -1015,6 +1259,9 @@ def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     if name in _PS_MEMBER_CMDLETS:
         return _ps_pipeline_safe(name, args)
     if name not in SAFE_COMMANDS:
+        return False
+    # 参数白名单：不认识的一律拦（黑名单要穷举危险写法，白名单不用）
+    if not _check_opts(name, args):
         return False
     subs = SAFE_COMMANDS[name]
     if subs is None:
