@@ -13,7 +13,11 @@
 - 结果写进运行历史（未读），推送 automation/run_updated、automation/run_done、automation/updated 通知；
   桌面端据此更新左栏「自动化」角标并弹 Windows 通知。
 
-RPC：automations/list|create|update|delete|run_now|runs|mark_read|preview。
+- v2（D5-3）：worktree 模式每次运行新建 `ee/auto-<自动化名>-<时间>` 的 worktree；运行中其它地方不能合并/删除它；
+  结束后在运行记录里给出改动摘要（文件 +/-），由用户「合并 / 压成一份 / 丢弃」；完成且一点没改的自动清理，
+  失败/中断的一律保留（连同会话）。运行记录带开始/结束/用时/用量与花费/模型/完整日志（log，最多 4000 字）。
+
+RPC：automations/list|create|update|delete|run_now|runs|mark_read|preview|worktree。
 """
 from __future__ import annotations
 
@@ -41,6 +45,8 @@ TICK = 30.0                     # 秒：调度循环最长睡多久
 RUNS_LIMIT = 1000
 RUNS_PER_AUTOMATION = 100
 SUMMARY_LEN = 200
+LOG_LEN = 4000
+WT_FILES = 50                   # 运行记录里最多列多少个改动文件
 DEFAULT_TIMEOUT = 60            # 分钟
 MAX_TIMEOUT = 24 * 60
 CATCHUP_GRACE = 90.0            # 秒：晚了这么多才算“错过后补跑”
@@ -190,6 +196,7 @@ class Automations:
         self.startup_delay = 5.0                      # 秒：启动后先等桌面端连上，补跑的结果通知不会丢
         self.running: dict[str, str] = {}             # automation_id -> run_id
         self.tasks: dict[str, asyncio.Task] = {}      # run_id -> 执行任务
+        self.active_wt: dict[str, tuple[str, str]] = {}   # run_id -> (worktree 路径, 自动化名)：运行中，不许删
         self._loop_task: asyncio.Task | None = None
         self._wake: asyncio.Event | None = None
 
@@ -322,6 +329,8 @@ class Automations:
                 if r.get("status") == "running" and r["id"] not in live:
                     r.update({"status": "interrupted", "finished": now,
                               "summary": r.get("summary") or "ee 上次退出时这次运行还没结束，已中断"})
+                    if (r.get("worktree") or {}).get("state") == "running":
+                        r["worktree"]["state"] = "pending"      # 留下的 worktree 交给用户合并/丢弃
                     stale.add(r["id"])
             for x in d["automations"]:
                 if x.get("last_status") == "running" and (x.get("last_run_id") in stale or x["id"] not in self.running):
@@ -461,9 +470,8 @@ class Automations:
         wt = None
         if a.get("worktree"):
             from ee.core import worktree as W
-            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(run["started"]))
             try:
-                wt = W.create(cwd, f"auto-{a['id'][3:9]}-{stamp}", None, self.home)
+                wt = self._create_worktree(a, run, cwd)
                 cwd = Path(wt["path"])
             except W.WorktreeError as e:
                 note = f"没能新建 worktree（{e}），本次直接在项目目录里运行。"
@@ -479,6 +487,105 @@ class Automations:
         th.save_meta()
         return th, wt, note
 
+    def _create_worktree(self, a: dict, run: dict, cwd: Path) -> dict:
+        """建本次运行的 worktree：名字 auto-<自动化名>-<开始时间>，重名加 -2、-3…；建好立刻登记为“运行中”。"""
+        from ee.core import worktree as W
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(run["started"]))
+        label = W._slug(a.get("name") or "")[:24].rstrip("-.") or a["id"][3:9]
+        base = f"auto-{label}-{stamp}"
+        for i in range(1, 10):
+            name = base if i == 1 else f"{base}-{i}"
+            try:
+                wt = W.create(cwd, name, None, self.home)
+                break
+            except W.WorktreeError as e:
+                if "已存在" not in str(e) or i == 9:
+                    raise
+        self.active_wt[run["id"]] = (wt["path"], a.get("name") or "")
+        run["worktree"] = {"path": wt["path"], "branch": wt["branch"], "name": wt["name"], "repo": wt["repo"],
+                           "state": "running"}
+        return wt
+
+    def busy_paths(self) -> dict[str, str]:
+        """正在运行的自动化占用的 worktree：规范化路径 → 自动化名。"""
+        from ee.core import worktree as W
+        return {W._norm(p): name for p, name in list(self.active_wt.values())}
+
+    def _wt_summary(self, run: dict, status: str) -> None:
+        """运行结束：统计 worktree 相对基准的改动写进运行记录；完成且没有任何改动就自动删掉（含分支）。"""
+        from ee.core import worktree as W
+        info = run.get("worktree") or {}
+        path = info.get("path")
+        if not path:
+            return
+        try:
+            d = W.diff(path, self.home)
+        except Exception as e:  # noqa: BLE001
+            log.warning("统计 worktree 改动失败：%s", path, exc_info=True)
+            info.update(state="pending", error=f"统计改动失败：{e}"[:300])
+            return
+        files = d.get("files") or []
+        commits = int((d.get("worktree") or {}).get("commits") or 0)
+        info.update(files=[{"path": f.get("path"), "additions": f.get("additions", 0), "deletions": f.get("deletions", 0),
+                            "status": f.get("status", "")} for f in files[:WT_FILES]],
+                    file_count=len(files), additions=d.get("additions", 0), deletions=d.get("deletions", 0),
+                    commits=commits, state="pending")
+        if status == "completed" and not files and not commits:
+            try:
+                W.remove(path, True, True, self.home)
+                info["state"] = "clean"
+            except Exception:  # noqa: BLE001
+                log.warning("清理没有改动的 worktree 失败：%s", path, exc_info=True)
+
+    async def worktree_action(self, run_id: str, action: str) -> dict:
+        """处理一次运行留下的 worktree：merge（--no-ff 合并）/ squash（压成一份放进暂存区）/ discard（丢弃）。
+        合并成功或丢弃后删掉 worktree 目录和分支。"""
+        from ee.core import worktree as W
+        if action not in ("merge", "squash", "discard"):
+            raise ValueError(f"未知操作：{action}")
+        d = await asyncio.to_thread(self.store.load)
+        run = next((r for r in d["runs"] if r.get("id") == run_id), None)
+        if run is None:
+            raise KeyError(run_id)
+        info = run.get("worktree") or {}
+        if not info.get("path"):
+            raise ValueError("这次运行没有 worktree")
+        if run.get("status") == "running" or run_id in self.active_wt:
+            raise ValueError("这次运行还没结束，等它运行完再处理 worktree")
+        state = info.get("state") or "pending"
+        if state in ("merged", "discarded", "clean", "gone"):
+            raise ValueError({"merged": "已经合并过了", "discarded": "已经丢弃了", "clean": "没有改动，已经自动清理了",
+                              "gone": "worktree 已经不在了"}[state])
+        try:
+            await asyncio.to_thread(W._find, info["path"], self.home)
+        except W.WorktreeError:
+            info["state"] = "gone"           # 在 Worktree 对话框里被删了
+        else:
+            call = self.backend.call
+            if action in ("merge", "squash"):
+                await call("worktree/merge", {"path": info["path"], "squash": action == "squash"})
+                info["state"] = "merged"
+                info["merged"] = action
+            try:
+                await call("worktree/remove", {"path": info["path"], "delete_branch": True, "force": True})
+            except Exception as e:  # noqa: BLE001
+                if action == "discard":
+                    raise
+                info["error"] = f"已合并，但删除 worktree 目录失败：{e}"[:300]
+            if action == "discard":
+                info["state"] = "discarded"
+        run["worktree"] = info
+
+        def fn(dd):
+            for i, r in enumerate(dd["runs"]):
+                if r["id"] == run_id:
+                    dd["runs"][i]["worktree"] = info
+                    return dict(dd["runs"][i])
+            return dict(run)
+        out = await asyncio.to_thread(self.store.update, fn)
+        self._notify("automation/run_updated", {"run": out})
+        return {"run": out}
+
     async def _execute(self, a: dict, run: dict) -> None:
         th = None
         status, text, note = "error", "", ""
@@ -491,8 +598,6 @@ class Automations:
                 return
             self.backend.threads[th.id] = th
             run["thread_id"] = th.id
-            if wt:
-                run["worktree"] = {"path": wt["path"], "branch": wt["branch"]}
             def _alive(d) -> bool:
                 _patch_run(d, run)
                 return any(x.get("id") == a["id"] for x in d["automations"])
@@ -518,6 +623,10 @@ class Automations:
                         pass
             last = next((it for it in reversed(th.items) if it.get("type") == "turn_end"), None)
             status = (last or {}).get("reason") or "error"
+            u = dict(th.usage or {})
+            run["usage"] = {k: u.get(k) for k in ("requests", "prompt", "completion", "hit", "cost", "currency")
+                            if k in u}
+            run["model"] = th.meta.get("model") or (th.session.spec.alias if th.session is not None else "")
             from ee.headless import _last_text
             text = th.final_text or _last_text(th)
             if status == "budget" and th.session is not None and th.session.budget.stop_reason:
@@ -539,11 +648,19 @@ class Automations:
                     await asyncio.wait_for(th.session.bg.close(), 8)     # 不留后台命令
                 except BaseException:  # noqa: BLE001
                     th.session.bg.kill_all_sync()
+            if run.get("worktree"):
+                try:
+                    await asyncio.shield(asyncio.to_thread(self._wt_summary, run, status))
+                except BaseException:  # noqa: BLE001
+                    log.warning("worktree 收尾失败", exc_info=True)
+            self.active_wt.pop(run["id"], None)
             self._finish(a, run, status, text, note)
 
     def _finish(self, a: dict, run: dict, status: str, text: str, note: str) -> None:
-        run.update({"finished": self.clock(), "status": status,
-                    "summary": _summary(((note + "\n") if note else "") + (text or "")) or "（没有输出）",
+        full = ((note + "\n") if note else "") + (text or "")
+        fin = self.clock()
+        run.update({"finished": fin, "status": status, "duration_ms": max(0, int((fin - run["started"]) * 1000)),
+                    "summary": _summary(full) or "（没有输出）", "log": full.strip()[:LOG_LEN],
                     "unread": True})
         self.running.pop(a["id"], None)
         self.tasks.pop(run["id"], None)
@@ -609,6 +726,14 @@ def register(methods: dict, backend: "Backend") -> Automations:
         except ValueError as e:
             raise RpcError(str(e))
 
+    async def worktree(run_id: str, action: str) -> dict:
+        try:
+            return await au.worktree_action(run_id, action)
+        except KeyError:
+            raise RpcError("运行记录不存在（可能已被删除）", 404)
+        except ValueError as e:
+            raise RpcError(str(e))
+
     def preview(schedule: dict, count: int = 3) -> dict:
         try:
             s = SC.normalize(schedule)
@@ -628,5 +753,6 @@ def register(methods: dict, backend: "Backend") -> Automations:
         "automations/mark_read": wrap(lambda run_ids=None, automation_id=None, thread_id=None, all=False:  # noqa: A002
                                       au.mark_read(run_ids, automation_id, thread_id, all)),
         "automations/preview": wrap(preview),
+        "automations/worktree": worktree,
     })
     return au

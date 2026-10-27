@@ -2,6 +2,7 @@ import clsx from "clsx";
 import {
   MessageCircleQuestion,
   SearchCheck,
+  Repeat,
   GitFork,
   Pencil,
   AlertTriangle,
@@ -198,6 +199,11 @@ export function UserMessage({ item }: { item: UserItem }) {
       )}
       <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
         {item.kind === "review" && <SearchCheck size={14} className="mr-1.5 inline-block align-[-2px] text-muted" />}
+        {item.kind === "loop" && (
+          <span title="由会话内 /loop 定时发送" className="mr-1.5 inline-flex">
+            <Repeat size={14} className="inline-block align-[-2px] text-accent" />
+          </span>
+        )}
         {item.text}
         {item.queue && !item.queued && <div className="mt-1 text-[11.5px] text-faint">{DELIVERED_LABEL[item.queue]}</div>}
       </div>

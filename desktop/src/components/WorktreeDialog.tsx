@@ -122,23 +122,24 @@ export function WorktreeDialog() {
                         {wt.exists === false
                           ? "目录已不存在"
                           : `${wt.commits ?? 0} 个提交 · ${dirty ? `${dirty} 个未提交改动` : "没有未提交改动"}`}
+                        {wt.in_use && <span className="ml-2 text-accent">{wt.in_use}</span>}
                       </div>
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <Button size="sm" variant="outline" disabled={!!busy || wt.exists === false} onClick={() => openThread(wt)}>
                           <SquarePen size={12} /> 在这里新对话
                         </Button>
                         <Tip label="把这个分支合并进主目录当前分支（保留提交历史；先自动提交未提交的改动）">
-                          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => run("m" + wt.path, () => rpc!.call("worktree/merge", { path: wt.path }, 180000), "已合并到主目录")}>
+                          <Button size="sm" variant="outline" disabled={!!busy || !!wt.in_use} onClick={() => run("m" + wt.path, () => rpc!.call("worktree/merge", { path: wt.path }, 180000), "已合并到主目录")}>
                             <GitMerge size={12} /> 合并
                           </Button>
                         </Tip>
                         <Tip label="把全部改动压成一份放进主目录的暂存区，由你自己检查、提交">
-                          <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => run("q" + wt.path, () => rpc!.call("worktree/merge", { path: wt.path, squash: true }, 180000), "改动已放进主目录暂存区")}>
+                          <Button size="sm" variant="ghost" disabled={!!busy || !!wt.in_use} onClick={() => run("q" + wt.path, () => rpc!.call("worktree/merge", { path: wt.path, squash: true }, 180000), "改动已放进主目录暂存区")}>
                             压成一份
                           </Button>
                         </Tip>
                         <div className="flex-1" />
-                        <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setConfirm({ wt, branch: false, force: false })}>
+                        <Button size="sm" variant="ghost" disabled={!!busy || !!wt.in_use} onClick={() => setConfirm({ wt, branch: false, force: false })}>
                           <Trash2 size={12} /> 删除
                         </Button>
                       </div>

@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type { RpcClient } from "./rpc";
 import { automationNotice, type Automation, type AutomationRun } from "./schedule";
+import { useLoops } from "./loopStore";
 import { useApp } from "./store";
 
 type State = {
@@ -11,18 +12,20 @@ type State = {
   runs: AutomationRun[];
   unread: number;
   loaded: boolean;
-  editing: Partial<Automation> | null; // 新建/编辑弹窗：null=关闭；没有 id = 新建
+  editing: (Partial<Automation> & { fromLoop?: { id: string; threadId: string } }) | null; // 新建/编辑弹窗：null=关闭；没有 id = 新建；fromLoop：由 /loop 转来，保存后停掉那个循环
+  filter: string; // 运行记录只看某个自动化（空 = 全部）
 };
 
 type Actions = {
   init(rpc: RpcClient): () => void;
   refresh(): Promise<void>;
-  save(a: Partial<Automation>): Promise<boolean>;
+  save(a: Partial<Automation> & { fromLoop?: { id: string; threadId: string } }): Promise<boolean>;
   setEnabled(id: string, enabled: boolean): Promise<void>;
   remove(id: string): Promise<void>;
   runNow(id: string): Promise<void>;
   markRead(p: { run_ids?: string[]; thread_id?: string; all?: boolean }): Promise<void>;
   openRun(run: AutomationRun): Promise<void>;
+  worktreeAction(runId: string, action: "merge" | "squash" | "discard"): Promise<boolean>;
   set(p: Partial<State>): void;
 };
 
@@ -39,6 +42,7 @@ export const useAutomations = create<State & Actions>((set, get) => ({
   unread: 0,
   loaded: false,
   editing: null,
+  filter: "",
   set: (p) => set(p),
 
   init(client) {
@@ -94,7 +98,7 @@ export const useAutomations = create<State & Actions>((set, get) => ({
 
   async save(a) {
     try {
-      const { id, ...rest } = a;
+      const { id, fromLoop, ...rest } = a;
       const body = {
         name: rest.name,
         cwd: rest.cwd,
@@ -111,7 +115,12 @@ export const useAutomations = create<State & Actions>((set, get) => ({
         ? await rpc().call("automations/update", { id, patch: body })
         : await rpc().call("automations/create", { automation: body });
       set((s) => ({ automations: upsert(s.automations, r.automation), editing: null }));
-      toast(id ? "已保存" : "已创建自动化");
+      if (fromLoop) {
+        // 由会话内 /loop 转来：持久化后停掉原来的循环，免得同一件事跑两份
+        await rpc().call("loop/stop", { thread_id: fromLoop.threadId, id: fromLoop.id }).catch(() => undefined);
+        useLoops.getState().drop([fromLoop.id]);
+        toast("已转为自动化，原来的会话内循环已停止");
+      } else toast(id ? "已保存" : "已创建自动化");
       return true;
     } catch (e) {
       toast((e as Error).message, "error");
@@ -151,6 +160,18 @@ export const useAutomations = create<State & Actions>((set, get) => ({
     const r = await rpc().call("automations/mark_read", p);
     const ids = new Set<string>(r.changed ?? []);
     set((s) => ({ unread: r.unread, runs: s.runs.map((x) => (ids.has(x.id) ? { ...x, unread: false } : x)) }));
+  },
+
+  async worktreeAction(runId, action) {
+    try {
+      const r = await rpc().call("automations/worktree", { run_id: runId, action }, 180000);
+      set((s) => ({ runs: upsert(s.runs, r.run) }));
+      toast(action === "discard" ? "已丢弃这次运行的改动" : action === "squash" ? "改动已放进主目录暂存区，确认后自己提交" : "已合并到主目录");
+      return true;
+    } catch (e) {
+      toast((e as Error).message, "error");
+      return false;
+    }
   },
 
   async openRun(run) {

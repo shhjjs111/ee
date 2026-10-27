@@ -7,6 +7,7 @@ import { RightPanel } from "./components/RightPanel";
 import { Dialogs } from "./components/ReviewDialogs";
 import { SettingsPage } from "./components/SettingsPage";
 import { AutomationsPage } from "./components/AutomationsPage";
+import { useLoops } from "./lib/loopStore";
 import { useAutomations } from "./lib/automationStore";
 import { Sidebar } from "./components/Sidebar";
 import { Button, Spinner } from "./components/ui";
@@ -14,6 +15,7 @@ import { RpcClient, rpcLog } from "./lib/rpc";
 import { applyTheme, useApp } from "./lib/store";
 
 let autoOff: (() => void) | null = null;
+let loopOff: (() => void) | null = null;
 
 type Boot = { state: "loading" } | { state: "error"; message: string } | { state: "ready" };
 
@@ -43,6 +45,8 @@ export default function App() {
       await useApp.getState().init(rpc);
       autoOff?.();
       autoOff = useAutomations.getState().init(rpc); // 自动化（D4-10）
+      loopOff?.();
+      loopOff = useLoops.getState().init(rpc); // 会话内 /loop（D5-3）
       setBoot({ state: "ready" });
     } catch (e) {
       setBoot({ state: "error", message: (e as Error).message });

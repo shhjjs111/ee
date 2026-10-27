@@ -43,6 +43,7 @@ export const BUILTIN: SlashCommand[] = [
   { name: "memory", description: "记住一句话（不带文字则打开记忆设置）", argHint: "[要记住的话]", takesArgs: true, kind: "builtin" },
   { name: "review", description: "代码审查：未提交的改动、相对分支、某个提交或按要求（只读）", argHint: "[额外要求]", takesArgs: true, kind: "builtin" },
   { name: "commit", description: "让模型根据改动写提交信息，确认后 git commit", takesArgs: false, kind: "builtin" },
+  { name: "loop", description: "在本会话里定时重复发送提示（关闭应用后不保留）；list 查看、stop 停止", argHint: "<10m | 每天 9:00> 提示词", takesArgs: true, kind: "builtin" },
   { name: "mcp", description: "管理 MCP 服务器", takesArgs: false, kind: "builtin" },
 ];
 

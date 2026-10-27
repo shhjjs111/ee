@@ -21,7 +21,7 @@ describe("slash", () => {
     const all = slashItems("/", prompts, models)!;
     expect(all.map((i) => i.key)).toEqual([
       "builtin:compact", "builtin:new", "builtin:undo", "builtin:model", "builtin:mode", "builtin:effort", "builtin:style", "builtin:plan", "builtin:memory",
-      "builtin:review", "builtin:commit", "builtin:mcp",
+      "builtin:review", "builtin:commit", "builtin:loop", "builtin:mcp",
       "prompt:init",
     ]);
     const m = slashItems("/mo", prompts, models)!;

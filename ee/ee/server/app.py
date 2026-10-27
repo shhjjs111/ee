@@ -105,6 +105,8 @@ class Backend:
         answer_rpc.register(self.methods, self)        # thread/options、styles/list、budget/status、reasoning/*（D5-9）
         from ee.server import automations as automations_rpc
         self.automations = automations_rpc.register(self.methods, self)   # automations/*（自动化 D4-10）
+        from ee.server import loops as loops_rpc
+        self.loops = loops_rpc.register(self.methods, self)               # loop/*（会话内 /loop，D5-3）
 
     # ------------------------------------------------------------ 通知
     def notify(self, method: str, params: dict) -> None:
@@ -321,6 +323,7 @@ class Backend:
                 raise RpcError("参数错误：thread_id 不合法", -32602) from None
         if extra.resolve() == sessions:
             raise RpcError("参数错误：thread_id 不合法", -32602)
+        self.loops.remove_thread(thread_id)              # 会话内 /loop 一并停止
         t = self.threads.pop(thread_id, None)
         if t is not None and t.running:
             t.interrupt()
@@ -739,11 +742,13 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         else:
             print("EE_SERVE_READY " + json.dumps({"port": real_port, "pid": os.getpid()}), flush=True)
         backend.automations.start()                    # 自动化调度（D4-10）：错过的启动后补跑一次
+        backend.loops.start()                          # 会话内 /loop（D5-3，只在内存里）
         gc_task = asyncio.create_task(_snapshot_gc_later(backend), name="ee-snapshot-gc")
         await stop
     gc_task.cancel()
     watchdog.stop()
     await backend.automations.stop()
+    await backend.loops.stop()
     for t in backend.threads.values():
         t.interrupt()
     try:
