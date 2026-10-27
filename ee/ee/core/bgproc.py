@@ -109,7 +109,7 @@ class BgManager:
         _ALL.add(self)
 
     # ---- 启动
-    async def start(self, command: str, shell, cwd: Path, env: dict) -> BgProc:
+    async def start(self, command: str, shell, cwd: Path, env: dict, sandbox=None) -> BgProc:
         if sum(1 for p in self.procs.values() if p.running) >= MAX_PROCS:
             raise RuntimeError(f"后台命令已达上限 {MAX_PROCS} 个，先用 shell_kill 结束不需要的")
         pid_ = f"b{next(self._ids)}"
@@ -127,6 +127,8 @@ class BgManager:
         else:
             kw["start_new_session"] = True
         argv, script = shell.prepare(command)
+        if sandbox is not None:                       # core/sandbox.SandboxPlan：经启动器在受限令牌里跑
+            argv, env = sandbox.wrap(argv, env)
         p._script = script
         try:
             proc = await asyncio.create_subprocess_exec(

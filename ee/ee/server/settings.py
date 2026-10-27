@@ -79,6 +79,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "permissions": {"mode": (data.get("permissions") or {}).get("mode", "default")},
             "ui": _ui_out(data.get("ui") or {}),
             "network": _network_out(data.get("network") or {}),
+            "sandbox": _sandbox_out(data),
             **_d2_out(data),
             "mcp": _mcp_out(data),
             "hooks": _hooks_out(data),
@@ -417,6 +418,11 @@ def _network_out(n: dict) -> dict:
             "retries": n.get("retries", 2), "system_proxy": _system_proxy()}
 
 
+def _sandbox_out(data: dict) -> dict:
+    from ee.core import sandbox as SB
+    return {**SB.settings(data), "supported": SB.supported()}
+
+
 def _system_proxy() -> str:
     """当前“跟随系统”会用到的代理（给设置页显示）。"""
     try:
@@ -497,6 +503,13 @@ def set_settings(new: dict) -> dict:
                     raise ValueError(f"{k} 应在 {lo}–{hi} 之间")
                 net[k] = int(v)
         out["network"] = net
+
+    if isinstance(new.get("sandbox"), dict):
+        sb = dict(out.get("sandbox") or {})
+        for k in ("enabled", "network"):
+            if new["sandbox"].get(k) is not None:
+                sb[k] = bool(new["sandbox"][k])
+        out["sandbox"] = sb
 
     if "providers" in new:
         old = user.get("providers") or {}

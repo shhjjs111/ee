@@ -7,6 +7,7 @@ import signal
 import subprocess
 import time
 
+from ee.core import sandbox as SB
 from ee.proc import kill_tree
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
@@ -63,16 +64,34 @@ def child_env() -> dict:
     return env
 
 
-async def run_command(command: str, shell: ShellInfo, cwd, timeout: float, emit=lambda s: None) -> tuple[int | None, str, bool]:
-    """跑命令，返回 (退出码, 合并输出, 是否超时)。取消时杀掉整个进程树。"""
+def sandbox_plan(ctx: ToolContext):
+    """按会话配置得到沙箱计划（未开启 → None）；沙箱准备失败 → ToolError（不静默回退成不隔离）。"""
+    cfg = ctx.extra.get("config")
+    data = getattr(cfg, "data", None) or {}
+    try:
+        return SB.plan(data, ctx.cwd)
+    except SB.SandboxError as e:
+        raise ToolError(str(e))
+
+
+def _sb_note(sb) -> str:
+    return f"\n{sb.notice}" if sb is not None and sb.notice else ""
+
+
+async def run_command(command: str, shell: ShellInfo, cwd, timeout: float, emit=lambda s: None,
+                      sandbox=None) -> tuple[int | None, str, bool]:
+    """跑命令，返回 (退出码, 合并输出, 是否超时)。取消时杀掉整个进程树。sandbox：core/sandbox.SandboxPlan。"""
     kw: dict = {}
     if IS_WINDOWS:
         kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     else:
         kw["start_new_session"] = True
     argv, script = shell.prepare(command)
+    env = child_env()
+    if sandbox is not None:
+        argv, env = sandbox.wrap(argv, env)
     try:
-        return await _run(argv, cwd, timeout, emit, kw)
+        return await _run(argv, cwd, timeout, emit, kw, env)
     finally:
         if script is not None:
             try:
@@ -81,10 +100,10 @@ async def run_command(command: str, shell: ShellInfo, cwd, timeout: float, emit=
                 pass
 
 
-async def _run(argv, cwd, timeout, emit, kw) -> tuple[int | None, str, bool]:
+async def _run(argv, cwd, timeout, emit, kw, env=None) -> tuple[int | None, str, bool]:
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=str(cwd), stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=child_env(), **kw)
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env if env is not None else child_env(), **kw)
     buf = CappedText(CAPTURE_CHARS)
     dec = StreamDecoder()
     timed_out = False
@@ -172,15 +191,18 @@ class ShellTool(Tool):
             raise ToolError(f"workdir 不存在：{cwd}")
         if args.get("background"):
             return await run_background(command, shell, cwd, ctx)
+        sb = sandbox_plan(ctx)
         t0 = time.monotonic()
         try:
-            code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit)
+            code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit, sandbox=sb)
         except FileNotFoundError as e:
             raise ToolError(f"无法启动 {shell.display}：{e}")
+        if sb is not None and SB.is_helper_failure(code, out):
+            raise ToolError(out.strip())
         dur = time.monotonic() - t0
         body, truncated = truncate_output_info(out.rstrip("\n"), ctx.output_dir, "shell")
         tail = f"\n[超时：{timeout}s 后已终止]" if timed_out else ""
-        footer = f"\n[exit {code if code is not None else '?'} · {dur:.1f}s]"
+        footer = f"\n[exit {code if code is not None else '?'} · {dur:.1f}s]" + _sb_note(sb)
         ok = (code == 0) and not timed_out
         return ToolResult((body or "（无输出）") + tail + footer, ok=ok, summary=f"Ran {command}",
                           meta={"kind": "shell", "command": command, "exit": code, "timed_out": timed_out,
@@ -196,8 +218,9 @@ async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) 
     mgr = getattr(sess, "bg", None)
     if mgr is None:
         raise ToolError("当前会话不支持后台命令")
+    sb = sandbox_plan(ctx)
     try:
-        p = await mgr.start(command, shell, cwd, child_env())
+        p = await mgr.start(command, shell, cwd, child_env(), sandbox=sb)
     except FileNotFoundError as e:
         raise ToolError(f"无法启动 {shell.display}：{e}")
     except RuntimeError as e:
@@ -219,6 +242,9 @@ async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) 
                  f"完整日志：{p.log_path}]")
     else:
         state = f"\n[已结束 · exit {p.exit_code}]"
+        if sb is not None and SB.is_helper_failure(p.exit_code, text):
+            raise ToolError(text.strip())
+    state += _sb_note(sb)
     body = text.rstrip("\n") or "（暂无输出）"
     return ToolResult(f"{head}\n{body}{state}", ok=(p.running or p.exit_code == 0), summary=f"Started {command}",
                       meta={"kind": "shell", "command": command, "background": True, "bg_id": p.id,
