@@ -98,3 +98,30 @@ def test_trailing_newline_delete_whole_lines():
     src = "a\n    b\n    c\nd\n"
     out, _, _ = replace(src, "b\nc\n", "")
     assert out == "a\nd\n"
+
+
+# ------------------------------------------------------------------ 2) 工具描述压缩后关键规则补回
+
+def _prefix_text(workspace, profile=None):
+    from test_prefix_budget import _prefix
+    _, p = _prefix(workspace, **({"profile": profile} if profile else {}))
+    tools = {t["function"]["name"]: t["function"]["description"] for t in p.tools}
+    return p.system["content"], tools
+
+
+@pytest.mark.parametrize("profile", [None, "lean"])
+def test_key_edit_and_shell_rules_present(ee_home, workspace, profile):
+    system, tools = _prefix_text(workspace, profile)
+    blob = system + "\n" + tools["edit"] + "\n" + tools["write"]
+    assert "先 read" in tools["edit"]                       # edit 前必须先 read
+    assert "唯一" in blob and "replace_all" in blob         # old_string 必须唯一
+    assert "缩进" in blob                                   # 保留原缩进
+    assert "行号" in blob                                   # 不带行号前缀
+    assert "新建" in blob                                   # 新建用 write
+    # 不要用 shell 写文件改代码
+    assert any(("shell" in line and "写文件" in line) for line in system.split("\n"))
+
+
+def test_full_mode_keeps_dedicated_tool_rules(ee_home, workspace):
+    system, _ = _prefix_text(workspace)
+    assert "cat" in system and "grep" in system and "glob" in system

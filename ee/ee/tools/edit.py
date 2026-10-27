@@ -18,7 +18,7 @@ class EditTool(Tool):
                 "items": {
                     "type": "object",
                     "properties": {
-                        "old_string": {"type": "string", "description": "原文（逐字复制，不含行号前缀）"},
+                        "old_string": {"type": "string", "description": "原文（逐字复制）"},
                         "new_string": {"type": "string"},
                         "replace_all": {"type": "boolean"},
                     },
