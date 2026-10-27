@@ -214,6 +214,7 @@ def plan(data: dict | None, workspace: Path, readonly: bool = False) -> SandboxP
     ws = Path(workspace).resolve()
     if not IS_WINDOWS:
         return SandboxPlan(workspace=ws, active=False, network=net, notice=NOTICE_UNSUPPORTED)
+    notice = _preflight_notice(ws, readonly=readonly, via_readonly_default=not s["enabled"])
     try:
         sid = capability_sid(ws)
         tmp = tmp_dir(ws)
@@ -228,7 +229,28 @@ def plan(data: dict | None, workspace: Path, readonly: bool = False) -> SandboxP
         raise
     except Exception as e:  # noqa: BLE001
         raise SandboxError(f"{FAIL_MARK} 准备沙箱失败：{e}") from e
-    return SandboxPlan(workspace=ws, active=True, network=net, sid=sid, tmp=tmp)
+    return SandboxPlan(workspace=ws, active=True, network=net, sid=sid, tmp=tmp, notice=notice)
+
+
+def _preflight_notice(ws: Path, readonly: bool, via_readonly_default: bool) -> str:
+    """沙箱开启前能看出来的坑，提前说清楚——不要等用户对着"拒绝访问。"猜。
+
+    已知坑：工作区在临时目录（%TEMP% / /tmp）下时，受限令牌拿不到父目录链的访问权，
+    命令会以"拒绝访问"失败。这个坑在沙箱默认关闭时碰不到；只读模式默认开之后概率变高，
+    所以必须给出可操作的提示。
+    """
+    try:
+        import tempfile
+        temp = Path(tempfile.gettempdir()).resolve()
+        under_temp = ws == temp or temp in ws.parents
+    except (OSError, RuntimeError):
+        under_temp = False
+    if not under_temp:
+        return ""
+    why = "只读/计划模式默认开启的" if via_readonly_default and readonly else ""
+    return (f"提示：工作区位于临时目录（{ws}），{why}沙箱在受限令牌下可能没有写权限，"
+            "命令可能出现“拒绝访问”。把工作区换到普通目录（如用户目录下的项目）即可；"
+            "或关闭沙箱：[sandbox] readonly_default = false / enabled = false。")
 
 
 def revoke(workspace: Path) -> bool:
