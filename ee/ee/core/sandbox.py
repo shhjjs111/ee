@@ -53,7 +53,11 @@ def settings(data: dict | None) -> dict:
     s = (data or {}).get("sandbox") or {}
     if not isinstance(s, dict):
         s = {}
-    return {"enabled": bool(s.get("enabled", False)), "network": bool(s.get("network", True))}
+    return {"enabled": bool(s.get("enabled", False)), "network": bool(s.get("network", True)),
+            # 只读/计划模式下即使 enabled=false 也开沙箱：命令白名单是"防误操作"，
+            # 不是安全边界（PowerShell 的成员调用语法永远可能还有下一种写法）。
+            # 真正的强制隔离是这里的受限令牌 + ACL，而只读模式的威胁正是写。
+            "readonly_default": bool(s.get("readonly_default", True))}
 
 
 def supported() -> bool:
@@ -191,10 +195,15 @@ def helper_argv() -> list[str]:
 _granted: set[tuple[str, str]] = set()      # 本进程已确认授权过的 (路径, SID)
 
 
-def plan(data: dict | None, workspace: Path) -> SandboxPlan | None:
-    """按配置得到沙箱计划；未开启返回 None。Windows 上准备失败抛 SandboxError（不静默回退）。"""
+def plan(data: dict | None, workspace: Path, readonly: bool = False) -> SandboxPlan | None:
+    """按配置得到沙箱计划；未开启返回 None。Windows 上准备失败抛 SandboxError（不静默回退）。
+
+    readonly=True（只读 / 计划模式）时，即使 enabled=false 也默认开沙箱——命令白名单
+    只能防误操作，静态分析证明不了"没有下一种绕过语法"；沙箱限制的是写，而只读模式的
+    威胁正是写。用 [sandbox] readonly_default = false 可以关掉这个默认。
+    """
     s = settings(data)
-    if not s["enabled"]:
+    if not (s["enabled"] or (readonly and s["readonly_default"])):
         return None
     ws = Path(workspace).resolve()
     if not IS_WINDOWS:

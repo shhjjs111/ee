@@ -48,10 +48,11 @@ def _run(ws, script_name, body, cfg, sh=None):
 # ------------------------------------------------------------------ 各平台
 
 def test_defaults_and_settings_parse():
-    assert DEFAULTS["sandbox"] == {"enabled": False, "network": True}
-    assert SB.settings({}) == {"enabled": False, "network": True}
-    assert SB.settings({"sandbox": {"enabled": 1, "network": 0}}) == {"enabled": True, "network": False}
-    assert SB.settings({"sandbox": "bad"}) == {"enabled": False, "network": True}
+    assert DEFAULTS["sandbox"] == {"enabled": False, "network": True, "readonly_default": True}
+    assert SB.settings({}) == {"enabled": False, "network": True, "readonly_default": True}
+    assert SB.settings({"sandbox": {"enabled": 1, "network": 0}}) == {"enabled": True, "network": False,
+                                                                      "readonly_default": True}
+    assert SB.settings({"sandbox": "bad"}) == {"enabled": False, "network": True, "readonly_default": True}
 
 
 def test_disabled_plan_is_none(workspace):
@@ -141,7 +142,7 @@ def test_disabled_shell_has_no_notice(workspace, ee_home):
 def test_settings_roundtrip(ee_home):
     from ee.server import settings as S
     out = S.get_settings()["settings"]["sandbox"]
-    assert out == {"enabled": False, "network": True, "supported": WIN}
+    assert out == {"enabled": False, "network": True, "readonly_default": True, "supported": WIN}
     st = S.get_settings()["settings"]
     st["sandbox"] = {"enabled": True, "network": False}
     res = S.set_settings(st)["settings"]["sandbox"]
@@ -151,7 +152,7 @@ def test_settings_roundtrip(ee_home):
 
 
 def test_prepare_failure_is_tool_error(workspace, ee_home, monkeypatch):
-    def boom(data, ws):
+    def boom(data, ws, readonly=False):
         raise SB.SandboxError(f"{SB.FAIL_MARK} 准备沙箱失败：测试")
     monkeypatch.setattr(SB, "plan", boom)
     sh = resolve_shell("auto")
@@ -310,7 +311,7 @@ def test_win_helper_failure_reported(wdirs, monkeypatch):
     p = SB.plan({"sandbox": {"enabled": True}}, workspace)
     assert p is not None and p.active
     p.sid = "not-a-sid"
-    monkeypatch.setattr(SB, "plan", lambda data, ws: p)
+    monkeypatch.setattr(SB, "plan", lambda data, ws, readonly=False: p)
     sh = resolve_shell("auto")
     from ee.tools.base import ToolError
     with pytest.raises(ToolError, match="沙箱启动失败"):
@@ -325,6 +326,17 @@ def test_project_layer_cannot_disable_sandbox_or_enable_network():
     assert set(dropped) >= {"sandbox.enabled", "sandbox.network", "sandbox.x"}
     clean, dropped = sanitize_project_layer({"sandbox": {"enabled": True, "network": False}}, {})
     assert clean["sandbox"] == {"enabled": True, "network": False} and not dropped
+
+
+def test_project_layer_cannot_disable_readonly_default():
+    """项目层不能关掉"只读模式默认开沙箱"——关掉等于削弱隔离。"""
+    from ee.config import sanitize_project_layer
+    clean, dropped = sanitize_project_layer({"sandbox": {"readonly_default": False}}, {})
+    assert "readonly_default" not in clean.get("sandbox", {})
+    assert "sandbox.readonly_default" in dropped
+    # 显式写 true 是收紧方向，允许
+    clean, dropped = sanitize_project_layer({"sandbox": {"readonly_default": True}}, {})
+    assert clean["sandbox"] == {"readonly_default": True} and not dropped
 
 
 def test_settings_set_ignores_readonly_supported(tmp_path, monkeypatch):

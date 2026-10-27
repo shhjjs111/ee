@@ -509,7 +509,7 @@ def set_settings(new: dict) -> dict:
 
     if isinstance(new.get("sandbox"), dict):
         sb = dict(out.get("sandbox") or {})
-        for k in ("enabled", "network"):
+        for k in ("enabled", "network", "readonly_default"):
             if new["sandbox"].get(k) is not None:
                 sb[k] = bool(new["sandbox"][k])
         out["sandbox"] = sb

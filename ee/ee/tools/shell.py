@@ -65,11 +65,17 @@ def child_env() -> dict:
 
 
 def sandbox_plan(ctx: ToolContext):
-    """按会话配置得到沙箱计划（未开启 → None）；沙箱准备失败 → ToolError（不静默回退成不隔离）。"""
+    """按会话配置得到沙箱计划（未开启 → None）；沙箱准备失败 → ToolError（不静默回退成不隔离）。
+
+    只读 / 计划模式下默认启用：命令白名单只能防误操作，不是安全边界。
+    """
+    from ee.core.permissions import READONLY_MODES
     cfg = ctx.extra.get("config")
     data = getattr(cfg, "data", None) or {}
+    session = ctx.extra.get("session")
+    mode = getattr(getattr(session, "policy", None), "mode", "") if session is not None else ""
     try:
-        return SB.plan(data, ctx.cwd)
+        return SB.plan(data, ctx.cwd, readonly=mode in READONLY_MODES)
     except SB.SandboxError as e:
         raise ToolError(str(e))
 
