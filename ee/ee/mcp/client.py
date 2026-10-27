@@ -28,6 +28,12 @@ CLIENT_INFO = {"name": "ee", "version": "0.3"}
 IS_WINDOWS = sys.platform == "win32"
 
 
+
+def _decode_line(b: bytes) -> str:
+    """MCP 服务器的 stderr / 非 JSON 输出：先 UTF-8，不合法时按本机编码（中文 Windows 的 GBK），报错不乱码。"""
+    from ee.tools.textdecode import smart_decode
+    return smart_decode(b)
+
 class McpError(Exception):
     pass
 
@@ -204,7 +210,7 @@ class StdioClient(_Base):
                 try:
                     msg = json.loads(line)
                 except ValueError:
-                    self._stderr.append("[stdout 非 JSON] " + line.decode("utf-8", "replace")[:300])
+                    self._stderr.append("[stdout 非 JSON] " + _decode_line(line)[:300])
                     continue
                 await self._on_message(msg)
         except (asyncio.CancelledError, ValueError):
@@ -221,7 +227,7 @@ class StdioClient(_Base):
                 line = await self.proc.stderr.readline()
                 if not line:
                     break
-                self._stderr.append(line.decode("utf-8", "replace").rstrip()[:500])
+                self._stderr.append(_decode_line(line).rstrip()[:500])
         except (asyncio.CancelledError, ValueError):
             pass
 

@@ -3,6 +3,7 @@ import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { OutputDecoder } from "./textdecode";
 
 export interface BackendInfo {
   port: number;
@@ -138,8 +139,10 @@ export class Backend {
         }
       }, startMs);
       let buf = "";
+      const outDec = new OutputDecoder();
+      const errDec = new OutputDecoder();
       child.stdout?.on("data", (d: Buffer) => {
-        const s = d.toString("utf8");
+        const s = outDec.write(d);
         log?.write(s);
         if (settled) return;
         buf += s;
@@ -152,7 +155,7 @@ export class Backend {
         }
       });
       child.stderr?.on("data", (d: Buffer) => {
-        const s = d.toString("utf8");
+        const s = errDec.write(d);
         log?.write(s);
         this.stderrTail.push(s);
         if (this.stderrTail.length > 40) this.stderrTail.shift();
@@ -166,7 +169,9 @@ export class Backend {
         }
       });
       child.on("exit", (code) => {
-        log?.write(`\n==== 后端退出，code=${code}\n`);
+        const rest = errDec.end();
+        if (rest) this.stderrTail.push(rest);
+        log?.write(`${rest}\n==== 后端退出，code=${code}\n`);
         log?.end();
         const current = this.proc === child; // stop()/restart() 结束的旧进程不算“意外退出”
         if (current) this.proc = null;

@@ -23,6 +23,12 @@ const STUCK = script("stuck.js", `process.stdout.write('EE_SERVE_READY {"port": 
 // 永远不 READY
 const SILENT = script("silent.js", `setInterval(() => {}, 1000);`);
 const FAIL = script("fail.js", `process.exit(3);`);
+// 启动失败时 stderr 的中文：一种是 UTF-8 但被拆成单字节写出，一种是中文 Windows 的 GBK（启动器/系统报错）
+const SPLIT_UTF8 = script(
+  "split.js",
+  `const b = Buffer.from("模块缺失：找不到依赖", "utf8"); (async () => { for (const x of b) { process.stderr.write(Buffer.from([x])); await new Promise((r) => setTimeout(r, 2)); } process.exit(4); })();`,
+);
+const GBK_ERR = script("gbk.js", `process.stderr.write(Buffer.from([0xcf,0xb5,0xcd,0xb3,0xd5,0xd2,0xb2,0xbb,0xb5,0xbd,0xd6,0xb8,0xb6,0xa8,0xb5,0xc4,0xce,0xc4,0xbc,0xfe]), () => process.exit(5));`);
 
 function opts(extra: Partial<BackendOptions> = {}): BackendOptions {
   return { isPackaged: false, resourcesPath: tmp, appRoot: tmp, logFile: path.join(tmp, "logs", "backend.log"), ...extra };
@@ -80,6 +86,11 @@ describe("Backend（主进程拉起内核）", () => {
     expect(r.port).toBe(1234);
     b.stop();
     await waitFor(() => !alive(r.pid));
+  });
+
+  it("启动失败的中文报错不乱码（分块的 UTF-8、GBK 都能还原）", async () => {
+    await expect(new Backend(opts({ command: node(SPLIT_UTF8) })).info()).rejects.toThrow("模块缺失：找不到依赖");
+    await expect(new Backend(opts({ command: node(GBK_ERR) })).info()).rejects.toThrow("系统找不到指定的文件");
   });
 
   it("启动超时会结束那个进程，不留后台残留", async () => {

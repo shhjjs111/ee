@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 
 from ee.proc import run_capture
+from ee.tools.textdecode import smart_decode
 
 log = logging.getLogger("ee.snapshot")
 
@@ -80,7 +81,7 @@ class DiskSnapshot:
                 "--literal-pathspecs", *args]       # 路径一律按字面匹配：a[b].txt 不能顺带匹配到 ab.txt
         code, out, err = run_capture(argv, cwd=self.worktree, timeout=timeout, input=input, env=self._env())
         if code != 0:
-            msg = err.decode("utf-8", "replace").strip()[:300] or f"退出码 {code}"
+            msg = smart_decode(err).strip()[:300] or f"退出码 {code}"
             raise SnapshotError(f"git {args[0]} 失败：{'超时' if code == 124 else msg}")
         return out
 

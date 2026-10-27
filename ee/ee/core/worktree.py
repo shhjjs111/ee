@@ -22,6 +22,7 @@ from pathlib import Path
 from ee.config import ee_home
 from ee.core import gitinfo
 from ee.proc import run_capture
+from ee.tools.textdecode import smart_decode
 
 _LOCK = threading.Lock()
 BRANCH_PREFIX = "ee/"
@@ -39,7 +40,7 @@ def _git(args: list[str], cwd: Path | str, timeout: float = 60, check: bool = Tr
         raise WorktreeError("没有找到 git，worktree 需要安装 Git")
     code, out, err = run_capture([exe, "-c", "core.quotepath=false", "-c", "core.longpaths=true", *args], cwd=cwd, timeout=timeout)
     if check and code != 0:
-        msg = (err or out).decode("utf-8", "replace").strip() or f"git {' '.join(args[:2])} 失败（{code}）"
+        msg = smart_decode(err or out).strip() or f"git {' '.join(args[:2])} 失败（{code}）"
         raise WorktreeError(msg[:2000])
     return out.decode("utf-8", "replace")
 
@@ -331,7 +332,7 @@ def _sync_dirty(src_top: Path, dst: Path) -> str | None:
     code, patch, err = run_capture([exe, "-c", "core.quotepath=false", "diff", "HEAD", "--binary", "--no-color",
                                     "--no-ext-diff", "--no-renames", "--ignore-submodules"], cwd=src_top, timeout=120)
     if code != 0:
-        raise WorktreeError("读取主目录未提交改动失败：" + (err or b"").decode("utf-8", "replace")[:500])
+        raise WorktreeError("读取主目录未提交改动失败：" + smart_decode(err or b"")[:500])
     untracked = [x for x in _git(["ls-files", "--others", "--exclude-standard", "-z"], src_top, timeout=60,
                                  check=False).split("\0") if x]
     if not patch.strip() and not untracked:

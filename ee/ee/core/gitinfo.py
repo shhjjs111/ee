@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ee.proc import run_capture
+from ee.tools.textdecode import smart_decode
 
 log = logging.getLogger("ee.git")
 
@@ -122,4 +123,4 @@ def commit(cwd: Path, message: str, stage_all: bool) -> tuple[bool, str]:
     if not exe:
         return False, "找不到 git"
     code, out, err = run_capture([exe, "commit", "-F", "-"], cwd=cwd, input=message.encode("utf-8"), timeout=60)
-    return code == 0, (out + err).decode("utf-8", errors="replace")
+    return code == 0, smart_decode(out + err)   # 提交钩子的输出在中文 Windows 上常是 GBK
