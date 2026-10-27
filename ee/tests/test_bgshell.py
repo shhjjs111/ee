@@ -48,8 +48,14 @@ def test_background_lifecycle(workspace, tmp_path):
         ctx = _ctx(workspace, sh, mgr)
         r = await ShellTool().run({"command": _py(sh, "srv.py"), "background": True}, ctx)
         assert r.ok and r.meta["background"] and r.meta["running"] and r.meta["bg_id"] == "b1"
-        assert "仍在运行" in r.output and "starting" in r.output
+        # 首屏不一定已经拿到子进程的第一行输出（Windows 上起一个 Python 子进程要 1-3 秒，
+        # PowerShell 更慢），所以只断言“启动回执”本身；子进程输出用 shell_output 等。
+        assert "仍在运行" in r.output
         out = r.output
+        if "starting" not in out:     # 慢机器上开头可能还没打印完
+            r2 = await ShellOutputTool().run({"id": "b1", "wait": 10}, ctx)
+            out += r2.output
+        assert "starting" in out
         if "ready on" not in out:     # 慢机器上开头 3 秒可能还没打印完
             r2 = await ShellOutputTool().run({"id": "b1", "wait": 10}, ctx)
             out += r2.output
@@ -97,7 +103,15 @@ def test_quick_command_finishes_in_yield(workspace, tmp_path):
         mgr = BgManager(tmp_path / "logs")
         cmd = "echo done; exit 2" if sh.syntax == "powershell" else "echo done && exit 2"
         r = await ShellTool().run({"command": cmd, "background": True}, _ctx(workspace, sh, mgr))
-        assert "done" in r.output and "已结束 · exit 2" in r.output and not r.ok
+        # 启动回执里的首屏输出是尽力而为：子进程可能还没来得及跑完（Windows 起进程 1-3 秒），
+        # 所以先断言拿到 bg_id，再用 shell_output 等它结束——这条用例要验的是
+        # 「快速结束的命令」能被观察到，不是「首屏一定已经包含输出」。
+        assert r.ok and r.meta.get("bg_id")
+        out = r.output
+        if "已退出" not in out:
+            r2 = await ShellOutputTool().run({"id": r.meta["bg_id"], "wait": 10}, _ctx(workspace, sh, mgr))
+            out += r2.output
+        assert "done" in out and "已退出 · exit 2" in out
 
     asyncio.run(go())
 
@@ -165,13 +179,22 @@ def test_server_rpc_and_turn_end_keeps_running(ee_home, workspace):
     from ee.server.app import Backend
 
     (workspace / "loop.py").write_text(LOOP, encoding="utf-8")
-    sh = resolve_shell("auto")
-    script = [
-        tool_chunks(0, "c1", "shell", {"command": _py(sh, "loop.py"), "background": True}) + finish("tool_calls"),
-        text_chunks("已在后台运行") + finish("stop"),
-    ]
 
     async def go():
+        # 命令语法必须和会话最终用的 shell 一致：会话的 shell 来自配置（用户的
+        # ~/.ee 可能设了 git-bash），而 resolve_shell("auto") 只按平台挑默认值。
+        # 两者不一致时会生成错误语法（例如 PowerShell 的 `& '...'` 交给 bash 执行）。
+        # 这里不建真实会话（那会去要 API key），直接按配置解析出会话会用哪个 shell。
+        from ee.config import load_config
+        cfg = load_config(workspace)
+        try:
+            sh = resolve_shell(cfg.data.get("shell", "auto"))
+        except Exception:  # noqa: BLE001
+            sh = resolve_shell("auto")
+        script = [
+            tool_chunks(0, "c1", "shell", {"command": _py(sh, "loop.py"), "background": True}) + finish("tool_calls"),
+            text_chunks("已在后台运行") + finish("stop"),
+        ]
         fake = FakeClient(script)
         b = Backend(home=ee_home, client_factory=lambda spec: ChatClient(spec, client=fake))
         ev = []
@@ -185,8 +208,18 @@ def test_server_rpc_and_turn_end_keeps_running(ee_home, workspace):
         assert any(m == "shell/updated" and p["proc"]["status"] == "running" for m, p in ev)
         tool = [p["item"] for m, p in ev if m == "item/updated" and p["item"]["type"] == "tool"][-1]
         assert tool["details"]["background"] and tool["details"]["bg_id"] == "b1"
-        r = await b.call("shell/read", {"thread_id": tid, "id": "b1"})
-        assert "tick" in r["output"]
+        # 启动回执里的首屏输出是尽力而为：Windows PowerShell 5.1 在某类机器上光是
+        # 进程初始化就要 4 秒以上（实测同一台机器 cmd/git 是 0.05s、csc.exe 是 0.09s，
+        # 只有 powershell.exe 是 4.3s），这段时间后台进程一个字节都还没产出。
+        # 这里要验的是「模型能读到子进程输出」，不是「启动瞬间就有输出」，所以轮询到有为止。
+        got = ""
+        for _ in range(100):                      # 最多等 20 秒
+            r = await b.call("shell/read", {"thread_id": tid, "id": "b1"})
+            got = r["output"]
+            if "tick" in got:
+                break
+            await asyncio.sleep(0.2)
+        assert "tick" in got, f"20 秒内没读到子进程输出，实际={got[:200]!r}"
         r = await b.call("shell/kill", {"thread_id": tid, "id": "b1"})
         assert r["proc"]["status"] == "killed"
         # 再起一个，删除会话时被清理
@@ -215,9 +248,17 @@ def test_crlf_split_across_reads_is_normalized(tmp_path):
     async def go():
         mgr = BgManager(tmp_path / "logs", owner="t")
         p = await mgr.start(_py(sh, str(script)), sh, tmp_path, dict(__import__("os").environ))
-        for _ in range(100):
+        for _ in range(200):
             if not p.running:
                 break
+            await asyncio.sleep(0.05)
+        # running=False 不等于输出已经读完：读线程可能还在收最后一块。等到日志落全。
+        for _ in range(100):
+            try:
+                if p.log_path.read_text(encoding="utf-8") == "a\nb\n":
+                    break
+            except OSError:
+                pass
             await asyncio.sleep(0.05)
         return p
 

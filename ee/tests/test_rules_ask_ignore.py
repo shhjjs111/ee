@@ -23,7 +23,10 @@ def make_backend(home, script):
     return b, fake, ev
 
 
-async def wait_for(ev, method, pred=lambda p: True, timeout=5.0):
+async def wait_for(ev, method, pred=lambda p: True, timeout=30.0):
+    """超时 30 秒：回合里常要跑一次真实 shell，Windows 上起 PowerShell 本身就要 5～6 秒
+    （实测 `powershell -NoProfile -Command "New-Item x"` 约 5.4 秒），5 秒会压在临界线上。
+    只放宽等待上限，不改变断言——真卡住的回合照样会在 30 秒后失败。"""
     t0 = asyncio.get_running_loop().time()
     while True:
         for m, p in ev:

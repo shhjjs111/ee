@@ -24,7 +24,15 @@ def make_backend(home, script, delay=0.0):
     return b, fake, events
 
 
-async def wait_for(events, method, pred=lambda p: True, timeout=5.0):
+async def wait_for(events, method, pred=lambda p: True, timeout=30.0):
+    """等某个事件出现。
+
+    超时默认 30 秒而不是 5 秒：回合里经常要跑一次真实子进程（shell 工具），
+    Windows 上 PowerShell 冷启动本身就要 5～6 秒（实测 `powershell -NoProfile
+    -Command "New-Item made.txt"` 连跑三次为 5.38/5.94/5.47 秒），5 秒超时会让
+    `turn/completed` 卡在临界线上随机失败。这里只放宽等待上限，不改变断言内容：
+    真卡住的回合照样会在 30 秒后失败。
+    """
     t0 = asyncio.get_running_loop().time()
     while True:
         for m, p in events:

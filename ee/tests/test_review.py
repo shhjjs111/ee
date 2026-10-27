@@ -14,7 +14,12 @@ pytestmark = pytest.mark.skipif(not shutil.which("git"), reason="需要 git")
 
 
 def git(cwd, *args):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+    # 显式 UTF-8：这些用例里有中文提交信息和中文文件名，Windows 上 text=True 会按
+    # 本机 ANSI 代码页（GBK）解码，git 输出 UTF-8 字节时抛 UnicodeDecodeError，
+    # stdout 变 None。
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                          text=True, encoding="utf-8").stdout
+
 
 
 @pytest.fixture

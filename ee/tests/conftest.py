@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -147,3 +148,39 @@ def _memory_secrets():
     secrets.use(secrets.MemoryStore())
     yield
     secrets.use(secrets.MemoryStore())
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_home(tmp_path, monkeypatch):
+    """把「真实主目录」隔离到临时目录。
+
+    背景：技能的兼容目录（~/.agents/skills、~/.claude/skills、~/.ee/skills）默认从
+    Path.home() 找。开发机上装了技能，每个会话开头就会多注入一条技能清单消息，让
+    「history 有几条消息」这类断言随机器变化而随机失败（CI 上是干净的，所以一直没暴露）。
+
+    实现要点：
+    - **只替换 Path.home 的返回值，不改 HOME/USERPROFILE 环境变量。** 改环境变量会让
+      ee.config.user_ee_dirs() 里的 os.path.expanduser("~") 一起漂移，真实 ~/.ee
+      反而漏进排除集之外，把真实用户配置当成项目级配置叠进来（这正是本目录
+      test_config_scope.py 守的那条不变量）。
+    - 测试如果自己显式改了 USERPROFILE/HOME（test_skills 的 uhome、test_snapshot 的
+      home_dir 用例），Path.home 跟随它——那些用例要的就是自己造的用户目录。
+    """
+    real_home = Path(os.path.expanduser("~")).resolve()
+    fake_home = (tmp_path / "user-home").resolve()
+    fake_home.mkdir(exist_ok=True)
+
+    def _home(cls) -> Path:
+        cur = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+        if cur:
+            try:
+                p = Path(cur).resolve()
+                if p != real_home:      # 用例自己改过 → 用它的
+                    return p
+            except OSError:
+                pass
+        return fake_home
+
+    monkeypatch.setattr(Path, "home", classmethod(_home))
+    return fake_home
+
