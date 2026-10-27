@@ -16,7 +16,7 @@ import json
 import os
 import re
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ee.core.atomic import write_bytes as atomic_write
@@ -34,6 +34,9 @@ class TextFile:
     existed: bool
     encoding: str = "utf-8"
     lossy: bool = False   # 既不是 UTF-8 也不是 GBK，按替换字符解码：局部编辑会损坏原字节
+    # 逐行原换行符（"\r\n" / "\n" / "" 表示最后一行没有换行）。空 = 没有逐行信息
+    # （新建文件或老调用方），此时按 eol 整体转换。
+    line_eols: list[str] = field(default_factory=list)
 
 
 def read_text(path: Path) -> TextFile:
@@ -59,14 +62,50 @@ def read_text(path: Path) -> TextFile:
     bom = s.startswith(BOM)
     if bom:
         s = s[1:]
-    eol = "\r\n" if "\r\n" in s else "\n"
-    return TextFile(s.replace("\r\n", "\n"), eol, bom, True, enc, lossy)
+    # 混合换行（Windows 编辑器写 CRLF、脚本生成 LF）很常见。只记"整体风格"会把
+    # 整个文件重写成 CRLF，改一行变成全文 diff。这里逐行记下原换行符，写回时按行还原。
+    raw_lines = s.split("\n")
+    line_eols: list[str] = []
+    for i, ln in enumerate(raw_lines):
+        is_last = i == len(raw_lines) - 1
+        if is_last:
+            line_eols.append("")                    # 最后一行后面没有换行（真·末尾换行时 split 出空串）
+        elif ln.endswith("\r"):
+            line_eols.append("\r\n")
+        else:
+            line_eols.append("\n")
+    # 主风格：出现次数多的那个；平手时取首个出现的
+    crlf = sum(1 for e in line_eols if e == "\r\n")
+    lf = sum(1 for e in line_eols if e == "\n")
+    if crlf == lf:
+        eol = next((e for e in line_eols if e in ("\r\n", "\n")), "\n")
+    else:
+        eol = "\r\n" if crlf > lf else "\n"
+    tf = TextFile(s.replace("\r\n", "\n"), eol, bom, True, enc, lossy)
+    tf.line_eols = line_eols
+    return tf
 
 
 def _render(tf: TextFile, new_text: str) -> str:
     out = new_text.replace("\r\n", "\n")
-    if tf.eol == "\r\n":
-        out = out.replace("\n", "\r\n")
+    per_line = tf.line_eols
+    if not per_line:
+        # 没有逐行信息（新建文件 / 老调用方）：按整体风格写
+        if tf.eol == "\r\n":
+            out = out.replace("\n", "\r\n")
+    else:
+        # 按行还原：第 i 行用它原来那个换行符；超出原行数的（新增行）用主风格。
+        # out.split("\n") 的最后一个元素是"末尾换行之后"的空段，不跟换行符。
+        # 同理 line_eols 末尾那个 "" 只是占位（对应 split 出的空段），不是可用的换行符。
+        usable = per_line[:-1] if per_line and per_line[-1] == "" else per_line
+        lines = out.split("\n")
+        buf: list[str] = []
+        for i, ln in enumerate(lines):
+            buf.append(ln)
+            if i == len(lines) - 1:
+                break
+            buf.append(usable[i] if i < len(usable) else tf.eol)
+        out = "".join(buf)
     if tf.bom:
         out = BOM + out
     return out

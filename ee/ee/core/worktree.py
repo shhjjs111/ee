@@ -505,15 +505,30 @@ def create_for_agent(cwd: Path | str, label: str = "", home: Path | None = None)
 
 
 def finish_agent(info: dict, message: str, home: Path | None = None) -> dict:
-    """子代理结束：把它的改动提交在自己的分支上，统计相对起点的改动；一点改动都没有就删掉 worktree 和分支。"""
+    """子代理结束：把它的改动提交在自己的分支上，统计相对起点的改动；确实一点改动都没有才删除。
+
+    **删除前必须确认"真的没东西可丢"**：`_git(check=False)` 失败时返回空字符串，和
+    "确实没有改动"无法区分。以前只要 `files` 为空就 `remove(force=True)`，于是
+    diff 超时 / git 报错 / 目录暂时不可用都会把子代理**已经提交的代码**连分支一起删掉。
+    现在要求：diff **成功**、结果为空、且 `commits` 也为空，才清理；
+    其余情况一律保留，交给用户（worktree 列表里能看到，可手动合并或删除）。
+    """
     p = Path(info["path"])
     base = info.get("agent_base") or info["base"]
     with AGENT_LOCK:
         if p.is_dir():
             _autosave(p, message)
         files = []
-        out = _git(["diff", "--numstat", "-z", "--no-renames", f"{base}..HEAD"], p, timeout=60, check=False) \
-            if p.is_dir() else ""
+        diff_ok = p.is_dir()
+        out = ""
+        if p.is_dir():
+            try:
+                out = _git(["diff", "--numstat", "-z", "--no-renames", f"{base}..HEAD"], p, timeout=60)
+            except Exception:      # noqa: BLE001  超时 / git 报错：不知道有没有改动 → 保留
+                diff_ok = False
+                out = ""
+        else:
+            diff_ok = False
         parts = [x for x in out.split("\0") if x]
         for rec in parts:
             bits = rec.split("\t", 2)
@@ -521,10 +536,18 @@ def finish_agent(info: dict, message: str, home: Path | None = None) -> dict:
                 a, d, path = bits
                 files.append({"path": path.strip(), "additions": int(a) if a.isdigit() else 0,
                               "deletions": int(d) if d.isdigit() else 0, "binary": a == "-"})
-        log = _git(["log", "--format=%h %s", f"{base}..HEAD"], p, timeout=30, check=False).strip() if p.is_dir() else ""
-        commits = [x for x in log.splitlines() if x.strip()]
+        commits: list[str] = []
+        log_ok = p.is_dir()
+        if p.is_dir():
+            try:
+                log = _git(["log", "--format=%h %s", f"{base}..HEAD"], p, timeout=30)
+                commits = [x for x in log.splitlines() if x.strip()]
+            except Exception:      # noqa: BLE001
+                log_ok = False
         removed = False
-        if not files:
+        # 只有"diff 成功且为空 + 提交也查得到且为空"才敢删
+        safe_to_remove = diff_ok and log_ok and not files and not commits
+        if safe_to_remove:
             try:
                 remove(p, delete_branch=True, force=True, home=home)
                 removed = True
@@ -533,4 +556,7 @@ def finish_agent(info: dict, message: str, home: Path | None = None) -> dict:
     return {"path": str(p), "branch": info["branch"], "base": base, "files": files[:200],
             "file_count": len(files), "additions": sum(f["additions"] for f in files),
             "deletions": sum(f["deletions"] for f in files), "commits": commits[:20], "removed": removed,
+            "kept": not removed,
+            "kept_reason": "" if removed else ("diff 失败，不确定是否有改动" if not diff_ok else
+                                               ("提交列表查不到，保守保留" if not log_ok else "有改动")),
             "synced_dirty": bool(info.get("synced_dirty"))}
