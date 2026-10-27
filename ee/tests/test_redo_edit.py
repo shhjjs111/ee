@@ -125,3 +125,33 @@ def test_key_edit_and_shell_rules_present(ee_home, workspace, profile):
 def test_full_mode_keeps_dedicated_tool_rules(ee_home, workspace):
     system, _ = _prefix_text(workspace)
     assert "cat" in system and "grep" in system and "glob" in system
+
+
+# ------------------------------------------------------------------ 3) SYSTEM.md 只替换基础段
+
+def test_system_md_replaces_only_base_tool_rules_kept(ee_home, workspace):
+    from conftest import collect, finish, make_session, text_chunks
+    from ee.core.context import builtin_base
+    from ee.tools import tool_rules
+    (ee_home / "SYSTEM.md").write_bytes("\ufeff我的提示词\r\n".encode("utf-8"))
+    s, fake = make_session(workspace, [text_chunks("好") + finish("stop")])
+    run(collect(s, "你好"))
+    text = fake.calls[0]["messages"][0]["content"]
+    assert text.startswith("我的提示词\n\n# 工具使用规则\n")
+    assert builtin_base() not in text
+    for r in tool_rules(s.tools):
+        assert f"- {r}" in text
+
+
+def test_system_md_tool_rules_follow_enabled_tools(ee_home, workspace):
+    from ee.core import sysprompt as SP
+    from ee.core.context import system_prompt
+    from ee.tools import tool_rules
+    from test_prefix_budget import _prefix
+    s, _ = _prefix(workspace, profile="lean")
+    (ee_home / "SYSTEM.md").write_text("X", encoding="utf-8")
+    src = SP.resolve(workspace, ee_home, {}, {})
+    text = system_prompt(s.profile, "", src, s.tools, s.agent_profile)
+    assert text.startswith("X\n\n# 工具使用规则\n")
+    rules = tool_rules(s.tools)
+    assert rules and all(f"- {r}" in text for r in rules)

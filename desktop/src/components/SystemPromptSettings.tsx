@@ -126,7 +126,7 @@ export function SystemPromptSettings() {
     <>
       <h2 className="mb-1 text-[20px] font-semibold tracking-tight text-fg">系统提示词</h2>
       <p className="mb-5 text-[13px] text-muted">
-        用 SYSTEM.md 替换内置的基础提示词，或用 APPEND_SYSTEM.md 在后面追加要求（例如写作业专用的规则）。系统提示词在对话开始时固定下来，改了文件从新对话生效。
+        用 SYSTEM.md 替换内置的基础提示词（按启用工具生成的工具使用规则仍会自动追加），或用 APPEND_SYSTEM.md 在后面追加要求（例如写作业专用的规则）。系统提示词在对话开始时固定下来，改了文件从新对话生效。
       </p>
 
       {err && <div className="mb-4 rounded-lg border border-line bg-soft/40 px-3 py-2 text-[12.5px] text-danger">{err}</div>}
@@ -202,7 +202,7 @@ export function SystemPromptSettings() {
       <Card title="说明">
         <ul className="list-disc space-y-1.5 pl-5 text-[12.5px] text-muted">
           <li>加载顺序：项目 .ee/SYSTEM.md（已信任）→ 用户目录 SYSTEM.md → 内置基础提示词；APPEND_SYSTEM.md 同样二选一。</li>
-          <li>最终顺序：基础提示词 → 模型补丁 → 追加提示词 → 回答风格。AGENTS.md、记忆、技能清单照常单独加载，不受影响。</li>
+          <li>最终顺序：基础提示词 → 工具使用规则（随启用的工具变化，SYSTEM.md 不替换它）→ 模型补丁 → 追加提示词 → 回答风格。AGENTS.md、记忆、技能清单照常单独加载，不受影响。</li>
           <li>文件用 UTF-8，单个不超过 {Math.round((info?.max_bytes ?? 65536) / 1024)} KiB；空文件会被忽略。</li>
           <li>
             <b className="text-fg">系统提示词不是安全边界</b>：权限模式、审批、拒绝规则和危险命令确认都在程序里执行，提示词里写什么都绕不过去。

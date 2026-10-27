@@ -34,19 +34,20 @@ def system_prompt(profile, style_segment: str = "", custom=None, tools=None, age
     custom：sysprompt.SystemSources（SYSTEM.md 替换基础段、APPEND_SYSTEM.md 追加、模型补丁开关）；
     None 或没有任何自定义时与原来逐字节相同。
     tools：本会话启用的工具，它们各自的使用规则（prompts/tools/*.md 的「## 规则」）去重后拼成「工具使用规则」段，
-    紧跟内置基础段；SYSTEM.md 替换的是「内置基础段 + 工具使用规则」整体（用户完全接管，工具描述本身仍在 tools 里）。
+    紧跟基础段。SYSTEM.md 只替换基础段；工具规则照常按启用的工具拼装追加（工具的使用约束跟着工具走，
+    自定义提示词不需要也不应该重写它们）。
     agent：full / lean，决定内置基础段用哪份。"""
     base = builtin_base(profile, agent)
-    if tools:
-        from ee.tools import tool_rules
-        rules = tool_rules(tools)
-        if rules:
-            base += "\n\n# 工具使用规则\n" + "\n".join(f"- {r}" for r in rules)
     use_patch = True
     if custom is not None:
         if custom.system is not None:
             base = custom.system.text
         use_patch = custom.model_patch
+    if tools:
+        from ee.tools import tool_rules
+        rules = tool_rules(tools)
+        if rules:
+            base += "\n\n# 工具使用规则\n" + "\n".join(f"- {r}" for r in rules)
     text = base + "\n"
     if use_patch:
         patch_name = getattr(profile, "prompt_patch", "default") or "default"
