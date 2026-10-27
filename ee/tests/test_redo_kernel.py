@@ -219,3 +219,34 @@ def test_session_set_effort_deepseek_max(ee_home, workspace):
     assert fake.calls[0]["reasoning_effort"] == "max"
     s.set_effort("高", remember=False)                 # 旧写法：DeepSeek 上规整成 最高
     assert s.effort == "max"
+
+
+# ---------------------------------------------------------------- 6) prune 默认关闭；~/.claude/skills 默认不读
+
+def test_prune_disabled_by_default_but_configurable(workspace):
+    from ee.config import load_config
+    from ee.core import prune as P
+    data = load_config(workspace).data
+    assert P.settings(data)["enabled"] is False
+    assert P.settings({})["enabled"] is False
+    assert P.settings({"prune": {"enabled": True}})["enabled"] is True
+    assert "缓存" in (P.__doc__ or "") and "DeepSeek" in (P.__doc__ or "")
+
+
+def _mk_skill(d, name):
+    sd = d / name
+    sd.mkdir(parents=True)
+    (sd / "SKILL.md").write_text(f"---\nname: {name}\ndescription: 测试技能 {name}\n---\n正文\n", encoding="utf-8")
+
+
+def test_claude_home_skills_off_by_default(ee_home, workspace, tmp_path):
+    from ee.core import skills as K
+    uh = tmp_path / "uh"
+    _mk_skill(uh / ".claude" / "skills", "from-claude-home")
+    _mk_skill(ee_home / "skills", "from-ee-home")
+    _mk_skill(workspace / ".ee" / "skills", "from-project-ee")
+    names = set(K.discover(ee_home, workspace, {}, user_home=uh).skills)
+    assert "from-claude-home" not in names
+    assert {"from-ee-home", "from-project-ee"} <= names
+    names = set(K.discover(ee_home, workspace, {"skills": {"claude_home": True}}, user_home=uh).skills)
+    assert "from-claude-home" in names

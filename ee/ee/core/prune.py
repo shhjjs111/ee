@@ -1,4 +1,9 @@
-"""修剪旧工具输出（不调模型）。
+"""修剪旧工具输出（不调模型）。默认关闭：[prune] enabled = true 才启用。
+
+为什么默认关闭：修剪改写的是历史里较早的消息，从第一条被修剪的消息起，那一次请求后面的整段历史
+都要按“未命中缓存”计费。DeepSeek 等前缀缓存很便宜的模型（命中价约为未命中价的 1/50，见
+profiles/deepseek.toml 的 price.cache_read）上，省下的那点 token 远抵不上这一整段重新按全价算的钱，
+修剪往往反而更贵；上下文真放不下时交给自动压缩（[compact]）。缓存不便宜、或窗口很小的模型可以在配置里打开。
 
 上下文用量达到 [prune].threshold × 窗口（默认 0.6，低于自动压缩的 0.8）时，把较早的大块工具结果
 （read / shell / grep 等）一次性换成一行占位：工具名、参数摘要、原长度、“已修剪，需要时重新调用”。
@@ -21,7 +26,7 @@ from ee.core import compaction as C
 from ee.core.events import Notice
 
 DEFAULTS = {
-    "enabled": True,
+    "enabled": False,          # 默认关闭：会让前缀缓存失效，DeepSeek 上往往更贵（见模块说明）
     "threshold": 0.6,          # 上下文用量 ≥ threshold × 窗口时修剪（必须低于 compact.threshold）
     "keep_turns": 2,           # 最近几个用户回合完全不碰
     "keep_tokens": 40000,      # 再往前最近这么多 token 的工具输出也保留
@@ -51,7 +56,7 @@ def settings(data: dict | None) -> dict:
             s[k] = DEFAULTS[k]
     tools = s.get("tools")
     s["tools"] = [str(t) for t in tools] if isinstance(tools, (list, tuple)) else list(DEFAULTS["tools"])
-    s["enabled"] = bool(s.get("enabled", True))
+    s["enabled"] = bool(s.get("enabled", False))
     return s
 
 

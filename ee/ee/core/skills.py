@@ -6,6 +6,8 @@
   3. 项目级：从项目根（含 .git 的最近上级目录，没有就是 cwd）到 cwd 的每一层：
      .agents/skills、.claude/skills、.ee/skills（越深越优先；同一层里 .ee 最优先）
 兼容目录可在配置里关闭（[skills] compat = false）。
+~/.claude/skills 默认不读（那是 Claude Code 的用户级技能，未必适合 ee）：[skills] claude_home = true 才读。
+~/.ee/skills 和项目里的 .ee/skills 始终读取。
 
 SKILL.md 开头必须有 frontmatter（--- 之间的 YAML 子集），必须有 name 和 description：
   ---
@@ -38,7 +40,7 @@ MAX_BODY_CHARS = 60_000               # skill 工具一次返回的正文上限�
 MAX_PER_DIR = 200
 MAX_FILES = 50                        # skill 工具列出的目录文件数上限
 MAX_MENTIONS = 5                      # 一条消息最多显式调用几个技能
-DEFAULTS = {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000}
+DEFAULTS = {"enabled": True, "compat": True, "claude_home": False, "disabled": [], "max_chars": 8000}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
 
 ORIGIN_DIRS = (("agents", ".agents"), ("claude", ".claude"), ("ee", ".ee"))   # 低 → 高
@@ -207,12 +209,14 @@ def read_body(skill: Skill) -> str:
 # ------------------------------------------------------------------ 发现
 
 def skill_dirs(home: Path, cwd: Path | None, user_home: Path | None = None,
-               compat: bool = True) -> list[tuple[str, str, Path]]:
-    """[(source, origin, 目录)]，按优先级从低到高。"""
+               compat: bool = True, claude_home: bool = False) -> list[tuple[str, str, Path]]:
+    """[(source, origin, 目录)]，按优先级从低到高。claude_home：是否读 ~/.claude/skills（默认不读）。"""
     uh = Path(user_home) if user_home is not None else Path.home()
     out: list[tuple[str, str, Path]] = []
     if compat:
-        out += [("user", "agents", uh / ".agents" / "skills"), ("user", "claude", uh / ".claude" / "skills")]
+        out.append(("user", "agents", uh / ".agents" / "skills"))
+        if claude_home:
+            out.append(("user", "claude", uh / ".claude" / "skills"))
     out.append(("user", "ee", Path(home) / "skills"))
     if cwd is not None:
         c = Path(cwd).resolve()
@@ -249,7 +253,8 @@ def discover(home: Path, cwd: Path | None, data: dict | None = None, user_home: 
     cat = Catalog()
     seen_files: dict[str, str] = {}        # 真实路径 → 名字（同一个文件经软链接出现两次只算一次）
     bad: set[str] = set()
-    for source, origin, d in skill_dirs(home, cwd, user_home, bool(cfg.get("compat", True))):
+    for source, origin, d in skill_dirs(home, cwd, user_home, bool(cfg.get("compat", True)),
+                                        bool(cfg.get("claude_home", False))):
         try:
             if not d.is_dir():
                 continue

@@ -222,13 +222,14 @@ def _skills_out(data: dict) -> dict:
     from ee.core.skills import settings as skills_settings
     sk = skills_settings(data)
     return {"enabled": bool(sk.get("enabled", True)), "compat": bool(sk.get("compat", True)),
+            "claude_home": bool(sk.get("claude_home", False)),
             "disabled": list(sk["disabled"]), "max_chars": int(sk.get("max_chars") or 8000)}
 
 
 def _skills_in(n: dict, out: dict) -> None:
-    """[skills]：enabled / compat 开关、disabled 名字列表、清单长度上限 max_chars。"""
+    """[skills]：enabled / compat / claude_home（读 ~/.claude/skills，默认关）开关、disabled 名字列表、清单长度上限 max_chars。"""
     sk = dict(out.get("skills") or {})
-    for k in ("enabled", "compat"):
+    for k in ("enabled", "compat", "claude_home"):
         if n.get(k) is not None:
             sk[k] = bool(n[k])
     if n.get("disabled") is not None:
