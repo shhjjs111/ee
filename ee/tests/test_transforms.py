@@ -97,7 +97,7 @@ def test_wire_messages_copy_and_rules():
     ds = profile_for("deepseek-flash")
     w = T.wire_messages(hist, ds)
     assert w[1]["reasoning_content"] == "" and w[1]["content"] == ""      # 缺失补 ""
-    assert "reasoning_content" not in w[3] and "reasoning" not in w[3]
+    assert w[3]["reasoning_content"] == "r2" and "reasoning" not in w[3]   # DeepSeek：所有助手轮次回传
     assert hist[3]["reasoning"] == "r2"                                     # 原历史不被修改
     gpt = profile_for("gpt-5")
     w2 = T.wire_messages(hist, gpt)

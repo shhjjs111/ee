@@ -133,7 +133,7 @@ def test_reasoning_passback_deepseek(ee_home, workspace):
     msgs = fake.calls[2]["messages"]
     asst = [m for m in msgs if m["role"] == "assistant"]
     assert asst[0]["reasoning_content"] == "先读文件"     # 带工具轮：回传
-    assert "reasoning_content" not in asst[1]            # 纯文本轮：不回传
+    assert asst[1]["reasoning_content"] == "完成"         # 纯文本轮也回传（带 tools 的请求要求所有轮次回传）
     assert "reasoning" not in asst[0]                    # 内部键不上线
 
 

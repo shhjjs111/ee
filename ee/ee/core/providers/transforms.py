@@ -2,6 +2,7 @@
 
 - 推理字段：reasoning_content / reasoning / content 里的 <think>…</think>
 - 回传规则：按档案 reasoning_passback（none | tool_turns | all），规则确定 → 历史字节稳定
+  （DeepSeek 用 all：官方文档要求带 tools 的请求回传之前所有轮次的 reasoning_content，见 profiles/deepseek.toml）
 - 坏工具调用兜底：content 里整段 JSON、DSML 标记、<tool_call> / <function=…> XML
 - 工具名大小写纠正、参数类型修复
 - 不支持参数（stream_options / parallel_tool_calls 等）时识别错误以便降级

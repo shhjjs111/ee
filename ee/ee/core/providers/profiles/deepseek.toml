@@ -9,8 +9,11 @@ parallel_tools = true
 # deepseek-flash（V4.1-Flash）支持图片输入（官方 Vision 文档 2026-10）；deepseek-v4-pro 不支持，见下方 variants
 vision = true
 reasoning = true
-# 带工具调用的助手轮次始终回传 reasoning_content（缺失补 ""）；纯文本轮不回传。规则确定 → 历史字节稳定。
-reasoning_passback = "tool_turns"
+# 所有助手轮次都回传 reasoning_content（缺失补 ""）。依据官方 Thinking Mode 文档
+# （https://api-docs.deepseek.com/guides/thinking_mode，2026-10 查阅）：请求带 tools 时，之前所有轮次的
+# reasoning_content 都要回传——包括没有调用工具的纯文本轮——否则返回 400；不带 tools 时回传会被忽略、不进上下文。
+# ee 主循环和压缩请求总带 tools，所以按 all 回传；规则只看消息本身 → 历史字节稳定（前缀缓存不受影响）。
+reasoning_passback = "all"
 edit_style = "edit"
 prompt_patch = "deepseek"
 empty_assistant_content = "empty"
