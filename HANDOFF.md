@@ -4,7 +4,7 @@
 
 
 
-> **接手第一步（2026-10-27 22:35）**：用户要求做完沙箱先暂停。恢复时先确认最新 Windows CI 绿，再进 D6；真实 DeepSeek 评测等用户自己的 key（`eval_profiles.py --preset a2/a3 --runs 3`）。遗留：apply_patch 的 trim 模糊匹配有与 edit 同类风险；`~/.claude` 技能无设置页开关。
+> **接手第一步（2026-10-27 22:35）**：用户要求做完沙箱先暂停。恢复时先确认最新 Windows CI 绿，再进 D6（**详细操作手册见 `research/d6-plan.md`**）；真实 DeepSeek 评测等用户自己的 key（`eval_profiles.py --preset a2/a3 --runs 3`）。遗留：apply_patch 的 trim 模糊匹配有与 edit 同类风险；`~/.claude` 技能无设置页开关。
 
 > **[x] D5-8 Windows 命令沙箱 v1（2026-10-27 22:25 合并 feat/d5-8，22:35 加设置页开关）**：参考 Codex 的受限令牌 + ACL 思路。`[sandbox] enabled=false, network=true`。开启后 shell 前台/后台命令经隐藏子命令 `ee __sandbox_exec` 启动器运行：CreateRestrictedToken(DISABLE_MAX_PRIVILEGE|LUA_TOKEN|WRITE_RESTRICTED，限制 SID = 工作区能力 SID、登录 SID、Everyone)，CreateProcessAsUserW 挂起创建、放入 KILL_ON_JOB_CLOSE 的 Job 后恢复。只有工作区和 `~/.ee/sandbox/tmp/<id>`（TEMP/TMP）可写，读不限制；能力 SID 存 `~/.ee/sandbox/sandbox.json`，ACE 不撤销（随机 SID 只此工作区持有；每条命令撤加会很慢且并发互撤），`sandbox.revoke()` 可清理。network=false 只用环境变量尽力而为（死代理、pip/npm/cargo/uv 离线、GIT_SSH_COMMAND=false）。非 Windows 开启时结果末尾提示“未生效”；Windows 上失败报“沙箱启动失败”不回退。hooks 不纳入。项目层只能开沙箱、只能关联网（sanitize_project_layer）。Windows CI 实测：写工作区内成功/外拒绝（关沙箱对照可写）、TEMP 可写、禁网生效、子进程继承限制、后台命令受限、cmd/pwsh 工作目录正确（tests/test_sandbox.py）。设置页「工具与记忆 → 命令沙箱」：启用沙箱、允许联网两个开关，非 Windows 显示“不支持，未生效”；保存后对空闲对话立即生效、运行中的回合结束后生效（AgentSettings.test.tsx）。已知限制：不是安全边界（Everyone/登录会话可写处仍可写）；直连不走代理的程序可联网；ee 以管理员运行时只授权 Administrators 的目录在沙箱内不可读；每条命令多一个启动器进程约 0.1–0.3s。
 
