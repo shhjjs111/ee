@@ -14,7 +14,6 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
 
 from ee.config import load_config, sanitize_project_layer
 
@@ -153,3 +152,66 @@ def test_sanitize_is_pure_and_returns_dropped():
     assert clean == {"permissions": {"deny": ["a"]}, "max_steps": 3}
     assert set(dropped) == {"permissions.mode", "providers"}
     assert layer["permissions"]["mode"] == "auto"            # 不改入参
+
+
+# ------------------------------------------------------------------ 2) 后端令牌不进子进程
+
+def test_child_environ_strips_serve_token(monkeypatch):
+    monkeypatch.setenv("EE_SERVE_TOKEN", "tok-secret")
+    from ee.proc import child_environ
+    assert "EE_SERVE_TOKEN" not in child_environ()
+    assert "EE_SERVE_TOKEN" not in child_environ({"EE_SERVE_TOKEN": "x", "A": "1"})
+
+
+def test_shell_hooks_mcp_envs_strip_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("EE_SERVE_TOKEN", "tok-secret")
+    from ee.tools.shell import child_env
+    assert "EE_SERVE_TOKEN" not in child_env()
+    # MCP stdio：server env 里也不许把令牌带进去
+    from ee.mcp import client as mc
+    import inspect
+    src = inspect.getsource(mc)
+    assert "{**os.environ" not in src
+    from ee.core import hooks as hk
+    assert "dict(os.environ)" not in inspect.getsource(hk)
+
+
+def test_shell_command_cannot_see_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("EE_SERVE_TOKEN", "tok-secret")
+    from ee.tools.shell import run_command
+    from ee.tools.shellenv import resolve_shell
+    cmd = 'python -c "import os;print(os.environ.get(\'EE_SERVE_TOKEN\',\'NONE\'))"'
+    code, out, _ = asyncio.run(run_command(cmd.replace("python", sys.executable), resolve_shell("auto"),
+                                           tmp_path, 30))
+    assert "tok-secret" not in out and "NONE" in out
+
+
+def test_run_capture_does_not_leak_token(monkeypatch):
+    monkeypatch.setenv("EE_SERVE_TOKEN", "tok-secret")
+    from ee.proc import run_capture
+    code, out, _ = run_capture([sys.executable, "-c", "import os;print(os.environ.get('EE_SERVE_TOKEN','NONE'))"])
+    assert code == 0 and b"NONE" in out
+
+
+def test_serve_pops_token_from_environ(monkeypatch):
+    monkeypatch.setenv("EE_SERVE_TOKEN", "tok-secret")
+    from ee.server.app import take_serve_token
+    assert take_serve_token() == "tok-secret"
+    assert "EE_SERVE_TOKEN" not in os.environ
+    assert take_serve_token("explicit") == "explicit"
+
+
+def test_cli_serve_removes_token_before_serving(monkeypatch):
+    monkeypatch.setenv("EE_SERVE_TOKEN", "tok-secret")
+    seen = {}
+
+    async def fake_serve(host, port, token, **kw):
+        seen["token"] = token
+        seen["env"] = os.environ.get("EE_SERVE_TOKEN")
+
+    import ee.server.app as app
+    import ee.cli as cli
+    monkeypatch.setattr(app, "serve", fake_serve)
+    monkeypatch.setattr(cli, "_migrate_secrets", lambda: None)
+    cli.main(["serve"])
+    assert seen == {"token": "tok-secret", "env": None}

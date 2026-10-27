@@ -17,6 +17,20 @@ import sys
 
 IS_WINDOWS = sys.platform == "win32"
 
+# 只属于 ee 后端自己的机密环境变量：绝不传给任何子进程（shell、后台命令、MCP、hooks、git…）。
+# EE_SERVE_TOKEN 是桌面端连后端 WebSocket 的口令，模型跑的命令拿到它就能连上来自己批准审批。
+SECRET_ENV_KEYS = ("EE_SERVE_TOKEN",)
+
+
+def child_environ(base=None, extra: dict | None = None) -> dict:
+    """给子进程用的环境：base（默认 os.environ）+ extra，去掉 SECRET_ENV_KEYS。"""
+    env = dict(os.environ if base is None else base)
+    if extra:
+        env.update(extra)
+    for k in SECRET_ENV_KEYS:
+        env.pop(k, None)
+    return env
+
 
 def no_window_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0
@@ -53,7 +67,8 @@ def run_capture(argv: list[str], cwd: str | os.PathLike | None = None, timeout: 
     try:
         p = subprocess.Popen(argv, cwd=str(cwd) if cwd else None,
                              stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, **popen_kwargs())
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_environ(env),
+                             **popen_kwargs())
     except OSError as e:
         return 127, b"", str(e).encode("utf-8", "replace")
     try:

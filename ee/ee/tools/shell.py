@@ -7,7 +7,7 @@ import signal
 import subprocess
 import time
 
-from ee.proc import kill_tree
+from ee.proc import child_environ, kill_tree
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
 from ee.tools.textdecode import StreamDecoder
@@ -57,7 +57,7 @@ class CappedText:
 
 
 def child_env() -> dict:
-    env = dict(os.environ)
+    env = child_environ()
     env.update({"GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0", "PYTHONIOENCODING": "utf-8",
                 "PYTHONUTF8": "1", "TERM": env.get("TERM", "dumb"), "NO_COLOR": "1", "GH_PAGER": "cat"})
     return env

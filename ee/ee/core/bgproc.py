@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from ee.proc import IS_WINDOWS, kill_tree
+from ee.proc import IS_WINDOWS, child_environ, kill_tree
 
 log = logging.getLogger("ee.bgproc")
 
@@ -131,7 +131,7 @@ class BgManager:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=str(cwd), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT, env=env, **kw)
+                stderr=asyncio.subprocess.STDOUT, env=child_environ(env), **kw)
         except Exception:
             self._cleanup_files(p)
             raise

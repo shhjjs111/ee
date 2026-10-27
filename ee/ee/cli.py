@@ -57,8 +57,8 @@ def main(argv: list[str] | None = None) -> int:
         from ee import log as eelog
         eelog.setup()
         _migrate_secrets()
-        from ee.server.app import serve
-        token = args.token or os.environ.get("EE_SERVE_TOKEN")
+        from ee.server import app as server_app
+        token = server_app.take_serve_token(args.token)        # 读完即从 os.environ 删除，子进程拿不到
         if not token:
             import secrets
             token = secrets.token_urlsafe(24)
@@ -66,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.host not in ("127.0.0.1", "localhost", "::1"):
             print("警告：后端监听在非本机地址上，任何拿到 token 的人都能控制它。", file=sys.stderr)
         try:
-            asyncio.run(serve(args.host, args.port, token, exit_on_stdin_eof=args.exit_on_stdin_eof,
-                              parent_pid=args.parent_pid))
+            asyncio.run(server_app.serve(args.host, args.port, token, exit_on_stdin_eof=args.exit_on_stdin_eof,
+                                         parent_pid=args.parent_pid))
         except KeyboardInterrupt:
             pass
         return 0

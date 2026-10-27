@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from ee.mcp.config import ServerConfig
+from ee.proc import child_environ
 
 log = logging.getLogger("ee.mcp")
 
@@ -166,7 +167,7 @@ class StdioClient(_Base):
 
     async def start(self) -> None:
         cfg = self.cfg
-        env = {**os.environ, **cfg.env}
+        env = child_environ(extra=cfg.env)       # 后端口令等机密变量不给 MCP 服务器
         # MCP 的 stdio 传输规定是 UTF-8（JSON-RPC 每条一行）。Windows 上子进程的
         # stdin/stdout 默认按本机 ANSI 代码页（中文系统是 GBK）编解码，服务器一发出
         # 中文（工具描述、工具结果都常有）就被写成 GBK 字节，我们按 UTF-8 解析会

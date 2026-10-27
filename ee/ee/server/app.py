@@ -627,6 +627,16 @@ class Backend:
 EXIT_GRACE = 10.0   # 秒：桌面端没了以后，正常清理最多等这么久，超时就强制结束子进程并退出
 
 
+def take_serve_token(token: str | None = None) -> str | None:
+    """取连接口令：显式传入的优先，否则读环境变量 EE_SERVE_TOKEN。
+
+    无论用哪个，都把 EE_SERVE_TOKEN 从 os.environ 删掉：子进程（shell、后台命令、MCP、hooks）默认
+    继承本进程环境，模型跑的命令拿到口令就能连 WebSocket 自己批准审批。
+    """
+    env_tok = os.environ.pop("EE_SERVE_TOKEN", None)
+    return token or env_tok
+
+
 async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None, exit_on_stdin_eof: bool = False,
                 backend: Backend | None = None, ready: Callable[[int], None] | None = None,
                 parent_pid: int | None = None) -> None:
@@ -634,7 +644,7 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     from websockets.datastructures import Headers
     from websockets.http11 import Response
 
-    token = token or os.environ.get("EE_SERVE_TOKEN") or secrets.token_urlsafe(24)
+    token = take_serve_token(token) or secrets.token_urlsafe(24)
     backend = backend or Backend()
     conns: dict = {}          # ws -> 发送队列（单写者，保证通知顺序）
     loop = asyncio.get_running_loop()

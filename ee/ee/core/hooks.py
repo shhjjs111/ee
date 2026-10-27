@@ -50,14 +50,13 @@ import fnmatch
 import hashlib
 import json
 import logging
-import os
 import re
 import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ee.proc import IS_WINDOWS, kill_tree, popen_kwargs
+from ee.proc import IS_WINDOWS, child_environ, kill_tree, popen_kwargs
 
 log = logging.getLogger("ee.hooks")
 
@@ -474,10 +473,10 @@ async def run_hook(hook: HookDef, payload: dict, cwd: Path, default_shell: str =
     except Exception as e:  # noqa: BLE001
         r.error = f"找不到可用的 shell：{e}"
         return r
-    env = dict(os.environ)
+    env = child_environ()
     env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "EE_PROJECT_DIR": str(project_dir(cwd)),
                 "EE_HOOK_EVENT": hook.event, "EE_HOOK_SOURCE": hook.source})
-    env.update({k: str(v) for k, v in (env_extra or {}).items()})
+    env = child_environ(env, {k: str(v) for k, v in (env_extra or {}).items()})
     data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     proc = None
     try:
