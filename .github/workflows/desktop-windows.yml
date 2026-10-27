@@ -2,12 +2,15 @@ name: desktop-windows
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/d5-8]
     paths:
       - "ee/**"
       - "desktop/**"
       - ".github/workflows/desktop-windows.yml"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 concurrency:
   group: desktop-windows-${{ github.ref }}
@@ -40,10 +43,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "./ee[test]" pyinstaller
 
+      - name: Sandbox tests (d5-8 temp)
+        working-directory: ee
+        timeout-minutes: 10
+        run: |
+          python -m pytest -v -rs tests/test_sandbox.py -o faulthandler_timeout=150 2>&1 | Tee-Object -FilePath sandbox-out.txt
+          exit $LASTEXITCODE
+
       - name: Backend tests
+        if: ${{ !cancelled() }}
         working-directory: ee
         timeout-minutes: 20
-        run: python -m pytest -q -o faulthandler_timeout=150
+        run: |
+          python -m pytest -q -o faulthandler_timeout=150 2>&1 | Tee-Object -FilePath pytest-out.txt
+          exit $LASTEXITCODE
+
+      - name: Push test logs (d5-8 temp)
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          cp ee/*-out.txt "$RUNNER_TEMP/logs/" || true
+          cd "$RUNNER_TEMP/logs"
+          git init -q
+          git checkout -q --orphan ci-logs-d5-8
+          git config user.name ci
+          git config user.email ci@users.noreply.github.com
+          git add -A
+          git commit -qm "logs ${{ github.run_id }}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:ci-logs-d5-8
 
       - name: E2E with source backend (python -m ee serve)
         if: ${{ !cancelled() }}
