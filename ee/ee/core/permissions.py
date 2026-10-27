@@ -734,6 +734,133 @@ def _has_code_syntax(seg: str, git: bool, syntax: str = "posix") -> bool:
     return False
 
 
+# ---------------------------------------------------------------- PowerShell 管道操作符
+# 这几个 cmdlet 在白名单里（它们本身不碰文件/进程），但**参数可以是动作成员名**：
+#   Get-Process | ForEach-Object Kill          ← Kill 是作用在每个进程上的方法
+#   Get-Process | ForEach-Object -MemberName Kill
+#   Get-ChildItem C:\ -Recurse -File | ForEach-Object Delete
+# 只看命令名会直接放行。它们的“安全子集”是投影/过滤/统计：参数只能是属性名、比较
+# 运算符、格式化参数，不能是裸的、看起来像动词的成员名。
+_PS_MEMBER_CMDLETS = {
+    "foreach-object", "%", "foreach",
+    "where-object", "where", "?",
+    "select-object", "select",
+    "measure-object", "measure",
+    "sort-object", "sort",
+    "group-object", "group",
+}
+# 这些 cmdlet 的第一个位置参数是属性名（投影），可以放行
+_PS_PROJECTION_CMDLETS = {"select-object", "select", "sort-object", "sort", "group-object", "group", "measure-object", "measure"}
+# 明确的危险成员名（PowerShell 动词 - 名词 形式的系统方法 / 常见别名）
+_PS_ACTION_MEMBERS = {
+    "delete", "remove", "remove-item", "del", "erase", "rmdir", "rd", "rm",
+    "kill", "stop", "stop-process", "spps", "terminate",
+    "start", "start-process", "saps", "invoke", "invoke-expression", "iex",
+    "set", "set-item", "set-content", "add-content", "out-file", "new-item",
+    "move", "move-item", "copy", "copy-item", "rename", "rename-item",
+    "clear", "clear-content", "close", "dispose", "write", "writeline",
+    "open", "save", "lock", "unlock", "flush",
+}
+# 允许出现在参数里的、纯查询/格式化/比较用的开关（小写比较，允许 PS 前缀缩写）
+_PS_SAFE_OPTS = {
+    "-property", "-properties", "-expandproperty", "-first", "-last", "-skip", "-skipfirst", "-skiplast",
+    "-unique", "-descending", "-ascending", "-casesensitive", "-casesensitive:", "-not", "-and", "-or",
+    "-eq", "-ne", "-gt", "-ge", "-lt", "-le", "-like", "-notlike", "-match", "-notmatch",
+    "-contains", "-notcontains", "-in", "-notin", "-is", "-isnot", "-as",
+    "-membername", "-process", "-inputobject", "-end", "-begin",
+    "-table", "-list", "-auto", "-wrap", "-none", "-full", "-noenumerate",
+    "-sum", "-average", "-maximum", "-minimum", "-count", "-standarddeviation",
+    "-line", "-character", "-word", "-culture", "-echo", "-verbose", "-debug",
+}
+# 参数值是属性名/字符串，不会是动作的情况：这些开关后面跟的值一律跳过
+_PS_VALUE_OPTS = {
+    "-property", "-properties", "-expandproperty", "-first", "-last", "-skip", "-skipfirst", "-skiplast",
+    "-membername", "-inputobject", "-eq", "-ne", "-gt", "-ge", "-lt", "-le", "-like", "-notlike",
+    "-match", "-notmatch", "-contains", "-notcontains", "-in", "-notin", "-is", "-isnot", "-as",
+}
+
+
+def _ps_pipeline_safe(name: str, args: list[str]) -> bool:
+    """管道操作符的参数检查：禁止把动作成员名当参数传进去。
+
+    放行的形态（都是纯查询/投影/统计）：
+      Select-Object Name / -Property Name,Length / -First 10 / -ExpandProperty Name
+      Where-Object Name -like '*.py'
+      ForEach-Object Name            （取属性）
+      Measure-Object                 （无参数）
+    拒绝：
+      ForEach-Object Kill / -MemberName Kill / -Process Kill
+      Where-Object Remove-Item
+      Select-Object -ExpandProperty Kill
+    """
+    if not args:
+        return True                     # 无参数：Measure-Object 之类
+    i = 0
+    n = len(args)
+    while i < n:
+        a = args[i]
+        low = a.lower()
+        if a.startswith("-") or (a.startswith("/") and len(a) > 1):
+            # 开关：-MemberName / -Process 的值要按“成员名”再判一次
+            base = low.split(":", 1)[0]
+            if base in ("-membername", "-process", "-expandproperty", "-begin", "-end") and i + 1 < n:
+                # 这几个开关后面跟的就是“要执行的成员/脚本”，一律按动作判
+                if _looks_like_action(args[i + 1]):
+                    return False
+                i += 2
+                continue
+            if base in _PS_VALUE_OPTS and i + 1 < n:
+                i += 2
+                continue
+            if _ps_opt_known(low):
+                i += 1
+                continue
+            # 不认识的开关：它后面的裸词可能是成员名，交给下面的裸词判断
+            i += 1
+            continue
+        # 位置参数 / 裸词
+        if _looks_like_action(a):
+            # 投影类 cmdlet 的第一个位置参数是属性名，不是动作
+            if i == 0 and name in _PS_PROJECTION_CMDLETS:
+                # 名字里不能带动词形态的连字符（Delete-All 这种），纯属性名（Name/Length）放行
+                if not _looks_like_verb_noun(a):
+                    i += 1
+                    continue
+            return False
+        i += 1
+    return True
+
+
+def _ps_opt_known(low: str) -> bool:
+    base = low.split(":", 1)[0]
+    if base in _PS_SAFE_OPTS:
+        return True
+    # PowerShell 允许前缀缩写：-Exp 代表 -ExpandProperty
+    return any(o.startswith(base) and len(base) >= 3 for o in _PS_SAFE_OPTS)
+
+
+def _looks_like_verb_noun(s: str) -> bool:
+    """PowerShell 系统方法名（Delete / Stop-Process / Remove-Item）。"""
+    return bool(re.match(r"^[A-Za-z]+-[A-Za-z]+$", s))
+
+
+def _looks_like_action(s: str) -> bool:
+    """这个词是不是“动作”而不是属性名。
+
+    属性名（Name / Length / FullName / PSIsContainer）不含连字符；
+    动作名要么在已知集合里，要么是 Verb-Noun 形态。
+    """
+    t = s.strip().strip("'\"")
+    if not t:
+        return False
+    low = t.lower()
+    if low in _PS_ACTION_MEMBERS:
+        return True
+    if _looks_like_verb_noun(t):
+        return True
+    return False
+
+
 def _sed_safe(args: list[str]) -> bool:
     scripts: list[str] = []
     rest = list(args)
@@ -807,6 +934,8 @@ def _segment_safe(seg: str, syntax: str = "posix") -> bool:
         return False  # sort 会执行压缩程序
     if name == "sed":
         return _sed_safe(args)
+    if name in _PS_MEMBER_CMDLETS:
+        return _ps_pipeline_safe(name, args)
     if name not in SAFE_COMMANDS:
         return False
     subs = SAFE_COMMANDS[name]
