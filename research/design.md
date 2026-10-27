@@ -166,3 +166,9 @@ ee/
 - 2026-10-26：D5-6 仓库地图（tree-sitter 定义/引用图排名，repo_map 只读工具，可选会话开始注入）合并。
 - 2026-10-26：D4-10 自动化 v1（ee serve 内调度，cron/每天/间隔，收件箱与通知）合并。
 - 2026-10-26：Pi 第一批（A1/A2/A3/A4/A5/A7/A8/A10）与 D5-10 合并；真实任务对比待用 key 跑 eval_profiles.py。
+
+## 13. 状态（2026-10-27）
+- 项目级配置只能收紧（sanitize_project_layer）；后端口令不进子进程；命令按实际 shell 语法拆分并归一后判危险；pytest 需确认。
+- SYSTEM.md 只替换基础段，工具规则始终按启用工具追加；edit 模糊匹配只做定位级符号归一，有疑义报错。
+- 修剪旧工具输出默认关闭；`~/.claude/skills` 默认不读；DeepSeek 推理档位 默认/低/最高/关闭，reasoning_content 带 tools 时全部回传。
+- D5-8 Windows 沙箱（受限令牌 + ACL + Job Object，禁网仅环境变量尽力而为）重做中。

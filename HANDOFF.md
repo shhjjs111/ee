@@ -1,6 +1,16 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 18:20（Asia/Shanghai，本机测试从 29 failed 修到 **838 passed / 13 skipped / 0 failed**；提交 `9cc8e46` + `59afb17` + `1a59975`；D5-8 未完成；Windows CI 待确认）
+最后更新：2026-10-27 21:45（Asia/Shanghai，审查修复 6 个分支重做并合并：pytest **1035 passed / 5 skipped**、vitest 138、两份 tsc、build、e2e_ws 通过；D5-8 沙箱在 feat/d5-8 重做中；Windows CI 见推送后记录）
+
+
+> **审查修复重做（2026-10-27 21:45，合并 fix/redo-*）**：另一会话的 6 路审查修复（audit4）未推送丢失，按审查报告逐项重做，每个 bug 先写失败测试再修。
+> - **fix/redo-security-config**：`config.sanitize_project_layer` 让项目 `.ee/config.toml` 只能收紧：丢 providers/hooks、web/network 的地址/key/代理字段、未知 provider 的模型与 headers、mcp.servers/allowed_project；更宽松的 permissions.mode 与 allow 丢弃，ask/deny 只追加，mcp.enabled/project_json 只能关；丢弃项写日志并在设置页“常规”顶部提示（`settings/get.project_ignored`）。后端口令 `take_serve_token()` 读后从 os.environ 删除，`proc.child_environ()` 在 shell/后台命令/hooks/MCP/run_capture 子进程中剔除。限制：项目层仍可改 budget、max_steps、style、shell 枚举。测试 tests/test_redo_security_config.py。
+> - **fix/redo-shell-split**：pytest 移出只读白名单（会执行 conftest.py，需确认）。`PermissionPolicy.shell` 记录实际 shell，`split_command(cmd, syntax)` 按 posix/PowerShell/cmd 各自规则拆分，不知道 shell 取三套最严，引号不配对或 cmd `%VAR%` 需确认。判危险前先归一（去引号转义、去包装前缀、递归 bash -c/cmd /c/pwsh -Command/-EncodedCommand、去 git 全局选项、展开 PS 参数缩写、拆 rd/s/q），原文与归一结果都匹配 deny/强制确认；命令名不确定时全自动也强制确认。未覆盖：PS .NET 方法删除、Start-Process、splatting、cmd `!VAR!`。测试 tests/test_redo_shell_split.py（154 例）。
+> - **fix/redo-edit**：edit 模糊匹配去掉逐行 trim、首尾锚点、NFKC；符号归一只用于定位；缩进只接受整体平移并按原文对齐；未改的行照抄原文，有疑义就报错并给原文（**宁可报错不误改，重点保留**）。补回 A2 压缩丢掉的工具规则（old_string 唯一或 replace_all、保留缩进、不含行号、新建用 write、不用 shell 改代码），预算不放宽（full 4421/4500，lean 1196/1200）。SYSTEM.md 只替换基础段，工具规则照常追加。eval_profiles.py：GBK 控制台不崩、超时结束进程树、不经 cmd.exe、新增 `--preset a2|a3`（worktree 检出 a6e2b22~1 / 4cc28dc~1 对比，`--base` 可自定义）。未做：apply_patch 的 trim 匹配同类风险。
+> - **fix/redo-data**：/undo 与编辑重发检测回合后手改，返回 `{needs_confirm, conflicts}`，确认后先存时间线恢复点再恢复；快照恢复先预检可写，不过一个不动，中途失败如实列已恢复/未恢复；锁定 worktree 拒删，删前备份被忽略文件到 `~/.ee/worktree-backups/`（200MB 上限，失败不删）；会话 JSONL 坏行/半行跳过；`core/atomic.py` 原子写入接入 config/permissions/记忆/desktop 设置等。限制：内存快照回退无冲突检测；Windows 文件锁为模拟测试。
+> - **fix/redo-kernel**：DeepSeek reasoning_content 按官方 Thinking Mode 文档在带 tools 时全部回传（`reasoning_passback="all"`）；`Session._history_lock` 串行化回合与压缩；会话文件存完整冻结前缀，重启后字节一致复用；`<think>` 只解析开头块；推理档位 DeepSeek 为 默认(high)/低/最高(max)/关闭思考，其它 provider 不变；`[prune] enabled` 默认 false（会破坏 DeepSeek 缓存）；`~/.claude/skills` 默认不读（`[skills] claude_home=true` 开启，暂无设置页开关）。
+> - **fix/redo-desktop**：系统提示词分区报错根因是通用校验拒 `thread_id: null`，处理函数声明 `thread_id=None` 时放行；新增 tests/test_rpc_contract.py 自动对照前端 rpc.call 与后端签名。`shell:openPath` 拦截可执行/脚本扩展名（只在资源管理器定位），路径限 ee 目录、工作区、日志目录。`lib/errors.ts` 统一 toast + 全局未处理拒绝兜底。主进程 `electron/textdecode.ts` 流式 UTF-8 回退 GBK，内核 git/钩子/MCP 报错用 smart_decode。Ctrl/⌘+K 聚焦对话搜索。
+> - 验收（合并后本地）：pytest 1035 passed / 5 skipped；vitest 37 文件 138 例；两份 tsc；vite build；e2e_ws 假模型全流程通过（本地跑需 `PYTHONPATH=ee`，且 HOME 被覆盖时 openai 须装在系统 site-packages）。待真实 DeepSeek key：`eval_profiles.py --preset a2/a3 --runs 3` 与推理回传验证。
 
 > **本机测试环境修复（2026-10-27，三个提交）**：接手时本地全量是 `29 failed / 810 passed`，HANDOFF 记的是 `835 passed`，差额全部查清并修掉，现为 **838 passed / 13 skipped / 0 failed**（13m06s）。三类根因：
 >
