@@ -109,3 +109,95 @@ def test_session_policy_follows_shell(workspace, monkeypatch):
     monkeypatch.setattr(session_mod, "resolve_shell", lambda name: ShellInfo("cmd", "cmd.exe", "cmd"))
     s.set_shell("cmd")
     assert s.policy.shell == "cmd"
+
+
+# ------------------------------------------------------------------ 1) 归一后再判危险命令（全自动也拦）
+
+@pytest.mark.parametrize("shell,cmd", [
+    # 引号 / 转义拆写命令名
+    ("posix", 'r"m" -rf build'),
+    ("posix", "'rm' -rf build"),
+    ("posix", "r\\m -rf build"),
+    ("posix", "/bin/rm -rf build"),
+    ("posix", "'git' reset --hard"),
+    ("posix", 'g"it" clean -fdx'),
+    ("posix", "command rm -rf build"),
+    ("posix", "env FOO=1 rm -rf build"),
+    ("posix", "(rm -rf build)"),
+    ("posix", "bash -c 'r\"m\" -rf build'"),
+    ("posix", "find . -name x | xargs rm -rf"),
+    ("powershell", "Remove-Item -Rec -Fo build"),
+    ("powershell", "Remove-Item build -r"),
+    ("powershell", "ri -Recurs build"),
+    ("powershell", "Remove-Item build \u2013Recurse"),           # en dash 也是参数前缀
+    ("powershell", "Re`move-Item -Recurse build"),
+    ("powershell", "& 'Remove-Item' -Recurse build"),
+    ("powershell", "$x = Remove-Item -Rec build"),
+    ("powershell", "Get-ChildItem | ForEach-Object { Remove-Item -Rec $_ }"),
+    ("powershell", "pwsh -Command \"Remove-Item -Rec build\""),
+    ("powershell", "'git' reset --hard"),
+    ("cmd", "r^d /s /q build"),
+    ("cmd", 'd"el" /s /q build'),
+    ("cmd", "rd/s/q build"),
+    ("cmd", "@rd /s /q build"),
+    ("cmd", "cmd /c \"rd /s /q build\""),
+    # git 全局选项在子命令前
+    ("posix", "git -C sub reset --hard"),
+    ("posix", "git --git-dir=.git --work-tree . clean -fd"),
+    ("posix", "git -c user.name=x reset --hard HEAD~1"),
+    ("posix", "git --no-pager branch -D old"),
+    ("powershell", "git -C sub push --force-with-lease"),
+    ("cmd", "git -C sub stash drop"),
+])
+def test_force_ask_not_bypassable_in_auto(tmp_path, shell, cmd):
+    d = pol(tmp_path, "auto", shell=shell).check("shell", {"command": cmd})
+    assert d.action in ("ask", "deny") and (d.action == "deny" or d.force), (shell, cmd, d)
+    # 不知道 shell（三套语法取最严）时也拦
+    d = pol(tmp_path, "auto").check("shell", {"command": cmd})
+    assert d.action in ("ask", "deny") and (d.action == "deny" or d.force), (cmd, d)
+
+
+@pytest.mark.parametrize("shell,cmd", [
+    ("posix", "'git' push --force"),
+    ("posix", 'g"it" push -f origin main'),
+    ("posix", "git -C sub push --force"),
+    ("posix", "git -c core.askpass=x push --force"),
+    ("posix", "git push -uf origin main"),                 # 短选项连写
+    ("powershell", "'git' push --force"),
+    ("powershell", "git -C sub push --force"),
+    ("cmd", "g^it push --force"),
+    ("cmd", "git -C sub push --force"),
+    ("posix", 'r"m" -rf /'),
+    ("powershell", "Remove-Item -Rec -Fo C:\\"),
+    ("cmd", "r^d /s /q C:\\"),
+    ("cmd", "rd/s/q C:\\"),
+])
+def test_deny_not_bypassable_in_auto(tmp_path, shell, cmd):
+    assert pol(tmp_path, "auto", shell=shell).check("shell", {"command": cmd}).action == "deny", (shell, cmd)
+    assert pol(tmp_path, "auto").check("shell", {"command": cmd}).action == "deny", cmd
+
+
+@pytest.mark.parametrize("shell,cmd", [
+    ("posix", "$CMD -rf build"),                       # 命令名是变量：不知道要执行什么
+    ("posix", "eval \"$X\""),
+    ("powershell", "& $c push --force"),
+    ("powershell", "iex $s"),
+    ("powershell", "Invoke-Expression 'Remove-Item -Rec build'"),
+    ("powershell", "pwsh -EncodedCommand UgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBSAGUAYwAgAGIAdQBpAGwAZAA="),
+    ("cmd", "%X% /s /q build"),
+    ("posix", "git -c alias.x='push --force' x"),     # alias 能把子命令换成任意东西
+])
+def test_dynamic_commands_force_ask_in_auto(tmp_path, shell, cmd):
+    d = pol(tmp_path, "auto", shell=shell).check("shell", {"command": cmd})
+    assert d.action in ("ask", "deny") and (d.action == "deny" or d.force), (shell, cmd, d)
+
+
+@pytest.mark.parametrize("shell,cmd", [
+    ("posix", "npm install"), ("posix", "git push origin main"), ("posix", "git -C sub commit -m 'fix'"),
+    ("posix", "rm a.txt"), ("posix", "git -c user.name=x commit -m y"), ("posix", "echo 'rm' -rf"),
+    ("powershell", "Remove-Item a.txt"), ("powershell", "Remove-Item a.txt -Force"),
+    ("powershell", "git push origin main"), ("powershell", "$x = Get-Content a.txt"),
+    ("cmd", "del a.txt"), ("cmd", "git push origin main"), ("cmd", "echo %USERPROFILE%"),
+])
+def test_auto_still_allows_normal(tmp_path, shell, cmd):
+    assert pol(tmp_path, "auto", shell=shell).check("shell", {"command": cmd}).action == "allow", (shell, cmd)

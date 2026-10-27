@@ -416,6 +416,201 @@ def _cmd_name(tok: str) -> str:
     return name
 
 
+# ------------------------------------------------------------------ 归一（判危险命令用）
+
+@dataclass
+class _Seg:
+    raw: str              # 原文
+    syntax: str
+    norm: str = ""        # 归一后的命令：命令名小写去路径/扩展名、去引号转义、去包装前缀和 git 全局选项、PS 参数缩写展开
+    dynamic: str = ""     # 非空：无法确定要执行什么（原因）
+
+
+_PREFIX_WRAPPERS = {"command", "builtin", "exec", "nohup", "nice", "env", "sudo", "doas", "xargs", "timeout",
+                    "stdbuf", "time", "call"}
+_XARGS_VALUE_OPTS = {"-I", "-L", "-n", "-P", "-d", "-E", "-e", "-s", "-a", "--delimiter", "--max-args",
+                     "--max-procs", "--arg-file", "--replace", "--max-lines", "--eof", "--max-chars"}
+_SUDO_VALUE_OPTS = {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-h", "-D", "-R"}
+_KEYWORDS = {"{", "}", "(", ")", "!", "if", "then", "else", "elif", "do", "while", "until", "fi", "done"}
+_GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+_PS_REMOVE = {"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"}
+_PS_REMOVE_PARAMS = ("path", "literalpath", "filter", "include", "exclude", "recurse", "force", "credential",
+                     "whatif", "confirm", "stream", "pspath", "lp")
+_PS_VALUE_OPTS = ("executionpolicy", "ep", "ex", "workingdirectory", "wd", "windowstyle", "configurationname",
+                  "inputformat", "outputformat", "settingsfile", "custompipename", "psconsolefile", "version")
+_MAX_DEPTH = 4
+
+
+def _analyze(command: str, syntax: str, depth: int = 0) -> list[_Seg]:
+    out: list[_Seg] = []
+    for raw in split_command(command, syntax):
+        w = words(raw, syntax)
+        if w is None:      # 引号不配对：_segment_safe 已按需要确认处理；危险规则仍按原文匹配
+            out.append(_Seg(raw, syntax))
+            continue
+        out.extend(_normalize(raw, w, syntax, depth))
+    return out
+
+
+def _q(x: str) -> str:
+    return f'"{x}"' if any(ch.isspace() for ch in x) else x
+
+
+def _strip_opts(w: list[str], value_opts: set[str] = frozenset()) -> list[str]:
+    while w and w[0].startswith("-") and w[0] != "-":
+        w = w[2:] if w[0] in value_opts else w[1:]
+    return w
+
+
+def _normalize(raw: str, w: list[str], syntax: str, depth: int) -> list[_Seg]:
+    if depth > _MAX_DEPTH:
+        return [_Seg(raw, syntax, "", "命令嵌套太深，无法可靠判断")]
+    w = list(w)
+    called = False
+    while w:                                   # 去掉不改变“执行什么”的前缀
+        h = w[0]
+        hl = h.lower()
+        if syntax == "posix" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", h):
+            w = w[1:]; continue
+        if syntax == "powershell" and h.startswith("$"):
+            m = re.match(r"^\$[\w:{}.\[\]]+\s*[+\-*/]?=(.*)$", h)
+            if m:                              # $x = 命令 / $x=命令：右边照样执行
+                w = ([m.group(1)] if m.group(1) else []) + w[1:]; continue
+            if len(w) > 1 and re.fullmatch(r"[+\-*/]?=", w[1]):
+                w = w[2:]; continue
+        if h in ("&", ".") and syntax != "cmd":
+            called = called or h == "&" or syntax == "powershell"
+            w = w[1:]; continue
+        if hl in _KEYWORDS and syntax != "cmd":
+            w = w[1:]; continue
+        stripped = h.lstrip("({@" if syntax == "cmd" else "({")
+        if stripped != h:
+            w = ([stripped] if stripped else []) + w[1:]; continue
+        name = _cmd_name(h)
+        if name in _PREFIX_WRAPPERS and (syntax == "posix" or name in ("call",) and syntax == "cmd"):
+            rest = w[1:]
+            if name == "env":
+                while rest and (rest[0].startswith("-") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", rest[0])):
+                    if rest[0] in ("-S", "--split-string") and len(rest) > 1:
+                        rest = (words(rest[1], "posix") or [rest[1]]) + rest[2:]; continue
+                    rest = rest[2:] if rest[0] in ("-u", "--unset", "-C", "--chdir") else rest[1:]
+            elif name == "xargs":
+                rest = _strip_opts(rest, _XARGS_VALUE_OPTS)
+            elif name in ("sudo", "doas"):
+                rest = _strip_opts(rest, _SUDO_VALUE_OPTS)
+            elif name == "nice":
+                rest = _strip_opts(rest, {"-n", "--adjustment"})
+            elif name == "timeout":
+                rest = _strip_opts(rest, {"-s", "--signal", "-k", "--kill-after"})[1:]
+            elif name == "stdbuf":
+                rest = _strip_opts(rest, {"-i", "-o", "-e"})
+            elif name == "command":
+                rest = _strip_opts(rest)
+            w = rest; continue
+        break
+    if not w:
+        return []
+    name0 = w[0]
+    dyn = ""
+    if syntax == "posix" and ("$" in name0 or "`" in name0):
+        dyn = "命令名是变量/替换，无法确定要执行什么"
+    elif syntax == "powershell" and name0.startswith(("$", "(")):
+        if not called:
+            return [_Seg(raw, syntax)]          # 不带 & 的 $x… 是表达式，不是命令
+        dyn = "调用的命令是变量/表达式，无法确定要执行什么"
+    elif syntax == "cmd" and re.search(r"%[^%\s]+%", name0):
+        dyn = "命令名里有 %变量%，无法确定要执行什么"
+    name = _cmd_name(name0)
+    args = w[1:]
+    nested: list[_Seg] = []
+    if name in ("bash", "sh", "zsh", "dash", "ksh", "ash"):
+        for i, a in enumerate(args):
+            if not a.startswith("-"):
+                break
+            if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a) and i + 1 < len(args):
+                nested = _analyze(args[i + 1], "posix", depth + 1)
+                break
+    elif name == "cmd":
+        for i, a in enumerate(args):
+            if re.fullmatch(r"/[ckCK]", a):
+                nested = _analyze(" ".join(args[i + 1:]), "cmd", depth + 1)
+                break
+            if re.match(r"(?i)^/[ck]\S", a):
+                nested = _analyze(" ".join([a[2:]] + args[i + 1:]), "cmd", depth + 1)
+                break
+    elif name in ("powershell", "pwsh"):
+        i = 0
+        while i < len(args):
+            a = args[i]
+            o = a.lower().lstrip("-/") if a[:1] in ("-", "/") else None
+            if o is None:                       # 位置参数：powershell.exe 当命令，pwsh 当脚本文件
+                if name == "powershell":
+                    nested = _analyze(" ".join(args[i:]), "powershell", depth + 1)
+                break
+            if o and "command".startswith(o):
+                nested = _analyze(" ".join(args[i + 1:]), "powershell", depth + 1)
+                break
+            if o in ("e", "ec") or (len(o) >= 2 and "encodedcommand".startswith(o)):
+                try:
+                    import base64
+                    script = base64.b64decode(args[i + 1]).decode("utf-16-le")
+                    nested = _analyze(script, "powershell", depth + 1)
+                except Exception:  # noqa: BLE001
+                    dyn = dyn or "无法解码 -EncodedCommand"
+                break
+            if o and "file".startswith(o):
+                break
+            i += 2 if (o in _PS_VALUE_OPTS or (len(o) >= 3 and any(x.startswith(o) for x in _PS_VALUE_OPTS))) else 1
+    elif name == "eval" and syntax == "posix":
+        script = " ".join(args)
+        if "$" in script or "`" in script:
+            dyn = dyn or "eval 的内容是变量/替换，无法确定要执行什么"
+        else:
+            nested = _analyze(script, "posix", depth + 1)
+    elif name in ("iex", "invoke-expression"):
+        script = " ".join(a for a in args if not re.fullmatch(r"(?i)-c(o(m(m(a(n(d)?)?)?)?)?)?", a))
+        if not script or "$" in script or "(" in script:
+            dyn = dyn or "Invoke-Expression 的内容是变量/表达式，无法确定要执行什么"
+        else:
+            nested = _analyze(script, "powershell", depth + 1)
+    norm_words = [name] + args
+    if name == "git":
+        rest = list(args)
+        while rest and rest[0].startswith("-"):
+            o = rest[0]
+            key = ""
+            if o in ("-c", "--config-env") and len(rest) > 1:
+                key = rest[1]
+            elif o.startswith("--config-env="):
+                key = o.split("=", 1)[1]
+            if key.lower().startswith("alias."):
+                dyn = dyn or "git -c alias.* 能把子命令换成任意命令"
+            rest = rest[2:] if o in _GIT_VALUE_OPTS else rest[1:]
+        if rest and rest[0] == "push":
+            exp: list[str] = []
+            for a in rest[1:]:
+                exp.extend(f"-{ch}" for ch in a[1:]) if re.fullmatch(r"-[A-Za-z]{2,}", a) else exp.append(a)
+            rest = ["push"] + exp
+        norm_words = ["git"] + rest
+    elif name in _PS_REMOVE and syntax == "powershell":
+        exp = []
+        for a in args:
+            m = re.fullmatch(r"-([A-Za-z]+)(:.*)?", a)
+            if m:
+                o = m.group(1).lower()
+                hits = [p for p in _PS_REMOVE_PARAMS if p.startswith(o)]
+                if o in _PS_REMOVE_PARAMS:
+                    hits = [o]
+                if "recurse" in hits and (len(hits) == 1 or o == "r"):
+                    a = "-recurse"
+                elif "force" in hits and len(hits) == 1:
+                    a = "-force"
+            exp.append(a)
+        norm_words = ["remove-item"] + exp
+    norm = " ".join(_q(x) for x in norm_words)
+    return [_Seg(raw, syntax, norm, dyn)] + nested
+
+
 # ------------------------------------------------------------------ 规则表
 
 # 永远拒绝（全自动也拦）。正则对整段做匹配（忽略大小写）。
@@ -863,31 +1058,43 @@ class PermissionPolicy:
             return Decision("allow")
         syntaxes = [self.shell] if self.shell in SYNTAXES else list(SYNTAXES)
         pairs: list[tuple[str, str]] = []          # (段, 语法)；不知道 shell 时三套语法的拆法取并集
+        entries: list[_Seg] = []                   # 归一后的段（含 bash -c / cmd /c / pwsh -Command 里的命令）
         for sx in syntaxes:
             for seg in split_command(command, sx):
                 if (seg, sx) not in pairs:
                     pairs.append((seg, sx))
+            entries.extend(_analyze(command, sx))
         segs = list(dict.fromkeys(seg for seg, _ in pairs))
-        low_full = command.lower()
-        for seg in segs + [command]:
-            low = seg.lower()
+        norms = [e.norm for e in entries if e.norm]
+
+        def hits(pat: str, raw: str, norm: str = "") -> bool:
+            # 原文任意位置匹配（兼容旧行为）；归一后的命令只从命令名开头匹配，免得把参数里的字样当命令
+            return bool(re.search(pat, raw, re.I) or (norm and re.match(pat, norm, re.I)))
+
+        for e in entries + [_Seg(command, "")]:
             for pat, why in DENY_PATTERNS:
-                if re.search(pat, low, re.I):
-                    return Decision("deny", f"危险命令已拦截（{why}）：{seg}")
-            if any(_match_rule(r, "shell", seg) for r in self.deny):
-                return Decision("deny", f"命中 deny 规则：{seg}")
-        for seg in segs:
+                if hits(pat, e.raw, e.norm):
+                    return Decision("deny", f"危险命令已拦截（{why}）：{e.raw}")
+            if any(_match_rule(r, "shell", e.raw) or (e.norm and _match_rule(r, "shell", e.norm))
+                   for r in self.deny):
+                return Decision("deny", f"命中 deny 规则：{e.raw}")
+        for e in entries:
             for pat, why in FORCE_ASK_PATTERNS:
-                if re.search(pat, seg, re.I):
+                if hits(pat, e.raw, e.norm):
                     if self.mode in READONLY_MODES:
-                        return Decision("deny", f"只读模式不能执行：{seg}")
+                        return Decision("deny", f"只读模式不能执行：{e.raw}")
                     return Decision("ask", why, prefix="", force=True)
+        for e in entries:
+            if e.dynamic:
+                if self.mode in READONLY_MODES:
+                    return Decision("deny", f"只读模式不能执行：{e.raw}（{e.dynamic}）")
+                return Decision("ask", e.dynamic, prefix="", force=True)
         unsafe = list(dict.fromkeys(seg for seg, sx in pairs if not _segment_safe(seg, sx)))
         if self.mode in READONLY_MODES:
             if unsafe:
                 return Decision("deny", f"只读模式只能运行只读命令，被拦截：{unsafe[0]}")
             return Decision("allow")
-        if any(_match_rule(r, "shell", s) for r in self.ask for s in segs):
+        if any(_match_rule(r, "shell", s) for r in self.ask for s in segs + norms):
             return Decision("ask", "命中 ask 规则", prefix=command_prefix(segs[0]))
         if self.mode == "auto":
             return Decision("allow")
@@ -905,5 +1112,4 @@ class PermissionPolicy:
         first = remaining[0]
         name = _cmd_name(tokens(first)[0]) if tokens(first) else ""
         why = "联网命令" if name in NETWORK_COMMANDS else "需要确认的命令"
-        _ = low_full
         return Decision("ask", why, prefix=command_prefix(first))
