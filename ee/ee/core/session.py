@@ -130,6 +130,10 @@ class Session:
         self._ok: dict[str, bool] = {}
         self._hook_stop: str | None = None      # Hook 输出 continue=false 时的原因：本步工具跑完后结束回合
         self._approval_lock = asyncio.Lock()
+        # 历史锁：回合与手动压缩都会整段改写 self.history（压缩是 self.history = 新历史），
+        # 两者并发时后完成的一方会覆盖另一方的消息。这里把它们串行化：回合等压缩做完再开始；
+        # 回合进行中手动压缩直接拒绝（回合里的自动压缩在回合内部顺序执行，不再取锁）。
+        self._history_lock = asyncio.Lock()
         self._subagent_plan: dict[str, str] = {}   # 本步每个 task 调用的隔离方式（D5-2）：worktree / inplace
         self._subagent_sem: asyncio.Semaphore | None = None   # 本步子代理并发上限
         self.last_reasoning = ""
@@ -143,7 +147,7 @@ class Session:
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
         self.compactions = 0
         # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
-        self.effort = RZ.resolve(config.data, self.home, self.spec.alias)
+        self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data, self.home, self.spec.alias))
         sdef = str((config.data.get("style") or {}).get("default") or "default")
         self.style = sdef if ST.exists(self.home, sdef) else "default"
         self._prefix_style: str | None = None      # 冻结进 system 的风格
@@ -194,7 +198,7 @@ class Session:
         if not same_prefix:
             self.prefix = None
         self.updates.reset()
-        self.effort = RZ.resolve(self.config.data, self.home, spec.alias)
+        self.effort = RZ.canonical(spec.profile, RZ.resolve(self.config.data, self.home, spec.alias))
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"
                 "换模型后服务端缓存会从零开始。")
 
@@ -206,7 +210,9 @@ class Session:
         """切换本会话的推理强度；remember 时同时按模型记住（下次用这个模型默认就是它）。"""
         lv = RZ.normalize(level)
         if lv is None:
-            raise ValueError(f"未知推理强度：{level}（可选 默认 / 低 / 中 / 高 / 关闭思考）")
+            opts = " / ".join(RZ.labels(self.profile)[x] for x in ["", *RZ.levels(self.profile), "off"])
+            raise ValueError(f"未知推理强度：{level}（可选 {opts}）")
+        lv = RZ.canonical(self.profile, lv)       # DeepSeek：旧写法 中/高 → 默认/最高
         self.effort = lv
         if remember:
             try:
@@ -215,7 +221,7 @@ class Session:
                 pass
         eff = RZ.effective(self.profile, lv)
         note = "" if eff == lv else "（当前模型不支持这个档位，请求里不会发送）"
-        return f"推理强度：{RZ.LABEL[lv]}{note}"
+        return f"推理强度：{RZ.labels(self.profile)[lv]}{note}"
 
     def effort_support(self) -> dict:
         return RZ.support(self.profile)
@@ -672,12 +678,47 @@ class Session:
             self._sys_src = SP.resolve(self.cwd, self.home, self.config.data)
         return self._sys_src
 
+    def _prefix_compat(self) -> str:
+        """决定 system/tools 形状的会话属性；恢复会话时只复用同一组属性下冻结的前缀。"""
+        p = self.spec.profile
+        return f"{self.agent_profile}|{p.prompt_patch}|{p.edit_style}"
+
+    def _restore_prefix(self) -> bool:
+        """重启后恢复会话：复用会话存盘里最后一次冻结的 system+tools（逐字节），而不是按当前文件 / 风格 / MCP 重算。
+
+        原因：前缀缓存按字节匹配。重启后重算的前缀只要差一个字（会话中途切过风格、改过提示词文件、
+        MCP 工具顺序或启停变了），整段历史的缓存都会失效，下一次请求按全价计费。
+        存盘记录被脱敏改写过（sha256 对不上）或属性不同（换了精简模式 / 模型补丁）时不复用。"""
+        if not self.history or not self.store.enabled or not self.store.path.is_file():
+            return False
+        from ee.core.store import SessionStore
+        rec = SessionStore.last_prefix(self.store.path, self._prefix_compat())
+        if not rec:
+            return False
+        try:
+            fp = FrozenPrefix(dict(rec["system"]), list(rec["tools"]), str(rec["sha256"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not fp.verify():
+            return False
+        self.prefix = fp
+        style = rec.get("style")
+        self._prefix_style = style if isinstance(style, str) and style else "default"
+        self._style_switched = False
+        log.info("恢复会话 %s：沿用存盘里冻结的前缀 %s", self.store.id, fp.sha256[:12])
+        return True
+
     def _ensure_prefix(self, emit) -> FrozenPrefix:
+        if self.prefix is None and self._restore_prefix():
+            return self._ensure_prefix(emit)
         if self.prefix is None:
             self._prefix_style = self.style          # 风格段随 system 冻结；之后切换走 <context-update>
             self._style_switched = False
             self.prefix = self.current_prefix()
-            self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model})
+            # 整个前缀落盘：重启恢复会话时逐字节复用（_restore_prefix），保住前缀缓存
+            self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model,
+                                         "compat": self._prefix_compat(), "style": self._prefix_style,
+                                         "system": self.prefix.system, "tools": self.prefix.tools})
             if getattr(self, "hooks_role", "main") != "subagent":
                 for text, level in self.system_sources().notices():
                     emit(Notice(text, level))
@@ -808,6 +849,9 @@ class Session:
     # ------------------------------------------------------------ 回合
     async def run_turn(self, text: str, images: list[str] | None = None) -> AsyncIterator:
         q: asyncio.Queue = asyncio.Queue()
+        if self._history_lock.locked():
+            yield Status("正在压缩上下文，压缩完成后开始这一回合…")
+        await self._history_lock.acquire()          # 与压缩串行（见 __init__ 里 _history_lock 的说明）
         self.running = True
         self._task = asyncio.create_task(self._turn(text, q.put_nowait, images))
         try:
@@ -825,13 +869,16 @@ class Session:
                 if isinstance(ev, TurnDone):
                     break
         finally:
-            self.running = False
-            if self._task and not self._task.done():
-                self._task.cancel()
-                try:
-                    await self._task
-                except BaseException:
-                    pass
+            try:
+                if self._task and not self._task.done():
+                    self._task.cancel()
+                    try:
+                        await self._task
+                    except BaseException:
+                        pass
+            finally:
+                self.running = False
+                self._history_lock.release()
 
     async def _turn(self, text: str, emit, images: list[str] | None = None) -> None:
         final = ""
@@ -1232,13 +1279,14 @@ class Session:
         返回 {ok, message, tokens_before, tokens_after}；成功时 emit 一个 Compacted 事件。
         """
         emit = emit or (lambda ev: None)
-        if self.running:
+        if self.running or self._history_lock.locked():
             return {"ok": False, "message": "正在运行中，等这一回合结束再压缩。", "tokens_before": 0, "tokens_after": 0}
-        self.running = True
-        try:
-            return await self._compact(emit, "manual")
-        finally:
-            self.running = False
+        async with self._history_lock:              # 压缩期间到来的回合会排队等待，而不是并行改写历史
+            self.running = True
+            try:
+                return await self._compact(emit, "manual")
+            finally:
+                self.running = False
 
     async def _summarize(self, emit, prev: tuple[int, str] | None = None) -> tuple[str, dict | None, object]:
         """主路：同一前缀 + 当前历史 + 压缩指令（同模型时复用缓存）。不调工具。

@@ -4,7 +4,8 @@
   message  发给模型的历史消息（恢复会话用）
   meta     线程元数据（cwd / model / mode / title），后写的覆盖先写的
   item     桌面端显示用的条目（用户消息、助手消息、工具卡片、审批……），同 id 后写的覆盖先写的
-  prefix / rewind / reset  内核内部记录
+  prefix   冻结前缀（sha256 + 完整 system/tools + 冻结时的风格），重启恢复会话时逐字节复用
+  rewind / reset  内核内部记录
   prune    修剪旧工具输出（D5-10）：把这些下标的 tool 消息换成占位（原 message 记录不动，界面条目另存完整输出）
   truncate 编辑重发（D3-E）：丢掉 seq ≥ from_seq 的已有条目（之后新写的条目照常保留）
 """
@@ -118,6 +119,15 @@ class SessionStore:
             elif rec.get("kind") == "prune":
                 _apply_prune(out, rec)
         return out
+
+    @staticmethod
+    def last_prefix(path: Path, compat: str) -> dict | None:
+        """最后一条带完整 system/tools、且 compat 相同的 prefix 记录（恢复会话时复用，保住前缀缓存）。"""
+        found = None
+        for rec in SessionStore._records(path):
+            if rec.get("kind") == "prefix" and rec.get("compat") == compat and "system" in rec and "tools" in rec:
+                found = rec
+        return found
 
     @staticmethod
     def load(path: Path) -> dict:

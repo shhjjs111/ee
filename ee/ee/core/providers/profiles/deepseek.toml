@@ -9,17 +9,26 @@ parallel_tools = true
 # deepseek-flash（V4.1-Flash）支持图片输入（官方 Vision 文档 2026-10）；deepseek-v4-pro 不支持，见下方 variants
 vision = true
 reasoning = true
-# 带工具调用的助手轮次始终回传 reasoning_content（缺失补 ""）；纯文本轮不回传。规则确定 → 历史字节稳定。
-reasoning_passback = "tool_turns"
+# 所有助手轮次都回传 reasoning_content（缺失补 ""）。依据官方 Thinking Mode 文档
+# （https://api-docs.deepseek.com/guides/thinking_mode，2026-10 查阅）：请求带 tools 时，之前所有轮次的
+# reasoning_content 都要回传——包括没有调用工具的纯文本轮——否则返回 400；不带 tools 时回传会被忽略、不进上下文。
+# ee 主循环和压缩请求总带 tools，所以按 all 回传；规则只看消息本身 → 历史字节稳定（前缀缓存不受影响）。
+reasoning_passback = "all"
 edit_style = "edit"
 prompt_patch = "deepseek"
 empty_assistant_content = "empty"
 quirks = ["dsml_tool_calls", "json_tool_calls"]
-# 推理强度：思考默认开启、默认强度 high；服务端只区分 low / high / max（medium 映射到 high）。
-# ee 的 低 / 中 / 高 → low / high / max；关闭思考 → extra_body {"thinking": {"type": "disabled"}}
+# 推理强度（官方 Thinking Mode 文档 https://api-docs.deepseek.com/guides/thinking_mode）：
+# 开关 extra_body {"thinking": {"type": "enabled|disabled"}}，思考默认开启；强度 reasoning_effort = low | high | max，
+# 默认 high（medium→high、xhigh→high 只是服务端映射，不是独立档位）。
+# 所以 ee 对 DeepSeek 只给 默认（high，不发参数）/ 低（low）/ 最高（max）/ 关闭思考 四档。
+# 旧版本记住的 中 / 高：中 = 服务端默认 high → 默认；高 以前就发 max → 最高。
 effort_param = "reasoning_effort"
 thinking_param = "thinking_type"
-effort_values = { low = "low", medium = "high", high = "max" }
+effort_levels = ["low", "max"]
+effort_values = { low = "low", max = "max" }
+effort_aliases = { medium = "", high = "max" }
+effort_labels = { "" = "默认（high）", max = "最高（max）" }
 
 [price]
 currency = "¥"

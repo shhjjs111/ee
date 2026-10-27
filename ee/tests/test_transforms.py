@@ -10,12 +10,12 @@ KNOWN = ["read", "write", "edit", "shell", "grep", "glob", "todo"]
 def test_think_splitter_across_chunks():
     sp = T.ThinkSplitter()
     out = []
-    for ch in ["开头<thi", "nk>想一想", "，再想</th", "ink>正文"]:
+    for ch in ["<thi", "nk>想一想", "，再想</th", "ink>正文"]:
         out += sp.feed(ch)
     out += sp.flush()
     text = "".join(p for k, p in out if k == "text")
     reasoning = "".join(p for k, p in out if k == "reasoning")
-    assert text == "开头正文" and reasoning == "想一想，再想"
+    assert text == "正文" and reasoning == "想一想，再想"
 
 
 def test_delta_reasoning_fields():
@@ -97,7 +97,7 @@ def test_wire_messages_copy_and_rules():
     ds = profile_for("deepseek-flash")
     w = T.wire_messages(hist, ds)
     assert w[1]["reasoning_content"] == "" and w[1]["content"] == ""      # 缺失补 ""
-    assert "reasoning_content" not in w[3] and "reasoning" not in w[3]
+    assert w[3]["reasoning_content"] == "r2" and "reasoning" not in w[3]   # DeepSeek：所有助手轮次回传
     assert hist[3]["reasoning"] == "r2"                                     # 原历史不被修改
     gpt = profile_for("gpt-5")
     w2 = T.wire_messages(hist, gpt)

@@ -42,7 +42,7 @@ def test_hierarchy_override_and_compat(ee_home, workspace, uhome):
     mk(workspace / ".ee" / "skills", "c", "项目根 ee")
     mk(sub / ".agents" / "skills", "c", "更深一层 agents")        # 更深的目录优先
     mk(workspace / ".ee" / "skills", "中文技能", "可以用中文名")
-    cat = K.discover(ee_home, sub)
+    cat = K.discover(ee_home, sub, {"skills": {"claude_home": True}})     # ~/.claude/skills 默认不读，这里显式打开
     got = {n: (s.description, s.source, s.origin) for n, s in cat.skills.items()}
     assert got["a"] == ("用户 claude", "user", "claude")
     assert got["b"] == ("项目 claude", "project", "claude")
@@ -128,7 +128,7 @@ def test_injection_position_and_prefix_cache(ee_home, workspace, uhome):
     (ee_home / "memory.md").write_text("- 记忆 A\n", encoding="utf-8")
     (workspace / "AGENTS.md").write_text("项目指令\n", encoding="utf-8")
     mk(ee_home / "skills", "pdf", "处理 PDF 文件")
-    mk(uhome / ".claude" / "skills", "excel", "处理 Excel")
+    mk(uhome / ".agents" / "skills", "excel", "处理 Excel")
     s, fake = make_session(workspace, [text_chunks("a") + finish("stop"), text_chunks("b") + finish("stop")])
     run(collect(s, "一"))
     h = s.prefix.sha256
@@ -262,7 +262,7 @@ def test_rpc_and_settings(ee_home, workspace, uhome):
     assert p == str(ee_home / "skills")
     # 设置：禁用写进 config，skills/list 立刻反映
     st = run(b.call("settings/get", {}))["settings"]["skills"]
-    assert st == {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000}
+    assert st == {"enabled": True, "compat": True, "claude_home": False, "disabled": [], "max_chars": 8000}
     st = run(b.call("settings/set", {"settings": {"skills": {"disabled": ["pdf"], "compat": False}}}))["settings"]["skills"]
     assert st["disabled"] == ["pdf"] and st["compat"] is False
     assert "disabled" in (ee_home / "config.toml").read_text(encoding="utf-8")

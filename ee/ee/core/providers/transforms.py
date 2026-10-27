@@ -1,7 +1,8 @@
 """各家模型怪癖集中处理。纯函数为主，方便测试。
 
-- 推理字段：reasoning_content / reasoning / content 里的 <think>…</think>
+- 推理字段：reasoning_content / reasoning / content 开头的 <think>…</think>
 - 回传规则：按档案 reasoning_passback（none | tool_turns | all），规则确定 → 历史字节稳定
+  （DeepSeek 用 all：官方文档要求带 tools 的请求回传之前所有轮次的 reasoning_content，见 profiles/deepseek.toml）
 - 坏工具调用兜底：content 里整段 JSON、DSML 标记、<tool_call> / <function=…> XML
 - 工具名大小写纠正、参数类型修复
 - 不支持参数（stream_options / parallel_tool_calls 等）时识别错误以便降级
@@ -45,44 +46,62 @@ def _get(obj: Any, key: str):
 
 
 class ThinkSplitter:
-    """把 content 流里的 <think>…</think> 拆成推理，能处理标签跨 chunk。"""
+    """把 content 流开头的 <think>…</think> 拆成推理（MiniMax 等把思考写进正文的模型靠它），能处理标签跨 chunk。
+
+    只认回答开头（前面只有空白）的那一个思考块：思考块结束后、或开头第一个非空白字符不是 <think> 时，
+    之后的一切都按正文原样输出。否则模型在正文里提到 "<think>" 字样（比如解释这个标签）时，
+    后面的回答会被当成推理吞掉，界面和历史里都看不到。"""
 
     OPEN, CLOSE = "<think>", "</think>"
 
     def __init__(self) -> None:
         self.buf = ""
-        self.inside = False
-        self.seen_text = False
+        self.state = "start"          # start（还没见到非空白）| inside（思考块内）| done（之后全是正文）
 
     def feed(self, chunk: str) -> list[tuple[str, str]]:
+        if self.state == "done":
+            return [("text", chunk)] if chunk else []
         self.buf += chunk
         out: list[tuple[str, str]] = []
-        while self.buf:
-            tag = self.CLOSE if self.inside else self.OPEN
-            i = self.buf.find(tag)
-            if i >= 0:
-                part, self.buf = self.buf[:i], self.buf[i + len(tag):]
-                if part:
-                    out.append(("reasoning" if self.inside else "text", part))
-                self.inside = not self.inside
-                continue
-            # 保留可能是半个标签的尾巴
-            keep = 0
-            for n in range(min(len(tag) - 1, len(self.buf)), 0, -1):
-                if tag.startswith(self.buf[-n:]):
-                    keep = n
-                    break
-            emit = self.buf[: len(self.buf) - keep]
-            self.buf = self.buf[len(self.buf) - keep:]
-            if emit:
-                out.append(("reasoning" if self.inside else "text", emit))
-            break
+        if self.state == "start":
+            lead = self.buf[: len(self.buf) - len(self.buf.lstrip())]
+            rest = self.buf[len(lead):]
+            if rest.startswith(self.OPEN):
+                self.state = "inside"
+                self.buf = rest[len(self.OPEN):]
+                # 开头的空白属于正文之前，丢掉不影响显示；保持与旧行为一致不输出
+            elif self.OPEN.startswith(rest):
+                return out             # 还可能是半个 <think>（或只有空白）：等下一块
+            else:
+                self.state = "done"
+                text, self.buf = self.buf, ""
+                return [("text", text)] if text else []
+        # inside
+        i = self.buf.find(self.CLOSE)
+        if i >= 0:
+            part, rest = self.buf[:i], self.buf[i + len(self.CLOSE):]
+            self.buf = ""
+            self.state = "done"
+            if part:
+                out.append(("reasoning", part))
+            if rest:
+                out.append(("text", rest))
+            return out
+        keep = 0                       # 保留可能是半个 </think> 的尾巴
+        for n in range(min(len(self.CLOSE) - 1, len(self.buf)), 0, -1):
+            if self.CLOSE.startswith(self.buf[-n:]):
+                keep = n
+                break
+        emit = self.buf[: len(self.buf) - keep]
+        self.buf = self.buf[len(self.buf) - keep:]
+        if emit:
+            out.append(("reasoning", emit))
         return out
 
     def flush(self) -> list[tuple[str, str]]:
         if not self.buf:
             return []
-        r = [("reasoning" if self.inside else "text", self.buf)]
+        r = [("reasoning" if self.state == "inside" else "text", self.buf)]
         self.buf = ""
         return r
 

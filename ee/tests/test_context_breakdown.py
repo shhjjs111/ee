@@ -74,7 +74,7 @@ def test_session_breakdown_is_read_only(ee_home, workspace):
     assert it["agents"]["tokens"] > 0 and it["tool_output"]["tokens"] > 0 and it["history"]["tokens"] > 0
     assert d["frozen"] is True and d["actual"] is True and d["used"] == 4120
     assert d["window"] == s.profile.context_window and d["thresholds"]["compact"] == 0.8
-    assert d["thresholds"]["prune"] < 0.8
+    assert d["thresholds"]["prune"] is None             # 修剪默认关闭（会让 DeepSeek 缓存失效）
     assert {t["name"] for t in d["tools"]} >= {"read", "shell"}
     # 系统提示用的就是冻结的那份
     assert it["system"]["tokens"] == C.estimate_tokens(s.prefix.system["content"])

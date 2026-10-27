@@ -501,7 +501,7 @@ class Backend:
             out.append({"name": name, "provider": spec.provider, "model": spec.model,
                         "family": spec.profile.family, "context_window": spec.profile.context_window,
                         "reasoning": spec.profile.reasoning, "vision": spec.profile.vision,
-                        "effort_support": RZ.support(spec.profile),           # D5-9：{effort, off}
+                        "effort_support": RZ.support(spec.profile),           # D5-9：{effort, off, levels, labels}
                         "effort_values": dict(spec.profile.effort_values or {}),
                         "has_key": bool(spec.api_key()),
                         "price": vars(spec.profile.price)})

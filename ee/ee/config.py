@@ -35,8 +35,9 @@ DEFAULTS: dict = {
     # 磁盘快照（影子 git 仓库）：disk=false 回退内存快照；清理时每个会话保留最近 keep_days 天、最近 keep_turns 个回合
     "snapshot": {"disk": True, "keep_days": 14, "keep_turns": 100},
     "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
-    # 修剪旧工具输出（D5-10）：上下文 ≥ threshold × 窗口（低于压缩阈值）时把较早的大块工具结果换成占位，成批做一次
-    "prune": {"enabled": True, "threshold": 0.6, "keep_turns": 2, "keep_tokens": 40000, "min_tokens": 20000,
+    # 修剪旧工具输出（D5-10）：上下文 ≥ threshold × 窗口（低于压缩阈值）时把较早的大块工具结果换成占位，成批做一次。
+    # 默认关闭：修剪会让后面整段历史的前缀缓存失效，DeepSeek（缓存命中价约 1/50）上往往更贵；需要时设 enabled = true
+    "prune": {"enabled": False, "threshold": 0.6, "keep_turns": 2, "keep_tokens": 40000, "min_tokens": 20000,
               "min_output_tokens": 300},
     # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限
     "agents_md": {"enabled": True, "max_bytes": 32768},
@@ -53,11 +54,12 @@ DEFAULTS: dict = {
     # inject = 会话开始时注入记忆；tool = 提供 memory 工具（enabled 为总开关）
     "memory": {"enabled": True, "workspace": True, "max_bytes": 8192, "inject": True, "tool": True},
     # 技能：~/.ee/skills、<项目>/.ee/skills（compat 时兼容 .claude/skills、.agents/skills）；清单总长上限 max_chars
-    "skills": {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000},
+    # claude_home = 是否读用户主目录的 ~/.claude/skills（默认关：那是 Claude Code 的技能，不一定适合 ee，也会让清单随机器变化）
+    "skills": {"enabled": True, "compat": True, "claude_home": False, "disabled": [], "max_chars": 8000},
     # 仓库地图（repo_map 工具，tree-sitter）：auto_inject = 会话开始时把一小份地图固定注入（默认关，省 token）
     "repo_map": {"enabled": True, "auto_inject": False, "max_tokens": 1536, "inject_tokens": 1024,
                  "max_files": 3000, "time_limit": 20},
-    # 推理强度（D5-9）：全局默认档位 "" | low | medium | high | off（会话里可切换，按模型记住）
+    # 推理强度（D5-9）：全局默认档位 "" | low | medium | high | max | off（DeepSeek 只有 "" / low / max / off；会话里可切换，按模型记住）
     "reasoning": {"effort": ""},
     # 按用途分模型（D5-9）：留空 = 跟随主模型。旧写法 [models.roles] 读取时会并进来
     "roles": {"title": "", "compact": "", "explore": "", "plan": "", "review": "", "commit": ""},

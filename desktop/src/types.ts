@@ -93,9 +93,10 @@ export type Usage = {
   by_model?: Record<string, { requests: number; prompt: number; completion: number; reasoning: number; cost: number | null; currency: string }>;
 };
 
-/** 推理强度档位（D5-9）：""=默认（不发参数）| low | medium | high | off（关闭思考） */
-export type Effort = "" | "low" | "medium" | "high" | "off";
-export type EffortSupport = { effort: boolean; off: boolean };
+/** 推理强度档位（D5-9）：""=默认（不发参数）| low | medium | high | max（最高）| off（关闭思考） */
+export type Effort = "" | "low" | "medium" | "high" | "max" | "off";
+/** levels：这个模型可选的强度档（不含 默认 / 关闭思考；DeepSeek 只有 low、max）；labels：档位文字覆盖（"" = 默认档） */
+export type EffortSupport = { effort: boolean; off: boolean; levels?: string[]; labels?: Record<string, string> };
 
 export type ThreadStatus = "idle" | "running" | "waiting_approval" | "compacting";
 

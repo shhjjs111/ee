@@ -14,7 +14,7 @@ def make(workspace, script, persist=False, window=10000, prune=None):
     from ee.core.session import Session
     cfg = load_config(workspace)
     cfg.data["models"]["deepseek-flash"]["context_window"] = window
-    cfg.data["prune"] = {"threshold": 0.5, "keep_turns": 1, "keep_tokens": 0, "min_tokens": 500,
+    cfg.data["prune"] = {"enabled": True, "threshold": 0.5, "keep_turns": 1, "keep_tokens": 0, "min_tokens": 500,
                          "min_output_tokens": 100, **(prune or {})}
     fake = FakeClient(script)
     return Session(cfg, cwd=workspace, client=fake, persist=persist), fake
@@ -183,7 +183,7 @@ def test_due_hysteresis():
     from ee.core.context import UsageStats
     st = UsageStats()
     s = SimpleNamespace(profile=SimpleNamespace(context_window=10000), stats=st, compactions=0)
-    cfg = P.settings({"prune": {"threshold": 0.5, "min_tokens": 1000}})
+    cfg = P.settings({"prune": {"enabled": True, "threshold": 0.5, "min_tokens": 1000}})
     st.requests, st.last_prompt = 3, 6000
     assert P.due(s, cfg)
     s._prune_mark, s._prune_floor, s._prune_comp = 3, None, 0       # 刚修剪过

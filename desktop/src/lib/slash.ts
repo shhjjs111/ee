@@ -1,4 +1,5 @@
 // 斜杠命令（D3-B）：内置命令 + 后端 prompts/list 的自定义提示 + skills/list 的技能（D5-5）。纯函数，便于测试。
+import type { EffortSupport } from "../types";
 
 export type PromptInfo = { name: string; description: string; argument_hint: string; source: string; path: string };
 /** skills/list 返回的一个技能（ee/core/skills.py Skill.summary）。 */
@@ -37,7 +38,7 @@ export const BUILTIN: SlashCommand[] = [
   { name: "undo", description: "撤销上一回合的文件改动", takesArgs: false, kind: "builtin" },
   { name: "model", description: "切换模型", argHint: "<模型名>", takesArgs: true, kind: "builtin" },
   { name: "mode", description: "切换权限模式", argHint: "只读 | 默认 | 全自动 | 计划", takesArgs: true, kind: "builtin" },
-  { name: "effort", description: "推理强度（本会话，并按模型记住）", argHint: "默认 | 低 | 中 | 高 | 关闭", takesArgs: true, kind: "builtin" },
+  { name: "effort", description: "推理强度（本会话，并按模型记住）", argHint: "默认 | 低 | 中 | 高 | 最高 | 关闭", takesArgs: true, kind: "builtin" },
   { name: "style", description: "回答风格（本会话）", argHint: "默认 | 简洁", takesArgs: true, kind: "builtin" },
   { name: "plan", description: "计划模式：先调研出方案，批准后再改（可直接跟任务）", argHint: "[任务]", takesArgs: true, kind: "builtin" },
   { name: "memory", description: "记住一句话（不带文字则打开记忆设置）", argHint: "[要记住的话]", takesArgs: true, kind: "builtin" },
@@ -59,11 +60,34 @@ export const EFFORT_OPTIONS = [
   { value: "low", label: "低", hint: "想得少、快、省 token" },
   { value: "medium", label: "中", hint: "平衡" },
   { value: "high", label: "高", hint: "想得更久，适合难题" },
+  { value: "max", label: "最高", hint: "想得最久（DeepSeek 的 max 档）" },
   { value: "off", label: "关闭思考", hint: "不输出思考过程（模型支持时）" },
 ];
 
-export function effortLabel(v: string | undefined | null): string {
-  return EFFORT_OPTIONS.find((o) => o.value === (v ?? ""))?.label ?? String(v);
+const DEFAULT_LEVELS = ["low", "medium", "high"];
+
+/** 某个模型界面上显示的档位：默认 + 它的强度档（DeepSeek：低 / 最高；其它：低 / 中 / 高）+ 关闭思考。
+ *  support 缺 levels（旧后端）或模型不支持调强度时按 默认 / 低 / 中 / 高 / 关闭思考 显示（由调用方置灰）。 */
+export function effortOptionsFor(support?: EffortSupport | null) {
+  const levels = support?.levels?.length ? support.levels : DEFAULT_LEVELS;
+  const labels = support?.labels ?? {};
+  return ["", ...levels, "off"].map((v) => {
+    const base = EFFORT_OPTIONS.find((o) => o.value === v) ?? { value: v, label: v, hint: "" };
+    return { ...base, label: labels[v] ?? base.label };
+  });
+}
+
+/** 这个模型支不支持某个档位（不支持的置灰，请求里不会发送）。 */
+export function effortSupported(v: string, support?: EffortSupport | null): boolean {
+  if (!v) return true;
+  if (v === "off") return !!support?.off;
+  if (!support?.effort) return false;
+  return (support.levels?.length ? support.levels : DEFAULT_LEVELS).includes(v);
+}
+
+export function effortLabel(v: string | undefined | null, support?: EffortSupport | null): string {
+  const key = v ?? "";
+  return support?.labels?.[key] ?? EFFORT_OPTIONS.find((o) => o.value === key)?.label ?? String(v);
 }
 
 /** /effort 的参数 → 档位；认不出返回 null。 */
@@ -71,7 +95,7 @@ export function resolveEffort(arg: string): string | null {
   const a = arg.trim().toLowerCase();
   const hit = EFFORT_OPTIONS.find((o) => o.value === a || o.label === arg.trim());
   if (hit) return hit.value;
-  const alias: Record<string, string> = { default: "", auto: "", "": "", 关: "off", 关闭: "off", none: "off", max: "high", minimal: "low" };
+  const alias: Record<string, string> = { default: "", auto: "", "": "", 关: "off", 关闭: "off", none: "off", minimal: "low", xhigh: "high", ultra: "max" };
   return a in alias ? alias[a] : arg.trim() in alias ? alias[arg.trim()] : null;
 }
 
@@ -131,6 +155,7 @@ export function slashItems(
   models: { name: string; hint?: string }[],
   skills: SkillInfo[] = [],
   styles: { id: string; label: string; description?: string }[] = [],
+  effortSupport?: EffortSupport | null,
 ): SlashItem[] | null {
   if (!text.startsWith("/") || text.includes("\n")) return null;
   const head = /^\/([\p{L}\p{N}_.-]*)$/u.exec(text); // 技能名可以是中文
@@ -152,7 +177,7 @@ export function slashItems(
   if (sub) {
     const q = sub[2].toLowerCase();
     if (sub[1] === "effort") {
-      return EFFORT_OPTIONS.filter((o) => !q || o.value.includes(q) || o.label.includes(sub[2])).map((o) => ({
+      return effortOptionsFor(effortSupport).filter((o) => !q || o.value.includes(q) || o.label.includes(sub[2])).map((o) => ({
         key: `effort:${o.value || "default"}`,
         label: o.label,
         hint: o.hint,

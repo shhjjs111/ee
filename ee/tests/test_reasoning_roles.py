@@ -30,8 +30,9 @@ def params(model, effort, state=None):
 @pytest.mark.parametrize("effort,top,body", [
     ("", None, None),
     ("low", "low", None),
-    ("medium", "high", None),          # DeepSeek 只认 low/high/max：中 → high
-    ("high", "max", None),
+    ("medium", None, None),            # DeepSeek 没有“中”档：旧值 中 = 服务端默认 high → 不发参数
+    ("high", "max", None),             # 旧值 高 以前就发 max → 最高
+    ("max", "max", None),
     ("off", None, {"thinking": {"type": "disabled"}}),
 ])
 def test_deepseek_effort_params(effort, top, body):
@@ -66,10 +67,12 @@ def test_custom_effort_param_goes_to_extra_body(workspace):
 
 
 def test_support_and_normalize():
-    assert RZ.support(spec("deepseek-flash").profile) == {"effort": True, "off": True}
-    assert RZ.support(spec("gpt-4o").profile) == {"effort": False, "off": False}
+    ds = RZ.support(spec("deepseek-flash").profile)
+    assert (ds["effort"], ds["off"], ds["levels"]) == (True, True, ["low", "max"])
+    g = RZ.support(spec("gpt-4o").profile)
+    assert (g["effort"], g["off"], g["levels"]) == (False, False, [])
     assert RZ.normalize("高") == "high" and RZ.normalize("关闭思考") == "off" and RZ.normalize("默认") == ""
-    assert RZ.normalize("max") == "high" and RZ.normalize("瞎写") is None
+    assert RZ.normalize("max") == "max" and RZ.normalize("最高") == "max" and RZ.normalize("瞎写") is None
 
 
 # ------------------------------------------------------------------ 降级重试
@@ -136,12 +139,12 @@ def test_effort_layers_session_model_global(ee_home, workspace):
     s.config.data["reasoning"]["effort"] = "low"
     s2, _ = make_session(workspace, [])
     assert s2.effort == ""                     # make_session 重新读配置：全局默认仍是空
-    s.set_effort("高")                          # 会话里选 → 同时按模型记住
+    s.set_effort("高")                          # 会话里选 → 同时按模型记住（DeepSeek 上旧写法 高 规整成 最高）
     run(collect(s, "hi"))
     assert fake.calls[0]["reasoning_effort"] == "max"
-    assert RZ.remembered(ee_home) == {"deepseek-flash": "high"}
+    assert RZ.remembered(ee_home) == {"deepseek-flash": "max"}
     s3, _ = make_session(workspace, [])
-    assert s3.effort == "high"                 # 新会话同模型 → 记住的
+    assert s3.effort == "max"                  # 新会话同模型 → 记住的
     s4, _ = make_session(workspace, [], model="deepseek-pro")
     assert s4.effort == ""                     # 另一个模型 → 全局
     (ee_home / "config.toml").write_text('[reasoning]\neffort = "low"\n[models.deepseek-pro]\nprovider = "deepseek"\n'
@@ -149,7 +152,7 @@ def test_effort_layers_session_model_global(ee_home, workspace):
     s5, _ = make_session(workspace, [], model="deepseek-pro")
     assert s5.effort == "off"                  # [models.X] reasoning_effort 优先于全局
     s6, _ = make_session(workspace, [])
-    assert s6.effort == "high"                 # 记住的优先于配置
+    assert s6.effort == "max"                  # 记住的优先于配置
     s6.set_effort("默认")
     assert RZ.remembered(ee_home) == {}
     with pytest.raises(ValueError):
@@ -171,7 +174,8 @@ def test_unsupported_level_reported_and_not_sent(ee_home, workspace):
     from ee.core.session import Session
     fake = FakeClient([text_chunks("ok") + finish("stop")])
     s = Session(cfg, model="g", cwd=workspace, client=fake, persist=False)
-    assert s.effort_support() == {"effort": False, "off": False}
+    sup = s.effort_support()
+    assert (sup["effort"], sup["off"]) == (False, False)
     msg = s.set_effort("high")
     assert "不支持" in msg
     run(collect(s, "hi"))
@@ -343,8 +347,9 @@ def test_models_list_reports_effort_support_and_roles(ee_home, workspace):
     (ee_home / "config.toml").write_text('[roles]\ntitle = "deepseek-flash"\n', encoding="utf-8")
     r = asyncio.run(Backend(home=ee_home).call("models/list", {"cwd": str(workspace)}))
     m = {x["name"]: x for x in r["models"]}
-    assert m["deepseek-flash"]["effort_support"] == {"effort": True, "off": True}
-    assert m["deepseek-flash"]["effort_values"]["high"] == "max"
+    es = m["deepseek-flash"]["effort_support"]
+    assert (es["effort"], es["off"], es["levels"]) == (True, True, ["low", "max"])
+    assert m["deepseek-flash"]["effort_values"]["max"] == "max"
     assert r["roles"]["title"] == "deepseek-flash" and r["roles"]["plan"] == ""
 
 
