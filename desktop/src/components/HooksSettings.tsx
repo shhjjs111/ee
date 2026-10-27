@@ -199,15 +199,23 @@ export function HooksSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   const [tests, setTests] = useState<Record<string, TestState>>({});
   const [addEvent, setAddEvent] = useState<HookEvent>("PreToolUse");
 
+  const listGen = useRef(0); // 切换项目 / 保存后又加载时，迟到的旧结果丢掉
   const reload = useCallback(() => {
     if (!s.rpc) return;
+    const tok = ++listGen.current;
     setLoading(true);
     setListErr(null);
     s.rpc
       .call("hooks/list", { cwd })
-      .then((r: HooksListResponse) => setList(r))
-      .catch((e: Error) => setListErr(e.message))
-      .finally(() => setLoading(false));
+      .then((r: HooksListResponse) => {
+        if (tok === listGen.current) setList(r);
+      })
+      .catch((e: Error) => {
+        if (tok === listGen.current) setListErr(e.message);
+      })
+      .finally(() => {
+        if (tok === listGen.current) setLoading(false);
+      });
   }, [s.rpc, cwd]);
   useEffect(reload, [reload, resp]);
 

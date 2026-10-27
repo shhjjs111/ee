@@ -1,7 +1,7 @@
 // 设置页「MCP」分区：服务器增删改、启用/信任、项目 .mcp.json 服务器允许、测试连接（列工具 + 状态点）。
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, Globe, Plug, Plus, RefreshCw, ShieldCheck, Terminal, Trash2 } from "lucide-react";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { formatArgs, formatKv, MCP_NAME_RE, parseArgs, parseKv } from "../lib/mcp";
 import { useApp } from "../lib/store";
 import type { McpListResponse, McpServerSettings, McpServerStatus, McpSettings as McpCfg, Settings, SettingsResponse } from "../types";
@@ -246,15 +246,24 @@ export function McpSettings({ draft, resp, up }: { draft: Settings; resp: Settin
   const [tests, setTests] = useState<Record<string, TestState>>({});
   const [newName, setNewName] = useState("");
 
+  // 每次加载一个令牌：切换项目 / 保存后又加载时，迟到的旧结果丢掉
+  const listGen = useRef(0);
   const reload = useCallback(() => {
     if (!s.rpc) return;
+    const tok = ++listGen.current;
     setLoading(true);
     setListErr(null);
     s.rpc
       .call("mcp/list", { cwd })
-      .then((r: McpListResponse) => setList(r))
-      .catch((e: Error) => setListErr(e.message))
-      .finally(() => setLoading(false));
+      .then((r: McpListResponse) => {
+        if (tok === listGen.current) setList(r);
+      })
+      .catch((e: Error) => {
+        if (tok === listGen.current) setListErr(e.message);
+      })
+      .finally(() => {
+        if (tok === listGen.current) setLoading(false);
+      });
   }, [s.rpc, cwd]);
   // 保存后（resp 变化）重新拉状态
   useEffect(reload, [reload, resp]);

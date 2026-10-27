@@ -203,7 +203,12 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => s.rpc?.call("budget/status", { thread_id: s.activeThreadId ?? undefined }).then(setStatus)}
+              onClick={() =>
+                s.rpc
+                  ?.call("budget/status", { thread_id: s.activeThreadId ?? undefined })
+                  .then(setStatus)
+                  .catch((e: Error) => s.showToast(`刷新已花费失败：${e.message}`, "error"))
+              }
             >
               刷新已花费
             </Button>
