@@ -103,15 +103,22 @@ def test_quick_command_finishes_in_yield(workspace, tmp_path):
         mgr = BgManager(tmp_path / "logs")
         cmd = "echo done; exit 2" if sh.syntax == "powershell" else "echo done && exit 2"
         r = await ShellTool().run({"command": cmd, "background": True}, _ctx(workspace, sh, mgr))
-        # 启动回执里的首屏输出是尽力而为：子进程可能还没来得及跑完（Windows 起进程 1-3 秒），
-        # 所以先断言拿到 bg_id，再用 shell_output 等它结束——这条用例要验的是
-        # 「快速结束的命令」能被观察到，不是「首屏一定已经包含输出」。
-        assert r.ok and r.meta.get("bg_id")
+        # 启动回执的 ok 只反映「那一刻还在跑」，不代表命令最终成功与否；
+        # 命令是 `exit 2`，所以要验的是退出码如实传出来（shell_output 的 meta["exit"]）。
+        # 首屏输出同样是尽力而为：Windows 起进程要 1-3 秒，可能还没来得及跑完。
+        assert r.meta.get("bg_id")
         out = r.output
-        if "已退出" not in out:
-            r2 = await ShellOutputTool().run({"id": r.meta["bg_id"], "wait": 10}, _ctx(workspace, sh, mgr))
+        bg_id = r.meta["bg_id"]
+        r2 = await ShellOutputTool().run({"id": bg_id, "wait": 10}, _ctx(workspace, sh, mgr))
+        out += r2.output
+        for _ in range(100):                  # 起进程慢时再等一会儿结束
+            if r2.meta.get("exit") is not None:
+                break
+            await asyncio.sleep(0.2)
+            r2 = await ShellOutputTool().run({"id": bg_id}, _ctx(workspace, sh, mgr))
             out += r2.output
         assert "done" in out and "已退出 · exit 2" in out
+        assert r2.meta.get("exit") == 2, f"退出码应为 2，实际 {r2.meta.get('exit')}"
 
     asyncio.run(go())
 
