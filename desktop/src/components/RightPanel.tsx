@@ -143,13 +143,8 @@ function Review() {
 
   const undo = async () => {
     if (!d) return;
-    try {
-      const r = await s.rpc!.call("thread/undo", { thread_id: d.id });
-      s.showToast(r.restored.length ? `已恢复 ${r.restored.length} 个文件` : "上一回合没有可撤销的文件改动");
-      load();
-    } catch (e) {
-      s.showToast((e as Error).message, "error");
-    }
+    await s.undo();       // 冲突确认、恢复点提示都在 store.undo 里
+    load();
   };
 
   if (!cwd) return <div className="p-6 text-center text-[13px] text-faint">先选择一个项目</div>;

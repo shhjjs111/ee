@@ -350,17 +350,30 @@ class Backend:
         self.notify("thread/deleted", {"thread_id": thread_id})
         return {"ok": True}
 
-    async def thread_undo(self, thread_id: str) -> dict:
+    async def thread_undo(self, thread_id: str, force: bool = False) -> dict:
+        """/undo。要恢复的文件在回合后被用户改过时返回 {needs_confirm, conflicts}、不动文件；
+        前端确认后带 force=true 再调：先把当前工作区存成恢复点（时间线里可反悔）再恢复。"""
+        from ee.core.session import RestoreConflict
+        from ee.server.checkpoint_rpc import add_restore_point, restore_point_view
         t = await self._athread(thread_id)
         s = await t.ensure_session_async()
         if s.running:
             raise RpcError("运行中不能撤销")
-        restored = await asyncio.to_thread(s.undo)
+        box: dict = {}
+
+        def keep(tree: str) -> None:
+            box["rp"] = add_restore_point(t, tree, "执行 /undo 前的文件（含你手改的内容）")
+
+        try:
+            restored = await asyncio.to_thread(s.undo, bool(force), keep)
+        except RestoreConflict as e:
+            return {"restored": [], "needs_confirm": True, "conflicts": e.conflicts}
         if s.last_undo_tree:
             t.mark_undone(s.last_undo_tree)
         if restored:
             t._add({"type": "notice", "text": "已撤销上一回合的文件改动：\n" + "\n".join(restored), "level": "info"})
-        return {"restored": restored}
+            self.notify("git/changed", {"cwd": t.meta.get("cwd")})
+        return {"restored": restored, "restore_point": restore_point_view(box.get("rp"))}
 
     async def thread_compact(self, thread_id: str) -> dict:
         t = await self._athread(thread_id)

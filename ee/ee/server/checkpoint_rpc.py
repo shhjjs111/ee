@@ -44,6 +44,20 @@ def session_base(t) -> str | None:
     return ents[0][1]["tree"] if ents else None
 
 
+def add_restore_point(t, tree: str, label: str) -> dict:
+    """把当前工作区 tree 存成会话的“恢复点”（时间线里可以恢复回来反悔），返回恢复点。"""
+    users = [it for _, it in turn_entries(t)]
+    rp = {"id": "rp-" + secrets.token_hex(6), "ts": time.time(), "tree": tree, "label": label,
+          "undone": {it["id"]: bool(it.get("undone")) for it in users}}
+    t.meta["restore_points"] = ([*(t.meta.get("restore_points") or []), rp])[-MAX_RESTORE_POINTS:]
+    t.save_meta()
+    return rp
+
+
+def restore_point_view(rp: dict | None) -> dict | None:
+    return None if not rp else {"id": rp["id"], "kind": "restore", "ts": rp["ts"], "text": rp["label"]}
+
+
 def register(methods: dict, backend) -> None:
     from ee.server import gitops
     from ee.server.app import RpcError
@@ -185,10 +199,7 @@ def register(methods: dict, backend) -> None:
         if not paths:
             return {"restored": [], "restore_point": None, "label": label}
         users = [it for _, it in turn_entries(t)]
-        rp = {"id": "rp-" + secrets.token_hex(6), "ts": time.time(), "tree": cur,
-              "label": f"执行「恢复到{label}」前的文件", "undone": {it["id"]: bool(it.get("undone")) for it in users}}
-        t.meta["restore_points"] = ([*(t.meta.get("restore_points") or []), rp])[-MAX_RESTORE_POINTS:]
-        t.save_meta()
+        rp = add_restore_point(t, cur, f"执行「恢复到{label}」前的文件")
         restored = d.restore(target, paths)
         # 同步“已撤销”标记，/undo 之后按新状态继续
         if kind == "turn":
@@ -212,7 +223,7 @@ def register(methods: dict, backend) -> None:
         t._add({"type": "notice", "level": "info",
                 "text": f"已把文件恢复到{label}（{len(rel)} 个文件）。恢复前的状态已存为检查点，可在时间线里恢复回来。"})
         return {"restored": rel, "label": label,
-                "restore_point": {"id": rp["id"], "kind": "restore", "ts": rp["ts"], "text": rp["label"]}}
+                "restore_point": restore_point_view(rp)}
 
     async def restore(thread_id: str, checkpoint_id: str, side: str = "before") -> dict:
         t, s = await _session(thread_id)
