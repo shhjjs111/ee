@@ -30,7 +30,7 @@ def test_lean_tools_and_system(ee_home, workspace):
     run(collect(s, "你好"))
     req = fake.calls[0]
     sys_text = req["messages"][0]["content"]
-    assert sys_text.startswith("你是 ee，运行在用户电脑上的编程 agent，用 read / write / edit / shell")
+    assert sys_text.startswith("你是 ee，用户电脑上的编程 agent，用 read/write/edit/shell")
     assert "# 工具使用规则" in sys_text and "context-update" in sys_text
     assert "todo" not in sys_text and "grep" not in sys_text and "shell_kill" not in sys_text
     shell = next(t for t in req["tools"] if t["function"]["name"] == "shell")["function"]
@@ -217,12 +217,13 @@ def test_builtin_base_and_system_md_in_lean(ee_home, workspace):
     s, fake = session(workspace, [text_chunks("好") + finish("stop")], profile="lean")
     run(collect(s, "hi"))
     assert fake.calls[0]["messages"][0]["content"].startswith(builtin_base(None, "lean"))
-    # SYSTEM.md 替换「内置基础段 + 工具使用规则」：精简模式也一样，工具表仍是 4 个
+    # SYSTEM.md 只替换内置基础段，工具使用规则照常按启用的 4 个工具追加
     (ee_home / "SYSTEM.md").write_text("我的提示词", encoding="utf-8")
     s2, fake2 = session(workspace, [text_chunks("好") + finish("stop")], profile="lean")
     run(collect(s2, "hi"))
     text = fake2.calls[0]["messages"][0]["content"]
-    assert text.startswith("我的提示词\n") and "# 工具使用规则" not in text and len(fake2.calls[0]["tools"]) == 4
+    assert text.startswith("我的提示词\n\n# 工具使用规则\n") and builtin_base(None, "lean") not in text
+    assert "grep" not in text and len(fake2.calls[0]["tools"]) == 4
 
 
 def test_sysprompt_preview_uses_profile(ee_home, workspace):

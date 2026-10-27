@@ -1,4 +1,4 @@
-"""自定义系统提示词：SYSTEM.md 替换内置基础段，APPEND_SYSTEM.md 追加在后面。
+"""自定义系统提示词：SYSTEM.md 替换内置基础段（工具使用规则照常追加），APPEND_SYSTEM.md 追加在后面。
 
 来源（两种文件各自独立，二选一，项目级优先）：
   1. <项目>/.ee/SYSTEM.md        从工作目录往上找到 git 根为止，取最近的一个；**必须先在设置里信任**才生效
@@ -6,7 +6,7 @@
   3. 都没有 → 内置基础段（context.builtin_base）
   APPEND_SYSTEM.md 规则相同，内容追加在模型补丁之后。
 
-最终系统提示词 = 基础段（SYSTEM.md 或内置）+ 模型补丁 system/<family>.md（可关）+ APPEND_SYSTEM.md + 回答风格段。
+最终系统提示词 = 基础段（SYSTEM.md 或内置）+ 工具使用规则（按启用的工具拼装）+ 模型补丁 system/<family>.md（可关）+ APPEND_SYSTEM.md + 回答风格段。
 
 配置（~/.ee/config.toml）：
   [system_prompt]

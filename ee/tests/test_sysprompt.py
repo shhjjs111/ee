@@ -168,7 +168,9 @@ def test_rpc_info_preview_trust(ee_home, workspace):
         assert info["current"]["system"].endswith("SYSTEM.md") and info["current"]["pending"] == []
         await b.call("sysprompt/set", {"model_patch": False})
         pv = await b.call("sysprompt/preview", {"cwd": str(workspace)})
-        assert pv["text"] == "项目自定义提示词\n"
+        # SYSTEM.md 只替换基础段：工具使用规则照常追加，关掉的只是模型补丁
+        assert pv["text"].startswith("项目自定义提示词\n\n# 工具使用规则\n- ")
+        assert "补充说明" not in pv["text"]
         # 对话开始后 preview 返回冻结版
         tid = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]["id"]
         await b.call("turn/start", {"thread_id": tid, "text": "你好"})

@@ -158,26 +158,28 @@ def test_output_is_short(workspace):
 # ------------------------------------------------------------------ 符号归一
 
 def test_unicode_normalized_match_preserves_untouched_lines():
-    content = "他说：“你好”——再见\n价格\u00a0100（含税）\n“保持”不变\n"
-    old = '他说："你好"--再见\n价格 100(含税)\n"保持"不变'
-    new = '他说："你好"--再见\n价格 200(含税)\n"保持"不变'
+    content = "他说：“你好”——再见\n价格 100\n“保持”\u00a0不变\n"
+    old = '他说："你好"--再见\n价格 100\n"保持" 不变'
+    new = '他说："你好"--再见\n价格 200\n"保持" 不变'
     out, hits = apply_edits(content, [Edit(old, new)])
     assert hits[0].strategy == "unicode"
-    # 没改的行照抄原文（弯引号、破折号都在）；改了的那行用新文本
-    assert out == "他说：“你好”——再见\n价格 200(含税)\n“保持”不变\n"
+    # 没改的行照抄原文（弯引号、破折号、特殊空格都在）；改了的那行用新文本
+    assert out == "他说：“你好”——再见\n价格 200\n“保持”\u00a0不变\n"
 
 
-def test_unicode_single_line_inside_line():
+def test_unicode_changed_text_itself_differs_rejected():
+    # 要改的正是含弯引号的那段：不知道改后用哪种引号，报错并给出原文，文件不动
     content = "x = ‘a’ + ’b’  \ny = 1\n"
-    out, hits = apply_edits(content, [Edit("'a' + 'b'", "'c'")])
-    assert hits[0].strategy == "unicode" and out == "x = 'c'  \ny = 1\n"
+    with pytest.raises(ToolError, match="‘a’"):
+        apply_edits(content, [Edit("'a' + 'b'", "'c'")])
 
 
 def test_fullwidth_nfkc(workspace):
-    p, ctx = _prep(workspace, "hw.md", "答案：（１）ＡＢＣ，共３项\n")
-    r = run(EditTool().run({"path": "hw.md", "edits": [{"old_string": "答案：(1)ABC,共3项", "new_string": "答案：(1)ABD,共3项"}]}, ctx))
+    p, ctx = _prep(workspace, "hw.md", "答案：（１）ＡＢＣ，共３项\n分数：90\n")
+    r = run(EditTool().run({"path": "hw.md", "edits": [{"old_string": "答案：(1)ABC,共3项\n分数：90",
+                                                         "new_string": "答案：(1)ABC,共3项\n分数：95"}]}, ctx))
     assert r.ok and "符号归一" in r.output
-    assert p.read_text(encoding="utf-8") == "答案：(1)ABD,共3项\n"
+    assert p.read_text(encoding="utf-8") == "答案：（１）ＡＢＣ，共３项\n分数：95\n"
 
 
 # ------------------------------------------------------------------ 换行与编码
