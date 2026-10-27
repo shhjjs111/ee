@@ -132,6 +132,7 @@ class Compacted(Notice):
     tokens_before: int = 0
     tokens_after: int = 0
     summary: str = ""
+    incremental: bool = False       # 在上次摘要基础上只合并了之后的新内容（A9）
 
 
 @dataclass

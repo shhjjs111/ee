@@ -114,6 +114,34 @@ def summary_prefix() -> str:
     return load_prompt("compact_prefix.md")
 
 
+def compact_update_prompt() -> str:
+    """增量压缩指令（已有上次摘要时用）。"""
+    return load_prompt("compact_update.md")
+
+
+def last_summary(history: list[dict]) -> tuple[int, str] | None:
+    """最近一条压缩摘要消息 → (下标, 摘要正文)；没有返回 None。"""
+    for i in range(len(history) - 1, -1, -1):
+        m = history[i]
+        if m.get("_kind") == "summary":
+            c = m.get("content") or ""
+            a, b = c.find("<summary>\n"), c.rfind("\n</summary>")
+            text = c[a + len("<summary>\n"):b] if a >= 0 and b > a else c
+            return i, text.strip()
+    return None
+
+
+def has_new_since(history: list[dict], idx: int) -> bool:
+    """摘要之后有没有真正的新内容（不算系统备注）。"""
+    return any(m.get("_kind") not in META_KINDS for m in history[idx + 1:])
+
+
+def incremental_side_request(previous: str, new_msgs: list[dict], max_tokens: int) -> str:
+    """侧路增量压缩的 user 内容：旧摘要 + 之后的新对话记录。"""
+    return ("<previous-summary>\n" + previous.strip() + "\n</previous-summary>\n\n"
+            "以下是上次摘要之后的新对话记录：\n\n" + render_transcript(new_msgs, max_tokens))
+
+
 def build_history(old: list[dict], summary: str, appendix: str, max_user: int, user_tokens: int) -> list[dict]:
     new: list[dict] = [dict(m) for m in old if m.get("_kind") == "agents"]
     for text in recent_user_messages(old, max_user, user_tokens):

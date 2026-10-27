@@ -1164,13 +1164,19 @@ class Session:
         finally:
             self.running = False
 
-    async def _summarize(self, emit) -> tuple[str, dict | None, object]:
-        """主路：同一前缀 + 完整历史 + 压缩指令（同模型时复用缓存）。不调工具。
-        配了 roles.compact 时交给那个模型（历史放不进它的窗口就抛错，走侧路精简记录）。"""
+    async def _summarize(self, emit, prev: tuple[int, str] | None = None) -> tuple[str, dict | None, object]:
+        """主路：同一前缀 + 当前历史 + 压缩指令（同模型时复用缓存）。不调工具。
+        配了 roles.compact 时交给那个模型（历史放不进它的窗口就抛错，走侧路精简记录）。
+        prev = 上次摘要 (下标, 正文)：增量压缩（A9）。当前历史里本来就只剩「保留的原话 + 旧摘要 + 之后的新内容」，
+        同模型时照发当前历史保住缓存，指令改成在旧摘要上合并新内容；换了模型（缓存不共享）时只发固定消息 + 旧摘要起的部分。"""
         prefix = self._ensure_prefix(emit)
         spec = self.role_spec("compact")
-        messages = ([prefix.system] + T.wire_messages(self.history, spec.profile) +
-                    [{"role": "user", "content": C.compact_prompt()}])
+        hist = self.history
+        if prev is not None and spec.alias != self.spec.alias:
+            hist = [m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] + self.history[prev[0]:]
+        instr = C.compact_update_prompt() if prev is not None else C.compact_prompt()
+        messages = ([prefix.system] + T.wire_messages(hist, spec.profile) +
+                    [{"role": "user", "content": instr}])
         if spec.alias != self.spec.alias and C.estimate_messages(messages) > 0.85 * spec.profile.context_window:
             raise RuntimeError(f"历史放不进压缩模型 {spec.alias} 的上下文窗口")
         text: list[str] = []
@@ -1186,9 +1192,12 @@ class Session:
         content = (comp.content if comp is not None else "".join(text)).strip()
         return content, (comp.usage if comp is not None else None), spec
 
-    async def _summarize_side(self) -> str:
-        """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。"""
+    async def _summarize_side(self, prev: tuple[int, str] | None = None) -> str:
+        """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。有上次摘要时只渲染之后的新内容 + <previous-summary>。"""
         budget = max(4000, int(min(self.profile.context_window, self.role_spec("compact").profile.context_window) * 0.5))
+        if prev is not None:
+            body = C.incremental_side_request(prev[1], self.history[prev[0] + 1:], budget)
+            return await self.side_complete(C.compact_update_prompt(), body, role="compact")
         transcript = C.render_transcript(self.history, budget)
         return await self.side_complete(C.compact_prompt(), "以下是需要压缩的对话记录：\n\n" + transcript,
                                         role="compact")
@@ -1198,9 +1207,14 @@ class Session:
         before = self.context_tokens()
         if not real:
             return {"ok": False, "message": "没有可压缩的内容。", "tokens_before": before, "tokens_after": before}
+        prev = C.last_summary(self.history)            # A9：已有上次摘要 → 只合并之后的新内容
+        if prev is not None and not C.has_new_since(self.history, prev[0]):
+            return {"ok": False, "message": "上次压缩之后没有新的内容，不需要再压缩。",
+                    "tokens_before": before, "tokens_after": before}
+        incremental = prev is not None
         summary, usage, used_spec = "", None, self.spec
         try:
-            summary, usage, used_spec = await self._summarize(emit)
+            summary, usage, used_spec = await self._summarize(emit, prev)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -1209,7 +1223,7 @@ class Session:
             await self._charge(usage, used_spec)
         if not summary:
             try:
-                summary = await self._summarize_side()
+                summary = await self._summarize_side(prev)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -1232,7 +1246,7 @@ class Session:
         self.store.append("reset", {"why": "compact"})
         for m in new:
             self.store.message(m)
-        self.store.append("compact", {"reason": reason, "tokens_before": before})
+        self.store.append("compact", {"reason": reason, "tokens_before": before, "incremental": incremental})
         self.turn_starts = []          # 压缩前的回合无法再回退
         for rec in self.state.files.values():
             rec.reads.clear()          # 读过的内容已不在上下文里：下次 read 返回全文
@@ -1240,11 +1254,13 @@ class Session:
         after = (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools)) +
                  C.estimate_messages(new))
         self.stats.last_prompt, self.stats.last_completion = after, 0
+        self.stats.compacted_tokens += max(0, before - after)
         self._fresh_usage = False
         self.compactions += 1
-        text = f"已压缩上下文（约 {before:,} → {after:,} tokens）"
-        emit(Compacted(text, "info", reason=reason, tokens_before=before, tokens_after=after, summary=summary))
-        return {"ok": True, "message": text, "tokens_before": before, "tokens_after": after}
+        text = f"已{'增量' if incremental else ''}压缩上下文（约 {before:,} → {after:,} tokens）"
+        emit(Compacted(text, "info", reason=reason, tokens_before=before, tokens_after=after, summary=summary,
+                       incremental=incremental))
+        return {"ok": True, "message": text, "tokens_before": before, "tokens_after": after, "incremental": incremental}
 
 
 def _friendly_error(e: Exception) -> str:
