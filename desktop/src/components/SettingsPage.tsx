@@ -1,3 +1,5 @@
+import { reportError } from "../lib/errors";
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { ArrowLeft, Check, Cpu, FileText, Gauge, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
@@ -316,7 +318,7 @@ export function SettingsPage() {
         setDraft(structuredClone(r.settings));
       })
       .catch((e: Error) => setLoadError(e.message));
-    window.ee?.appInfo().then(setAppInfo).catch(() => undefined);
+    window.ee?.appInfo().then(setAppInfo).catch(reportError("读取应用信息失败"));
   }, [s.rpc, loadNonce]);
 
   const dirty = useMemo(() => {
@@ -637,7 +639,7 @@ export function SettingsPage() {
                   </SettingRow>
                   {appInfo && (
                     <SettingRow label="日志目录">
-                      <button className="mono max-w-[360px] truncate text-[12px] text-accent hover:underline" onClick={() => window.ee?.openPath(appInfo.logs)}>
+                      <button className="mono max-w-[360px] truncate text-[12px] text-accent hover:underline" onClick={() => openPath(appInfo.logs)}>
                         {appInfo.logs}
                       </button>
                     </SettingRow>

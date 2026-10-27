@@ -1,4 +1,5 @@
 // 设置页「工具与记忆」：网页搜索后端与 key、子代理默认最大步数、记忆开关与编辑、技能列表（D5-5）。
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -123,7 +124,7 @@ function SkillsCard({ draft, up, cwd }: { draft: Settings; up: (p: Partial<Setti
   const openDir = async (scope: "user" | "project") => {
     try {
       const r: { path: string } = await s.rpc!.call("skills/dir", { scope, cwd });
-      if (window.ee?.openPath) await window.ee.openPath(r.path);
+      if (window.ee?.openPath) await openPath(r.path);
       else s.showToast(r.path);
     } catch (e) {
       s.showToast((e as Error).message, "error");
@@ -186,7 +187,7 @@ function SkillsCard({ draft, up, cwd }: { draft: Settings; up: (p: Partial<Setti
                         {(x.shadows?.length ?? 0) > 0 && <span className="shrink-0 text-[11px] text-faint">覆盖了 {x.shadows!.length} 个同名技能</span>}
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[12px] text-muted">{x.description}</div>
-                      <button className="mono mt-0.5 block max-w-full truncate text-left text-[11.5px] text-faint hover:text-fg" onClick={() => window.ee?.openPath(x.path)} title="打开 SKILL.md">
+                      <button className="mono mt-0.5 block max-w-full truncate text-left text-[11.5px] text-faint hover:text-fg" onClick={() => openPath(x.path)} title="打开 SKILL.md">
                         {x.path}
                       </button>
                     </div>

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
 import path from "node:path";
 import { Backend } from "./backend";
+import { allowedRoots, guardedOpenPath } from "./openpath";
 import { killAll as killTerminals, registerTerminalIpc, setPtySearchPaths } from "./terminal";
 import { markQuitting, setupTray } from "./tray";
 
@@ -91,7 +92,7 @@ ipcMain.handle("dialog:openFolder", async () => {
   const r = await dialog.showOpenDialog(win!, { title: "选择项目文件夹", properties: ["openDirectory", "createDirectory"] });
   return r.canceled ? null : r.filePaths[0] ?? null;
 });
-ipcMain.handle("shell:openPath", (_e, p: string) => shell.openPath(p));
+ipcMain.handle("shell:openPath", (_e, p: unknown) => guardedOpenPath(p, shell, [...allowedRoots(), app.getPath("logs")])); // 可执行文件只定位不运行；限工作区/ee 目录/日志目录
 ipcMain.handle("shell:showItem", (_e, p: string) => shell.showItemInFolder(p));
 ipcMain.handle("shell:openExternal", (_e, url: string) => (/^https?:/.test(url) ? shell.openExternal(url) : undefined));
 ipcMain.handle("app:setTheme", (_e, theme: "system" | "dark" | "light") => {

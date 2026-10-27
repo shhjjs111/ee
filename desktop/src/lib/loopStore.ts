@@ -1,5 +1,6 @@
 // 会话内 /loop（D5-3）的前端状态：订阅 loop/updated、loop/removed；连上后端时拉一次（后端重启后自然清空）。
 import { create } from "zustand";
+import { reportError } from "./errors";
 import type { RpcClient } from "./rpc";
 import type { SessionLoop } from "./loop";
 
@@ -11,6 +12,7 @@ type Actions = {
   drop(ids: string[]): void;
 };
 
+const loopErr = (e: unknown) => reportError("加载会话内循环失败")(e);
 const byId = (a: SessionLoop, b: SessionLoop) => Number(a.id) - Number(b.id);
 
 export const useLoops = create<State & Actions>((set, get) => ({
@@ -27,9 +29,9 @@ export const useLoops = create<State & Actions>((set, get) => ({
       else if (method === "loop/removed") get().drop((p?.ids ?? []).map(String));
     });
     const offS = rpc.onState((st) => {
-      if (st === "open") get().refresh(rpc).catch(() => undefined);
+      if (st === "open") get().refresh(rpc).catch(loopErr);
     });
-    get().refresh(rpc).catch(() => undefined);
+    get().refresh(rpc).catch(loopErr);
     return () => {
       offN();
       offS();

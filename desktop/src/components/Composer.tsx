@@ -1,3 +1,4 @@
+import { reportError } from "../lib/errors";
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
 import { ContextRing } from "./ContextPanel";
@@ -69,7 +70,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   useEffect(() => {
     if (!s.rpc) return;
     let alive = true;
-    s.rpc.call("styles/list").then((r) => alive && setStyles(r.styles ?? [])).catch(() => undefined);
+    s.rpc.call("styles/list").then((r) => alive && setStyles(r.styles ?? [])).catch(reportError("读取回答风格列表失败"));
     s.rpc.call("reasoning/prefs").then((r) => alive && setRemembered(r.remembered ?? {})).catch(() => undefined);
     return () => {
       alive = false;
@@ -125,7 +126,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           setSel(0);
         }
       })
-      .catch(() => undefined);
+      .catch((e) => alive && reportError("搜索文件失败")(e));
     return () => {
       alive = false;
     };
@@ -139,11 +140,11 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     s.rpc
       .call("prompts/list", { cwd })
       .then((r) => alive && setPrompts(r.prompts))
-      .catch(() => undefined);
+      .catch((e) => alive && reportError("读取自定义提示列表失败")(e));
     s.rpc
       .call("skills/list", { cwd })
       .then((r) => alive && setSkills(r.skills ?? []))
-      .catch(() => undefined);
+      .catch((e) => alive && reportError("读取技能列表失败")(e));
     return () => {
       alive = false;
     };

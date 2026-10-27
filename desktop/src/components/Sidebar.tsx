@@ -1,3 +1,5 @@
+import { reportError } from "../lib/errors";
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import {
   GitBranch,
@@ -14,7 +16,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { relTime } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import { useAutomations } from "../lib/automationStore";
@@ -106,6 +108,24 @@ export function Sidebar() {
   const autoUnread = useAutomations((x) => x.unread);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  // Ctrl/⌘+K：打开并聚焦对话搜索（侧栏按钮上提示的快捷键）；终端里不抢
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return;
+      if ((e.target as HTMLElement | null)?.closest?.(".xterm")) return;
+      e.preventDefault();
+      setSearching(true);
+      requestAnimationFrame(() => {
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      });
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const q = s.search.trim().toLowerCase();
   // 全文搜索（D4-4）：输入停顿 250ms 后查后端索引；标题命中或内容命中都显示，内容命中附片段
   const [hits, setHits] = useState<Record<string, string>>({});
@@ -124,8 +144,11 @@ export function Sidebar() {
         const m: Record<string, string> = {};
         for (const x of r.results ?? []) m[x.thread.id] = x.hits?.find((h: any) => h.kind !== "title")?.snippet ?? "";
         setHits(m);
-      } catch {
-        if (live) setHits({});
+      } catch (e) {
+        if (live) {
+          setHits({});
+          reportError("全文搜索失败，只按标题筛选")(e);
+        }
       } finally {
         if (live) setSearchBusy(false);
       }
@@ -180,6 +203,7 @@ export function Sidebar() {
           <div className="flex h-8 items-center gap-2 rounded-lg border border-line bg-bg px-2.5">
             <Search size={14} className="text-faint" />
             <input
+              ref={searchRef}
               autoFocus
               value={s.search}
               onChange={(e) => s.set({ search: e.target.value })}
@@ -271,7 +295,7 @@ export function Sidebar() {
                       </button>
                     }
                     items={[
-                      { label: "在资源管理器中打开", onSelect: () => window.ee?.openPath(g.path) },
+                      { label: "在资源管理器中打开", onSelect: () => openPath(g.path) },
                       { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
                       { label: "从列表移除", danger: true, onSelect: () => void s.removeWorkspace(g.path) },
                     ]}

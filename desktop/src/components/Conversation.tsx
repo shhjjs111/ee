@@ -1,3 +1,4 @@
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -77,7 +78,7 @@ function Header() {
         <Tip label={cwd} side="bottom">
           <button
             className="no-drag flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-faint hover:bg-hover hover:text-muted"
-            onClick={() => window.ee?.openPath(cwd)}
+            onClick={() => openPath(cwd)}
           >
             <FolderOpen size={12} />
             <span className="truncate">{shortPath(cwd, 1)}</span>

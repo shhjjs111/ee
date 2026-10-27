@@ -19,6 +19,8 @@ type State = {
 type Actions = {
   init(rpc: RpcClient): () => void;
   refresh(): Promise<void>;
+  /** refresh，失败时 toast。 */
+  refreshSafe(): Promise<void>;
   save(a: Partial<Automation> & { fromLoop?: { id: string; threadId: string } }): Promise<boolean>;
   setEnabled(id: string, enabled: boolean): Promise<void>;
   remove(id: string): Promise<void>;
@@ -74,7 +76,7 @@ export const useAutomations = create<State & Actions>((set, get) => ({
       }
     });
     const offState = client.onState((st) => {
-      if (st === "open") get().refresh().catch(() => undefined);
+      if (st === "open") void get().refreshSafe();
     });
     // 打开的会话是一次未读运行 → 标已读（点收件箱、点通知、点左栏都会走到这里）
     const offActive = useApp.subscribe((s, prev) => {
@@ -83,12 +85,20 @@ export const useAutomations = create<State & Actions>((set, get) => ({
         if (get().runs.some((r) => r.thread_id === id && r.unread)) get().markRead({ thread_id: id }).catch(() => undefined);
       }
     });
-    get().refresh().catch(() => undefined);
+    void get().refreshSafe();
     return () => {
       offN();
       offState();
       offActive();
     };
+  },
+
+  async refreshSafe() {
+    try {
+      await get().refresh();
+    } catch (e) {
+      toast(`加载自动化列表失败：${(e as Error).message}`, "error");
+    }
   },
 
   async refresh() {

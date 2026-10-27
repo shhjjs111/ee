@@ -1,4 +1,5 @@
 import "@xterm/xterm/css/xterm.css";
+import { reportError } from "../lib/errors";
 import clsx from "clsx";
 import { Eraser, Plus, SquareTerminal, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef } from "react";
@@ -15,7 +16,7 @@ export function TerminalPanel() {
   useEffect(() => {
     checkAvailable().then((r) => {
       if (r.ok && useTerms.getState().tabs.length === 0 && cwd) newTab(cwd);
-    });
+    }).catch(reportError("检查终端是否可用失败"));
   }, [cwd]);
 
   useLayoutEffect(() => {

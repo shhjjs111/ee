@@ -1,3 +1,4 @@
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import {
   MessageCircleQuestion,
@@ -326,7 +327,7 @@ function TruncatedNote({ item }: { item: ToolItem }) {
     <div className="mt-1.5 flex items-center gap-2 text-[12px] text-faint">
       <span>{text}</span>
       {path && window.ee?.openPath && (
-        <button className="text-accent hover:underline" onClick={() => window.ee?.openPath(path)} title={path}>
+        <button className="text-accent hover:underline" onClick={() => openPath(path)} title={path}>
           打开全文
         </button>
       )}

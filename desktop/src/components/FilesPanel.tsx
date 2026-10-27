@@ -1,3 +1,4 @@
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -260,7 +261,7 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
         </Tip>
         {window.ee && data && (
           <Tip label="用默认程序打开">
-            <Button size="icon-sm" onClick={() => window.ee!.openPath(data.abs)}>
+            <Button size="icon-sm" onClick={() => openPath(data.abs)}>
               <SquareArrowOutUpRight size={13} />
             </Button>
           </Tip>
@@ -305,7 +306,7 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
             <File size={28} className="mb-3 opacity-50" />
             {data.reason === "too_large" ? "文件太大，不预览" : data.reason === "doc_error" ? ((data as any).message ?? "无法解析") : "二进制文件，不预览"}
             {window.ee && (
-              <Button className="mt-4" onClick={() => window.ee!.openPath(data.abs)}>
+              <Button className="mt-4" onClick={() => openPath(data.abs)}>
                 <SquareArrowOutUpRight size={13} /> 用默认程序打开
               </Button>
             )}
