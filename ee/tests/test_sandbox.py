@@ -77,9 +77,12 @@ def test_plan_env_strips_secret_and_applies_network(workspace, ee_home):
 
 def test_active_plan_wraps_with_helper(workspace, ee_home, tmp_path):
     p = SB.SandboxPlan(workspace=workspace, active=True, network=True, sid="S-1-5-21-1-2-3-4", tmp=tmp_path)
-    argv, env = p.wrap(["cmd.exe", "/c", "echo hi"], {})
+    argv, env = p.wrap(["cmd.exe", "/c", 'echo "hi"'], {})
     i = argv.index(SB.HELPER_CMD)
-    assert argv[i + 1:] == ["--sid", "S-1-5-21-1-2-3-4", "--", "cmd.exe", "/c", "echo hi"]
+    assert argv[i + 1:i + 4] == ["--sid", "S-1-5-21-1-2-3-4", "--cmdline"]
+    import base64
+    import subprocess
+    assert base64.b64decode(argv[i + 4]).decode() == subprocess.list2cmdline(["cmd.exe", "/c", 'echo "hi"'])
     assert env["TEMP"] == str(tmp_path) and env["TMP"] == str(tmp_path)
 
 
@@ -98,6 +101,7 @@ def test_capability_sid_persisted_per_workspace(ee_home, tmp_path):
 def test_helper_bad_args():
     assert SB.helper_main([]) == SB.FAIL_CODE
     assert SB.helper_main(["--sid", "S-1-5-21-1-2-3-4", "--"]) == SB.FAIL_CODE
+    assert SB.helper_main(["--sid", "S-1-5-21-1-2-3-4", "--cmdline", "!!"]) == SB.FAIL_CODE
     assert SB.is_helper_failure(SB.FAIL_CODE, f"{SB.FAIL_MARK} x")
     assert not SB.is_helper_failure(0, f"{SB.FAIL_MARK} x")
 
@@ -154,6 +158,26 @@ def test_prepare_failure_is_tool_error(workspace, ee_home, monkeypatch):
 
 
 # ------------------------------------------------------------------ Windows 真实隔离
+#
+# 不用 pytest 的 tmp_path：Python 3.12.4+ 在 Windows 上按 0o700 建临时目录时会写一份只给
+# SYSTEM/Administrators/所有者 的 ACL，CI 的管理员令牌下所有者是 Administrators 组；沙箱令牌
+# （LUA_TOKEN 把 Administrators 变成 deny-only）连读都读不了，和真实工作区（继承用户目录 ACL）不一样。
+# 所以 Windows 用例在用户目录下自建普通目录。
+
+
+@pytest.fixture
+def wdirs(monkeypatch):
+    import os
+    import shutil
+    import uuid
+    from pathlib import Path
+    root = Path(os.environ["USERPROFILE"]) / "ee-sbx-tests" / uuid.uuid4().hex[:10]
+    ws, home, outside = root / "ws", root / "home", root / "outside"
+    for d in (ws, home, outside):
+        os.makedirs(d)
+    monkeypatch.setenv("EE_HOME", str(home))
+    yield SimpleNamespace(root=root, ws=ws, home=home, outside=outside)
+    shutil.rmtree(root, ignore_errors=True)
 
 WRITE = """
 import sys
@@ -169,7 +193,8 @@ except OSError as e:
 
 @win_only
 @pytest.mark.parametrize("shell_name", ["cmd", "auto"])
-def test_win_cwd_preserved(workspace, ee_home, shell_name):
+def test_win_cwd_preserved(wdirs, shell_name):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     sh = resolve_shell(shell_name)
     r = _run(workspace, "c.py", "import os; print('CWD=' + os.getcwd())", _cfg(True), sh=sh)
     assert f"CWD={workspace}".lower() in r.output.lower() or f"CWD={workspace.resolve()}".lower() in r.output.lower(), \
@@ -177,7 +202,8 @@ def test_win_cwd_preserved(workspace, ee_home, shell_name):
 
 
 @win_only
-def test_win_write_inside_workspace_ok(workspace, ee_home):
+def test_win_write_inside_workspace_ok(wdirs):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     target = str(workspace / "inside.txt")
     r = _run(workspace, "w.py", WRITE.format(target=target), _cfg(True))
     assert "WROTE" in r.output, r.output
@@ -189,9 +215,10 @@ def test_win_write_inside_workspace_ok(workspace, ee_home):
 
 
 @win_only
-def test_win_write_outside_workspace_denied(workspace, ee_home, tmp_path):
+def test_win_write_outside_workspace_denied(wdirs):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     outside = tmp_path / "outside"
-    outside.mkdir()
+    outside.mkdir(exist_ok=True)
     target = outside / "nope.txt"
     r = _run(workspace, "w.py", WRITE.format(target=str(target)), _cfg(True))
     assert "DENIED" in r.output, r.output
@@ -202,7 +229,8 @@ def test_win_write_outside_workspace_denied(workspace, ee_home, tmp_path):
 
 
 @win_only
-def test_win_temp_points_to_sandbox_tmp(workspace, ee_home):
+def test_win_temp_points_to_sandbox_tmp(wdirs):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     body = ("import os, tempfile; t = os.environ['TEMP']; print('T=' + t);"
             "f = tempfile.NamedTemporaryFile(delete=False); f.write(b'1'); f.close(); print('TMPOK')")
     r = _run(workspace, "t.py", body, _cfg(True))
@@ -211,7 +239,8 @@ def test_win_temp_points_to_sandbox_tmp(workspace, ee_home):
 
 
 @win_only
-def test_win_network_env_blocks_proxy_aware_clients(workspace, ee_home):
+def test_win_network_env_blocks_proxy_aware_clients(wdirs):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     body = """
 import os, urllib.request, urllib.error
 print('P=' + os.environ.get('HTTPS_PROXY', ''))
@@ -228,9 +257,10 @@ except Exception as e:
 
 
 @win_only
-def test_win_child_process_inherits_restriction(workspace, ee_home, tmp_path):
+def test_win_child_process_inherits_restriction(wdirs):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     outside = tmp_path / "outside2"
-    outside.mkdir()
+    outside.mkdir(exist_ok=True)
     target = outside / "child.txt"
     (workspace / "w.py").write_text(WRITE.format(target=str(target)), encoding="utf-8")
     body = f"""
@@ -248,9 +278,10 @@ print('CHILDIN:' + r.stdout.strip())
 
 
 @win_only
-def test_win_background_command_sandboxed(workspace, ee_home, tmp_path):
+def test_win_background_command_sandboxed(wdirs):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     outside = tmp_path / "outside3"
-    outside.mkdir()
+    outside.mkdir(exist_ok=True)
     target = outside / "bg.txt"
     (workspace / "w.py").write_text(WRITE.format(target=str(target)), encoding="utf-8")
     sh = resolve_shell("auto")
@@ -271,7 +302,8 @@ def test_win_background_command_sandboxed(workspace, ee_home, tmp_path):
 
 
 @win_only
-def test_win_helper_failure_reported(workspace, ee_home, monkeypatch):
+def test_win_helper_failure_reported(wdirs, monkeypatch):
+    workspace, tmp_path = wdirs.ws, wdirs.root
     p = SB.plan({"sandbox": {"enabled": True}}, workspace)
     assert p is not None and p.active
     p.sid = "not-a-sid"

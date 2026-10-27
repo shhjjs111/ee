@@ -22,6 +22,7 @@ ACE 不撤销（有意为之）：能力 SID 随机、只属于这个工作区�
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import secrets as _rand
@@ -175,7 +176,10 @@ class SandboxPlan:
         env = self.env(env)
         if not self.active:
             return list(argv), env
-        return helper_argv() + ["--sid", self.sid, "--"] + list(argv), env
+        # 命令行原样（按 subprocess 的规则拼好后 base64）交给启动器，避免二次解析/拼接改变 cmd 的引号
+        line = subprocess.list2cmdline(list(argv))
+        b64 = base64.b64encode(line.encode("utf-8")).decode("ascii")
+        return helper_argv() + ["--sid", self.sid, "--cmdline", b64], env
 
 
 def helper_argv() -> list[str]:
@@ -235,12 +239,15 @@ def is_helper_failure(code, output: str) -> bool:
 # ------------------------------------------------------------------ 启动器（在子进程里跑）
 
 def helper_main(args: list[str]) -> int:
-    """`ee __sandbox_exec --sid S-1-... -- 程序 参数...`：受限令牌 + Job 跑命令，返回它的退出码。"""
+    """`ee __sandbox_exec --sid S-1-... --cmdline <base64 命令行>`（或 `-- 程序 参数...`）：
+    受限令牌 + Job 跑命令，返回它的退出码。"""
     try:
-        sep = args.index("--")
-        opts, cmd = args[:sep], args[sep + 1:]
-        sid = opts[opts.index("--sid") + 1]
-        if not cmd:
+        sid = args[args.index("--sid") + 1]
+        if "--cmdline" in args:
+            cmdline = base64.b64decode(args[args.index("--cmdline") + 1]).decode("utf-8")
+        else:
+            cmdline = subprocess.list2cmdline(args[args.index("--") + 1:])
+        if not cmdline.strip():
             raise ValueError("没有要运行的命令")
     except (ValueError, IndexError) as e:
         _fail(f"参数错误：{e}")
@@ -249,7 +256,7 @@ def helper_main(args: list[str]) -> int:
         _fail("当前系统不支持沙箱")
         return FAIL_CODE
     try:
-        return _win().run_restricted(subprocess.list2cmdline(cmd), sid)
+        return _win().run_restricted(cmdline, sid)
     except Exception as e:  # noqa: BLE001
         _fail(str(e))
         return FAIL_CODE
@@ -572,7 +579,7 @@ class _WinApi:
                 setattr(si, attr, h)
             buf = ct.create_unicode_buffer(cmdline)
             flags = self.CREATE_SUSPENDED | self.CREATE_UNICODE_ENVIRONMENT | self.CREATE_NO_WINDOW
-            cwd = os.getcwd()                         # 显式传工作目录（不传时部分程序会落到自己的安装目录）
+            cwd = os.getcwd()
             if not self.adv.CreateProcessAsUserW(token, None, buf, None, None, True, flags, None, cwd,
                                                  ct.byref(si), ct.byref(pi)):
                 raise self._err("以受限令牌启动命令")
