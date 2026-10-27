@@ -56,7 +56,7 @@ DEFAULTS: dict = {
     # 仓库地图（repo_map 工具，tree-sitter）：auto_inject = 会话开始时把一小份地图固定注入（默认关，省 token）
     "repo_map": {"enabled": True, "auto_inject": False, "max_tokens": 1536, "inject_tokens": 1024,
                  "max_files": 3000, "time_limit": 20},
-    # 推理强度（D5-9）：全局默认档位 "" | low | medium | high | off（会话里可切换，按模型记住）
+    # 推理强度（D5-9）：全局默认档位 "" | low | medium | high | max | off（DeepSeek 只有 "" / low / max / off；会话里可切换，按模型记住）
     "reasoning": {"effort": ""},
     # 按用途分模型（D5-9）：留空 = 跟随主模型。旧写法 [models.roles] 读取时会并进来
     "roles": {"title": "", "compact": "", "explore": "", "plan": "", "review": "", "commit": ""},

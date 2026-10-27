@@ -386,7 +386,7 @@ def test_settings_roundtrip_and_validation(ee_home):
         with pytest.raises(ValueError):
             S.set_settings(bad)
     choices = S.get_settings()["choices"]
-    assert choices["efforts"] == ["", "low", "medium", "high", "off"] and [x["id"] for x in choices["styles"]] == ["default", "concise"]
+    assert choices["efforts"] == ["", "low", "medium", "high", "max", "off"] and [x["id"] for x in choices["styles"]] == ["default", "concise"]
 
 
 def test_budget_status_rpc_without_thread(ee_home):
