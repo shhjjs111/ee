@@ -74,9 +74,9 @@ class ReadTool(Tool):
 
     async def _read_doc(self, path, args: dict, offset: int, limit: int, ctx: ToolContext) -> ToolResult:
         """PDF / Word / Excel / PPT：先转文字（D4-7），再按行号分段返回，和普通文本一样可用 offset/limit 续读。"""
-        from ee.core.docread import DocError, extract
+        from ee.core.docread import DocError, extract_async
         try:
-            text, info = await asyncio.to_thread(extract, path, args.get("pages"), args.get("sheet"))
+            text, info = await extract_async(path, args.get("pages"), args.get("sheet"))
         except DocError as e:
             raise ToolError(str(e))
         ctx.state.mark_read(path)

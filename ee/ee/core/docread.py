@@ -7,12 +7,18 @@
   单元格，每行「行号 | A | B …」，最多 MAX_ROWS 行；sheet 可按名字或序号选。
 - PowerPoint .pptx（python-pptx，可选依赖）：每张幻灯片的文字和备注。
 结果按 (路径, mtime, 大小, 参数) 缓存，同一文件反复分段读不重复解析。
+防护：文件大小上限；docx/xlsx/pptx 先看 zip 目录（条目数、解压后总大小、单条压缩比）挡压缩炸弹；
+解析循环里检查截止时间与输出字数；异步入口 extract_async 在专用线程池里跑并有等待超时，不阻塞事件循环。
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import re
+import time
+import zipfile
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DOC_EXTS = {".pdf": "pdf", ".docx": "docx", ".xlsx": "xlsx", ".xlsm": "xlsx", ".pptx": "pptx"}
@@ -21,6 +27,15 @@ DEFAULT_PDF_PAGES = 50
 MAX_ROWS = 2000
 MAX_COLS = 60
 MAX_CELL = 300
+DOC_TIMEOUT = 60.0                     # 秒：单个文档解析的时间上限
+MAX_DOC_BYTES = 200 * 1024 * 1024      # 文档文件本身的大小上限
+MAX_ZIP_ENTRIES = 10_000               # docx/xlsx/pptx 里的条目数上限
+MAX_UNZIPPED = 512 * 1024 * 1024       # 解压后总大小上限
+MAX_RATIO = 200                        # 单条（解压后 > 2MB）压缩比上限
+MAX_OUT_CHARS = 4_000_000              # 转出的文字上限
+
+# 解析卡住的线程无法强杀：放在专用的小线程池里，不占用 asyncio.to_thread 的默认线程池
+_EXEC = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ee-docread")
 
 _CACHE: "OrderedDict[tuple, tuple[str, dict]]" = OrderedDict()
 _CACHE_MAX = 16
@@ -30,11 +45,65 @@ class DocError(Exception):
     pass
 
 
+class _Budget:
+    """截止时间 + 输出字数；解析循环里调 tick()/add()。"""
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+        self.deadline = time.monotonic() + timeout
+        self.chars = 0
+
+    def tick(self) -> None:
+        if time.monotonic() > self.deadline:
+            raise DocError(f"解析超时（超过 {max(self.timeout, 0):.0f} 秒），文件可能太大或结构异常")
+
+    def add(self, s: str) -> bool:
+        """记下输出字数；超过上限返回 False（调用方停止并标注截断）。"""
+        self.tick()
+        self.chars += len(s)
+        return self.chars <= MAX_OUT_CHARS
+
+
+TRUNC_NOTE = "\n\n（内容过长，已截断：只转换了前 {n} 字符。需要全部内容时用 shell 跑 Python 处理）"
+
+
+def _zip_guard(path: Path) -> None:
+    """只读 zip 目录（不解压）：条目太多、解压后太大、压缩比异常都拒绝。"""
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+    except zipfile.BadZipFile:
+        return                          # 不是 zip：交给解析库报“文件损坏”
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise DocError(f"文件内部条目太多（{len(infos)} 个，上限 {MAX_ZIP_ENTRIES}），可能是压缩炸弹，拒绝解析")
+    total = 0
+    for i in infos:
+        total += i.file_size
+        if i.file_size > 2 * 1024 * 1024 and i.file_size > MAX_RATIO * max(i.compress_size, 1):
+            raise DocError(f"文件内部 {i.filename} 压缩比异常（{i.compress_size} → {i.file_size} 字节），"
+                           "可能是压缩炸弹，拒绝解析")
+    if total > MAX_UNZIPPED:
+        raise DocError(f"文件解压后约 {total // (1024 * 1024)}MB，超过上限 {MAX_UNZIPPED // (1024 * 1024)}MB，拒绝解析")
+
+
 def doc_kind(path: Path) -> str | None:
     return DOC_EXTS.get(path.suffix.lower())
 
 
-def extract(path: Path, pages: str | None = None, sheet: str | int | None = None) -> tuple[str, dict]:
+async def extract_async(path: Path, pages: str | None = None, sheet: str | int | None = None,
+                        timeout: float | None = None) -> tuple[str, dict]:
+    """在专用线程里 extract，最多等 timeout 秒；超时直接报错（后台线程会在下一个检查点自行停下）。"""
+    t = DOC_TIMEOUT if timeout is None else timeout
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(_EXEC, lambda: extract(path, pages, sheet, timeout=t))
+    try:
+        return await asyncio.wait_for(asyncio.shield(fut), max(t, 0.01))
+    except asyncio.TimeoutError:
+        raise DocError(f"解析超时（超过 {max(t, 0):.0f} 秒），文件可能太大或结构异常") from None
+
+
+def extract(path: Path, pages: str | None = None, sheet: str | int | None = None,
+            timeout: float | None = None) -> tuple[str, dict]:
     """返回 (文字, 信息)。信息含 kind、总页数/工作表列表等。"""
     ext = path.suffix.lower()
     if ext in OLD_FORMATS:
@@ -46,14 +115,20 @@ def extract(path: Path, pages: str | None = None, sheet: str | int | None = None
     if not path.is_file():   # FIFO / 设备文件：解析库打开它会一直阻塞
         raise DocError(f"{path} 不是普通文件，不能读取")
     st = path.stat()
+    if st.st_size > MAX_DOC_BYTES:
+        raise DocError(f"文件太大（{st.st_size // (1024 * 1024)}MB，上限 {MAX_DOC_BYTES // (1024 * 1024)}MB），"
+                       "请在 shell 里用 Python 分块处理")
     key = (str(path), st.st_mtime_ns, st.st_size, str(pages or ""), str(sheet if sheet is not None else ""))
     hit = _CACHE.get(key)
     if hit is not None:
         _CACHE.move_to_end(key)
         return hit
-    fn = {"pdf": _pdf, "docx": _docx, "xlsx": _xlsx, "pptx": _pptx}[kind]
+    fn = _PARSERS[kind]
+    budget = _Budget(DOC_TIMEOUT if timeout is None else timeout)
     try:
-        text, info = fn(path, pages=pages, sheet=sheet)
+        if kind != "pdf":
+            _zip_guard(path)
+        text, info = fn(path, pages=pages, sheet=sheet, budget=budget)
     except DocError:
         raise
     except ImportError as e:
@@ -94,7 +169,8 @@ def parse_pages(spec: str | None, total: int, default: int = DEFAULT_PDF_PAGES) 
     return res
 
 
-def _pdf(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
+def _pdf(path: Path, pages=None, sheet=None, budget: _Budget | None = None) -> tuple[str, dict]:
+    budget = budget or _Budget(DOC_TIMEOUT)
     from pypdf import PdfReader
     reader = PdfReader(str(path))
     if reader.is_encrypted:
@@ -112,6 +188,7 @@ def _pdf(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
     parts: list[str] = []
     empty: list[int] = []
     for n in sel:
+        budget.tick()
         try:
             t = reader.pages[n - 1].extract_text() or ""
         except Exception as e:  # noqa: BLE001
@@ -121,6 +198,9 @@ def _pdf(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
             empty.append(n)
             t = "（本页没有可提取的文字：可能是扫描图片）"
         parts.append(f"=== 第 {n} 页 ===\n{t}")
+        if not budget.add(parts[-1]):
+            parts.append(TRUNC_NOTE.format(n=MAX_OUT_CHARS).strip())
+            break
     info = {"pages": total, "shown": sel, "empty_pages": empty}
     meta = reader.metadata or {}
     title = getattr(meta, "title", None) if meta else None
@@ -136,7 +216,8 @@ def _tidy(t: str) -> str:
 
 
 # ---------------------------------------------------------------- Word
-def _docx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
+def _docx(path: Path, pages=None, sheet=None, budget: _Budget | None = None) -> tuple[str, dict]:
+    budget = budget or _Budget(DOC_TIMEOUT)
     import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -154,6 +235,11 @@ def _docx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
         elif tag == "tbl":
             n_tables += 1
             out.append(_table_md(Table(child, d)))
+        else:
+            continue
+        if out and not budget.add(out[-1]):
+            out.append(TRUNC_NOTE.format(n=MAX_OUT_CHARS))
+            break
     text = "\n".join(out)
     text = re.sub(r"\n{3,}", "\n\n", text).strip("\n")
     return text, {"tables": n_tables, "paragraphs": len(d.paragraphs)}
@@ -223,7 +309,8 @@ def _fmt(v) -> str:
     return _cell(v)
 
 
-def _xlsx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
+def _xlsx(path: Path, pages=None, sheet=None, budget: _Budget | None = None) -> tuple[str, dict]:
+    budget = budget or _Budget(DOC_TIMEOUT)
     import openpyxl
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     try:
@@ -259,6 +346,8 @@ def _xlsx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
         more = 0
         max_c = 0
         for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if r_idx % 200 == 1:
+                budget.tick()
             vals = [_fmt(v) for v in row[:MAX_COLS]]
             while vals and vals[-1] == "":
                 vals.pop()
@@ -269,6 +358,9 @@ def _xlsx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
                 continue
             max_c = max(max_c, len(vals))
             rows_out.append((r_idx, vals))
+            if not budget.add("".join(vals)):
+                more += 1          # 至少还有后面的行；精确数字不再统计
+                break
             shown += 1
         lines = [header, f"\n=== 工作表「{ws.title}」===", ""]
         if not rows_out:
@@ -278,7 +370,7 @@ def _xlsx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
             for r_idx, vals in rows_out:
                 lines.append(f"{r_idx} | " + " | ".join(vals + [""] * (max_c - len(vals))))
         if more:
-            lines.append(f"\n（还有 {more} 行未显示：只显示前 {MAX_ROWS} 个非空行。需要统计/筛选大表时用 shell 跑 Python（openpyxl / pandas）处理）")
+            lines.append(f"\n（还有{'' if shown < MAX_ROWS else f' {more} '}行未显示：只显示前 {shown} 个非空行。需要统计/筛选大表时用 shell 跑 Python（openpyxl / pandas）处理）")
         if (ws.max_column or 0) > MAX_COLS:
             lines.append(f"（只显示前 {MAX_COLS} 列，共 {ws.max_column} 列）")
         return "\n".join(lines), {"sheets": sheets, "sheet": ws.title}
@@ -287,7 +379,8 @@ def _xlsx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
 
 
 # ---------------------------------------------------------------- PowerPoint
-def _pptx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
+def _pptx(path: Path, pages=None, sheet=None, budget: _Budget | None = None) -> tuple[str, dict]:
+    budget = budget or _Budget(DOC_TIMEOUT)
     try:
         from pptx import Presentation
     except ImportError as e:
@@ -299,6 +392,7 @@ def _pptx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
     for i, slide in enumerate(prs.slides, start=1):
         if i not in sel:
             continue
+        budget.tick()
         texts = []
         for shape in slide.shapes:
             if getattr(shape, "has_text_frame", False) and shape.text_frame.text.strip():
@@ -314,4 +408,10 @@ def _pptx(path: Path, pages=None, sheet=None) -> tuple[str, dict]:
         if notes:
             body += f"\n[备注] {notes}"
         parts.append(f"=== 第 {i} 张幻灯片 ===\n{body}")
+        if not budget.add(parts[-1]):
+            parts.append(TRUNC_NOTE.format(n=MAX_OUT_CHARS).strip())
+            break
     return "\n\n".join(parts), {"slides": total, "shown": sorted(sel)}
+
+
+_PARSERS = {"pdf": _pdf, "docx": _docx, "xlsx": _xlsx, "pptx": _pptx}
