@@ -33,6 +33,9 @@ def _py(sh, script: str) -> str:
     exe = sys.executable
     if sh.syntax == "powershell":
         return f"& '{exe}' -u {script}"
+    if sh.syntax == "cmd" and " " not in exe:
+        # cmd 的 /s /c 参数经 list2cmdline 后内部引号会变成 \"，cmd 不认（与沙箱无关的既有行为），这里不加引号
+        return f"{exe} -u {script}"
     return f'"{exe}" -u {script}'
 
 
