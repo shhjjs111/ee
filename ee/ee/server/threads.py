@@ -3,7 +3,8 @@
 条目类型（与桌面端 src/types.ts 一致）：
   user        {text, queued?, queue?: steer|follow}（queued = 运行中排队、还没送入；送入后去掉 queued、保留 queue 作标签）
   assistant   {text, reasoning, streaming}
-  tool        {call_id, name, args, summary, status: running|ok|error|denied|interrupted, output, diff, meta}
+  tool        {call_id, name, args, summary, status: running|ok|error|denied|interrupted, output, details}
+              （details = 只给界面的结构化数据，见 ee/tools/details.py；diff 在 details.diff。旧会话的 meta/diff 读取时迁移）
   approval    {call_id, tool, title, detail, prefix, status: pending|once|always|deny|cancelled}
   plan        {items: [{content, status}]}
   notice      {text, level}
@@ -42,6 +43,18 @@ def _clip(s: str, n: int = UI_OUTPUT_LIMIT) -> str:
     return s[:half] + f"\n\n…（界面省略了中间 {len(s) - n} 个字符）…\n\n" + s[-half:]
 
 
+def _migrate_tool_item(it: dict) -> None:
+    """旧版条目 {meta, diff} → {details}（diff 并入 details.diff）。"""
+    if "meta" not in it and "diff" not in it:
+        return
+    d = dict(it.pop("meta", None) or {})
+    d.update(it.get("details") or {})
+    diff = it.pop("diff", "") or ""
+    if diff and not d.get("diff"):
+        d["diff"] = diff
+    it["details"] = d
+
+
 def clean_title(t: str) -> str:
     """模型给的标题：取第一行、去引号/句号/“标题：”前缀，最多 40 字。"""
     t = (t or "").strip().splitlines()[0].strip() if (t or "").strip() else ""
@@ -69,6 +82,8 @@ class Thread:
         for it in self.items:          # 排队条目只在送入后才落盘；旧版本落盘的 queued 标记其实都已送入
             if it.get("type") == "user":
                 it.pop("queued", None)
+            elif it.get("type") == "tool":
+                _migrate_tool_item(it)
         self._by_id = {it["id"]: it for it in self.items}
         self._seq = max([int(it.get("seq", 0)) for it in self.items] + [len(self.items)]) + 1
         self.client_factory = client_factory
@@ -523,8 +538,8 @@ class Thread:
         elif isinstance(ev, ToolStart):
             self.cur_assistant = None
             self._add({"id": f"tool_{ev.call_id}", "type": "tool", "call_id": ev.call_id, "name": ev.name,
-                       "args": ev.args, "summary": ev.summary, "status": "running", "output": "", "diff": "",
-                       "meta": {}}, persist=False)
+                       "args": ev.args, "summary": ev.summary, "status": "running", "output": "",
+                       "details": {}}, persist=False)
         elif isinstance(ev, ToolOutput):
             it = self._by_id.get(f"tool_{ev.call_id}")
             if it is not None and len(it.get("output") or "") < UI_OUTPUT_LIMIT:
@@ -534,9 +549,12 @@ class Thread:
             if it is None:
                 it = self._add({"id": f"tool_{ev.call_id}", "type": "tool", "call_id": ev.call_id, "name": ev.name,
                                 "args": {}}, persist=False)
-            status = "ok" if ev.ok else ("denied" if ev.meta.get("denied") else "error")
+            status = "ok" if ev.ok else ("denied" if ev.details.get("denied") else "error")
+            details = dict(ev.details)
+            if ev.diff and not details.get("diff"):
+                details["diff"] = _clip(ev.diff)
             it.update({"status": status, "output": _clip(ev.output or ""), "summary": ev.summary or it.get("summary"),
-                       "diff": _clip(ev.diff or ""), "meta": ev.meta})
+                       "details": details})
             self._update(it)
         elif isinstance(ev, QuestionRequest):
             it = self._add({"type": "question", "call_id": ev.call_id, "question": ev.question,
@@ -570,10 +588,10 @@ class Thread:
             # 子代理进度挂在父 task 工具条目的 meta.subagent 上（界面渲染成子代理卡片）
             it = self._by_id.get(f"tool_{ev.call_id}")
             if it is not None:
-                meta = dict(it.get("meta") or {})
-                meta["kind"] = "subagent"
-                meta["subagent"] = apply_subagent_event(meta.get("subagent"), ev)
-                it["meta"] = meta
+                det = dict(it.get("details") or {})
+                det["kind"] = "subagent"
+                det["subagent"] = apply_subagent_event(det.get("subagent"), ev)
+                it["details"] = det
                 self._update(it, persist=False)
             if isinstance(ev, SubagentUpdate) and ev.kind == "usage" and ev.totals:
                 # 子代理的用量实时并入主会话（D5-2：并行子代理跑的时候顶部花费也在涨）

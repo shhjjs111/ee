@@ -360,8 +360,8 @@ export function PlanProposalCard({ item }: { item: ToolItem }) {
   const idle = !d || d.status === "idle";
   const idx = d ? d.items.findIndex((x) => x.id === item.id) : -1;
   const later = d && idx >= 0 ? d.items.slice(idx + 1).some((x) => x.type === "user") : false;
-  const plan = String(item.meta?.plan ?? "");
-  const title = String(item.meta?.title || "实施方案");
+  const plan = String(item.details?.plan ?? "");
+  const title = String(item.details?.title || "实施方案");
 
   const run = (mode: "default" | "auto") => {
     localStorage.setItem("ee.mode", mode);

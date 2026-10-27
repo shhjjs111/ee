@@ -47,12 +47,12 @@ export type Block =
 
 /** task 工具条目（子代理卡片）。 */
 export function isSubagent(it: Item): it is ToolItem {
-  return it.type === "tool" && (it.name === "task" || it.meta?.kind === "subagent");
+  return it.type === "tool" && (it.name === "task" || it.details?.kind === "subagent");
 }
 
 /** 子代理条目的状态：queued / running / completed / …（记录优先，没有就看工具条目）。 */
 export function subagentStatus(it: ToolItem): string {
-  const rec = it.meta?.subagent;
+  const rec = it.details?.subagent;
   const st: string | undefined = rec?.status;
   if (st) {
     // 记录还停在“运行/排队”但工具条目已经结束（被中断、内核重启）：以工具条目为准
@@ -67,7 +67,7 @@ const EXPLORE_TOOLS = new Set(["read", "grep", "glob"]);
 
 export function isExplore(it: Item): boolean {
   if (it.type !== "tool") return false;
-  const k = it.meta?.kind;
+  const k = it.details?.kind;
   if (k === "read" || k === "list" || k === "search") return true;
   return EXPLORE_TOOLS.has(it.name);
 }

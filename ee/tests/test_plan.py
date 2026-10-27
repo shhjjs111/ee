@@ -39,7 +39,7 @@ def test_plan_flow(ee_home, workspace):
         d = (await b.call("thread/get", {"thread_id": tid}))["thread"]
         tools = [it for it in d["items"] if it["type"] == "tool"]
         assert tools[0]["status"] == "denied" or "拒绝" in tools[0]["output"]
-        assert tools[1]["meta"]["kind"] == "plan_proposal" and tools[1]["meta"]["plan"] == plan
+        assert tools[1]["details"]["kind"] == "plan_proposal" and tools[1]["details"]["plan"] == plan
         assert d["mode"] == "plan"
 
         ev.clear()

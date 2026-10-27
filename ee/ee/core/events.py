@@ -61,8 +61,12 @@ class ToolEnd(Event):
     ok: bool
     output: str
     summary: str = ""
-    diff: str = ""          # 改文件类工具的统一 diff
-    meta: dict = field(default_factory=dict)
+    diff: str = ""          # 改文件类工具的统一 diff（也会放进 details.diff）
+    details: dict = field(default_factory=dict)   # A6：只给界面的结构化数据（tools/details.py），不进模型上下文
+
+    @property
+    def meta(self) -> dict:  # 旧名
+        return self.details
 
 
 @dataclass
@@ -128,6 +132,7 @@ class Compacted(Notice):
     tokens_before: int = 0
     tokens_after: int = 0
     summary: str = ""
+    incremental: bool = False       # 在上次摘要基础上只合并了之后的新内容（A9）
 
 
 @dataclass

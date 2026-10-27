@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ee.proc import popen_kwargs
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult, rel
-from ee.tools.truncate import truncate_output
+from ee.tools.truncate import truncate_output_info
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
              ".tox", "dist", "build", ".idea", ".vscode", "target", ".next"}
@@ -148,10 +148,12 @@ class GlobTool(Tool):
         shown = files[:MAX_FILES]
         lines = [rel(p, ctx.cwd) for p in shown]
         if not lines:
-            return ToolResult("没有匹配的文件", summary=f"List {pattern}", meta={"kind": "list"})
+            return ToolResult("没有匹配的文件", summary=f"List {pattern}", meta={"kind": "list", "files": [], "total": 0})
         if total > MAX_FILES:
             lines.append(f"\n（共 {total} 个，只显示最近修改的 {MAX_FILES} 个；请缩小模式或路径）")
-        return ToolResult("\n".join(lines), summary=f"List {pattern}", meta={"kind": "list"})
+        return ToolResult("\n".join(lines), summary=f"List {pattern}",
+                          meta={"kind": "list", "path": rel(root, ctx.cwd), "files": [rel(p, ctx.cwd) for p in shown[:200]],
+                                "total": total})
 
 
 class GrepTool(Tool):
@@ -217,7 +219,8 @@ class GrepTool(Tool):
 
         per_file, order = await asyncio.to_thread(order_files)
         if not per_file:
-            return ToolResult("没有匹配", summary=self.summary(args), meta={"kind": "search"})
+            return ToolResult("没有匹配", summary=self.summary(args),
+                              meta={"kind": "search", "pattern": pattern, "matches": 0, "files": []})
         out_lines: list[str] = []
         total = sum(len(v) for v in per_file.values())
         if mode == "files":
@@ -237,5 +240,8 @@ class GrepTool(Tool):
                     n += 1
         if (mode == "content" and total > MAX_MATCHES) or len(order) > MAX_FILES:
             out_lines.append(f"\n（共 {total} 处匹配 / {len(order)} 个文件，已截断；请缩小 pattern、path 或 include）")
-        text, _ = truncate_output("\n".join(out_lines), ctx.output_dir, "grep")
-        return ToolResult(text, summary=self.summary(args), meta={"kind": "search", "matches": total})
+        text, trunc = truncate_output_info("\n".join(out_lines), ctx.output_dir, "grep")
+        return ToolResult(text, summary=self.summary(args),
+                          meta={"kind": "search", "pattern": pattern, "matches": total,
+                                "files": [rel(f, ctx.cwd) for f in order[:200]],
+                                **({"truncated": trunc} if trunc else {})})

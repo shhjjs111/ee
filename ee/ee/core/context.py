@@ -179,6 +179,7 @@ class UsageStats:
     by_model: dict = field(default_factory=dict)
     pruned_tokens: int = 0         # 修剪旧工具输出累计省下的 token（估计，D5-10）
     prunes: int = 0
+    compacted_tokens: int = 0      # 压缩累计省下的 token（估计：压缩前 − 压缩后）
 
     def add(self, usage: dict | None, price, model: str = "") -> float | None:
         """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。"""
@@ -248,6 +249,8 @@ class UsageStats:
             out["reasoning"] = self.reasoning
         if self.pruned_tokens:
             out["pruned"] = self.pruned_tokens
+        if self.compacted_tokens:
+            out["compacted"] = self.compacted_tokens
         if self.by_model:
             out["by_model"] = {k: {**v, "cost": v["cost"] if v["cost_known"] else None}
                                for k, v in self.by_model.items()}

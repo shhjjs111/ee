@@ -81,7 +81,8 @@ class ReadTool(Tool):
             items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
             lines = [p.name + ("/" if p.is_dir() else "") for p in items[:500]]
             more = f"\n…（共 {len(items)} 项，只列前 500）" if len(items) > 500 else ""
-            return ToolResult("\n".join(lines) + more, summary=f"List {rel(path, ctx.cwd)}", meta={"kind": "list"})
+            return ToolResult("\n".join(lines) + more, summary=f"List {rel(path, ctx.cwd)}",
+                              meta={"kind": "list", "path": rel(path, ctx.cwd), "files": lines[:200], "total": len(items)})
         offset = max(1, int(args.get("offset") or 1))
         limit = max(1, int(args.get("limit") or DEFAULT_LIMIT))
         from ee.core.docread import OLD_FORMATS, doc_kind
@@ -97,7 +98,8 @@ class ReadTool(Tool):
             all_lines = all_lines[:-1]
         total = len(all_lines)
         if total == 0:
-            return ToolResult("<文件为空>", summary=f"Read {rel(path, ctx.cwd)}", meta={"kind": "read"})
+            return ToolResult("<文件为空>", summary=f"Read {rel(path, ctx.cwd)}",
+                              meta={"kind": "read", "path": rel(path, ctx.cwd), "total_lines": 0})
         if offset > total:
             raise ToolError(f"offset={offset} 超过文件总行数 {total}")
         # 未变的重复读 → 引用（省 token）；同一引用第二次再要就给全文，避免死循环
@@ -105,7 +107,8 @@ class ReadTool(Tool):
             rec.reads[key] = 1
             return ToolResult(f"[与上次读取相同] {path} 自上次读取后未改变（{total} 行），内容见上文同一次 read 的结果。"
                               "如果上文已被压缩看不到了，再调用一次 read 会返回全文。",
-                              summary=f"Read {rel(path, ctx.cwd)}", meta={"kind": "read", "ref": True})
+                              summary=f"Read {rel(path, ctx.cwd)}",
+                              meta={"kind": "read", "ref": True, "path": rel(path, ctx.cwd), "total_lines": total})
         rec.reads[key] = 0
         chunk = all_lines[offset - 1: offset - 1 + limit]
         width = len(str(offset + len(chunk)))
@@ -117,7 +120,9 @@ class ReadTool(Tool):
         end = offset + len(chunk) - 1
         if end < total:
             out.append(f"\n（显示第 {offset}-{end} 行，共 {total} 行。用 offset={end + 1} 继续读）")
-        return ToolResult("\n".join(out), summary=f"Read {rel(path, ctx.cwd)}", meta={"kind": "read"})
+        return ToolResult("\n".join(out), summary=f"Read {rel(path, ctx.cwd)}",
+                          meta={"kind": "read", "path": rel(path, ctx.cwd), "start": offset, "end": end,
+                                "total_lines": total})
 
     async def _read_large(self, path, offset: int, limit: int, ctx: ToolContext) -> ToolResult:
         chunk, total = await asyncio.to_thread(_scan_window, path, offset, limit)

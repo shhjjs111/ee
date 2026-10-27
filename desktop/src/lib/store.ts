@@ -607,7 +607,7 @@ function onNotification(method: string, p: any) {
       return { turnStartedAt: rest, reviewNonce: s.reviewNonce + 1 };
     });
   }
-  if (method === "item/updated" && p.item?.type === "tool" && p.item?.meta?.kind === "edit") {
+  if (method === "item/updated" && p.item?.type === "tool" && p.item?.details?.kind === "edit") {
     useApp.setState((s) => ({ reviewNonce: s.reviewNonce + 1 }));
   }
   const tid = p?.thread_id;
