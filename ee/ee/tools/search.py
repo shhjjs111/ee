@@ -24,7 +24,19 @@ async def _rg(args: list[str], cwd: Path) -> tuple[int, str]:
                                                 stdin=asyncio.subprocess.DEVNULL,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                                                 **popen_kwargs())
-    out, err = await proc.communicate()
+    try:
+        out, err = await proc.communicate()
+    except BaseException:          # 回合被中断（取消）：结束 rg，别让它留在后台
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except BaseException:  # noqa: BLE001
+                pass
+        raise
     if proc.returncode not in (0, 1):
         raise ToolError(f"rg 出错：{err.decode('utf-8', 'replace').strip()[:500]}")
     return proc.returncode, out.decode("utf-8", errors="replace")

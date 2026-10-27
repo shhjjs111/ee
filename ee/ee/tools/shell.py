@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import os
 import signal
 import subprocess
@@ -49,13 +50,15 @@ async def _run(argv, cwd, timeout, emit, kw) -> tuple[int | None, str, bool]:
 
     async def pump():
         assert proc.stdout
+        dec = codecs.getincrementaldecoder("utf-8")("replace")   # 多字节字符可能被切在两块之间
         while True:
             b = await proc.stdout.read(4096)
+            s = dec.decode(b, final=not b)
+            if s:
+                chunks.append(s)
+                emit(s)
             if not b:
                 break
-            s = b.decode("utf-8", errors="replace")
-            chunks.append(s)
-            emit(s)
 
     try:
         await asyncio.wait_for(asyncio.gather(pump(), proc.wait()), timeout=timeout)

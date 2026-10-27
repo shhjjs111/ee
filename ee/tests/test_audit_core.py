@@ -76,3 +76,60 @@ def test_grep_glob_fallback_runs_off_event_loop(ee_home, workspace, monkeypatch)
     assert "a.py" in r1.output and "a.py" in r2.output
     assert seen and not any(seen), "回退遍历在事件循环线程上执行"
 
+
+
+# ------------------------------------------------------------------ shell 输出按块解码不能把多字节字符切坏
+def test_shell_output_multibyte_split_across_chunks(tmp_path):
+    import sys
+    from ee.tools import shell as SH
+    code = "import sys; sys.stdout.buffer.write(('中文' * 3000).encode('utf-8')); sys.stdout.flush()"
+    rc, out, timed_out = asyncio.run(SH._run([sys.executable, "-c", code], tmp_path, 30, lambda s: None, {}))
+    assert rc == 0 and not timed_out
+    assert "\ufffd" not in out
+    assert out == "中文" * 3000
+
+
+# ------------------------------------------------------------------ 中断 grep 时 rg 子进程要被结束
+def test_rg_killed_on_cancel(tmp_path, monkeypatch):
+    import os
+    import sys
+    import time
+    import pytest
+    if sys.platform == "win32":
+        pytest.skip("用 POSIX 脚本冒充 rg")
+    from ee.tools import search
+    pidf = tmp_path / "pid"
+    fake = tmp_path / "rg"
+    fake.write_text(f"#!{sys.executable}\nimport os, time\nopen({str(pidf)!r}, 'w').write(str(os.getpid()))\n"
+                    "time.sleep(60)\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(search.shutil, "which", lambda name: str(fake))
+
+    async def go():
+        t = asyncio.ensure_future(search._rg(["--files"], tmp_path))
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if pidf.exists() and pidf.read_text():
+                break
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    pid = int(pidf.read_text())
+    for _ in range(40):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        try:   # 已退出但还没被回收（僵尸）也算结束
+            with open(f"/proc/{pid}/stat") as f:
+                if f.read().split()[2] == "Z":
+                    return
+        except OSError:
+            return
+        time.sleep(0.05)
+    os.kill(pid, 9)
+    raise AssertionError("取消后 rg 子进程还在运行")
