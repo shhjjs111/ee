@@ -2,7 +2,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import clsx from "clsx";
 import { CheckCircle2, GitCommitHorizontal, ListChecks, Play, RefreshCw, SearchCheck, TriangleAlert, Wrench, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { location, fixMessage, type ReviewResult } from "../lib/review";
 import { useApp, type ReviewParams } from "../lib/store";
 import type { ToolItem } from "../types";
@@ -62,9 +62,12 @@ export function ReviewDialog({ initial }: { initial?: string }) {
 
   useEffect(() => {
     if (!cwd || !s.rpc) return;
+    let stale = false; // 切换项目后，旧项目迟到的结果丢掉
+    setTg(null);
     s.rpc
       .call("review/targets", { cwd })
       .then((t: Targets) => {
+        if (stale) return;
         setTg(t);
         if (!t.is_repo) setKind("custom");
         else if (!t.dirty) setKind(t.base ? "branch" : "commit");
@@ -73,10 +76,14 @@ export function ReviewDialog({ initial }: { initial?: string }) {
         setCommit(t.commits?.[0]?.sha ?? "");
       })
       .catch((e) => {
+        if (stale) return;
         s.showToast((e as Error).message, "error");
         setTg({ is_repo: false });
         setKind("custom");
       });
+    return () => {
+      stale = true;
+    };
   }, [cwd, s.rpc]);
 
   const others = (tg?.branches ?? []).filter((b) => b !== tg?.branch);
@@ -98,7 +105,9 @@ export function ReviewDialog({ initial }: { initial?: string }) {
 
   return (
     <Shell title="代码审查" icon={<SearchCheck size={16} />} onClose={close}>
-      {!tg ? (
+      {!cwd ? (
+        <div className="py-6 text-center text-[13px] text-muted">先在左侧选择或添加一个项目文件夹，再开始审查。</div>
+      ) : !tg ? (
         <div className="flex justify-center py-8">
           <Spinner />
         </div>
@@ -171,8 +180,14 @@ export function CommitDialog() {
   const [err, setErr] = useState("");
   const close = () => s.set({ dialog: null });
 
+  const genTok = useRef(0);
   const generate = async () => {
-    if (!cwd || !s.rpc) return;
+    if (!s.rpc) return;
+    if (!cwd) {
+      setErr("先在左侧选择或添加一个项目文件夹。");
+      return;
+    }
+    const tok = ++genTok.current; // 重新生成 / 换项目后，旧的结果丢掉
     setGen(true);
     setErr("");
     try {
@@ -181,12 +196,13 @@ export function CommitDialog() {
         { cwd, thread_id: s.activeThreadId ?? undefined, model: s.draftModel ?? undefined },
         120000,
       );
+      if (tok !== genTok.current) return;
       setMsg(r.message);
       setInfo({ stage_all: r.stage_all, files: r.files });
     } catch (e) {
-      setErr((e as Error).message);
+      if (tok === genTok.current) setErr((e as Error).message);
     } finally {
-      setGen(false);
+      if (tok === genTok.current) setGen(false);
     }
   };
 
