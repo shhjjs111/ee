@@ -120,6 +120,10 @@ class Session:
         self._ok: dict[str, bool] = {}
         self._hook_stop: str | None = None      # Hook 输出 continue=false 时的原因：本步工具跑完后结束回合
         self._approval_lock = asyncio.Lock()
+        # 历史锁：回合与手动压缩都会整段改写 self.history（压缩是 self.history = 新历史），
+        # 两者并发时后完成的一方会覆盖另一方的消息。这里把它们串行化：回合等压缩做完再开始；
+        # 回合进行中手动压缩直接拒绝（回合里的自动压缩在回合内部顺序执行，不再取锁）。
+        self._history_lock = asyncio.Lock()
         self._subagent_plan: dict[str, str] = {}   # 本步每个 task 调用的隔离方式（D5-2）：worktree / inplace
         self._subagent_sem: asyncio.Semaphore | None = None   # 本步子代理并发上限
         self.last_reasoning = ""
@@ -739,6 +743,9 @@ class Session:
     # ------------------------------------------------------------ 回合
     async def run_turn(self, text: str, images: list[str] | None = None) -> AsyncIterator:
         q: asyncio.Queue = asyncio.Queue()
+        if self._history_lock.locked():
+            yield Status("正在压缩上下文，压缩完成后开始这一回合…")
+        await self._history_lock.acquire()          # 与压缩串行（见 __init__ 里 _history_lock 的说明）
         self.running = True
         self._task = asyncio.create_task(self._turn(text, q.put_nowait, images))
         try:
@@ -756,13 +763,16 @@ class Session:
                 if isinstance(ev, TurnDone):
                     break
         finally:
-            self.running = False
-            if self._task and not self._task.done():
-                self._task.cancel()
-                try:
-                    await self._task
-                except BaseException:
-                    pass
+            try:
+                if self._task and not self._task.done():
+                    self._task.cancel()
+                    try:
+                        await self._task
+                    except BaseException:
+                        pass
+            finally:
+                self.running = False
+                self._history_lock.release()
 
     async def _turn(self, text: str, emit, images: list[str] | None = None) -> None:
         final = ""
@@ -1163,13 +1173,14 @@ class Session:
         返回 {ok, message, tokens_before, tokens_after}；成功时 emit 一个 Compacted 事件。
         """
         emit = emit or (lambda ev: None)
-        if self.running:
+        if self.running or self._history_lock.locked():
             return {"ok": False, "message": "正在运行中，等这一回合结束再压缩。", "tokens_before": 0, "tokens_after": 0}
-        self.running = True
-        try:
-            return await self._compact(emit, "manual")
-        finally:
-            self.running = False
+        async with self._history_lock:              # 压缩期间到来的回合会排队等待，而不是并行改写历史
+            self.running = True
+            try:
+                return await self._compact(emit, "manual")
+            finally:
+                self.running = False
 
     async def _summarize(self, emit, prev: tuple[int, str] | None = None) -> tuple[str, dict | None, object]:
         """主路：同一前缀 + 当前历史 + 压缩指令（同模型时复用缓存）。不调工具。
