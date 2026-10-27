@@ -91,19 +91,117 @@ def parse_patch(text: str) -> list[FileOp]:
     return ops
 
 
-def seek(lines: list[str], pattern: list[str], start: int, eof: bool = False) -> int:
+def _lead(line: str) -> str:
+    return line[:len(line) - len(line.lstrip(" \t"))]
+
+
+def _base_indent(lines: list[str]) -> str:
+    """非空行里缩进最短的那行的前导空白。"""
+    ind = [_lead(l) for l in lines if l.strip()]
+    return min(ind, key=len) if ind else ""
+
+
+def _reindent_new(old: list[str], new: list[str], o: str, r: str) -> list[str]:
+    """把 new 的每一行从「以 old 的基准缩进 o 为基准」平移成「以原文的基准缩进 r 为基准」。
+
+    只做整块统一平移（与 edit 的 indent 策略同一条规则）：old 里每个非空行都必须以 o 开头，
+    这样才能确定 new 该加多少空白。做不到就报错——宁可报错，不能误改缩进。
+    """
+    if o == r:
+        return new
+    chars = set(o + r)
+    out: list[str] = []
+    for line in new:
+        if not line.strip():
+            out.append("")
+            continue
+        if line.startswith(o):
+            out.append(r + line[len(o):])
+            continue
+        lead = _lead(line)
+        if len(chars) == 1 and set(lead) <= chars:
+            k = len(lead) + len(r) - len(o)
+            if k >= 0:
+                out.append(next(iter(chars)) * k + line[len(lead):])
+                continue
+        raise ToolError("补丁的 '+' 行缩进比 '-' 行的基准缩进还浅，无法按原文缩进对齐；"
+                        "请照原文缩进重写补丁（或先 read 再逐字复制）。")
+    return out
+
+
+def _indent_hits(lines: list[str], pattern: list[str], rng: list[int]) -> list[int]:
+    """整体缩进平移：block 每行都是「原文基准缩进 R + 余下部分」对「old 基准缩进 O + 同样的余下部分」。
+
+    与 edit 的 indent 策略同一条规则——只接受整块统一平移（相对缩进与缩进字符都和原文一致），
+    这样 _reindent_new 才能把 new 按同一偏移安全对齐回原文。
+    """
+    if not pattern or not any(l.strip() for l in pattern):
+        return []
+    o = _base_indent(pattern)
+    if any(l.strip() and not l.startswith(o) for l in pattern):
+        return []
+    rest = [l[len(o):].rstrip() if l.strip() else "" for l in pattern]
+    n = len(pattern)
+    out: list[int] = []
+    for i in rng:
+        win = lines[i:i + n]
+        if len(win) != n:
+            continue
+        if any(bool(w.strip()) != bool(f) for w, f in zip(win, rest)):
+            continue                      # 空行/非空行的位置必须对得上
+        r = _base_indent(win)
+        if all((not w.strip()) or (w.startswith(r) and w[len(r):].rstrip() == f)
+               for w, f in zip(win, rest)):
+            out.append(i)
+    return out
+
+
+def seek_hits(lines: list[str], pattern: list[str], start: int, eof: bool = False) -> tuple[list[int], str]:
+    """所有命中位置 + 用的匹配级别。
+
+    **不再有 strip 级**（首尾空白都不看会把不相关的行当成命中，而且会吞掉缩进）。
+    三级都是安全的：精确 → 忽略行尾空白 → 整体缩进平移。
+    多处命中交给调用方报歧义——静默取第一处就是误改（重复代码很常见）。
+    """
     if not pattern:
-        return start
+        return [start], "empty"
     if len(pattern) > len(lines):
-        return -1
-    norms = [lambda s: s, str.rstrip, str.strip]
-    rng = range(len(lines) - len(pattern), start - 1, -1) if eof else range(start, len(lines) - len(pattern) + 1)
-    for norm in norms:
+        return [], ""
+    rng = list(range(len(lines) - len(pattern), start - 1, -1)) if eof else list(range(start, len(lines) - len(pattern) + 1))
+    for name, norm in (("exact", lambda s: s), ("rstrip", str.rstrip)):
         pn = [norm(p) for p in pattern]
-        for i in (list(rng) if eof else rng):
-            if all(norm(lines[i + j]) == pn[j] for j in range(len(pattern))):
-                return i
-    return -1
+        hits = [i for i in rng if all(norm(lines[i + j]) == pn[j] for j in range(len(pattern)))]
+        if hits:
+            return hits, name
+    hits = _indent_hits(lines, pattern, rng)
+    if hits:
+        return hits, "indent"
+    return [], ""
+
+
+def seek_all(lines: list[str], pattern: list[str], start: int, eof: bool = False) -> tuple[int, int, str]:
+    """兼容旧调用：(第一处位置, 命中次数, 匹配级别)。"""
+    hits, how = seek_hits(lines, pattern, start, eof)
+    return (hits[0] if hits else -1), len(hits), how
+
+
+def _ambiguous(what: str, hits: list[int]) -> str:
+    """多处命中：列出全部行号，让模型给更长的上下文重试。"""
+    where = "、".join(str(i + 1) for i in hits[:10])
+    more = f"（共 {len(hits)} 处，只列前 10 处）" if len(hits) > 10 else ""
+    return (f"{what}有多处命中（第 {where} 行{more}），无法确定要改哪一处。"
+            "请把上下文写长一点（包含上下的 ' ' 行）重试，让它只匹配一处。")
+
+
+def seek(lines: list[str], pattern: list[str], start: int, eof: bool = False, what: str = "") -> int:
+    """唯一命中的位置；找不到或多处命中都报错。"""
+    hits, _ = seek_hits(lines, pattern, start, eof)
+    if not hits:
+        raise ToolError(f"找不到要替换的上下文：\n" + "\n".join(pattern[:8]) +
+                        "\n请重新读取文件，确保 ' ' 和 '-' 行与原文一致。")
+    if len(hits) > 1:
+        raise ToolError(_ambiguous(what or "补丁上下文", hits))
+    return hits[0]
 
 
 def apply_hunks(text: str, hunks: list[Hunk], path: str) -> str:
@@ -114,9 +212,8 @@ def apply_hunks(text: str, hunks: list[Hunk], path: str) -> str:
     cursor = 0
     for h in hunks:
         if h.header:
-            idx = seek(lines, [h.header], cursor)
-            if idx < 0:
-                raise ToolError(f"{path}：找不到 @@ 定位行：{h.header}")
+            # @@ 定位行同样要唯一；多处在同名的 def/class 里很常见
+            idx = seek(lines, [h.header], cursor, what=f"{path}：@@ 定位行 '{h.header}' ")
             cursor = idx + 1
         old, new = list(h.old), list(h.new)
         if not old:
@@ -124,13 +221,21 @@ def apply_hunks(text: str, hunks: list[Hunk], path: str) -> str:
             lines[pos:pos] = new
             cursor = pos + len(new)
             continue
-        idx = seek(lines, old, cursor, h.eof)
-        if idx < 0 and old and old[-1] == "":
+        hits, _ = seek_hits(lines, old, cursor, h.eof)
+        if not hits and old and old[-1] == "":
+            # 补丁块末尾的空行常是分隔符，不是要删的行
             old, new = old[:-1], (new[:-1] if new and new[-1] == "" else new)
-            idx = seek(lines, old, cursor, h.eof)
-        if idx < 0:
+            hits, _ = seek_hits(lines, old, cursor, h.eof)
+        if not hits:
             raise ToolError(f"{path}：找不到要替换的上下文：\n" + "\n".join(old[:8]) +
                             "\n请重新读取文件，确保 ' ' 和 '-' 行与原文一致。")
+        if len(hits) > 1:
+            raise ToolError(_ambiguous(f"{path}：", hits))
+        idx = hits[0]
+        # 缩进按原文对齐：old 的基准缩进 → 原文窗口的基准缩进（不再把 new 原样写入）
+        win = lines[idx: idx + len(old)]
+        o, r = _base_indent(old), _base_indent(win)
+        new = _reindent_new(old, new, o, r)
         lines[idx: idx + len(old)] = new
         cursor = idx + len(new)
     return "\n".join(lines) + ("\n" if trailing_nl else "")

@@ -114,7 +114,18 @@ def _norm(line: str) -> str:
     return line.rstrip("\n").rstrip("\r")
 
 
-def _find(lines: list[str], want: list[str], start: int, loose: bool) -> int:
+MAX_DRIFT = 200           # 有上下文行的 hunk：行号锚点允许的偏移上限
+CONTEXT_FREE_DRIFT = 8    # 纯增删（0 上下文）的 hunk：只容忍文件头尾小幅增删造成的整体偏移
+
+
+def _find(lines: list[str], want: list[str], start: int, loose: bool, max_drift: int = MAX_DRIFT) -> int:
+    """从行号锚点 start 向两侧找最近的命中，最远 max_drift 行。
+
+    为什么需要这个上限：hunk 只记了行号，文件里出现同样内容时“最近的那处”未必是
+    hunk 记录的那一处。0 上下文的纯增删块尤其危险——want 里只有改动行本身、
+    没有任何定位信息，一旦文件里另有同样内容就会改错位置，把用户后来手改的行改回去
+    （见 tests/test_hunks_drift.py）。这种情况调用方传 max_drift=0：只认锚点原位。
+    """
     n, k = len(lines), len(want)
     if k == 0:
         return max(0, min(start, n))
@@ -129,7 +140,8 @@ def _find(lines: list[str], want: list[str], start: int, loose: bool) -> int:
         return seg == cmp
 
     start = max(0, min(start, n - k))
-    for off in range(0, n + 1):
+    limit = min(max(0, max_drift), n)
+    for off in range(0, limit + 1):
         for i in (start - off, start + off) if off else (start,):
             if 0 <= i <= n - k and ok(i):
                 return i
@@ -142,10 +154,14 @@ def _swap(content: str, hunk: Hunk, src: str, dst: str) -> str:
     start_no = hunk.new_start if src == "+" else hunk.old_start
     length = hunk.new_len if src == "+" else hunk.old_len
     start = start_no if length == 0 else start_no - 1       # 长度 0 的一侧，行号是“插在它后面”
-    i = _find(lines, want, start, loose=False)
+    # 上下文行（' '）是 hunk 的定位信息：有它才敢在锚点附近大幅浮动找；纯增删只有改动行
+    # 本身，另一处内容相同就会改错位置，所以只容忍很小的整体偏移（用户在文件开头加几行）。
+    has_context = any(tag == " " for tag, _ in hunk.lines)
+    drift = MAX_DRIFT if has_context else CONTEXT_FREE_DRIFT
+    i = _find(lines, want, start, loose=False, max_drift=drift)
     loose = False
     if i < 0:
-        i = _find(lines, want, start, loose=True)
+        i = _find(lines, want, start, loose=True, max_drift=drift)
         loose = True
     if i < 0:
         raise HunkError("文件内容已经变了，这块改动对不上（请刷新后再试）")
