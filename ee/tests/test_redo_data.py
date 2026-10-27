@@ -258,3 +258,65 @@ def test_remove_skips_backup_when_ignored_files_unchanged(wt_repo, ee_home):
     info = W.create(wt_repo, "same", home=ee_home)             # .env 从主目录原样复制过来，没改过
     r = W.remove(Path(info["path"]), home=ee_home)
     assert r["ignored_backup"] is None and r["backed_up"] == []
+
+
+# ---------------------------------------------------------------- 4) 会话 JSONL 末尾半行
+def _good_session(ee_home, sid="20260101-000000-abcdef"):
+    import json
+    d = ee_home / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    recs = [{"t": 1.0, "kind": "meta", "meta": {"cwd": str(ee_home), "title": "旧会话"}},
+            {"t": 2.0, "kind": "message", "message": {"role": "user", "content": "你好"}},
+            {"t": 2.1, "kind": "item", "item": {"id": "u1", "type": "user", "text": "你好", "seq": 1}},
+            {"t": 3.0, "kind": "message", "message": {"role": "assistant", "content": "在的"}}]
+    data = b"".join(json.dumps(r, ensure_ascii=False).encode("utf-8") + b"\n" for r in recs)
+    return d / f"{sid}.jsonl", data, sid
+
+
+def test_half_written_last_line_is_skipped_and_logged(ee_home, caplog):
+    import json
+    import logging
+
+    from ee.core.store import SessionStore
+    path, data, _ = _good_session(ee_home)
+    half = json.dumps({"t": 4.0, "kind": "message", "message": {"role": "user", "content": "崩溃时写到一半的中文"}},
+                      ensure_ascii=False).encode("utf-8")
+    path.write_bytes(data + half[:-9])                 # 截在一个中文字符的中间：既不是完整 JSON 也不是完整 UTF-8
+    with caplog.at_level(logging.WARNING):
+        d = SessionStore.load(path)
+    assert [m["content"] for m in d["messages"]] == ["你好", "在的"]
+    assert d["meta"]["title"] == "旧会话" and [it["id"] for it in d["items"]] == ["u1"]
+    assert any("第 5 行" in r.getMessage() for r in caplog.records)
+    assert SessionStore.load_messages(path)[-1]["content"] == "在的"
+    assert SessionStore.summary(path)["title"] == "旧会话"
+
+
+def test_crlf_bom_and_malformed_records_are_tolerated(ee_home):
+    from ee.core.store import SessionStore
+    path, data, _ = _good_session(ee_home)
+    bad = b'12\n["x"]\n{"t": 5, "kind": "message"}\n{"t": 6, "kind": "item", "item": "oops"}\n'
+    path.write_bytes(b"\xef\xbb\xbf" + data.replace(b"\n", b"\r\n") + bad)
+    d = SessionStore.load(path)
+    assert [m["content"] for m in d["messages"]] == ["你好", "在的"]
+    assert d["meta"]["title"] == "旧会话"
+
+
+def test_append_after_half_line_starts_on_new_line(ee_home):
+    from ee.core.store import SessionStore
+    path, data, sid = _good_session(ee_home)
+    path.write_bytes(data + b'{"t": 4.0, "kind": "mess')
+    SessionStore(ee_home, sid).message({"role": "user", "content": "重启后的新消息"})
+    assert [m["content"] for m in SessionStore.load_messages(path)] == ["你好", "在的", "重启后的新消息"]
+
+
+def test_backend_opens_session_with_half_line(ee_home):
+    path, data, sid = _good_session(ee_home)
+    path.write_bytes(data + "{\"t\": 4.0, \"kind\": \"item\", \"item\": {\"id\": \"a\", \"text\": \"半".encode("utf-8")[:-1])
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        d = (await b.call("thread/get", {"thread_id": sid}))["thread"]
+        assert [it["id"] for it in d["items"]] == ["u1"]
+        lst = await b.call("thread/list", {})
+        assert any(t["id"] == sid for t in lst["threads"])
+    asyncio.run(go())
