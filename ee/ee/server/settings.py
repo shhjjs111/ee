@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import os
 
-from ee.config import DEFAULTS, ROLES, deep_merge, load_user_file, normalize_roles, save_user_file, user_config_path
+from ee.config import DEFAULTS, PROJECT_IGNORED, ROLES, deep_merge, load_user_file, normalize_roles, save_user_file, user_config_path
 from ee.core import queue as Q
 from ee.core import reasoning as RZ
 from ee.core import secrets
@@ -71,6 +71,8 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
     return {
         "path": str(user_config_path()),
         "project_sources": project_sources or [],
+        # 项目 .ee/config.toml 里因安全原因被忽略的字段（只能收紧、不能放宽）：[{path, fields}]
+        "project_ignored": [{"path": k, "fields": list(v)} for k, v in PROJECT_IGNORED.items() if v],
         "settings": {
             "default_model": data.get("default_model"),
             "shell": data.get("shell", "auto"),

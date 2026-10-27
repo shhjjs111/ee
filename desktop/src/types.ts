@@ -323,6 +323,8 @@ export type NetworkSettings = {
 export type SettingsResponse = {
   path: string;
   project_sources: string[];
+  // 项目 .ee/config.toml 里因安全原因被忽略的字段（项目配置只能收紧、不能放宽）
+  project_ignored?: { path: string; fields: string[] }[];
   settings: Settings;
   choices: {
     shells: string[];

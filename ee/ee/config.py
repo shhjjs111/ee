@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import tomllib
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ee.core.providers.profiles import Profile, profile_for
+
+log = logging.getLogger("ee.config")
 
 DEFAULTS: dict = {
     "default_model": "deepseek-flash",
@@ -134,6 +137,109 @@ def normalize_roles(data: dict) -> dict:
     return data
 
 
+# ------------------------------------------------------------------ 项目层配置过滤（只能收紧，不能放宽）
+#
+# 项目 .ee/config.toml 跟着仓库走，打开一个陌生/恶意仓库就会被读到。它不能：
+#   - 改 provider / base_url / api_key / 代理，把用户的 key 或请求发到别处；
+#   - 用 [mcp.servers] 等字段直接让 ee 启动程序（项目 MCP 只走 .mcp.json + 用户允许）；
+#   - 放宽权限（更宽松的 mode、加 allow 规则、删掉用户的 ask/deny）。
+# hooks 不在这里合并：项目 hooks 由 ee/core/hooks.py 直接读文件，走“设置 → Hooks 里允许”的信任机制。
+
+PROJECT_DROP_TOP = ("providers", "hooks")
+_MODE_RANK = {"read-only": 0, "plan": 0, "default": 1, "auto": 2}
+_KEYISH = re.compile(r"(api_key|api_key_env|base_url|_url|headers|proxy)$")
+
+# 最近一次 load_config 时各项目配置里被丢弃的字段：{项目配置路径: [字段, ...]}（设置页展示）
+PROJECT_IGNORED: dict[str, list[str]] = {}
+
+
+def sanitize_project_layer(layer: dict, user_cfg: dict) -> tuple[dict, list[str]]:
+    """过滤项目层配置：返回 (可以安全合并的部分, 被丢弃的字段名列表)。不修改入参。
+
+    user_cfg 是合并项目层之前的配置（内置默认 + 用户级），用来判断“是否比用户更宽松”。
+    """
+    clean = copy.deepcopy(layer)
+    dropped: list[str] = []
+    for k in PROJECT_DROP_TOP:
+        if k in clean:
+            clean.pop(k)
+            dropped.append(k)
+
+    def drop_keyish(section: str) -> None:
+        t = clean.get(section)
+        if isinstance(t, dict):
+            for k in [k for k in t if _KEYISH.search(str(k))]:
+                t.pop(k)
+                dropped.append(f"{section}.{k}")
+
+    drop_keyish("web")
+    drop_keyish("network")
+
+    models = clean.get("models")
+    if "models" in clean and not isinstance(models, dict):
+        clean.pop("models")
+        dropped.append("models")
+    elif isinstance(models, dict):              # 只能在用户已有的 provider 上定义/调整模型，不能带自定义请求头
+        known = set((user_cfg.get("providers") or {}).keys())
+        for name in list(models):
+            m = models[name]
+            if not isinstance(m, dict) or ("provider" in m and str(m["provider"]) not in known):
+                models.pop(name)
+                dropped.append(f"models.{name}")
+                continue
+            if "headers" in m:
+                m.pop("headers")
+                dropped.append(f"models.{name}.headers")
+        if not models:
+            clean.pop("models")
+
+    perms = clean.get("permissions")
+    if "permissions" in clean and not isinstance(perms, dict):
+        clean.pop("permissions")
+        dropped.append("permissions")
+    elif isinstance(perms, dict):
+        up = user_cfg.get("permissions") or {}
+        if "mode" in perms:
+            want, have = str(perms["mode"]), str(up.get("mode") or "default")
+            if want not in _MODE_RANK or _MODE_RANK[want] > _MODE_RANK.get(have, 1):
+                perms.pop("mode")
+                dropped.append("permissions.mode")
+        if "allow" in perms:
+            perms.pop("allow")
+            dropped.append("permissions.allow")
+        for k in ("ask", "deny"):               # 只能追加规则；deep_merge 会整个替换列表，所以这里先并上用户的
+            mine = list(up.get(k) or [])
+            if k in perms:
+                extra = perms[k] if isinstance(perms[k], list) else []
+                perms[k] = mine + [r for r in extra if r not in mine]
+            elif mine:
+                perms[k] = mine
+        for k in [k for k in perms if k not in ("mode", "ask", "deny")]:
+            perms.pop(k)
+            dropped.append(f"permissions.{k}")
+
+    mcp = clean.get("mcp")
+    if "mcp" in clean and not isinstance(mcp, dict):
+        clean.pop("mcp")
+        dropped.append("mcp")
+    elif isinstance(mcp, dict):
+        for k in ("servers", "allowed_project"):
+            if k in mcp:
+                mcp.pop(k)
+                dropped.append(f"mcp.{k}")
+        um = user_cfg.get("mcp") or {}
+        for k in ("enabled", "project_json"):   # 只能关，不能开
+            if k in mcp and bool(mcp[k]) and um.get(k) is False:
+                mcp.pop(k)
+                dropped.append(f"mcp.{k}")
+    return clean, dropped
+
+
+def _read_toml_layer(p: Path) -> dict:
+    """读项目层 TOML：容忍 UTF-8 BOM（Windows 记事本常见）和 CRLF。"""
+    return tomllib.loads(p.read_bytes().decode("utf-8-sig"))
+
+
 @dataclass
 class ModelSpec:
     alias: str
@@ -174,6 +280,7 @@ class Config:
     data: dict
     cwd: Path
     sources: list[Path] = field(default_factory=list)
+    project_ignored: list[str] = field(default_factory=list)   # 项目配置里因安全原因被忽略的字段
 
     @property
     def default_model(self) -> str:
@@ -358,6 +465,7 @@ def load_config(cwd: Path | None = None) -> Config:
     cwd = Path(cwd or os.getcwd())
     data = copy.deepcopy(DEFAULTS)
     sources: list[Path] = []
+    ignored: list[str] = []
     user_cfg = ee_home() / "config.toml"
     user_dirs = user_ee_dirs()          # 用户级 .ee 目录（含真实主目录），绝不当成项目级
     candidates = [user_cfg]
@@ -384,10 +492,14 @@ def load_config(cwd: Path | None = None) -> Config:
             except OSError:
                 same_as_user = False
             if same_as_user:
-                layer = load_user_file(p)
+                layer = normalize_roles(dict(load_user_file(p)))
             else:
-                with open(p, "rb") as f:
-                    layer = tomllib.load(f)
-            data = deep_merge(data, normalize_roles(dict(layer)))
+                layer = normalize_roles(dict(_read_toml_layer(p)))
+                layer, dropped = sanitize_project_layer(layer, data)
+                PROJECT_IGNORED[str(p)] = dropped
+                if dropped:
+                    ignored += dropped
+                    log.warning("项目配置 %s 里的这些字段只能在用户级配置里设置，已忽略：%s", p, ", ".join(dropped))
+            data = deep_merge(data, layer)
             sources.append(p)
-    return Config(data=data, cwd=cwd, sources=sources)
+    return Config(data=data, cwd=cwd, sources=sources, project_ignored=ignored)

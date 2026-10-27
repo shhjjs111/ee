@@ -62,11 +62,14 @@ def test_write_setting_roundtrip(ee_home, tmp_path):
 
 
 def test_project_config_overrides(ee_home, tmp_path):
-    (ee_home / "config.toml").write_text('default_model = "deepseek-pro"\n', encoding="utf-8")
+    # provider 只能在用户级定义（项目配置不能把 key 发到别处）；项目可以在已有 provider 上定义模型、切默认模型
+    (ee_home / "config.toml").write_text(
+        'default_model = "deepseek-pro"\n[providers.dashscope]\nbase_url = "https://x/v1"\n'
+        'api_key_env = "DASHSCOPE_API_KEY"\n', encoding="utf-8")
     proj = tmp_path / "proj"
     (proj / ".ee").mkdir(parents=True)
     (proj / ".ee" / "config.toml").write_text(
-        'default_model = "qwen"\n[providers.dashscope]\nbase_url = "https://x/v1"\napi_key_env = "DASHSCOPE_API_KEY"\n'
+        'default_model = "qwen"\n'
         '[models.qwen]\nprovider = "dashscope"\nmodel = "qwen3-coder-plus"\ncontext_window = 1000000\n', encoding="utf-8")
     cfg = load_config(proj)
     spec = cfg.resolve_model()

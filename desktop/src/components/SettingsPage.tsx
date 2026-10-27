@@ -410,6 +410,19 @@ export function SettingsPage() {
             {section === "general" && (
               <>
                 <h2 className="mb-5 text-[20px] font-semibold tracking-tight text-fg">常规</h2>
+                {(resp.project_ignored ?? []).length > 0 && (
+                  <Card title="项目配置里有被忽略的设置">
+                    {(resp.project_ignored ?? []).map((e) => (
+                      <SettingRow
+                        key={e.path}
+                        label={e.path}
+                        desc="出于安全考虑，项目 .ee/config.toml 只能收紧设置：供应商地址 / key、代理、MCP 服务器、更宽松的权限只能在这里（用户级）设置"
+                      >
+                        <span className="mono max-w-[360px] text-[12px] text-danger">{e.fields.join(", ")}</span>
+                      </SettingRow>
+                    ))}
+                  </Card>
+                )}
                 <Card title="外观">
                   <SettingRow label="主题" desc="跟随系统，或固定为深色 / 浅色">
                     <Segmented<Theme>
