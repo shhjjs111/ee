@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 13:30（Asia/Shanghai，后端内核审查 fix/audit-core 合并；见下方「后端内核审查」）
+最后更新：2026-10-27 12:45（Asia/Shanghai，安全与健壮性 fix/audit-safety 合并：web_fetch 拦内网、docread 上限与超时、输出上限、GBK 回退、Windows 路径归一，见「D5 进度」首条；此前后端内核审查 fix/audit-core 合并，见下方「后端内核审查」。注：并行账号写的时间戳可能超前，以 git 提交时间为准）
 
 > **后端内核审查（2026-10-27，fix/audit-core，范围 core/providers/tools，每个 bug 先写失败测试，tests/test_audit_core.py）**：全量 pytest、e2e_ws 通过；ruff 0.17 默认规则报 222 条，几乎全是风格类（RUF012/S110/BLE001 等），未改，无 F 类错误。修复：① fork 子代理的 task/ask_user 占位工具没带「工具使用规则」，子代理每一步都误报“system/tools 与会话开始时不同”（_ForkBlocked 照抄 rules）；② 400 上下文超长/余额不足的错误里提到 max_tokens 等参数名（中转站常带 invalid_request_error）时被当成“参数不支持”永久去掉 max_tokens 并重试，现在 overflow/quota 不走降级（openai_chat.stream）；③ grep/glob 的纯 Python 回退（Windows 上没有 rg 时）在事件循环上同步遍历、读文件，大仓库会卡住整个后端（含中断），改到线程里，并跳过管道/设备文件；④ shell 输出按 4096 字节块各自解码，多字节中文切在块边界变成乱码，改增量解码；⑤ grep 被中断时 rg 子进程不结束；⑥ 自定义子代理定义：一个坏文件（GBK 编码/max_steps 非整数）让全部自定义子代理静默消失，UTF-8 BOM（记事本）开头的定义不被识别，值带引号不去——现在逐文件容错、BOM/GBK、去引号、记日志；⑦ edit 同一处在 edits 与顶层 old_string 各给一遍时误报重叠，去重。已核实无问题：两条队列的送入/退回时序（取出到写历史间无挂起点、TurnDone 后 drain 到任务结束间无挂起点）、修剪的批次/缓存/重放、sysprompt 信任与 BOM/CRLF、花费账本锁与原子写、tool_rules 拼装去重。未改（低风险/待定）：流式中途的 APIError（无 HTTP 状态）一律不重试；tool 消息缺 tool_call_id 时 wire_messages 每次随机补 id（破坏缓存，实际不会出现）；子代理用量合并会让修剪的 requests 计数提前前进（最多让下一次修剪略早）。
 
@@ -200,6 +200,16 @@
 1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」）
 
 **D5 进度**
+
+- **审查第三轮遗留 · 安全与健壮性**（fix/audit-safety，2026-10-27）：修掉「审查第三轮 · 未修」里 5 项无需产品决策的。
+  - 参考：Codex 的子进程输出按 UTF-8 优先、失败再按本机编码解；Apache POI 的 zip 解压比/条目上限思路；常见 SSRF 防护（解析后检查 + 每跳检查 + 连接时钉 IP）。
+  - web_fetch（`tools/web.py`）：拦本机/内网/链路本地/组播/保留/云元数据（169.254.169.254、阿里云 100.100.100.200、metadata.google.internal、*.localhost），字面 IP 的宽松写法（127.1、2130706433、0x7f.0.0.1、IPv4 映射/NAT64/6to4 的 IPv6）也认；DNS 解析出的任一地址是内网就拒；重定向改手动跟随、每跳都查（最多 10 跳）；直连时在 httpcore 网络后端里连接前再解析检查并连到检查过的 IP（防 DNS rebinding，TLS SNI 不变）。198.18.0.0/15 放行（Clash 等 fake-ip）。`[web] allow_private = true` 放行（默认 false）。DeepSeek Fetch 由对方服务器抓，不拦；搜索后端不受影响。
+  - docread（`core/docread.py`）：文件 ≤200MB；docx/xlsx/pptx 先读 zip 目录：条目 ≤1 万、解压后总量 ≤512MB、单条（>2MB）压缩比 ≤200；解析循环检查 60 秒截止与 400 万字输出上限；`extract_async` 用专用 2 线程池 + 等待超时，read 工具改用它（卡死的解析不占默认线程池、不卡事件循环）。PDF 的解压炸弹靠 pypdf 自带上限。
+  - 输出上限：Hook stdout/stderr 各读 1MB，多的读掉丢弃并注明（`core/hooks.py` `_communicate_capped`）；shell 输出内存里只留开头+结尾各 200 万字符并注明省略（`tools/shell.py` `CappedText`）；read 超过 8MB 的文本文件逐行扫描、每行最多读 64KB，只留要显示的行（`tools/read.py` `_scan_window`）；整体读入（edit/write 等）上限 32MB（`fileops.MAX_TEXT_BYTES`）；普通 read 的读文件挪到线程。后台命令原本就有缓冲上限。
+  - 解码：新 `tools/textdecode.py`（`smart_decode`、`StreamDecoder`）：先严格 UTF-8（多字节被拆在两块之间也能拼对），遇到非法 UTF-8 改用 `locale.getpreferredencoding`（本机就是 UTF-8 时用 cp936），本条输出之后一直用它。shell、后台命令、Hook 都改用它。
+  - Windows 路径（新 `core/winpath.py` 纯函数 `normalize_win_path`）：去每级结尾点/空格、`:流名:$DATA` 备用数据流、`\\?\` / `\\?\UNC\` 前缀，含 `~` 时用 GetLongPathNameW 对最长存在前缀展开 8.3 短名；`.eeignore` 判断和权限的写路径（deny 规则、工作区内外、`.git` 判断忽略大小写）在 Windows 上先归一。
+  - 测试：`tests/test_audit_safety_web.py`、`test_audit_safety_docread.py`、`test_audit_safety_output.py`、`test_audit_safety_winpath.py`（真实 8.3/ADS 用例只在 Windows 跑；卷上没生成短名时 skip）。
+  - 已知限制：走代理时目标由代理解析，只能做请求前预检（不能防 rebinding）；DNS 解析失败时预检放行（真正连接也会失败）；allow_private 只能在 config.toml 改，设置页没加开关；超时的文档解析线程无法强杀，只能在下一个检查点停（单页 PDF 解析内部不检查）；GBK 回退是按整条输出“粘住”的，同一条输出里 UTF-8 与 GBK 混排时后半段 UTF-8 会乱码；shell 的 `emit` 实时流不受内存上限限制（界面侧自行截断）。
 
 - **Pi A2+A7+A1+A8 提示词与工具表瘦身**（合并自 feat/pi-lean，2026-10-26 23:50）
   - 参考：Pi 的“工具描述一两句、细则随启用的工具进系统提示词”和默认只开 4 个工具。
