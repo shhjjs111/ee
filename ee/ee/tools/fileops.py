@@ -24,6 +24,7 @@ from ee.tools.base import ToolError
 
 BOM = "\ufeff"
 SIMILARITY = 0.65
+MAX_TEXT_BYTES = 32 * 1024 * 1024     # 整体按文本读入（编辑、匹配）的文件大小上限
 
 
 @dataclass
@@ -41,6 +42,10 @@ def read_text(path: Path) -> TextFile:
         return TextFile("", "\n", False, False)
     if not path.is_file():   # FIFO / 设备文件：打开或读取会一直阻塞（或读不完）
         raise ToolError(f"{path} 不是普通文件（可能是管道或设备），不能按文本读写")
+    size = path.stat().st_size
+    if size > MAX_TEXT_BYTES:
+        raise ToolError(f"{path} 太大（{size // (1024 * 1024)}MB，上限 {MAX_TEXT_BYTES // (1024 * 1024)}MB），"
+                        "不能整体按文本处理；用 read 的 offset/limit 分段看，或用 shell 处理")
     raw = path.read_bytes()
     if b"\x00" in raw[:8192]:
         raise ToolError(f"{path} 看起来是二进制文件，不能按文本编辑")

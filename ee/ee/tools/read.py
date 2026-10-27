@@ -8,6 +8,51 @@ from ee.tools.fileops import read_text
 DEFAULT_LIMIT = 2000
 MAX_LINE = 2000
 REF_MIN_BYTES = 2048
+STREAM_BYTES = 8 * 1024 * 1024     # 超过这么大的文本文件逐行扫描，只留要显示的行，不整体读入内存
+LINE_READ_CAP = 64 * 1024          # 逐行扫描时每行最多读入的字节，超出部分跳过
+
+
+def _scan_window(path, offset: int, limit: int) -> tuple[list[str], int]:
+    """逐行扫描大文件：返回 (第 offset 行起最多 limit 行, 总行数)。超长行只读前 LINE_READ_CAP 字节。"""
+    from ee.tools.textdecode import _utf8_prefix
+    out: list[str] = []
+    total = 0
+    with open(path, "rb") as f:
+        head = f.read(65536)
+        if b"\x00" in head[:8192]:
+            raise ToolError(f"{path} 看起来是二进制文件，不能按文本读")
+        enc = "utf-8"
+        if _utf8_prefix(head) is None:     # 开头 64KB 不是 UTF-8：能按 GBK 解就当 GBK（Windows 中文老日志）
+            for cand in (head, head[:-1]):        # 末字节可能是被切开的双字节字符的前半
+                try:
+                    cand.decode("gbk")
+                    enc = "gbk"
+                    break
+                except UnicodeDecodeError:
+                    continue
+        f.seek(0)
+        if f.read(3) != b"\xef\xbb\xbf":
+            f.seek(0)
+        while True:
+            b = f.readline(LINE_READ_CAP)
+            if not b:
+                break
+            extra = 0
+            if not b.endswith(b"\n"):        # 超长行（或最后一行没有换行）：把这一行剩下的读掉
+                while True:
+                    c = f.readline(1 << 20)
+                    if not c:
+                        break
+                    extra += len(c)
+                    if c.endswith(b"\n"):
+                        break
+            total += 1
+            if offset <= total < offset + limit:
+                line = b.rstrip(b"\r\n").decode(enc, errors="replace")
+                if extra and len(line) > MAX_LINE:
+                    line = line[:MAX_LINE] + f" …（本行过长，截断，原长 {len(b) + extra} 字节）"
+                out.append(line)
+    return out, total
 
 
 class ReadTool(Tool):
@@ -42,7 +87,9 @@ class ReadTool(Tool):
         from ee.core.docread import OLD_FORMATS, doc_kind
         if doc_kind(path) or path.suffix.lower() in OLD_FORMATS:
             return await self._read_doc(path, args, offset, limit, ctx)
-        tf = read_text(path)
+        if path.is_file() and path.stat().st_size > STREAM_BYTES:
+            return await self._read_large(path, offset, limit, ctx)
+        tf = await asyncio.to_thread(read_text, path)
         rec = ctx.state.mark_read(path)
         key = (offset, limit)
         all_lines = tf.text.split("\n")
@@ -71,6 +118,25 @@ class ReadTool(Tool):
         if end < total:
             out.append(f"\n（显示第 {offset}-{end} 行，共 {total} 行。用 offset={end + 1} 继续读）")
         return ToolResult("\n".join(out), summary=f"Read {rel(path, ctx.cwd)}", meta={"kind": "read"})
+
+    async def _read_large(self, path, offset: int, limit: int, ctx: ToolContext) -> ToolResult:
+        chunk, total = await asyncio.to_thread(_scan_window, path, offset, limit)
+        ctx.state.mark_read(path)
+        summary = f"Read {rel(path, ctx.cwd)}"
+        if total == 0:
+            return ToolResult("<文件为空>", summary=summary, meta={"kind": "read"})
+        if offset > total:
+            raise ToolError(f"offset={offset} 超过文件总行数 {total}")
+        width = len(str(offset + len(chunk)))
+        out = []
+        for i, line in enumerate(chunk, start=offset):
+            if len(line) > MAX_LINE and "…（本行过长" not in line[MAX_LINE:]:
+                line = line[:MAX_LINE] + f" …（本行过长，截断，原长 {len(line)} 字符）"
+            out.append(f"{i:>{width}}\t{line}")
+        end = offset + len(chunk) - 1
+        if end < total:
+            out.append(f"\n（显示第 {offset}-{end} 行，共 {total} 行。用 offset={end + 1} 继续读）")
+        return ToolResult("\n".join(out), summary=summary, meta={"kind": "read", "large": True})
 
     async def _read_doc(self, path, args: dict, offset: int, limit: int, ctx: ToolContext) -> ToolResult:
         """PDF / Word / Excel / PPT：先转文字（D4-7），再按行号分段返回，和普通文本一样可用 offset/limit 续读。"""

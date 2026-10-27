@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import os
 import signal
 import subprocess
@@ -11,9 +10,50 @@ import time
 from ee.proc import kill_tree
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
+from ee.tools.textdecode import StreamDecoder
 from ee.tools.truncate import truncate_output
 
 MAX_TIMEOUT = 600
+CAPTURE_CHARS = 4_000_000      # 内存里最多留这么多字符（开头一半 + 结尾一半），防止输出巨大的命令撑爆内存
+
+
+class CappedText:
+    """只保留开头和结尾各 limit/2 个字符，记下中间丢了多少。"""
+
+    def __init__(self, limit: int):
+        self.half = max(1, limit // 2)
+        self.head: list[str] = []
+        self.head_len = 0
+        self.tail: list[str] = []
+        self.tail_len = 0
+        self.dropped = 0
+
+    def add(self, s: str) -> None:
+        if self.head_len < self.half:
+            take = s[: self.half - self.head_len]
+            self.head.append(take)
+            self.head_len += len(take)
+            s = s[len(take):]
+            if not s:
+                return
+        self.tail.append(s)
+        self.tail_len += len(s)
+        if self.tail_len > self.half * 2:          # 攒够两倍再裁，避免每块都拼接
+            whole = "".join(self.tail)
+            cut = len(whole) - self.half
+            self.dropped += cut
+            self.tail, self.tail_len = [whole[cut:]], self.half
+
+    def text(self) -> str:
+        tail = "".join(self.tail)
+        if len(tail) > self.half:
+            self.dropped += len(tail) - self.half
+            tail = tail[-self.half:]
+            self.tail, self.tail_len = [tail], len(tail)
+        head = "".join(self.head)
+        if not self.dropped:
+            return head + tail
+        return f"{head}\n\n…[输出过大，中间省略约 {self.dropped} 字符]…\n\n{tail}"
 
 
 def child_env() -> dict:
@@ -45,17 +85,17 @@ async def _run(argv, cwd, timeout, emit, kw) -> tuple[int | None, str, bool]:
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=str(cwd), stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=child_env(), **kw)
-    chunks: list[str] = []
+    buf = CappedText(CAPTURE_CHARS)
+    dec = StreamDecoder()
     timed_out = False
 
     async def pump():
         assert proc.stdout
-        dec = codecs.getincrementaldecoder("utf-8")("replace")   # 多字节字符可能被切在两块之间
         while True:
-            b = await proc.stdout.read(4096)
+            b = await proc.stdout.read(65536)
             s = dec.decode(b, final=not b)
             if s:
-                chunks.append(s)
+                buf.add(s)
                 emit(s)
             if not b:
                 break
@@ -68,7 +108,7 @@ async def _run(argv, cwd, timeout, emit, kw) -> tuple[int | None, str, bool]:
     except asyncio.CancelledError:
         await _kill(proc)
         raise
-    out = strip_clixml("".join(chunks).replace("\r\n", "\n"))
+    out = strip_clixml(buf.text().replace("\r\n", "\n"))
     return proc.returncode, out, timed_out
 
 

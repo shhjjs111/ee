@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import codecs
 import itertools
 import logging
 import os
@@ -147,7 +146,8 @@ class BgManager:
     async def _pump_output(self, p: BgProc) -> None:
         proc = p._proc
         assert proc is not None and proc.stdout is not None
-        dec = codecs.getincrementaldecoder("utf-8")("replace")
+        from ee.tools.textdecode import StreamDecoder
+        dec = StreamDecoder()           # 先 UTF-8，不合法时改用本机编码（中文 Windows 的 GBK）
         cr = ""          # 上一块末尾的 \r 先扣着：\r\n 可能被拆在两次读取之间
         try:
             while True:

@@ -369,8 +369,51 @@ def _argv(hook: HookDef, default_shell: str) -> tuple[list[str], Path | None]:
     return sh.prepare(hook.command)
 
 
-def _decode(b: bytes) -> str:
-    s = (b or b"").decode("utf-8", errors="replace").replace("\r\n", "\n")
+MAX_HOOK_OUTPUT = 1024 * 1024     # stdout / stderr 各最多读这么多字节，多出的读掉丢弃（不让管道写满卡住 Hook）
+
+
+async def _read_capped(stream, limit: int) -> tuple[bytes, int]:
+    """读到 EOF，只留前 limit 字节；返回 (数据, 丢弃的字节数)。"""
+    buf = bytearray()
+    dropped = 0
+    if stream is None:
+        return b"", 0
+    while True:
+        b = await stream.read(65536)
+        if not b:
+            break
+        room = limit - len(buf)
+        if room > 0:
+            buf += b[:room]
+        dropped += max(0, len(b) - max(room, 0))
+    return bytes(buf), dropped
+
+
+async def _communicate_capped(proc, data: bytes, limit: int) -> tuple[bytes, bytes, int, int]:
+    async def feed():
+        if proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(data)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass                       # Hook 没读 stdin 就退出了
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+    _, (out, od), (err, ed) = await asyncio.gather(feed(), _read_capped(proc.stdout, limit),
+                                                   _read_capped(proc.stderr, limit))
+    await proc.wait()
+    return out, err, od, ed
+
+
+def _decode(b: bytes, dropped: int = 0) -> str:
+    from ee.tools.textdecode import smart_decode
+    s = smart_decode(b or b"").replace("\r\n", "\n")
+    if dropped:
+        s += f"\n…[输出过长，已截断：多出的 {dropped} 字节未读入]"
     if "#< CLIXML" in s:
         from ee.tools.shellenv import strip_clixml
         s = strip_clixml(s)
@@ -446,9 +489,10 @@ async def run_hook(hook: HookDef, payload: dict, cwd: Path, default_shell: str =
             r.error = f"无法启动：{e}"
             return r
         try:
-            out, err = await asyncio.wait_for(proc.communicate(data), timeout=hook.timeout)
+            out, err, od, ed = await asyncio.wait_for(_communicate_capped(proc, data, MAX_HOOK_OUTPUT),
+                                                      timeout=hook.timeout)
             r.code = proc.returncode
-            r.stdout, r.stderr = _decode(out), _decode(err)
+            r.stdout, r.stderr = _decode(out, od), _decode(err, ed)
         except asyncio.TimeoutError:
             r.timed_out = True
             await _kill(proc)
