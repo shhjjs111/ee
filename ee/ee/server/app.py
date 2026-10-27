@@ -520,8 +520,12 @@ class Backend:
 
 # ---------------------------------------------------------------- WebSocket 传输
 
+EXIT_GRACE = 10.0   # 秒：桌面端没了以后，正常清理最多等这么久，超时就强制结束子进程并退出
+
+
 async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None, exit_on_stdin_eof: bool = False,
-                backend: Backend | None = None, ready: Callable[[int], None] | None = None) -> None:
+                backend: Backend | None = None, ready: Callable[[int], None] | None = None,
+                parent_pid: int | None = None) -> None:
     from websockets.asyncio.server import serve as ws_serve
     from websockets.datastructures import Headers
     from websockets.http11 import Response
@@ -601,6 +605,15 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         if rid is not None:
             q.put_nowait(json.dumps(out, ensure_ascii=False, default=str))
 
+    from ee.server import lifeline
+
+    def request_exit(reason: str) -> None:     # 任意线程可调：通知事件循环退出，并兜底硬退出
+        lifeline.hard_exit_after(EXIT_GRACE, reason=reason)
+        loop.call_soon_threadsafe(lambda: stop.done() or stop.set_result(None))
+
+    if parent_pid:
+        lifeline.ParentWatch(parent_pid, lambda: request_exit("桌面端进程已退出")).start()
+
     if exit_on_stdin_eof:
         # 先把 fd 0 换成 NUL，再在私有副本上阻塞读：子进程（git 等）就不会继承这根正被读着的管道。
         # 实测 Windows 上不这样做，git 子进程会在启动时卡死，事件循环跟着卡死（界面全部转圈）。
@@ -617,7 +630,7 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             except Exception:  # noqa: BLE001
                 pass
             log.info("stdin 已关闭（桌面端退出），后端退出")
-            loop.call_soon_threadsafe(lambda: stop.done() or stop.set_result(None))
+            request_exit("stdin 已关闭")
         threading.Thread(target=watch, name="ee-stdin-eof", daemon=True).start()
 
     from ee import log as eelog
@@ -655,6 +668,11 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         await asyncio.wait_for(mcp_shutdown(), 8)       # 关掉 MCP 子进程
     except Exception:  # noqa: BLE001
         pass
+    if exit_on_stdin_eof or parent_pid:                 # 作为桌面端内核运行：残留的子孙进程一并结束
+        try:
+            await asyncio.wait_for(asyncio.to_thread(lifeline.kill_descendants), 10)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _detach_stdin() -> int | None:
