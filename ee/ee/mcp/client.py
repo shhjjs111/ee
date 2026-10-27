@@ -167,6 +167,13 @@ class StdioClient(_Base):
     async def start(self) -> None:
         cfg = self.cfg
         env = {**os.environ, **cfg.env}
+        # MCP 的 stdio 传输规定是 UTF-8（JSON-RPC 每条一行）。Windows 上子进程的
+        # stdin/stdout 默认按本机 ANSI 代码页（中文系统是 GBK）编解码，服务器一发出
+        # 中文（工具描述、工具结果都常有）就被写成 GBK 字节，我们按 UTF-8 解析会
+        # 撞 "非 JSON" 并一直等到超时。这里给子进程显式指定 UTF-8；用户自己配的
+        # env 放最后，显式设置仍然优先。
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
         cwd = cfg.cwd or self.base_cwd or None
         exe = shutil.which(cfg.command, path=env.get("PATH")) or cfg.command
         kw: dict = {"stdin": asyncio.subprocess.PIPE, "stdout": asyncio.subprocess.PIPE,

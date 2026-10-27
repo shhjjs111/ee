@@ -81,6 +81,31 @@ def ee_home() -> Path:
     return Path(env) if env else Path.home() / ".ee"
 
 
+def user_ee_dirs() -> set[Path]:
+    """所有“用户级 .ee 目录”的解析后路径，绝不能被当成项目级配置再叠一次。
+
+    三个来源都要算：`ee_home()`（EE_HOME 可指到别处）、`Path.home()`、以及**环境变量
+    推出的主目录**。三个不能合并成两个：只要工作区位于真实主目录之下（例如
+    `C:\\Users\\alice\\proj\\foo`，很常见的布局），向上查找就会撞上真实主目录的
+    `~/.ee/config.toml`；如果 `EE_HOME` 指向别处、而 `Path.home()` 又与真实主目录不同
+    （测试里隔离、或 PYTHONHOME 之类），只按前两者排除就会漏掉它，用户级设置被
+    静默当成项目级配置再叠一遍。
+    """
+    out: set[Path] = set()
+    cands = [ee_home(), Path.home() / ".ee"]
+    try:
+        cands.append(Path(os.path.expanduser("~")) / ".ee")      # 不受 Path.home 补丁影响
+    except (OSError, RuntimeError):
+        pass
+    for cand in cands:
+        try:
+            out.add(cand.resolve())
+        except OSError:
+            continue
+    return out
+
+
+
 def deep_merge(base: dict, over: dict) -> dict:
     out = copy.deepcopy(base)
     for k, v in over.items():
@@ -334,12 +359,18 @@ def load_config(cwd: Path | None = None) -> Config:
     data = copy.deepcopy(DEFAULTS)
     sources: list[Path] = []
     user_cfg = ee_home() / "config.toml"
+    user_dirs = user_ee_dirs()          # 用户级 .ee 目录（含真实主目录），绝不当成项目级
     candidates = [user_cfg]
     proj = None
     cur = cwd.resolve()
     for d in [cur, *cur.parents]:
         p = d / ".ee" / "config.toml"
-        if p.is_file() and p.resolve() != user_cfg.resolve():
+        try:
+            if p.resolve().parent in user_dirs:
+                continue                # 用户级配置，不是项目配置；继续往上但别叠它
+        except OSError:
+            continue
+        if p.is_file():
             proj = p
             break
         if (d / ".git").exists():
@@ -348,7 +379,11 @@ def load_config(cwd: Path | None = None) -> Config:
         candidates.append(proj)
     for p in candidates:
         if p.is_file():
-            if p is user_cfg:
+            try:
+                same_as_user = p.resolve() == user_cfg.resolve()
+            except OSError:
+                same_as_user = False
+            if same_as_user:
                 layer = load_user_file(p)
             else:
                 with open(p, "rb") as f:

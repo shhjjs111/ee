@@ -117,15 +117,16 @@ def project_file(cwd: Path | None, name: str, home: Path) -> Path | None:
     """从 cwd 往上（到 git 根为止）最近的 .ee/<name>；用户级 ~/.ee 本身不算项目。"""
     if cwd is None:
         return None
+    from ee.config import user_ee_dirs
     try:
         cur = Path(cwd).resolve()
-        home_ee = Path(home).resolve()
+        user_dirs = user_ee_dirs() | {Path(home).resolve()}
     except OSError:
         return None
     for d in [cur, *cur.parents]:
         p = d / ".ee" / name
         try:
-            if p.is_file() and p.resolve().parent != home_ee:
+            if p.is_file() and p.resolve().parent not in user_dirs:
                 return p
         except OSError:
             pass

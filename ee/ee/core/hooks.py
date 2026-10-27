@@ -271,10 +271,10 @@ def project_files(cwd: Path | None) -> list[Path]:
     """项目 hooks 文件：从 cwd 往上（到 git 根为止）最近的 .ee/hooks.toml 和 .ee/config.toml（不含用户级）。"""
     if cwd is None:
         return []
-    from ee.config import ee_home
+    from ee.config import user_ee_dirs
     try:
         cur = Path(cwd).resolve()
-        home_ee = ee_home().resolve()
+        home_dirs = user_ee_dirs()          # 含 ee_home() 与真实主目录的 ~/.ee
     except OSError:
         return []
     found: dict[str, Path] = {}
@@ -283,7 +283,7 @@ def project_files(cwd: Path | None) -> list[Path]:
             p = d / ".ee" / name
             if name not in found and p.is_file():
                 try:
-                    if p.resolve().parent == home_ee:
+                    if p.resolve().parent in home_dirs:
                         continue
                 except OSError:
                     continue

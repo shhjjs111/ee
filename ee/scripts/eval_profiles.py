@@ -182,9 +182,14 @@ def run_once(task: Task, profile: str, idx: int, args, repo: Path) -> dict:
             cmd += ["--max-steps", str(args.max_steps)]
         cmd.append("-")
         t0 = time.monotonic()
+        # 子进程按本机代码页输出（中文 Windows 是 GBK），而事件流里有 ¥ 之类的字符
+        # （usage 里的 currency），GBK 编不出来会让 fake_ee/ee exec 直接抛
+        # UnicodeEncodeError 崩掉，本行只拿到半截事件流（表现为 crashed）。
+        # 这里显式给子进程指定 UTF-8，和读取端 encoding="utf-8" 对齐。
+        child_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
         try:
             r = subprocess.run(cmd, input=task.prompt, capture_output=True, text=True, timeout=args.timeout,
-                               encoding="utf-8", errors="replace", cwd=root)
+                               encoding="utf-8", errors="replace", cwd=root, env=child_env)
             out, code = r.stdout, r.returncode
         except subprocess.TimeoutExpired as e:
             out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
