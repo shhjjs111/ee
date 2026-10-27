@@ -350,12 +350,13 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             p = parent.policy
             if read_only:
                 child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),
-                                                ask=list(p.ask), deny=list(p.deny))
+                                                ask=list(p.ask), deny=list(p.deny), shell=p.shell)
             elif wt_info:
                 # 工作区换成 worktree；会话内“以后都行”与主会话共享（同一个集合对象）
                 child.policy = PermissionPolicy(mode=p.mode, workspace=child_cwd, allow=list(p.allow),
                                                 ask=list(p.ask), deny=list(p.deny),
-                                                session_prefixes=p.session_prefixes, session_tools=p.session_tools)
+                                                session_prefixes=p.session_prefixes, session_tools=p.session_tools,
+                                                shell=p.shell)
             else:
                 child.policy = p                   # 继承：同一模式 + 共享“以后都行”
             if not wt_info:

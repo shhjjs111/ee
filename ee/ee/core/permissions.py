@@ -36,11 +36,79 @@ class Decision:
 
 # ------------------------------------------------------------------ 命令拆分
 
-_SEPARATORS = ("&&", "||", "|", ";", "&", "\n")
+# 三套语法：posix（bash / git-bash / sh）、powershell（pwsh / Windows PowerShell）、cmd。
+# 拆分按 shell 工具实际用的 shell 来（ShellInfo.syntax）；不知道时三套都拆一遍、取最严。
+SYNTAXES = ("posix", "powershell", "cmd")
+_PS_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+                            "\u201c": '"', "\u201d": '"', "\u201e": '"'})   # PowerShell 把弯引号也当引号
 
 
-def split_command(cmd: str) -> list[str]:
-    """按 | || && ; & 换行 拆段，并把 $(...)、`...`、PowerShell 的 $(...) 里的子命令也拆出来。尊重引号。"""
+def split_command(cmd: str, syntax: str = "posix") -> list[str]:
+    r"""按实际 shell 的语法拆段，并把子命令（$(…)、`…`、PowerShell 的 (…)、{…} 等）也拆出来。尊重引号和转义。
+
+    posix：| || && ; & 换行 分隔；'…' 原样，"…" 里 \ 转义、$(…) 和 `…` 照样执行；引号外 \ 转义下一个字符。
+    powershell：; | && || 换行 分隔，非行首的 & 是 PS7 后台运算符也算分隔；'…' 里 '' 是单引号，
+                "…" 里反引号转义、$(…) 执行；引号外反引号转义下一个字符；(…)、$(…)、@(…)、{…}、@{…} 里都会执行命令。
+    cmd：& && | || 换行 分隔（; 不是分隔符）；只有 "…" 是引号（' 是普通字符）；引号外 ^ 转义下一个字符。
+    """
+    if syntax == "powershell":
+        segs, subs = _split_ps(cmd.translate(_PS_QUOTES))
+    elif syntax == "cmd":
+        segs, subs = _split_cmd(cmd)
+    else:
+        segs, subs = _split_posix(cmd)
+    out = [s.strip() for s in segs if s.strip()]
+    for sub in subs:
+        out.extend(split_command(sub, syntax))
+    return out
+
+
+def _match_close(s: str, open_idx: int, syntax: str = "posix") -> int:
+    """s[open_idx] 是 ( 或 {，返回配对的右括号位置（考虑引号和转义）；不配对就返回 len(s)。"""
+    open_c = s[open_idx]
+    close_c = {"(": ")", "{": "}"}[open_c]
+    esc = {"posix": "\\", "powershell": "`", "cmd": "^"}.get(syntax, "\\")
+    quotes = ('"',) if syntax == "cmd" else ("'", '"')
+    depth, quote, k, n = 0, None, open_idx, len(s)
+    while k < n:
+        c = s[k]
+        if quote:
+            if c == esc and quote == '"' and syntax != "cmd":
+                k += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c == esc:
+            k += 2
+            continue
+        elif c in quotes:
+            quote = c
+        elif c == open_c:
+            depth += 1
+        elif c == close_c:
+            depth -= 1
+            if depth == 0:
+                return k
+        k += 1
+    return n
+
+
+def _find_backtick(s: str, i: int) -> int | None:
+    """posix：从 i 起找下一个未转义的反引号。"""
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == "`":
+            return i
+        i += 1
+    return None
+
+
+_POSIX_SEPS = ("&&", "||", "|", ";", "&", "\n")
+
+
+def _split_posix(cmd: str) -> tuple[list[str], list[str]]:
     segs: list[str] = []
     subs: list[str] = []
     buf: list[str] = []
@@ -48,51 +116,162 @@ def split_command(cmd: str) -> list[str]:
     quote: str | None = None
     while i < n:
         c = cmd[i]
-        if quote:
+        if quote == "'":
             buf.append(c)
-            if c == quote:
+            if c == "'":
                 quote = None
-            elif c == "\\" and quote == '"' and i + 1 < n:
-                buf.append(cmd[i + 1]); i += 1
-            elif quote == '"' and cmd.startswith("$(", i):
-                j = _match_paren(cmd, i + 1)
-                subs.append(cmd[i + 2:j]); buf.append(cmd[i + 1:j + 1]); i = j
             i += 1
             continue
+        if quote == '"':
+            if c == "\\" and i + 1 < n:
+                buf.append(cmd[i:i + 2]); i += 2; continue
+            if cmd.startswith("$(", i):
+                j = _match_close(cmd, i + 1)
+                subs.append(cmd[i + 2:j]); buf.append(cmd[i:j + 1]); i = j + 1; continue
+            if c == "`":
+                j = _find_backtick(cmd, i + 1)
+                if j is not None:
+                    subs.append(cmd[i + 1:j]); buf.append(cmd[i:j + 1]); i = j + 1; continue
+            buf.append(c)
+            if c == '"':
+                quote = None
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:          # 引号外 \ 转义下一个字符（\; 不是分隔符）
+            buf.append(cmd[i:i + 2]); i += 2; continue
         if c in ("'", '"'):
             quote = c; buf.append(c); i += 1; continue
-        if cmd.startswith("$(", i):
-            j = _match_paren(cmd, i + 1)
-            subs.append(cmd[i + 2:j]); buf.append("$(…)"); i = j + 1; continue
-        if c == "`" and "`" in cmd[i + 1:]:
-            j = cmd.index("`", i + 1)
-            inner = cmd[i + 1:j]
-            # PowerShell 用 ` 做转义字符（单个字符），bash 用 `cmd` 做命令替换
-            if len(inner) > 1:
-                subs.append(inner); buf.append("`…`"); i = j + 1; continue
-        if c == ">" and i + 1 < n and cmd[i + 1] == "&":  # 2>&1 之类，不是分隔符
-            buf.append(">&"); i += 2; continue
-        sep = next((s for s in _SEPARATORS if cmd.startswith(s, i)), None)
+        if cmd.startswith(("$(", "<(", ">("), i):   # 命令替换 / 进程替换
+            j = _match_close(cmd, i + 1)
+            subs.append(cmd[i + 2:j]); buf.append(c + "(…)"); i = j + 1; continue
+        if c == "`":
+            j = _find_backtick(cmd, i + 1)
+            if j is not None:
+                subs.append(cmd[i + 1:j]); buf.append("`…`"); i = j + 1; continue
+        if cmd.startswith((">&", "<&"), i):  # 2>&1 之类，不是分隔符
+            buf.append(cmd[i:i + 2]); i += 2; continue
+        sep = next((x for x in _POSIX_SEPS if cmd.startswith(x, i)), None)
         if sep:
             segs.append("".join(buf)); buf = []; i += len(sep); continue
         buf.append(c); i += 1
     segs.append("".join(buf))
-    out = [s.strip() for s in segs if s.strip()]
-    for s in subs:
-        out.extend(split_command(s))
-    return out
+    return segs, subs
 
 
-def _match_paren(s: str, open_idx: int) -> int:
-    depth = 0
-    for k in range(open_idx, len(s)):
-        if s[k] == "(":
-            depth += 1
-        elif s[k] == ")":
-            depth -= 1
-            if depth == 0:
-                return k
-    return len(s) - 1
+def _split_ps(cmd: str) -> tuple[list[str], list[str]]:
+    segs: list[str] = []
+    subs: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(cmd)
+    quote: str | None = None
+
+    def at_token_start() -> bool:
+        j = len(buf) - 1
+        prev = buf[j][-1] if buf and buf[j] else ""
+        return prev == "" or prev.isspace() or prev in "|;(&={,"
+
+    while i < n:
+        c = cmd[i]
+        if quote == "'":
+            buf.append(c)
+            if c == "'":
+                if cmd.startswith("''", i):
+                    buf.append("'"); i += 2; continue
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if c == "`" and i + 1 < n:
+                buf.append(cmd[i:i + 2]); i += 2; continue
+            if cmd.startswith("$(", i):
+                j = _match_close(cmd, i + 1, "powershell")
+                subs.append(cmd[i + 2:j]); buf.append(cmd[i:j + 1]); i = j + 1; continue
+            buf.append(c)
+            if c == '"':
+                if cmd.startswith('""', i):
+                    buf.append('"'); i += 2; continue
+                quote = None
+            i += 1
+            continue
+        if cmd.startswith(("@'", '@"'), i):     # here-string：到行首的 '@ / "@ 为止
+            q = cmd[i + 1]
+            end = cmd.find("\n" + q + "@", i + 2)
+            end = n if end < 0 else end + 3
+            body = cmd[i:end]
+            if q == '"':                         # 可展开的 here-string 里 $(…) 照样执行
+                k = 0
+                while True:
+                    k = body.find("$(", k)
+                    if k < 0:
+                        break
+                    j = _match_close(body, k + 1, "powershell")
+                    subs.append(body[k + 2:j]); k = j + 1
+            buf.append(body); i = end; continue
+        if c == "`":
+            if i + 1 < n:
+                buf.append(cmd[i:i + 2]); i += 2; continue
+            i += 1; continue
+        if c in ("'", '"'):
+            quote = c; buf.append(c); i += 1; continue
+        if cmd.startswith(("$(", "@("), i):
+            j = _match_close(cmd, i + 1, "powershell")
+            subs.append(cmd[i + 2:j]); buf.append(c + "(…)"); i = j + 1; continue
+        if c == "(":
+            j = _match_close(cmd, i, "powershell")
+            subs.append(cmd[i + 1:j]); buf.append("(…)"); i = j + 1; continue
+        if cmd.startswith("@{", i) and at_token_start():
+            j = _match_close(cmd, i + 1, "powershell")
+            subs.append(cmd[i + 2:j]); buf.append("@{…}"); i = j + 1; continue
+        if c == "{" and at_token_start():
+            j = _match_close(cmd, i, "powershell")
+            subs.append(cmd[i + 1:j]); buf.append("{…}"); i = j + 1; continue
+        if cmd.startswith((">&", "<&"), i):
+            buf.append(cmd[i:i + 2]); i += 2; continue
+        if cmd.startswith(("&&", "||"), i):
+            segs.append("".join(buf)); buf = []; i += 2; continue
+        if c == "&":
+            if "".join(buf).strip() == "":      # 行首：调用运算符
+                buf.append(c); i += 1; continue
+            segs.append("".join(buf)); buf = []; i += 1; continue   # PS7 后台运算符
+        if c in ";|\n":
+            segs.append("".join(buf)); buf = []; i += 1; continue
+        if c == "\r":
+            i += 1; continue
+        buf.append(c); i += 1
+    segs.append("".join(buf))
+    return segs, subs
+
+
+_CMD_SEPS = ("&&", "||", "|", "&", "\n")
+
+
+def _split_cmd(cmd: str) -> tuple[list[str], list[str]]:
+    segs: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(cmd)
+    quote = False
+    while i < n:
+        c = cmd[i]
+        if quote:
+            buf.append(c)
+            if c == '"':
+                quote = False
+            i += 1
+            continue
+        if c == "^" and i + 1 < n:            # ^ 转义下一个字符（^& 是字面量 &）
+            buf.append(cmd[i:i + 2]); i += 2; continue
+        if c == '"':
+            quote = True; buf.append(c); i += 1; continue
+        if cmd.startswith((">&", "<&"), i):
+            buf.append(cmd[i:i + 2]); i += 2; continue
+        sep = next((x for x in _CMD_SEPS if cmd.startswith(x, i)), None)
+        if sep:
+            segs.append("".join(buf)); buf = []; i += len(sep); continue
+        if c == "\r":
+            i += 1; continue
+        buf.append(c); i += 1
+    segs.append("".join(buf))
+    return segs, []
 
 
 def tokens(seg: str) -> list[str]:
@@ -111,12 +290,325 @@ def tokens(seg: str) -> list[str]:
     return t
 
 
+def words(seg: str, syntax: str = "posix") -> list[str] | None:
+    """按 shell 语法把一段拆成词（去掉引号和转义）。引号不配对等解析不了时返回 None。"""
+    if syntax == "powershell":
+        return _ps_words(seg.translate(_PS_QUOTES))
+    if syntax == "cmd":
+        return _cmd_words(seg)
+    try:
+        return shlex.split(seg, posix=True)
+    except ValueError:
+        return None
+
+
+def _ps_words(seg: str) -> list[str] | None:
+    out: list[str] = []
+    cur: list[str] = []
+    have = False
+    quote: str | None = None
+    i, n = 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if quote == "'":
+            if c == "'":
+                if seg.startswith("''", i):
+                    cur.append("'"); i += 2; continue
+                quote = None
+            else:
+                cur.append(c)
+            i += 1
+            continue
+        if quote == '"':
+            if c == "`" and i + 1 < n:
+                cur.append(seg[i + 1]); i += 2; continue
+            if c == '"':
+                if seg.startswith('""', i):
+                    cur.append('"'); i += 2; continue
+                quote = None
+            else:
+                cur.append(c)
+            i += 1
+            continue
+        if c == "`":
+            if i + 1 < n and seg[i + 1] not in "\r\n":
+                cur.append(seg[i + 1]); have = True
+            i += 2
+            continue
+        if c in ("'", '"'):
+            quote = c; have = True; i += 1; continue
+        if c.isspace():
+            if have or cur:
+                out.append("".join(cur)); cur = []; have = False
+            i += 1
+            continue
+        cur.append(c); i += 1
+    if quote:
+        return None
+    if have or cur:
+        out.append("".join(cur))
+    # PowerShell 把 – — ― 也当参数前缀的 -
+    return [re.sub(r"^[\u2013\u2014\u2015]", "-", w) for w in out]
+
+
+def _cmd_words(seg: str) -> list[str]:
+    out: list[str] = []
+    cur: list[str] = []
+    have = False
+    quote = False
+    i, n = 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if quote:
+            if c == '"':
+                quote = False
+            else:
+                cur.append(c)
+            i += 1
+            continue
+        if c == "^":
+            if i + 1 < n:
+                cur.append(seg[i + 1]); have = True
+            i += 2
+            continue
+        if c == '"':
+            quote = True; have = True; i += 1; continue
+        if c.isspace():
+            if have or cur:
+                out.append("".join(cur)); cur = []; have = False
+            i += 1
+            continue
+        cur.append(c); i += 1
+    if have or cur:
+        out.append("".join(cur))
+    return _cmd_builtin_args(out)
+
+
+# cmd 内部命令：命令名后可以直接跟 / , ; =（rd/s/q、del,/q,x 都能执行），参数也按 , ; = 分隔
+_CMD_BUILTINS = {"rd", "rmdir", "del", "erase", "dir", "copy", "move", "md", "mkdir", "type", "echo", "ren",
+                 "rename", "cd", "chdir", "set", "start", "call", "pushd", "popd", "cls", "ver", "vol", "path",
+                 "mklink", "assoc", "ftype", "for", "if", "goto", "shift", "title", "color", "date", "time",
+                 "break", "verify", "prompt", "setlocal", "endlocal", "exit", "rem", "pause"}
+
+
+def _cmd_builtin_args(w: list[str]) -> list[str]:
+    if not w:
+        return w
+    first = w[0].lstrip("@(")
+    m = re.match(r"^([^,;=/\\]+)([,;=/].*)$", first)
+    head = (m.group(1) if m else first).lower()
+    if head not in _CMD_BUILTINS:
+        return w
+    rest = ([m.group(2)] if m else []) + w[1:]
+    out = [w[0][: len(w[0]) - len(first)] + (m.group(1) if m else first)]
+    for a in rest:
+        for part in re.split(r"[,;=]", a):
+            # /s/q 连写 → /s /q
+            out.extend(re.findall(r"/[^/]*", part) if re.fullmatch(r"(/[A-Za-z?:\-]+)+", part) else [part])
+    return [x for x in out if x != ""]
+
+
 def _cmd_name(tok: str) -> str:
     name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
     for ext in (".exe", ".cmd", ".bat", ".ps1"):
         if name.endswith(ext):
             name = name[: -len(ext)]
     return name
+
+
+# ------------------------------------------------------------------ 归一（判危险命令用）
+
+@dataclass
+class _Seg:
+    raw: str              # 原文
+    syntax: str
+    norm: str = ""        # 归一后的命令：命令名小写去路径/扩展名、去引号转义、去包装前缀和 git 全局选项、PS 参数缩写展开
+    dynamic: str = ""     # 非空：无法确定要执行什么（原因）
+
+
+_PREFIX_WRAPPERS = {"command", "builtin", "exec", "nohup", "nice", "env", "sudo", "doas", "xargs", "timeout",
+                    "stdbuf", "time", "call"}
+_XARGS_VALUE_OPTS = {"-I", "-L", "-n", "-P", "-d", "-E", "-e", "-s", "-a", "--delimiter", "--max-args",
+                     "--max-procs", "--arg-file", "--replace", "--max-lines", "--eof", "--max-chars"}
+_SUDO_VALUE_OPTS = {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-h", "-D", "-R"}
+_KEYWORDS = {"{", "}", "(", ")", "!", "if", "then", "else", "elif", "do", "while", "until", "fi", "done"}
+_GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+_PS_REMOVE = {"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"}
+_PS_REMOVE_PARAMS = ("path", "literalpath", "filter", "include", "exclude", "recurse", "force", "credential",
+                     "whatif", "confirm", "stream", "pspath", "lp")
+_PS_VALUE_OPTS = ("executionpolicy", "ep", "ex", "workingdirectory", "wd", "windowstyle", "configurationname",
+                  "inputformat", "outputformat", "settingsfile", "custompipename", "psconsolefile", "version")
+_MAX_DEPTH = 4
+
+
+def _analyze(command: str, syntax: str, depth: int = 0) -> list[_Seg]:
+    out: list[_Seg] = []
+    for raw in split_command(command, syntax):
+        w = words(raw, syntax)
+        if w is None:      # 引号不配对：_segment_safe 已按需要确认处理；危险规则仍按原文匹配
+            out.append(_Seg(raw, syntax))
+            continue
+        out.extend(_normalize(raw, w, syntax, depth))
+    return out
+
+
+def _q(x: str) -> str:
+    return f'"{x}"' if any(ch.isspace() for ch in x) else x
+
+
+def _strip_opts(w: list[str], value_opts: set[str] = frozenset()) -> list[str]:
+    while w and w[0].startswith("-") and w[0] != "-":
+        w = w[2:] if w[0] in value_opts else w[1:]
+    return w
+
+
+def _normalize(raw: str, w: list[str], syntax: str, depth: int) -> list[_Seg]:
+    if depth > _MAX_DEPTH:
+        return [_Seg(raw, syntax, "", "命令嵌套太深，无法可靠判断")]
+    w = list(w)
+    called = False
+    while w:                                   # 去掉不改变“执行什么”的前缀
+        h = w[0]
+        hl = h.lower()
+        if syntax == "posix" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", h):
+            w = w[1:]; continue
+        if syntax == "powershell" and h.startswith("$"):
+            m = re.match(r"^\$[\w:{}.\[\]]+\s*[+\-*/]?=(.*)$", h)
+            if m:                              # $x = 命令 / $x=命令：右边照样执行
+                w = ([m.group(1)] if m.group(1) else []) + w[1:]; continue
+            if len(w) > 1 and re.fullmatch(r"[+\-*/]?=", w[1]):
+                w = w[2:]; continue
+        if h in ("&", ".") and syntax != "cmd":
+            called = called or h == "&" or syntax == "powershell"
+            w = w[1:]; continue
+        if hl in _KEYWORDS and syntax != "cmd":
+            w = w[1:]; continue
+        stripped = h.lstrip("({@" if syntax == "cmd" else "({")
+        if stripped != h:
+            w = ([stripped] if stripped else []) + w[1:]; continue
+        name = _cmd_name(h)
+        if name in _PREFIX_WRAPPERS and (syntax == "posix" or name in ("call",) and syntax == "cmd"):
+            rest = w[1:]
+            if name == "env":
+                while rest and (rest[0].startswith("-") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", rest[0])):
+                    if rest[0] in ("-S", "--split-string") and len(rest) > 1:
+                        rest = (words(rest[1], "posix") or [rest[1]]) + rest[2:]; continue
+                    rest = rest[2:] if rest[0] in ("-u", "--unset", "-C", "--chdir") else rest[1:]
+            elif name == "xargs":
+                rest = _strip_opts(rest, _XARGS_VALUE_OPTS)
+            elif name in ("sudo", "doas"):
+                rest = _strip_opts(rest, _SUDO_VALUE_OPTS)
+            elif name == "nice":
+                rest = _strip_opts(rest, {"-n", "--adjustment"})
+            elif name == "timeout":
+                rest = _strip_opts(rest, {"-s", "--signal", "-k", "--kill-after"})[1:]
+            elif name == "stdbuf":
+                rest = _strip_opts(rest, {"-i", "-o", "-e"})
+            elif name == "command":
+                rest = _strip_opts(rest)
+            w = rest; continue
+        break
+    if not w:
+        return []
+    name0 = w[0]
+    dyn = ""
+    if syntax == "posix" and ("$" in name0 or "`" in name0):
+        dyn = "命令名是变量/替换，无法确定要执行什么"
+    elif syntax == "powershell" and name0.startswith(("$", "(")):
+        if not called:
+            return [_Seg(raw, syntax)]          # 不带 & 的 $x… 是表达式，不是命令
+        dyn = "调用的命令是变量/表达式，无法确定要执行什么"
+    elif syntax == "cmd" and re.search(r"%[^%\s]+%", name0):
+        dyn = "命令名里有 %变量%，无法确定要执行什么"
+    name = _cmd_name(name0)
+    args = w[1:]
+    nested: list[_Seg] = []
+    if name in ("bash", "sh", "zsh", "dash", "ksh", "ash"):
+        for i, a in enumerate(args):
+            if not a.startswith("-"):
+                break
+            if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a) and i + 1 < len(args):
+                nested = _analyze(args[i + 1], "posix", depth + 1)
+                break
+    elif name == "cmd":
+        for i, a in enumerate(args):
+            if re.fullmatch(r"/[ckCK]", a):
+                nested = _analyze(" ".join(args[i + 1:]), "cmd", depth + 1)
+                break
+            if re.match(r"(?i)^/[ck]\S", a):
+                nested = _analyze(" ".join([a[2:]] + args[i + 1:]), "cmd", depth + 1)
+                break
+    elif name in ("powershell", "pwsh"):
+        i = 0
+        while i < len(args):
+            a = args[i]
+            o = a.lower().lstrip("-/") if a[:1] in ("-", "/") else None
+            if o is None:                       # 位置参数：powershell.exe 当命令，pwsh 当脚本文件
+                if name == "powershell":
+                    nested = _analyze(" ".join(args[i:]), "powershell", depth + 1)
+                break
+            if o and "command".startswith(o):
+                nested = _analyze(" ".join(args[i + 1:]), "powershell", depth + 1)
+                break
+            if o in ("e", "ec") or (len(o) >= 2 and "encodedcommand".startswith(o)):
+                try:
+                    import base64
+                    script = base64.b64decode(args[i + 1]).decode("utf-16-le")
+                    nested = _analyze(script, "powershell", depth + 1)
+                except Exception:  # noqa: BLE001
+                    dyn = dyn or "无法解码 -EncodedCommand"
+                break
+            if o and "file".startswith(o):
+                break
+            i += 2 if (o in _PS_VALUE_OPTS or (len(o) >= 3 and any(x.startswith(o) for x in _PS_VALUE_OPTS))) else 1
+    elif name == "eval" and syntax == "posix":
+        script = " ".join(args)
+        if "$" in script or "`" in script:
+            dyn = dyn or "eval 的内容是变量/替换，无法确定要执行什么"
+        else:
+            nested = _analyze(script, "posix", depth + 1)
+    elif name in ("iex", "invoke-expression"):
+        script = " ".join(a for a in args if not re.fullmatch(r"(?i)-c(o(m(m(a(n(d)?)?)?)?)?)?", a))
+        if not script or "$" in script or "(" in script:
+            dyn = dyn or "Invoke-Expression 的内容是变量/表达式，无法确定要执行什么"
+        else:
+            nested = _analyze(script, "powershell", depth + 1)
+    norm_words = [name] + args
+    if name == "git":
+        rest = list(args)
+        while rest and rest[0].startswith("-"):
+            o = rest[0]
+            key = ""
+            if o in ("-c", "--config-env") and len(rest) > 1:
+                key = rest[1]
+            elif o.startswith("--config-env="):
+                key = o.split("=", 1)[1]
+            if key.lower().startswith("alias."):
+                dyn = dyn or "git -c alias.* 能把子命令换成任意命令"
+            rest = rest[2:] if o in _GIT_VALUE_OPTS else rest[1:]
+        if rest and rest[0] == "push":
+            exp: list[str] = []
+            for a in rest[1:]:
+                exp.extend(f"-{ch}" for ch in a[1:]) if re.fullmatch(r"-[A-Za-z]{2,}", a) else exp.append(a)
+            rest = ["push"] + exp
+        norm_words = ["git"] + rest
+    elif name in _PS_REMOVE and syntax == "powershell":
+        exp = []
+        for a in args:
+            m = re.fullmatch(r"-([A-Za-z]+)(:.*)?", a)
+            if m:
+                o = m.group(1).lower()
+                hits = [p for p in _PS_REMOVE_PARAMS if p.startswith(o)]
+                if o in _PS_REMOVE_PARAMS:
+                    hits = [o]
+                if "recurse" in hits and (len(hits) == 1 or o == "r"):
+                    a = "-recurse"
+                elif "force" in hits and len(hits) == 1:
+                    a = "-force"
+            exp.append(a)
+        norm_words = ["remove-item"] + exp
+    norm = " ".join(_q(x) for x in norm_words)
+    return [_Seg(raw, syntax, norm, dyn)] + nested
 
 
 # ------------------------------------------------------------------ 规则表
@@ -174,8 +666,6 @@ SAFE_COMMANDS: dict[str, set[str] | None] = {
     "fl": None, "out-string": None, "get-process": None, "get-filehash": None, "split-path": None,
     "join-path": None, "get-itemproperty": None, "compare-object": None, "group-object": None,
     "convertto-json": None, "convertfrom-json": None, "get-help": None, "get-history": None,
-    # 测试/版本查询
-    "pytest": None, "py.test": None,
     # 只读 git / gh 子命令
     "git": {"status", "diff", "log", "show", "branch", "blame", "rev-parse", "ls-files", "remote", "describe",
             "shortlog", "reflog", "grep", "config", "tag", "ls-tree", "cat-file", "merge-base", "rev-list",
@@ -209,9 +699,6 @@ _SED_CMD = re.compile(
     r"(?:[pdqQ=lnNgGhHxDPz]|s(?P<d>[^\\\n\sA-Za-z0-9])(?:(?!(?P=d))[^\\]|\\.)*(?P=d)(?:(?!(?P=d))[^\\]|\\.)*(?P=d)[gpiImM0-9]*)?\s*")
 _SED_FLAGS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-u",
               "--unbuffered", "-z", "--null-data", "--posix", "--debug", "--sandbox"}
-# pytest 会写文件/删目录的参数（--basetemp 会先清空该目录）
-_PYTEST_WRITE_OPTS = ("--basetemp", "--junitxml", "--junit-xml", "--result-log", "--resultlog", "--log-file",
-                      "--report-log", "--html", "-o", "--override-ini", "-p", "--rootdir", "--confcutdir")
 
 
 def _redirects_safe(seg: str) -> bool:
@@ -222,9 +709,10 @@ def _redirects_safe(seg: str) -> bool:
     return True
 
 
-def _has_code_syntax(seg: str, git: bool) -> bool:
+def _has_code_syntax(seg: str, git: bool, syntax: str = "posix") -> bool:
     """引号外的 ( ) { }：PowerShell 的 (表达式)、@(…)、{脚本块}、@{…}，bash 的 <(…) 进程替换，都会执行命令。"""
     quote = None
+    quotes = ('"',) if syntax == "cmd" else ("'", '"')   # cmd 里 ' 不是引号
     i = 0
     while i < len(seg):
         c = seg[i]
@@ -233,7 +721,7 @@ def _has_code_syntax(seg: str, git: bool) -> bool:
                 quote = None
             elif c == "\\" and quote == '"':
                 i += 1
-        elif c in ("'", '"'):
+        elif c in quotes:
             quote = c
         elif c in "(){}":
             if git and c == "{":         # git 的 HEAD@{1} / @{u}：只允许 @{简单内容}
@@ -273,13 +761,23 @@ def _sed_safe(args: list[str]) -> bool:
     return True
 
 
-def _segment_safe(seg: str) -> bool:
+def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     if not _redirects_safe(seg):
         return False  # 重定向写文件
     if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*=", seg):
         return False  # 前置环境变量（GIT_CONFIG_*、GIT_EXTERNAL_DIFF、LESSOPEN…）能让白名单命令执行任意程序
-    t = tokens(seg)
-    if t and _has_code_syntax(seg, _cmd_name(t[0]) == "git"):
+    if syntax == "posix":
+        if words(seg, "posix") is None:
+            return False  # 引号不配对：解析不了，按需要确认
+        t = tokens(seg)
+    else:
+        w = words(seg, syntax)
+        if w is None:
+            return False
+        if syntax == "cmd" and re.search(r"%[^%\s]+%", seg):
+            return False  # %VAR% 在 cmd 解析前展开，内容里可能带 & | 等分隔符
+        t = w[1:] if w and w[0] in ("&", ".") else w
+    if t and _has_code_syntax(seg, _cmd_name(t[0]) == "git", syntax):
         return False
     if not t:
         return True
@@ -289,11 +787,7 @@ def _segment_safe(seg: str) -> bool:
                 "pip", "uv", "rustc", "gcc", "make", "cmake", "deno", "bun", "ruby", "php", "pwsh", "powershell"):
         if args and args[0] in _VERSION_FLAGS:
             return True
-        if name in ("python", "python3", "py") and args[:2] == ["-m", "pytest"]:
-            return _pytest_safe(args[2:])
-        return False
-    if name in ("pytest", "py.test") and not _pytest_safe(args):
-        return False
+        return False     # pytest 也不算只读：它会导入并执行仓库里的 conftest.py / 插件（任意代码）
     if name == "find":
         return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf",
                              "-fls") for a in args)
@@ -347,15 +841,6 @@ def _segment_safe(seg: str) -> bool:
     return True
 
 
-def _pytest_safe(args: list[str]) -> bool:
-    for a in args:
-        if any(a == o or a.startswith(o + "=") for o in _PYTEST_WRITE_OPTS):
-            return False
-        if re.fullmatch(r"-[op]\S+", a):     # -oKEY=VAL / -pPLUGIN 连写
-            return False
-    return True
-
-
 def command_prefix(seg: str) -> str:
     """用于“以后 `<前缀>` 开头的命令都不问”：命令名 + 子命令（如 git commit、npm run）。"""
     t = tokens(seg)
@@ -404,6 +889,8 @@ class PermissionPolicy:
     deny: list[str] = field(default_factory=list)
     session_prefixes: set[str] = field(default_factory=set)      # 会话内“以后都行”的命令前缀
     session_tools: set[str] = field(default_factory=set)         # 会话内“以后都行”的写目录等
+    # shell 工具实际用的命令语法（ShellInfo.syntax：posix / powershell / cmd）；None = 不知道，三套都按最严判
+    shell: str | None = None
 
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
@@ -569,27 +1056,45 @@ class PermissionPolicy:
     def _check_shell(self, command: str) -> Decision:
         if not command.strip():
             return Decision("allow")
-        segs = split_command(command)
-        low_full = command.lower()
-        for seg in segs + [command]:
-            low = seg.lower()
+        syntaxes = [self.shell] if self.shell in SYNTAXES else list(SYNTAXES)
+        pairs: list[tuple[str, str]] = []          # (段, 语法)；不知道 shell 时三套语法的拆法取并集
+        entries: list[_Seg] = []                   # 归一后的段（含 bash -c / cmd /c / pwsh -Command 里的命令）
+        for sx in syntaxes:
+            for seg in split_command(command, sx):
+                if (seg, sx) not in pairs:
+                    pairs.append((seg, sx))
+            entries.extend(_analyze(command, sx))
+        segs = list(dict.fromkeys(seg for seg, _ in pairs))
+        norms = [e.norm for e in entries if e.norm]
+
+        def hits(pat: str, raw: str, norm: str = "") -> bool:
+            # 原文任意位置匹配（兼容旧行为）；归一后的命令只从命令名开头匹配，免得把参数里的字样当命令
+            return bool(re.search(pat, raw, re.I) or (norm and re.match(pat, norm, re.I)))
+
+        for e in entries + [_Seg(command, "")]:
             for pat, why in DENY_PATTERNS:
-                if re.search(pat, low, re.I):
-                    return Decision("deny", f"危险命令已拦截（{why}）：{seg}")
-            if any(_match_rule(r, "shell", seg) for r in self.deny):
-                return Decision("deny", f"命中 deny 规则：{seg}")
-        for seg in segs:
+                if hits(pat, e.raw, e.norm):
+                    return Decision("deny", f"危险命令已拦截（{why}）：{e.raw}")
+            if any(_match_rule(r, "shell", e.raw) or (e.norm and _match_rule(r, "shell", e.norm))
+                   for r in self.deny):
+                return Decision("deny", f"命中 deny 规则：{e.raw}")
+        for e in entries:
             for pat, why in FORCE_ASK_PATTERNS:
-                if re.search(pat, seg, re.I):
+                if hits(pat, e.raw, e.norm):
                     if self.mode in READONLY_MODES:
-                        return Decision("deny", f"只读模式不能执行：{seg}")
+                        return Decision("deny", f"只读模式不能执行：{e.raw}")
                     return Decision("ask", why, prefix="", force=True)
-        unsafe = [s for s in segs if not _segment_safe(s)]
+        for e in entries:
+            if e.dynamic:
+                if self.mode in READONLY_MODES:
+                    return Decision("deny", f"只读模式不能执行：{e.raw}（{e.dynamic}）")
+                return Decision("ask", e.dynamic, prefix="", force=True)
+        unsafe = list(dict.fromkeys(seg for seg, sx in pairs if not _segment_safe(seg, sx)))
         if self.mode in READONLY_MODES:
             if unsafe:
                 return Decision("deny", f"只读模式只能运行只读命令，被拦截：{unsafe[0]}")
             return Decision("allow")
-        if any(_match_rule(r, "shell", s) for r in self.ask for s in segs):
+        if any(_match_rule(r, "shell", s) for r in self.ask for s in segs + norms):
             return Decision("ask", "命中 ask 规则", prefix=command_prefix(segs[0]))
         if self.mode == "auto":
             return Decision("allow")
@@ -607,5 +1112,4 @@ class PermissionPolicy:
         first = remaining[0]
         name = _cmd_name(tokens(first)[0]) if tokens(first) else ""
         why = "联网命令" if name in NETWORK_COMMANDS else "需要确认的命令"
-        _ = low_full
         return Decision("ask", why, prefix=command_prefix(first))

@@ -100,6 +100,7 @@ class Session:
                 self.shell = resolve_shell("auto")
             except ShellNotFound:
                 self.shell = None
+        self.policy.shell = self.shell.syntax if self.shell else None   # 权限按实际 shell 的语法拆命令
         self.git = gitinfo.status(self.cwd)
         self.gh = gitinfo.gh_exe() is not None
         self.queue = Q.InputQueue()          # 运行中排队的用户消息（插话 / 待追加）
@@ -306,6 +307,7 @@ class Session:
     def set_shell(self, name: str) -> str:
         sh = resolve_shell(name)   # 找不到会抛 ShellNotFound
         self.shell, self.shell_name = sh, name
+        self.policy.shell = sh.syntax
         return f"shell 已切换为 {sh.display}（{sh.exe}）。下一条消息会以增量环境信息告诉模型。"
 
     @property

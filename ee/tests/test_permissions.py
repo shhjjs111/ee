@@ -18,7 +18,7 @@ def test_split_command():
 
 @pytest.mark.parametrize("cmd", [
     "git status", "git diff HEAD~1", "git log --oneline -5", "git show HEAD", "git branch", "git blame a.py",
-    "ls -la | wc -l", "rg foo src", "pytest -q", "python -m pytest tests", "Get-ChildItem -Recurse | Select-Object Name",
+    "ls -la | wc -l", "rg foo src", "Get-ChildItem -Recurse | Select-Object Name",
     "Get-Content a.txt", "gh pr view 12", "gh issue list", "git -C sub status", "dir", "python --version",
 ])
 def test_safe_commands_allowed(tmp_path, cmd):
@@ -29,6 +29,7 @@ def test_safe_commands_allowed(tmp_path, cmd):
     "git commit -m x", "git checkout main", "git switch dev", "git stash", "git merge dev", "git rebase main",
     "npm install", "curl https://x.com", "echo hi > out.txt", "gh pr create", "gh pr merge 1", "git branch -d old",
     "Invoke-WebRequest https://x.com", "python script.py", "ls && rm a.txt",
+    "pytest -q", "python -m pytest tests",   # pytest 会执行仓库里的 conftest.py，不算只读
 ])
 def test_unsafe_commands_ask(tmp_path, cmd):
     assert pol(tmp_path).check("shell", {"command": cmd}).action == "ask"
