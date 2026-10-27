@@ -140,7 +140,11 @@ export const useApp = create<State & Actions>((set, get) => ({
   async init(rpc) {
     set({ rpc });
     let wasOpen = false;
+    // 内核重启后会换一个新的 RpcClient：旧连接迟到的状态 / 通知一律丢弃，
+    // 否则旧连接重连失败的 "failed" 会把界面标成断线、甚至再触发一次自动重启
+    const current = () => get().rpc === rpc;
     rpc.onState((s) => {
+      if (!current()) return;
       set({ conn: s });
       if (s === "open") {
         get().refreshLists().catch(() => undefined);
@@ -154,7 +158,9 @@ export const useApp = create<State & Actions>((set, get) => ({
         wasOpen = true;
       }
     });
-    rpc.onNotification((method, p) => onNotification(method, p));
+    rpc.onNotification((method, p) => {
+      if (current()) onNotification(method, p);
+    });
     rpc.connect();
     await Promise.all([get().refreshLists(), get().refreshModels()]).catch(() => undefined);
     try {
@@ -189,13 +195,15 @@ export const useApp = create<State & Actions>((set, get) => ({
     try {
       const r = await rpc.call("thread/get", { thread_id: id });
       const t = r.thread as ThreadDetail;
-      set((s) => ({ details: { ...s.details, [id]: t }, activeWorkspace: t.cwd }));
-      localStorage.setItem("ee.workspace", t.cwd);
+      // 迟到的响应（用户已经切到别的对话）只缓存详情，不改当前项目
+      const still = get().activeThreadId === id;
+      set((s) => ({ details: { ...s.details, [id]: t }, ...(still ? { activeWorkspace: t.cwd } : {}) }));
+      if (still) localStorage.setItem("ee.workspace", t.cwd);
       rpc.call("shell/list", { thread_id: id })
         .then((r) => set((s) => ({ bgProcs: { ...s.bgProcs, [id]: r.procs as BgProc[] } })))
         .catch(() => undefined);
     } catch (e) {
-      get().showToast((e as Error).message, "error");
+      if (get().activeThreadId === id) get().showToast((e as Error).message, "error");
     }
   },
 
