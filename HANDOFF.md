@@ -1,8 +1,8 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 13:40（Asia/Shanghai，fix/audit-desktop + thread_id 高危修复、D5-7、D5-3、Pi 第二批 A6/A9/A12 已合并并推送 origin/main `ec082e1`；全量 pytest 835 过 12 跳过、vitest 106、e2e/selftest 通过；D5-8 未完成；Windows CI 待确认）
+最后更新：2026-10-27 13:40（Asia/Shanghai，fix/audit-desktop + thread_id 高危修复、D5-7、D5-3、Pi 第二批 A6/A9/A12 已合并并推送 origin/main `a7249c2`（代码 `ec082e1` + HANDOFF 修订）；全量 pytest 835 过 12 跳过、vitest 106、e2e/selftest 通过；D5-8 未完成；Windows CI 待确认）
 
-> **本轮合并验收（2026-10-27，本地 main）**：`835 passed, 12 skipped`（10m20s，`PIP_NO_INDEX=1` 避免测试里的 pip 联网超时）；前端 `vitest 106`、两份 tsc、`vite build` 通过；`ee/scripts/e2e_ws.py` 假模型全流程通过、`ee selftest` 通过。**已推送 origin/main `ec082e1`，Windows CI 待确认。** 12 个跳过是 Windows 平台/权限差异（软链接、mkfifo、tzset、POSIX、Windows sleep 演示、8.3 短名未生成时）。
+> **本轮合并验收（2026-10-27，本地 main）**：`835 passed, 12 skipped`（10m20s，`PIP_NO_INDEX=1` 避免测试里的 pip 联网超时）；前端 `vitest 106`、两份 tsc、`vite build` 通过；`ee/scripts/e2e_ws.py` 假模型全流程通过、`ee selftest` 通过。**已推送 origin/main `a7249c2`（代码 `ec082e1` + HANDOFF 修订），Windows CI 待确认。** 12 个跳过是 Windows 平台/权限差异（软链接、mkfifo、tzset、POSIX、Windows sleep 演示、8.3 短名未生成时）。
 
 > **后端内核审查（2026-10-27，fix/audit-core，范围 core/providers/tools，每个 bug 先写失败测试，tests/test_audit_core.py）**：全量 pytest、e2e_ws 通过；ruff 0.17 默认规则报 222 条，几乎全是风格类（RUF012/S110/BLE001 等），未改，无 F 类错误。修复：① fork 子代理的 task/ask_user 占位工具没带「工具使用规则」，子代理每一步都误报“system/tools 与会话开始时不同”（_ForkBlocked 照抄 rules）；② 400 上下文超长/余额不足的错误里提到 max_tokens 等参数名（中转站常带 invalid_request_error）时被当成“参数不支持”永久去掉 max_tokens 并重试，现在 overflow/quota 不走降级（openai_chat.stream）；③ grep/glob 的纯 Python 回退（Windows 上没有 rg 时）在事件循环上同步遍历、读文件，大仓库会卡住整个后端（含中断），改到线程里，并跳过管道/设备文件；④ shell 输出按 4096 字节块各自解码，多字节中文切在块边界变成乱码，改增量解码；⑤ grep 被中断时 rg 子进程不结束；⑥ 自定义子代理定义：一个坏文件（GBK 编码/max_steps 非整数）让全部自定义子代理静默消失，UTF-8 BOM（记事本）开头的定义不被识别，值带引号不去——现在逐文件容错、BOM/GBK、去引号、记日志；⑦ edit 同一处在 edits 与顶层 old_string 各给一遍时误报重叠，去重。已核实无问题：两条队列的送入/退回时序（取出到写历史间无挂起点、TurnDone 后 drain 到任务结束间无挂起点）、修剪的批次/缓存/重放、sysprompt 信任与 BOM/CRLF、花费账本锁与原子写、tool_rules 拼装去重。未改（低风险/待定）：流式中途的 APIError（无 HTTP 状态）一律不重试；tool 消息缺 tool_call_id 时 wire_messages 每次随机补 id（破坏缓存，实际不会出现）；子代理用量合并会让修剪的 requests 计数提前前进（最多让下一次修剪略早）。
 
