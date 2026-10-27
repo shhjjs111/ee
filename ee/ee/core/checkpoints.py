@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import stat
 import time
 from pathlib import Path
 
@@ -79,6 +81,17 @@ def collect_keep(home: Path, keep_days: float, keep_turns: int, now: float | Non
     return out
 
 
+def _rmtree(p: Path) -> None:
+    """git 的对象文件是只读的，Windows 上直接删会失败：先去掉只读再删。"""
+    def onerror(func, path, _exc):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass
+    shutil.rmtree(p, onerror=onerror)
+
+
 def gc_all(home: Path, keep_days: float = DEFAULT_KEEP_DAYS, keep_turns: int = DEFAULT_KEEP_TURNS,
            force: bool = False, now: float | None = None, skip: set[str] | None = None) -> dict:
     """清理所有影子仓库。force=False 时距上次清理不到一天就跳过。返回统计。"""
@@ -104,8 +117,9 @@ def gc_all(home: Path, keep_days: float = DEFAULT_KEEP_DAYS, keep_turns: int = D
             wt = ""
         if not wt or not Path(wt).is_dir():
             if not keep.get(gd.name):
-                shutil.rmtree(gd, ignore_errors=True)      # 工作区没了、也没有会话引用：整个删
-                stats["removed_repos"] += 1
+                _rmtree(gd)                               # 工作区没了、也没有会话引用：整个删
+                if not gd.exists():
+                    stats["removed_repos"] += 1
             continue
         ds = snapshot.for_dir(Path(wt), Path(home))
         if not ds.available:
