@@ -47,7 +47,7 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
           onBlur={() => setEditing(false)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-              s.rpc?.call("thread/rename", { thread_id: t.id, title });
+              void s.renameThread(t.id, title);
               setEditing(false);
             } else if (e.key === "Escape") setEditing(false);
           }}
@@ -91,7 +91,7 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
               icon: <Trash2 size={13} />,
               danger: true,
               onSelect: () => {
-                if (confirm(`删除对话“${t.title}”？此操作不能撤销。`)) s.rpc?.call("thread/delete", { thread_id: t.id });
+                if (confirm(`删除对话“${t.title}”？此操作不能撤销。`)) void s.deleteThread(t.id);
               },
             },
           ]}
@@ -156,7 +156,7 @@ export function Sidebar() {
 
   const pickFolder = async () => {
     const p = window.ee ? await window.ee.openFolder() : window.prompt("项目文件夹路径");
-    if (p) s.addWorkspace(p);
+    if (p) void s.addWorkspace(p);
   };
 
   return (
@@ -273,7 +273,7 @@ export function Sidebar() {
                     items={[
                       { label: "在资源管理器中打开", onSelect: () => window.ee?.openPath(g.path) },
                       { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
-                      { label: "从列表移除", danger: true, onSelect: () => s.removeWorkspace(g.path) },
+                      { label: "从列表移除", danger: true, onSelect: () => void s.removeWorkspace(g.path) },
                     ]}
                   />
                 </span>

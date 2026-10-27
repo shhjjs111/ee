@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=0, help="端口，0 = 随机")
     s.add_argument("--token", help="连接口令（默认读环境变量 EE_SERVE_TOKEN，都没有则随机生成并打印）")
     s.add_argument("--exit-on-stdin-eof", action="store_true", help="stdin 关闭时退出（由 Electron 拉起时用）")
+    s.add_argument("--parent-pid", type=int, default=None, help="这个进程（桌面端）退出时后端跟着退出，并结束所有子进程")
     t = sub.add_parser("selftest", help="检查打包是否完整（openai/httpx/证书/编码），不联网，输出 JSON")
     t.add_argument("--secrets", action="store_true", help="另外测一次凭据存储读写删（写入临时项后立即删除）")
     from ee.headless import add_arguments as exec_arguments
@@ -65,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.host not in ("127.0.0.1", "localhost", "::1"):
             print("警告：后端监听在非本机地址上，任何拿到 token 的人都能控制它。", file=sys.stderr)
         try:
-            asyncio.run(serve(args.host, args.port, token, exit_on_stdin_eof=args.exit_on_stdin_eof))
+            asyncio.run(serve(args.host, args.port, token, exit_on_stdin_eof=args.exit_on_stdin_eof,
+                              parent_pid=args.parent_pid))
         except KeyboardInterrupt:
             pass
         return 0

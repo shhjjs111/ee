@@ -137,7 +137,7 @@ function EmptyState() {
   const s = useApp();
   const pickFolder = async () => {
     const p = window.ee ? await window.ee.openFolder() : window.prompt("项目文件夹路径");
-    if (p) s.addWorkspace(p);
+    if (p) void s.addWorkspace(p);
   };
   const options = s.workspaces.map((w) => ({ value: w.path, label: w.name, hint: w.path }));
   return (

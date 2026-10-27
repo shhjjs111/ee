@@ -1,7 +1,7 @@
 // 设置页「工具与记忆」：网页搜索后端与 key、子代理默认最大步数、记忆开关与编辑、技能列表（D5-5）。
 import clsx from "clsx";
 import { FolderOpen, RefreshCw } from "lucide-react";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { SkillInfo } from "../lib/slash";
 import { useApp } from "../lib/store";
 import type { MemoryInfo, Settings, SettingsResponse, SkillsSettings, WebKeySettings, WebSettings } from "../types";
@@ -99,17 +99,24 @@ function SkillsCard({ draft, up, cwd }: { draft: Settings; up: (p: Partial<Setti
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const gen = useRef(0);
   const load = useCallback(() => {
     if (!s.rpc) return;
+    const tok = ++gen.current; // 迟到的旧项目结果丢掉
     setBusy(true);
     s.rpc
       .call("skills/list", { cwd })
       .then((r: SkillsList) => {
+        if (tok !== gen.current) return;
         setList(r);
         setErr(null);
       })
-      .catch((e: Error) => setErr(`读取技能失败：${e.message}`))
-      .finally(() => setBusy(false));
+      .catch((e: Error) => {
+        if (tok === gen.current) setErr(`读取技能失败：${e.message}`);
+      })
+      .finally(() => {
+        if (tok === gen.current) setBusy(false);
+      });
   }, [s.rpc, cwd]);
   useEffect(load, [load]);
 
@@ -223,13 +230,20 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   const [memMsg, setMemMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    let stale = false; // 切换项目后，旧项目迟到的记忆不能覆盖新项目的
     s.rpc
       ?.call("memory/get", { cwd })
       .then((r: MemoryInfo) => {
+        if (stale) return;
         setMemInfo(r);
         setMemText({ user: r.user.text, workspace: r.workspace?.text ?? "" });
       })
-      .catch((e: Error) => setMemMsg(`读取记忆失败：${e.message}`));
+      .catch((e: Error) => {
+        if (!stale) setMemMsg(`读取记忆失败：${e.message}`);
+      });
+    return () => {
+      stale = true;
+    };
   }, [s.rpc, cwd]);
 
   const saveMem = async (scope: "user" | "workspace") => {

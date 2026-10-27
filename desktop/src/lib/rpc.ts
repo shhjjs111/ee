@@ -22,8 +22,9 @@ export class RpcClient {
   private pending = new Map<number, Pending>();
   private handlers = new Set<NotificationHandler>();
   private stateHandlers = new Set<(s: ConnState) => void>();
-  private queue: string[] = [];
+  private queue: { id: number; msg: string }[] = []; // 连上之前的请求；超时 / 被拒绝时从这里删掉，不会迟到补发
   private retry = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private closedByUser = false;
   state: ConnState = "closed";
 
@@ -31,15 +32,32 @@ export class RpcClient {
 
   connect(): void {
     this.closedByUser = false;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    const prev = this.ws;
+    this.ws = null;
+    if (prev) {
+      // 先断开旧连接的回调：它迟到的 close 不能拒掉新连接上的请求、也不能再安排一次重连
+      prev.onopen = prev.onmessage = prev.onclose = null;
+      try {
+        prev.close();
+      } catch {
+        /* ignore */
+      }
+    }
     this.setState("connecting");
     const ws = new WebSocket(this.url);
     this.ws = ws;
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.retry = 0;
       this.setState("open");
-      for (const m of this.queue.splice(0)) ws.send(m);
+      for (const q of this.queue.splice(0)) ws.send(q.msg);
     };
     ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
       let msg: any;
       try {
         msg = JSON.parse(ev.data as string);
@@ -57,6 +75,7 @@ export class RpcClient {
       }
     };
     ws.onclose = () => {
+      if (this.ws !== ws) return;
       this.ws = null;
       this.setState("closed");
       for (const [id, p] of this.pending) {
@@ -64,6 +83,7 @@ export class RpcClient {
         p.reject(new Error("与后端的连接断开了"));
         this.pending.delete(id);
       }
+      this.queue = [];
       if (!this.closedByUser) {
         if (this.retry >= MAX_RECONNECTS) {
           rpcLog(`WebSocket 连续 ${this.retry} 次重连失败，放弃（等待界面重启内核）`);
@@ -72,13 +92,20 @@ export class RpcClient {
         }
         const delay = Math.min(4000, 300 * 2 ** this.retry++);
         if (this.retry === 1) rpcLog("WebSocket 断开，正在重连");
-        setTimeout(() => this.connect(), delay);
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          if (!this.closedByUser) this.connect();
+        }, delay);
       }
     };
   }
 
   close(): void {
     this.closedByUser = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     this.ws?.close();
   }
 
@@ -97,11 +124,12 @@ export class RpcClient {
       };
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.queue = this.queue.filter((q) => q.id !== id);
         fail(new Error(`内核 ${Math.round(timeoutMs / 1000)} 秒没有响应（${method}）。可在 设置 → 关于 打开日志目录查看 ee-backend.log。`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject: fail, timer });
       if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(msg);
-      else this.queue.push(msg);
+      else this.queue.push({ id, msg });
     });
   }
 

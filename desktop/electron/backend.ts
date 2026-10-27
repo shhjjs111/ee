@@ -1,5 +1,5 @@
 // 拉起 Python 后端（ee serve），读 stdout 的 READY 行拿端口；token 由这里生成，经环境变量传给后端。
-import { ChildProcess, spawn } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +15,30 @@ export interface BackendOptions {
   resourcesPath: string;
   appRoot: string; // desktop/ 目录（开发模式）
   logFile: string;
+  /** 测试用：替换拉起命令。 */
+  command?: () => { cmd: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
+  startTimeoutMs?: number; // 默认 20 秒
+  stopGraceMs?: number; // stdin 关闭后等多久还没退出就强制结束整棵进程树，默认 5 秒
+}
+
+/** 结束一个进程及其子孙进程（Windows 用 taskkill /T，后端的后台命令、MCP 服务器都在这棵树里）。 */
+export function killProcessTree(pid: number, sync = false): void {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    try {
+      const args = ["/PID", String(pid), "/T", "/F"];
+      if (sync) spawnSync("taskkill", args, { stdio: "ignore", windowsHide: true, timeout: 5000 });
+      else spawn("taskkill", args, { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已经退出 */
+  }
 }
 
 function devPython(): string {
@@ -23,7 +47,8 @@ function devPython(): string {
 }
 
 export function backendCommand(opts: BackendOptions): { cmd: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv } {
-  const base = ["serve", "--exit-on-stdin-eof"];
+  // --parent-pid：桌面端被强杀（任务管理器结束进程）时，后端自己发现并退出，同时结束它的子进程
+  const base = ["serve", "--exit-on-stdin-eof", "--parent-pid", String(process.pid)];
   if (opts.isPackaged || process.env.EE_BACKEND_EXE) {
     const exeName = process.platform === "win32" ? "ee-backend.exe" : "ee-backend";
     const exe = process.env.EE_BACKEND_EXE || path.join(opts.resourcesPath, "backend", "ee-backend", exeName);
@@ -40,19 +65,29 @@ export class Backend {
   private proc: ChildProcess | null = null;
   private ready: Promise<BackendInfo> | null = null;
   private stderrTail: string[] = [];
+  /** 最近一次拉起的进程 pid（调试 / 测试用）。 */
+  lastPid = 0;
   onExit: ((code: number | null, tail: string) => void) | null = null;
 
   constructor(private opts: BackendOptions) {}
 
   info(): Promise<BackendInfo> {
-    if (!this.ready) this.ready = this.start();
+    if (!this.ready) this.ready = this.track(this.start());
     return this.ready;
   }
 
   restart(): Promise<BackendInfo> {
     this.stop();
-    this.ready = this.start();
+    this.ready = this.track(this.start());
     return this.ready;
+  }
+
+  /** 启动失败不缓存：下次 info() 重新拉起，而不是永远返回同一个失败。 */
+  private track(p: Promise<BackendInfo>): Promise<BackendInfo> {
+    p.catch(() => {
+      if (this.ready === p) this.ready = null;
+    });
+    return p;
   }
 
   /** 追加一行到 backend.log（界面侧的 RPC 失败、重连、自动重启等）。 */
@@ -71,7 +106,7 @@ export class Backend {
 
   private start(): Promise<BackendInfo> {
     const token = randomBytes(24).toString("hex");
-    const { cmd, args, cwd, env } = backendCommand(this.opts);
+    const { cmd, args, cwd, env } = this.opts.command ? this.opts.command() : backendCommand(this.opts);
     this.stderrTail = [];
     let log: fs.WriteStream | null = null;
     try {
@@ -91,12 +126,17 @@ export class Backend {
         windowsHide: true,
       });
       this.proc = child;
+      this.lastPid = child.pid ?? 0;
+      const startMs = this.opts.startTimeoutMs ?? 20000;
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
-          reject(new Error(`后端 20 秒内没有启动。\n${this.lastError()}`));
+          // 没启动起来的进程也要结束，否则它可能稍后才起来、一直留在后台
+          if (this.proc === child) this.proc = null;
+          killProcessTree(child.pid ?? 0);
+          reject(new Error(`后端 ${Math.round(startMs / 1000)} 秒内没有启动。\n${this.lastError()}`));
         }
-      }, 20000);
+      }, startMs);
       let buf = "";
       child.stdout?.on("data", (d: Buffer) => {
         const s = d.toString("utf8");
@@ -128,15 +168,38 @@ export class Backend {
       child.on("exit", (code) => {
         log?.write(`\n==== 后端退出，code=${code}\n`);
         log?.end();
-        if (this.proc === child) this.proc = null;
+        const current = this.proc === child; // stop()/restart() 结束的旧进程不算“意外退出”
+        if (current) this.proc = null;
         if (!settled) {
           settled = true;
           clearTimeout(timer);
           reject(new Error(`后端启动失败（退出码 ${code}）。\n${this.lastError()}`));
-        } else if (this.onExit) {
+        } else if (current && this.onExit) {
           this.onExit(code, this.lastError());
         }
       });
+    });
+  }
+
+  /** 退出应用时用：关 stdin 让后端自己清理，最多等 ms；超时就同步结束整棵进程树。 */
+  stopAndWait(ms = 6000): Promise<void> {
+    const p = this.proc;
+    if (!p || p.exitCode !== null || p.signalCode !== null) {
+      this.stop();
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(t);
+        resolve();
+      };
+      const t = setTimeout(() => {
+        p.off("exit", done);
+        killProcessTree(p.pid ?? 0, true);
+        resolve();
+      }, ms);
+      p.once("exit", done);
+      this.stop();
     });
   }
 
@@ -149,8 +212,10 @@ export class Backend {
     } catch {
       /* ignore */
     }
-    setTimeout(() => {
-      if (p.exitCode === null) p.kill();
-    }, 1500);
+    const t = setTimeout(() => {
+      // 还没退：强制结束整棵进程树（只 kill 后端本身会留下它起的后台命令 / MCP 服务器）
+      if (p.exitCode === null && p.signalCode === null) killProcessTree(p.pid ?? 0);
+    }, this.opts.stopGraceMs ?? 5000);
+    t.unref?.();
   }
 }

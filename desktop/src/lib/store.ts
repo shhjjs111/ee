@@ -56,8 +56,11 @@ type Actions = {
   refreshModels(): Promise<void>;
   openThread(id: string): Promise<void>;
   newThread(cwd?: string | null): void;
-  addWorkspace(path: string): Promise<void>;
-  removeWorkspace(path: string): Promise<void>;
+  /** 失败时提示错误并返回 false（不抛）。 */
+  addWorkspace(path: string): Promise<boolean>;
+  removeWorkspace(path: string): Promise<boolean>;
+  renameThread(id: string, title: string): Promise<boolean>;
+  deleteThread(id: string): Promise<boolean>;
   /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
   withdrawQueued(itemId: string): Promise<void>;
@@ -140,7 +143,11 @@ export const useApp = create<State & Actions>((set, get) => ({
   async init(rpc) {
     set({ rpc });
     let wasOpen = false;
+    // 内核重启后会换一个新的 RpcClient：旧连接迟到的状态 / 通知一律丢弃，
+    // 否则旧连接重连失败的 "failed" 会把界面标成断线、甚至再触发一次自动重启
+    const current = () => get().rpc === rpc;
     rpc.onState((s) => {
+      if (!current()) return;
       set({ conn: s });
       if (s === "open") {
         get().refreshLists().catch(() => undefined);
@@ -154,7 +161,9 @@ export const useApp = create<State & Actions>((set, get) => ({
         wasOpen = true;
       }
     });
-    rpc.onNotification((method, p) => onNotification(method, p));
+    rpc.onNotification((method, p) => {
+      if (current()) onNotification(method, p);
+    });
     rpc.connect();
     await Promise.all([get().refreshLists(), get().refreshModels()]).catch(() => undefined);
     try {
@@ -189,13 +198,15 @@ export const useApp = create<State & Actions>((set, get) => ({
     try {
       const r = await rpc.call("thread/get", { thread_id: id });
       const t = r.thread as ThreadDetail;
-      set((s) => ({ details: { ...s.details, [id]: t }, activeWorkspace: t.cwd }));
-      localStorage.setItem("ee.workspace", t.cwd);
+      // 迟到的响应（用户已经切到别的对话）只缓存详情，不改当前项目
+      const still = get().activeThreadId === id;
+      set((s) => ({ details: { ...s.details, [id]: t }, ...(still ? { activeWorkspace: t.cwd } : {}) }));
+      if (still) localStorage.setItem("ee.workspace", t.cwd);
       rpc.call("shell/list", { thread_id: id })
         .then((r) => set((s) => ({ bgProcs: { ...s.bgProcs, [id]: r.procs as BgProc[] } })))
         .catch(() => undefined);
     } catch (e) {
-      get().showToast((e as Error).message, "error");
+      if (get().activeThreadId === id) get().showToast((e as Error).message, "error");
     }
   },
 
@@ -206,16 +217,47 @@ export const useApp = create<State & Actions>((set, get) => ({
   },
 
   async addWorkspace(path) {
-    const rpc = get().rpc!;
-    const r = await rpc.call("workspace/open", { path });
-    localStorage.setItem("ee.workspace", path);
-    set({ workspaces: r.workspaces, activeWorkspace: r.workspaces[0]?.path ?? path, activeThreadId: null, view: "chat" });
+    try {
+      const r = await get().rpc!.call("workspace/open", { path });
+      const p = r.workspaces[0]?.path ?? path; // 后端规范化后的路径（Windows 上盘符 / 分隔符）
+      localStorage.setItem("ee.workspace", p);
+      set({ workspaces: r.workspaces, activeWorkspace: p, activeThreadId: null, view: "chat" });
+      return true;
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+      return false;
+    }
   },
 
   async removeWorkspace(path) {
-    const rpc = get().rpc!;
-    const r = await rpc.call("workspace/remove", { path });
-    set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
+    try {
+      const r = await get().rpc!.call("workspace/remove", { path });
+      set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
+      return true;
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+      return false;
+    }
+  },
+
+  async renameThread(id, title) {
+    try {
+      await get().rpc!.call("thread/rename", { thread_id: id, title });
+      return true;
+    } catch (e) {
+      get().showToast(`重命名失败：${(e as Error).message}`, "error");
+      return false;
+    }
+  },
+
+  async deleteThread(id) {
+    try {
+      await get().rpc!.call("thread/delete", { thread_id: id });
+      return true;
+    } catch (e) {
+      get().showToast(`删除失败：${(e as Error).message}`, "error");
+      return false;
+    }
   },
 
   async send(text, attachments, queue) {
@@ -260,6 +302,11 @@ export const useApp = create<State & Actions>((set, get) => ({
         // 排队失败：回合还在跑，不动状态，把文字放回输入框
         set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
         return false;
+      }
+      // 输入框已经清空了：没带图片的消息把文字退回输入框，免得用户重打（带图片的由输入框自己恢复）
+      if (!attachments?.length && text.trim()) {
+        if (id) set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+        else set({ composerDraft: { text, nonce: Date.now() } });
       }
       if (id) {
         // 让对话里也看得到：不再停在“正在工作”

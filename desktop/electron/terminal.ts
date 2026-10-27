@@ -105,6 +105,34 @@ function flush(id: number) {
   if (!s.owner.isDestroyed()) s.owner.send("term:data", { id, data });
 }
 
+function killSession(id: number) {
+  const s = sessions.get(id);
+  if (!s) return;
+  sessions.delete(id);
+  if (s.timer) clearTimeout(s.timer);
+  try {
+    s.pty.kill();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 每个窗口只挂一次：窗口销毁或页面重新加载（旧页面的终端 id 已经没人认了）时结束它的所有终端。 */
+const watchedOwners = new WeakSet<WebContents>();
+function watchOwner(owner: WebContents) {
+  if (watchedOwners.has(owner)) return;
+  watchedOwners.add(owner);
+  const killOwned = () => {
+    for (const [id, s] of sessions) if (s.owner === owner) killSession(id);
+  };
+  owner.once("destroyed", killOwned);
+  owner.on("did-start-navigation", (details: any, _url?: unknown, isInPlace?: boolean, isMainFrame?: boolean) => {
+    const main = details?.isMainFrame ?? isMainFrame;
+    const same = details?.isSameDocument ?? isInPlace;
+    if (main && !same) killOwned();
+  });
+}
+
 export function killAll() {
   for (const [id, s] of sessions) {
     try {
@@ -165,16 +193,7 @@ export function registerTerminalIpc() {
         sessions.delete(id);
         if (!s.owner.isDestroyed()) s.owner.send("term:exit", { id, code: exitCode });
       });
-      e.sender.once("destroyed", () => {
-        if (sessions.has(id)) {
-          try {
-            p.kill();
-          } catch {
-            /* ignore */
-          }
-          sessions.delete(id);
-        }
-      });
+      watchOwner(e.sender);
       return { ok: true, id, pid: p.pid, shell: sh.file, kind: sh.kind, cwd };
     },
   );
@@ -192,14 +211,8 @@ export function registerTerminalIpc() {
     }
   });
   ipcMain.handle("term:kill", (_e, id: number) => {
-    const s = sessions.get(id);
-    if (!s) return false;
-    try {
-      s.pty.kill();
-    } catch {
-      /* ignore */
-    }
-    sessions.delete(id);
+    if (!sessions.has(id)) return false;
+    killSession(id);
     return true;
   });
 }
