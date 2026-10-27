@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-28（Asia/Shanghai，**六轮安全/正确性修复已合并进 main 并推送** `90b3512`；全量 pytest **1461 passed / 15 skipped / 0 failed**（15m30s）；下一步 D6）
+最后更新：2026-10-28（Asia/Shanghai，**八项安全/正确性修复已合并进 main 并推送** `d6e8437`；全量 pytest **1473 passed / 15 skipped / 0 failed**（15m49s）；下一步 D6）
 
 > **接手第一步（2026-10-28）**：这一轮的修复**已经合并到 main**（`90b3512`，快进合并，全量 0 failed）。
 > 修的是"静默改错/静默放行"类问题（详见下面「本轮：安全与正确性六连修」）。
@@ -77,6 +77,38 @@
 > 另：沙箱相关 44 passed / 2 skipped、编辑相关 91 passed、hunks 31 passed。
 > **全量 pytest：1461 passed / 15 skipped / 0 failed**（15m30s，2026-10-28 合并前跑的，零失败）。
 >
+> **续修：问题 5 / 6（2026-10-28，分支 `fix/worktree-loss`，已合并 main `d6e8437`）**
+>
+> - **问题 5（高）子代理代码会被删掉**（`core/worktree.py:finish_agent`）：
+>   `_git([...], check=False)` 失败时返回空字符串，和"确实没有改动"无法区分；
+>   原逻辑只看 `if not files:` 就 `remove(p, delete_branch=True, force=True)`。
+>   于是 diff 超时 / git 报错 / 目录暂时不可用 → 子代理**已提交的代码**连 worktree 带分支一起被删。
+>   `commits` 算出来了却从未参与删除判断。
+>   修法：只有 ① diff 成功 ② 结果为空 ③ 提交列表查得到且为空，三条同时满足才清理；
+>   否则保留并在返回值里给 `kept` / `kept_reason`。diff/log 改用 try/except 显式捕获。
+>   **测试 `tests/test_worktree_finish_safety.py`（5 例）**。
+>
+> - **问题 6（中）混合换行文件改一处全文变 CRLF**（`tools/fileops.py`）：
+>   `eol = "
+" if "
+" in s else "
+"` —— 只要文件里任一处是 CRLF，整篇就被当 CRLF，
+>   写回时把所有 `
+` 换成 `
+`。混合换行文件（Windows 编辑器 + 脚本生成）改一行 → 整文件重写。
+>   修法：`TextFile` 新增 `line_eols` 逐行记原换行符，`_render` 按行还原，
+>   新增行才用主风格（多数派，平手取首个出现的）。
+>   **测试 `tests/test_mixed_eol.py`（7 例）**。
+>
+> **续修验收**：全量 pytest **1473 passed / 15 skipped / 0 failed**（15m49s）；
+> 编辑链 7 个测试文件 98 passed、worktree 链 4 个文件 47 passed。
+>
+> **续修踩的坑（我引入又修掉的）**：⑥ `TextFile` 新字段忘了 `from dataclasses import field`，
+> import 就崩；⑦ `_render` 第一版把 `line_eols` 末尾那个占位 `""` 当成可用换行符，
+> 导致末尾追加一行丢掉结尾换行（`d = 4` 而非 `d = 4
+`）——被既有测试
+> `test_crlf_multi_edit_keeps_crlf` 抓住。
+
 > **本轮踩的坑（都是我自己引入又修掉的）**：① hunks 第一版只加 MAX_DRIFT=200 无效（实际距离仅
 > 10 行，在上限内）；② 第二版改 drift=0 误伤正常场景；③ 最终按"hunk 是否有上下文行"区分才对；
 > ④ `SAFE_OPTS` 初版漏了整段 PowerShell cmdlet，导致 `Get-ChildItem -Recurse | Select-Object Name`
