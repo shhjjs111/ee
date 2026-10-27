@@ -14,8 +14,38 @@ export type ToolItem = ItemBase & {
   summary: string;
   status: ToolStatus;
   output: string;
-  diff: string;
-  meta: Record<string, any>;
+  /** 只给界面的结构化数据（后端 ee/tools/details.py），不进模型上下文。 */
+  details: ToolDetails;
+};
+/** 工具结果 details：按 kind 有固定字段；所有 kind 都可能带 duration_ms / truncated / denied。 */
+export type ToolTruncation = { lines: number; bytes: number; path: string | null };
+export type FileChange = { verb: string; path: string; added: number; removed: number };
+export type ToolDetails = {
+  kind?: string;
+  duration_ms?: number;
+  truncated?: ToolTruncation;
+  denied?: boolean;
+  // edit
+  files?: FileChange[] | string[];
+  path?: string;
+  verb?: string;
+  added?: number;
+  removed?: number;
+  diff?: string;
+  // shell
+  command?: string;
+  exit?: number | null;
+  timed_out?: boolean;
+  background?: boolean;
+  bg_id?: string;
+  // read / list / search
+  start?: number;
+  end?: number;
+  total_lines?: number;
+  total?: number;
+  matches?: number;
+  ref?: boolean;
+  [k: string]: any;
 };
 export type ApprovalStatus = "pending" | "once" | "always" | "forever" | "deny" | "cancelled";
 export type ApprovalItem = ItemBase & {

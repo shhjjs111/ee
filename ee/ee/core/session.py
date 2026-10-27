@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
@@ -40,7 +41,8 @@ from ee.core.providers.openai_chat import ChatClient, Completion
 from ee.core.store import SessionStore
 from ee.tools import AGENT_PROFILES, ToolContext, ToolError, ToolResult, ToolState, agent_profile, build_tools
 from ee.tools.shellenv import ShellNotFound, resolve_shell
-from ee.tools.truncate import truncate_output
+from ee.tools.details import finalize as finalize_details
+from ee.tools.truncate import truncate_output_info
 
 log = logging.getLogger("ee.session")
 
@@ -1013,15 +1015,18 @@ class Session:
             args = pre.args
         summary = tool.summary(args) if tool else name
         emit(ToolStart(cid, name, args, summary))
+        t0 = time.monotonic()
         if err is not None:
             res = ToolResult(err, ok=False, summary=summary)
         else:
             res = await self._guarded_run(cid, tool, args, emit, pre)
             res = await hooks.post_tool_use(self, cid, tool, args, res, emit)   # D5-4 Hooks
-        out, _ = truncate_output(res.output, self.home / "tool-output", name)
+        # A6：content 给模型（截断后进历史），details 只给界面（不进历史，持久化在条目上）
+        out, trunc = truncate_output_info(res.output, self.home / "tool-output", name)
         self._results[cid] = out
         self._ok[cid] = res.ok
-        emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, res.meta))
+        details = finalize_details(name, res, int((time.monotonic() - t0) * 1000), trunc)
+        emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, details))
         if res.meta.get("kind") == "plan":
             emit(PlanUpdate(res.meta.get("items", [])))
         if res.ok and res.meta.get("end_turn"):

@@ -116,7 +116,7 @@ function WorktreeInfo({ wt, running }: { wt: NonNullable<SubagentRecord["worktre
 }
 
 export function SubagentCard({ item }: { item: ToolItem }) {
-  const rec: SubagentRecord | undefined = item.meta?.subagent;
+  const rec: SubagentRecord | undefined = item.details?.subagent;
   const status = subagentStatus(item);
   const running = status === "running";
   const queued = status === "queued";
@@ -222,8 +222,8 @@ export function WebSearchCard({ item }: { item: ToolItem }) {
   const running = item.status === "running";
   const [open, setOpen] = useState(false);
   const failed = item.status === "error" || item.status === "denied";
-  const q = String(item.args?.query ?? item.meta?.query ?? "");
-  const hits: Hit[] = item.meta?.results ?? [];
+  const q = String(item.args?.query ?? item.details?.query ?? "");
+  const hits: Hit[] = item.details?.results ?? [];
   return (
     <div className="fadein">
       <Head
@@ -265,8 +265,8 @@ export function WebFetchCard({ item }: { item: ToolItem }) {
   const running = item.status === "running";
   const [open, setOpen] = useState(false);
   const failed = item.status === "error" || item.status === "denied";
-  const url = String(item.meta?.url ?? item.args?.url ?? "");
-  const title = item.meta?.title as string | undefined;
+  const url = String(item.details?.url ?? item.args?.url ?? "");
+  const title = item.details?.title as string | undefined;
   return (
     <div className="fadein">
       <Head
@@ -276,7 +276,7 @@ export function WebFetchCard({ item }: { item: ToolItem }) {
             {running ? "正在打开" : failed ? "打开失败" : "打开了"} <span className="text-fg/90">{title || host(url)}</span>
           </>
         }
-        right={!running && !failed && item.meta?.chars ? <span className="shrink-0 text-[12px] text-faint">{item.meta.chars} 字</span> : undefined}
+        right={!running && !failed && item.details?.chars ? <span className="shrink-0 text-[12px] text-faint">{item.details.chars} 字</span> : undefined}
         active={running}
         tone={failed ? "error" : undefined}
         open={open}
@@ -301,8 +301,8 @@ export function SkillCard({ item }: { item: ToolItem }) {
   const running = item.status === "running";
   const [open, setOpen] = useState(false);
   const failed = item.status === "error" || item.status === "denied";
-  const name = String(item.meta?.name ?? item.args?.name ?? "");
-  const path = item.meta?.path as string | undefined;
+  const name = String(item.details?.name ?? item.args?.name ?? "");
+  const path = item.details?.path as string | undefined;
   return (
     <div className="fadein">
       <Head

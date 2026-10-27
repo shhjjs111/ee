@@ -184,7 +184,7 @@ def test_server_rpc_and_turn_end_keeps_running(ee_home, workspace):
         assert len(procs) == 1 and procs[0]["status"] == "running" and procs[0]["id"] == "b1"
         assert any(m == "shell/updated" and p["proc"]["status"] == "running" for m, p in ev)
         tool = [p["item"] for m, p in ev if m == "item/updated" and p["item"]["type"] == "tool"][-1]
-        assert tool["meta"]["background"] and tool["meta"]["bg_id"] == "b1"
+        assert tool["details"]["background"] and tool["details"]["bg_id"] == "b1"
         r = await b.call("shell/read", {"thread_id": tid, "id": "b1"})
         assert "tick" in r["output"]
         r = await b.call("shell/kill", {"thread_id": tid, "id": "b1"})

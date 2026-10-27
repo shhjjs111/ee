@@ -504,13 +504,13 @@ def test_server_thread_parallel_items(ee_home, workspace):
         await t.task
     run(go())
     tools = {it["call_id"]: it for it in t.items if it.get("type") == "tool"}
-    assert tools["p0"]["meta"]["subagent"]["summary"] == "甲" and tools["p1"]["meta"]["subagent"]["summary"] == "乙"
-    assert tools["p0"]["meta"]["subagent"]["id"] == "p0"
+    assert tools["p0"]["details"]["subagent"]["summary"] == "甲" and tools["p1"]["details"]["subagent"]["summary"] == "乙"
+    assert tools["p0"]["details"]["subagent"]["id"] == "p0"
     running_both = False
     state = {}
     for m, p in notes:
         if m == "item/updated" and p["item"].get("type") == "tool":
-            sub = p["item"].get("meta", {}).get("subagent") or {}
+            sub = p["item"].get("details", {}).get("subagent") or {}
             state[p["item"]["call_id"]] = sub.get("status")
             if state.get("p0") == "running" and state.get("p1") == "running":
                 running_both = True

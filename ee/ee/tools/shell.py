@@ -10,7 +10,7 @@ import time
 from ee.proc import kill_tree
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
-from ee.tools.truncate import truncate_output
+from ee.tools.truncate import truncate_output_info
 
 MAX_TIMEOUT = 600
 
@@ -135,13 +135,13 @@ class ShellTool(Tool):
         except FileNotFoundError as e:
             raise ToolError(f"无法启动 {shell.display}：{e}")
         dur = time.monotonic() - t0
-        body, truncated = truncate_output(out.rstrip("\n"), ctx.output_dir, "shell")
+        body, truncated = truncate_output_info(out.rstrip("\n"), ctx.output_dir, "shell")
         tail = f"\n[超时：{timeout}s 后已终止]" if timed_out else ""
         footer = f"\n[exit {code if code is not None else '?'} · {dur:.1f}s]"
         ok = (code == 0) and not timed_out
         return ToolResult((body or "（无输出）") + tail + footer, ok=ok, summary=f"Ran {command}",
                           meta={"kind": "shell", "command": command, "exit": code, "timed_out": timed_out,
-                                "truncated": truncated, "output": out[-4000:]})
+                                **({"truncated": truncated} if truncated else {}), "output": out[-4000:]})
 
 
 

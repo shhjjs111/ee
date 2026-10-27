@@ -24,7 +24,7 @@ function task(id: string, desc: string, sub: Record<string, unknown>, status = "
     status,
     output: "",
     diff: "",
-    meta: { kind: "subagent", subagent: { id, agent: "explore", description: desc, model: "m", mode: "read-only", max_steps: 30, step: 0, tools: [], text: "", summary: "", ...sub } },
+    details: { kind: "subagent", subagent: { id, agent: "explore", description: desc, model: "m", mode: "read-only", max_steps: 30, step: 0, tools: [], text: "", summary: "", ...sub } },
   } as unknown as ToolItem;
 }
 

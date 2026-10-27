@@ -35,6 +35,7 @@ import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
 import { DELIVERED_LABEL } from "../lib/queue";
+import { changedFiles, exploreHint, truncationText } from "../lib/details";
 
 // ------------------------------------------------------------ 通用折叠行
 function Row({
@@ -261,7 +262,7 @@ export function AssistantMessage({ item }: { item: AssistantItem }) {
 function exploreLabel(it: ToolItem): { verb: string; target: string; icon: React.ReactNode; file?: string } {
   const a = it.args || {};
   if (it.name === "read") {
-    const k = it.meta?.kind;
+    const k = it.details?.kind;
     const p = String(a.path ?? "");
     return { verb: k === "list" ? "列出" : "读取", target: shortPath(p, 3), icon: <FileSearch size={13} />, file: k === "list" ? undefined : p };
   }
@@ -274,7 +275,7 @@ export function ExploreGroup({ items }: { items: Item[] }) {
   const [open, setOpen] = useState(false);
   const tools = items as ToolItem[];
   const running = tools.some((t) => t.status === "running");
-  const reads = tools.filter((t) => t.name === "read" && t.meta?.kind !== "list").length;
+  const reads = tools.filter((t) => t.name === "read" && t.details?.kind !== "list").length;
   const searches = tools.length - reads;
   const parts: string[] = [];
   if (reads) parts.push(`${reads} 个文件`);
@@ -300,11 +301,30 @@ export function ExploreGroup({ items }: { items: Item[] }) {
                 <span className="mono truncate text-fg/80">{l.target}</span>
               )}
               {t.status === "error" && <span className="text-danger">失败</span>}
+              {exploreHint(t) && <span className="shrink-0 text-[12px] text-faint">{exploreHint(t)}</span>}
             </div>
           );
         })}
       </div>
     </Row>
+  );
+}
+
+/** 给模型的输出被截断时：说明 + 打开全文（全文存在 ~/.ee/tool-output/，用系统程序打开）。 */
+function TruncatedNote({ item }: { item: ToolItem }) {
+  const d = item.details ?? {};
+  const text = truncationText(d);
+  if (!text) return null;
+  const path = d.truncated?.path;
+  return (
+    <div className="mt-1.5 flex items-center gap-2 text-[12px] text-faint">
+      <span>{text}</span>
+      {path && window.ee?.openPath && (
+        <button className="text-accent hover:underline" onClick={() => window.ee?.openPath(path)} title={path}>
+          打开全文
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -316,18 +336,18 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   const a = item.args || {};
 
   if (item.name === "shell") {
-    const cmd = String(a.command ?? item.meta?.command ?? "");
-    const exit = item.meta?.exit as number | undefined;
-    const bg = !!item.meta?.background;
+    const cmd = String(a.command ?? item.details?.command ?? "");
+    const exit = item.details?.exit as number | undefined;
+    const bg = !!item.details?.background;
     const isOpen = open || (running && !!item.output);
     return (
       <Row
         icon={denied ? <Ban size={14} /> : <SquareTerminal size={14} />}
         title={
           <>
-            {running ? (bg ? "正在后台启动" : "正在运行") : denied ? "未运行" : bg ? (item.meta?.running ? "后台运行" : "后台运行了") : "运行了"}{" "}
+            {running ? (bg ? "正在后台启动" : "正在运行") : denied ? "未运行" : bg ? (item.details?.running ? "后台运行" : "后台运行了") : "运行了"}{" "}
             <Mono>{cmd.split("\n")[0].slice(0, 120)}</Mono>
-            {bg && item.meta?.bg_id && <span className="ml-1.5 rounded bg-soft px-1 text-[11px] text-muted">{item.meta.bg_id}</span>}
+            {bg && item.details?.bg_id && <span className="ml-1.5 rounded bg-soft px-1 text-[11px] text-muted">{item.details.bg_id}</span>}
           </>
         }
         right={
@@ -343,14 +363,15 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
         onToggle={() => setOpen(!isOpen)}
       >
         <OutputBox text={item.output || ""} />
+        <TruncatedNote item={item} />
       </Row>
     );
   }
 
-  if (item.meta?.kind === "edit" || ["write", "edit", "apply_patch"].includes(item.name)) {
-    const files: { verb: string; path: string; added: number; removed: number }[] =
-      item.meta?.files ?? (item.meta?.path ? [{ verb: item.meta.verb, path: item.meta.path, added: item.meta.added, removed: item.meta.removed }] : []);
-    const st = item.diff ? diffStat(item.diff) : { add: item.meta?.added ?? 0, del: item.meta?.removed ?? 0 };
+  if (item.details?.kind === "edit" || ["write", "edit", "apply_patch"].includes(item.name)) {
+    const files = changedFiles(item);
+    const diff = item.details?.diff ?? "";
+    const st = diff ? diffStat(diff) : { add: item.details?.added ?? 0, del: item.details?.removed ?? 0 };
     const path = files[0]?.path ?? String(a.path ?? "");
     const created = files[0]?.verb === "Created" || files[0]?.verb === "Added";
     const verb = running ? "正在编辑" : denied ? "未修改" : failed ? "编辑失败" : created ? "已创建" : "已编辑";
@@ -385,9 +406,9 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
             ))}
           </div>
         )}
-        {item.diff ? (
+        {diff ? (
           <div className="overflow-hidden rounded-xl border border-line bg-code">
-            <DiffView patch={item.diff} maxHeight={360} />
+            <DiffView patch={diff} maxHeight={360} />
           </div>
         ) : (
           <OutputBox text={item.output} />
@@ -397,11 +418,11 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   }
 
   if (["shell_output", "shell_write", "shell_kill"].includes(item.name)) {
-    const id = String(a.id ?? item.meta?.bg_id ?? "");
+    const id = String(a.id ?? item.details?.bg_id ?? "");
     const verb =
       item.name === "shell_kill" ? (running ? "正在结束" : "结束了") : item.name === "shell_write" ? (running ? "正在输入到" : "输入到") : running ? "正在查看" : "查看了";
     const input = item.name === "shell_write" ? String(a.input ?? "").replace(/\n$/, "") : "";
-    const cmd = String(item.meta?.command ?? "");
+    const cmd = String(item.details?.command ?? "");
     return (
       <Row
         icon={<SquareTerminal size={14} />}
@@ -428,21 +449,21 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
   }
   if (item.name === "todo") return null; // 计划单独渲染
   if (item.name === "ask_user" && !failed) return null; // 提问卡片单独渲染
-  if (item.name === "present_plan" && item.meta?.kind === "plan_proposal") return <PlanProposalCard item={item} />;
-  if (item.name === "task" || item.meta?.kind === "subagent") return <SubagentCard item={item} />;
+  if (item.name === "present_plan" && item.details?.kind === "plan_proposal") return <PlanProposalCard item={item} />;
+  if (item.name === "task" || item.details?.kind === "subagent") return <SubagentCard item={item} />;
   if (item.name === "web_search") return <WebSearchCard item={item} />;
   if (item.name === "web_fetch") return <WebFetchCard item={item} />;
   if (item.name === "skill") return <SkillCard item={item} />;
 
-  const mcp = item.meta?.kind === "mcp";
+  const mcp = item.details?.kind === "mcp";
   return (
     <Row
       icon={mcp ? <Plug size={14} /> : <Wrench size={14} />}
       title={
         mcp ? (
           <>
-            {running ? "正在调用" : "调用了"} <Mono>{String(item.meta?.tool ?? item.name)}</Mono>
-            <span className="ml-1 text-faint">（MCP · {String(item.meta?.server ?? "")}）</span>
+            {running ? "正在调用" : "调用了"} <Mono>{String(item.details?.tool ?? item.name)}</Mono>
+            <span className="ml-1 text-faint">（MCP · {String(item.details?.server ?? "")}）</span>
           </>
         ) : (
           <>
@@ -456,6 +477,7 @@ export function ToolCard({ item, approval }: { item: ToolItem; approval?: string
       onToggle={() => setOpen(!open)}
     >
       <OutputBox text={item.output} />
+      <TruncatedNote item={item} />
     </Row>
   );
 }

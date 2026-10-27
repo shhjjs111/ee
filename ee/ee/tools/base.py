@@ -11,13 +11,30 @@ class ToolError(Exception):
     """工具可预期的失败：原样回喂给模型让它自己修。"""
 
 
-@dataclass
 class ToolResult:
-    output: str
-    ok: bool = True
-    summary: str = ""
-    diff: str = ""
-    meta: dict = field(default_factory=dict)
+    """工具结果。output = 给模型的 content；details = 只给界面的结构化数据（见 tools/details.py），
+    不进模型上下文、持久化到条目。meta 是 details 的旧名（同一个 dict）。"""
+
+    __slots__ = ("output", "ok", "summary", "diff", "details")
+
+    def __init__(self, output: str, ok: bool = True, summary: str = "", diff: str = "",
+                 meta: dict | None = None, details: dict | None = None) -> None:
+        self.output = output
+        self.ok = ok
+        self.summary = summary
+        self.diff = diff
+        self.details = dict(details if details is not None else (meta or {}))
+
+    @property
+    def meta(self) -> dict:
+        return self.details
+
+    @meta.setter
+    def meta(self, v: dict) -> None:
+        self.details = v
+
+    def __repr__(self) -> str:
+        return f"ToolResult(ok={self.ok}, summary={self.summary!r}, output={self.output[:60]!r})"
 
 
 @dataclass

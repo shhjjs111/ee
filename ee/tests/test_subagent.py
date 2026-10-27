@@ -153,6 +153,6 @@ def test_server_thread_attaches_subagent_meta(ee_home, workspace):
         await t.task
     asyncio.run(go())
     tool = [it for it in t.items if it.get("type") == "tool" and it["name"] == "task"][0]
-    assert tool["meta"]["kind"] == "subagent" and tool["meta"]["subagent"]["status"] == "completed"
-    assert any(m == "item/updated" and p["item"].get("meta", {}).get("subagent", {}).get("status") == "running"
+    assert tool["details"]["kind"] == "subagent" and tool["details"]["subagent"]["status"] == "completed"
+    assert any(m == "item/updated" and p["item"].get("details", {}).get("subagent", {}).get("status") == "running"
                for m, p in notes)

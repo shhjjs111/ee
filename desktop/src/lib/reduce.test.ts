@@ -27,7 +27,7 @@ describe("applyItemNotification", () => {
 
 describe("groupBlocks", () => {
   it("连续的读/搜工具合并为一组", () => {
-    const tool = (id: string, name: string, kind?: string) => ({ id, type: "tool", name, call_id: id, args: {}, summary: "", status: "ok", output: "", diff: "", meta: kind ? { kind } : {} }) as any;
+    const tool = (id: string, name: string, kind?: string) => ({ id, type: "tool", name, call_id: id, args: {}, summary: "", status: "ok", output: "", details: kind ? { kind } : {} }) as any;
     const blocks = groupBlocks([
       tool("1", "read", "read"),
       tool("2", "grep", "search"),
@@ -40,8 +40,8 @@ describe("groupBlocks", () => {
 
   it("连续的子代理合成一组，单个子代理保持原样", () => {
     const task = (id: string, status = "running", sub?: string) =>
-      ({ id, type: "tool", name: "task", call_id: id, args: {}, summary: "", status, output: "", diff: "", meta: sub ? { kind: "subagent", subagent: { status: sub } } : {} }) as any;
-    const other = { id: "x", type: "tool", name: "shell", call_id: "x", args: {}, summary: "", status: "ok", output: "", diff: "", meta: {} } as any;
+      ({ id, type: "tool", name: "task", call_id: id, args: {}, summary: "", status, output: "", details: sub ? { kind: "subagent", subagent: { status: sub } } : {} }) as any;
+    const other = { id: "x", type: "tool", name: "shell", call_id: "x", args: {}, summary: "", status: "ok", output: "", details: {} } as any;
     const blocks = groupBlocks([task("a"), task("b", "running", "queued"), task("c"), other, task("d")]);
     expect(blocks.map((b) => b.kind)).toEqual(["agents", "item", "item"]);
     expect((blocks[0] as any).items.map((i: any) => i.id)).toEqual(["a", "b", "c"]);
