@@ -1,5 +1,6 @@
 // 子进程（内核）输出解码：先按 UTF-8 流式解（多字节字符被拆在两块之间也能拼对）；
 // 一旦出现非法 UTF-8（中文 Windows 上启动器/系统报错是 GBK），本条流后面都按 GBK 解，不再乱码。
+import { TextDecoder } from "node:util";
 export class OutputDecoder {
   private utf8: TextDecoder | null = new TextDecoder("utf-8", { fatal: true });
   private fallback: TextDecoder | null = null;
