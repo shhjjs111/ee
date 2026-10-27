@@ -935,6 +935,39 @@ def _sed_safe(args: list[str]) -> bool:
     return True
 
 
+def _opt_is(arg: str, names: tuple[str, ...] | set[str]) -> bool:
+    """这个参数是不是 names 里某个长选项的写法（含 GNU 的任意唯一前缀缩写）。
+
+    GNU getopt_long 允许把 `--output` 写成 `--out` / `--ou` / `--o`，
+    所以判断方向必须是「危险选项名.startswith(用户写的选项名)」——
+    原来写成 `用户写法.startswith(危险选项名)`，只能匹配完整写法，写短了就绕过。
+
+    前缀匹配是有意保守的：`--o` 同时是 `--output` / `--open-files-in-pager` 的前缀，
+    实际 git 会因歧义报错，但我们直接拒绝——宁可让用户多写几个字母。
+    """
+    a = arg.strip()
+    if not a.startswith("--"):
+        return False
+    name = a.split("=", 1)[0].rstrip()          # 按第一个 = 截断选项名
+    if name == "--":                            # 选项结束标记，不是选项
+        return False
+    return any(d.startswith(name) for d in names)
+
+
+def _any_opt(args: list[str], names: tuple[str, ...] | set[str]) -> bool:
+    return any(_opt_is(a, names) for a in args)
+
+
+# 各命令里能执行程序 / 写文件的长选项（完整写法；_opt_is 负责前缀）
+# --paginate：ee 的 child_env() 强制 GIT_PAGER=cat / PAGER=cat，实测当前不可利用
+#   （config core.pager 也被环境变量压住）；但它依赖那个前提，加一道纵深防御成本为零。
+#   --no-pager 不以 --paginate 开头，不受影响。
+_GIT_DANGEROUS_LONG = {
+    "--config-env", "--exec-path", "--output", "--open-files-in-pager", "--ext-diff", "--paginate",
+}
+_SORT_DANGEROUS_LONG = {"--output", "--compress-program"}
+
+
 def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     if not _redirects_safe(seg):
         return False  # 重定向写文件
@@ -965,20 +998,18 @@ def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     if name == "find":
         return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf",
                              "-fls") for a in args)
-    # 白名单命令里能执行外部程序或写文件的参数
-    if name == "rg" and any(a == "--pre" or a.startswith("--pre=") for a in args):
+    # 白名单命令里能执行外部程序或写文件的参数（长选项按 GNU 前缀缩写匹配）
+    if name == "rg" and _any_opt(args, {"--pre"}):
         return False
-    if name == "sort" and any(a == "-o" or a.startswith("-o") or a.startswith("--output") for a in args):
+    if name == "sort" and (any(a == "-o" or a.startswith("-o") for a in args)
+                           or _any_opt(args, _SORT_DANGEROUS_LONG)):
         return False
     if name == "tree" and any(a == "-o" or a.startswith("-o") for a in args):
         return False
     if name == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
         return False  # uniq IN OUT 会写 OUT
-    if name == "git" and any(a in ("-c", "--ext-diff", "-O", "--open-files-in-pager") or a.startswith(
-            ("--config-env", "--exec-path=", "--output", "--open-files-in-pager=", "-O")) for a in args):
+    if name == "git" and (any(a in ("-c", "-O") for a in args) or _any_opt(args, _GIT_DANGEROUS_LONG)):
         return False  # -c 注入配置可执行任意命令；--output 写文件；外部 diff / 分页器会执行程序
-    if name == "sort" and any(a.startswith("--compress-program") for a in args):
-        return False  # sort 会执行压缩程序
     if name == "sed":
         return _sed_safe(args)
     if name in _PS_MEMBER_CMDLETS:
