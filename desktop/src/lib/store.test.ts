@@ -70,3 +70,28 @@ describe("store", () => {
     expect(useApp.getState().threads).toEqual([]);
   });
 });
+
+describe("发送失败", () => {
+  it("空闲时 turn/start 失败：错误进对话，文字退回输入框（不丢用户打的字）", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") }, returnedDraft: null, composerDraft: null });
+    const p = useApp.getState().send("帮我改一下 README");
+    await Promise.resolve();
+    f.calls.find((c) => c.method === "turn/start")!.reject(new Error("内核 20 秒没有响应"));
+    expect(await p).toBe(false);
+    const st = useApp.getState();
+    expect(st.details.t.status).toBe("idle");
+    expect(st.details.t.items.some((x: any) => x.type === "error")).toBe(true);
+    expect(st.returnedDraft?.texts).toEqual(["帮我改一下 README"]);
+  });
+
+  it("新对话 thread/start 失败：文字退回输入框", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: null, activeWorkspace: "/A", details: {}, composerDraft: null });
+    const p = useApp.getState().send("你好");
+    await Promise.resolve();
+    f.calls.find((c) => c.method === "thread/start")!.reject(new Error("目录不存在"));
+    expect(await p).toBe(false);
+    expect(useApp.getState().composerDraft?.text).toBe("你好");
+  });
+});

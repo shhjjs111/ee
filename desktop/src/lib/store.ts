@@ -269,6 +269,11 @@ export const useApp = create<State & Actions>((set, get) => ({
         set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
         return false;
       }
+      // 输入框已经清空了：没带图片的消息把文字退回输入框，免得用户重打（带图片的由输入框自己恢复）
+      if (!attachments?.length && text.trim()) {
+        if (id) set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+        else set({ composerDraft: { text, nonce: Date.now() } });
+      }
       if (id) {
         // 让对话里也看得到：不再停在“正在工作”
         setStatus(id, "idle");
