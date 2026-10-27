@@ -79,6 +79,7 @@ class _ForkBlocked(Tool):
     def __init__(self, orig) -> None:     # noqa: D401  不读描述文件，照抄原工具
         self.name = orig.name
         self.description = getattr(orig, "description", "")
+        self.rules = list(getattr(orig, "rules", None) or [])   # 规则也照抄：系统提示词的「工具使用规则」段要一致
         self.parameters = orig.parameters
         self._schema = orig.schema()
 

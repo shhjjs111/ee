@@ -6,6 +6,7 @@ import fnmatch
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from ee.proc import popen_kwargs
@@ -34,6 +35,25 @@ def _walk(root: Path):
         dns[:] = [d for d in dns if d not in SKIP_DIRS and not d.startswith(".")]
         for f in fns:
             yield Path(dp) / f
+
+
+def _py_grep(root: Path, rx: re.Pattern, include: str | None) -> dict[str, list[str]]:
+    """没有 rg 时的逐文件搜索。只读普通文件（管道 / 设备文件打开会一直阻塞）。"""
+    per_file: dict[str, list[str]] = {}
+    files = [root] if root.is_file() else _walk(root)
+    for p in files:
+        if include and not _glob_match(p.name, include):
+            continue
+        try:
+            if not stat.S_ISREG(os.stat(p).st_mode):
+                continue
+            with open(p, encoding="utf-8", errors="strict") as fh:
+                for i, line in enumerate(fh, 1):
+                    if rx.search(line):
+                        per_file.setdefault(str(p), []).append(f"{i}: {line.rstrip()[:400]}")
+        except (UnicodeDecodeError, OSError):
+            continue
+    return per_file
 
 
 def _glob_match(relpath: str, pattern: str) -> bool:
@@ -100,11 +120,18 @@ class GlobTool(Tool):
             _, out = await _rg(["--files", "--hidden", "-g", "!.git", "-g", pattern], root)
             files = [root / l for l in out.splitlines() if l]
         else:
-            files = [p for p in _walk(root) if _glob_match(str(p.relative_to(root)), pattern)]
-        ig = _ignore(ctx)
-        if ig is not None:
-            files = [f for f in files if not ig.ignored(f, False)]
-        files.sort(key=_mtime, reverse=True)
+            files = None
+
+        def collect() -> list[Path]:     # 遍历 / .eeignore / stat 排序都是同步 IO：放线程里，不卡事件循环
+            fs = files if files is not None else \
+                [p for p in _walk(root) if _glob_match(str(p.relative_to(root)), pattern)]
+            ig = _ignore(ctx)
+            if ig is not None:
+                fs = [f for f in fs if not ig.ignored(f, False)]
+            fs.sort(key=_mtime, reverse=True)
+            return fs
+
+        files = await asyncio.to_thread(collect)
         total = len(files)
         shown = files[:MAX_FILES]
         lines = [rel(p, ctx.cwd) for p in shown]
@@ -165,24 +192,20 @@ class GrepTool(Tool):
             try:
                 rx = re.compile(pattern, re.I if icase else 0)
             except re.error as e:
-                raise ToolError(f"正则无效：{e}")
-            files = [root] if root.is_file() else _walk(root)
-            for p in files:
-                if include and not _glob_match(p.name, include):
-                    continue
-                try:
-                    with open(p, encoding="utf-8", errors="strict") as fh:
-                        for i, line in enumerate(fh, 1):
-                            if rx.search(line):
-                                per_file.setdefault(str(p), []).append(f"{i}: {line.rstrip()[:400]}")
-                except (UnicodeDecodeError, OSError):
-                    continue
-        ig = _ignore(ctx)
-        if ig is not None:
-            per_file = {f: v for f, v in per_file.items() if not ig.ignored(Path(f) if Path(f).is_absolute() else ctx.cwd / f, False)}
+                raise ToolError(f"正则无效：{e}") from None
+            # 纯 Python 回退（Windows 上常见）：逐个读文件是同步 IO，放线程里，不卡事件循环
+            per_file = await asyncio.to_thread(_py_grep, root, rx, include)
+
+        def order_files() -> tuple[dict[str, list[str]], list[str]]:
+            pf = per_file
+            ig = _ignore(ctx)
+            if ig is not None:
+                pf = {f: v for f, v in pf.items() if not ig.ignored(Path(f) if Path(f).is_absolute() else ctx.cwd / f, False)}
+            return pf, sorted(pf, key=lambda f: _mtime(Path(f)), reverse=True)
+
+        per_file, order = await asyncio.to_thread(order_files)
         if not per_file:
             return ToolResult("没有匹配", summary=self.summary(args), meta={"kind": "search"})
-        order = sorted(per_file, key=lambda f: _mtime(Path(f)), reverse=True)
         out_lines: list[str] = []
         total = sum(len(v) for v in per_file.values())
         if mode == "files":

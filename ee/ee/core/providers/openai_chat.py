@@ -204,7 +204,8 @@ class ChatClient:
                 kind = "other" if isinstance(e, ModelError) else net.classify(e, text)
                 log.warning("模型请求失败：%s 用时 %.1fs status=%s %s", self.spec.alias, time.monotonic() - t0, status,
                             text[:500], exc_info=True)
-                if status == 400 and degrade_budget > 0:
+                if status == 400 and degrade_budget > 0 and kind not in ("overflow", "quota"):
+                    # 上下文超长 / 余额不足的 400 常常也提到 max_tokens 等参数名：不能当成“参数不支持”永久降级
                     bad = T.unsupported_param(text)
                     if bad:
                         degrade_budget -= 1
@@ -215,7 +216,7 @@ class ChatClient:
                         self.state.save()
                         yield ("notice", f"服务端不支持参数 {bad}，已自动降级并记住")
                         continue
-                    if sent_reasoning and not strip_reasoning and not emitted and kind not in ("overflow", "quota"):
+                    if sent_reasoning and not strip_reasoning and not emitted:
                         # 说不清是哪个参数的 400：先去掉推理参数试一次（成功才记住）
                         strip_reasoning = True
                         degrade_budget -= 1
