@@ -262,7 +262,7 @@ def test_rpc_and_settings(ee_home, workspace, uhome):
     assert p == str(ee_home / "skills")
     # 设置：禁用写进 config，skills/list 立刻反映
     st = run(b.call("settings/get", {}))["settings"]["skills"]
-    assert st == {"enabled": True, "compat": True, "disabled": [], "max_chars": 8000}
+    assert st == {"enabled": True, "compat": True, "claude_home": False, "disabled": [], "max_chars": 8000}
     st = run(b.call("settings/set", {"settings": {"skills": {"disabled": ["pdf"], "compat": False}}}))["settings"]["skills"]
     assert st["disabled"] == ["pdf"] and st["compat"] is False
     assert "disabled" in (ee_home / "config.toml").read_text(encoding="utf-8")
