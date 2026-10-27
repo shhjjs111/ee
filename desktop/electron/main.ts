@@ -137,9 +137,17 @@ if (!app.requestSingleInstanceLock()) {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
-app.on("before-quit", () => {
+// 退出：先让后端自己清理（结束后台命令、MCP 服务器），最多等 6 秒，超时就结束整棵进程树再真正退出
+let backendStopped = false;
+app.on("before-quit", (e) => {
   markQuitting();
   trayCtl?.destroy();
   killTerminals();
-  backend.stop();
+  if (backendStopped) return;
+  e.preventDefault();
+  backendStopped = true;
+  backend
+    .stopAndWait(6000)
+    .catch(() => undefined)
+    .finally(() => app.quit());
 });
