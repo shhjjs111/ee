@@ -28,6 +28,11 @@ DEFAULT_EXCLUDES = ["node_modules/", ".venv/", "venv/", "__pycache__/", ".mypy_c
 _BEGIN, _END = "# >>> ee 自动排除（大文件）", "# <<< ee"
 
 
+def repo_key(worktree) -> str:
+    """工作区对应的影子仓库目录名（真实路径小写的 sha1 前 16 位）。"""
+    return hashlib.sha1(str(os.path.realpath(worktree)).lower().encode("utf-8")).hexdigest()[:16]
+
+
 class SnapshotError(Exception):
     pass
 
@@ -40,12 +45,12 @@ def _git() -> str | None:
 class DiskSnapshot:
     def __init__(self, worktree: Path, home: Path):
         self.worktree = Path(os.path.realpath(worktree))
-        key = hashlib.sha1(str(self.worktree).lower().encode("utf-8")).hexdigest()[:16]
-        self.gitdir = Path(home) / "snapshot" / key
+        self.gitdir = Path(home) / "snapshot" / repo_key(self.worktree)
         self.exe = _git()
         self.disabled = ""            # 非空 = 不可用的原因
         self._lock = threading.Lock()
         self._ready = False
+        self._numstat_cache: dict[tuple[str, str], dict] = {}
         if not self.exe:
             self.disabled = "没有找到 git"
         elif self._too_broad():
@@ -188,9 +193,99 @@ class DiskSnapshot:
                 done.append(str(full))
         return done
 
+    # ------------------------------------------------------------ 检查点时间线（D5-7）
+    _DIFF_CFG = ("-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false",
+                 "-c", "diff.external=", "-c", "color.ui=never")
+
+    def diff_text(self, a: str, b: str, paths: list[str] | None = None, context: int = 3) -> str:
+        """两个 tree 之间的 unified diff（字节按 utf-8 + surrogateescape 解码，\r 原样保留）。"""
+        if not a or not b or a == b:
+            return ""
+        _check_tree(a), _check_tree(b)
+        args = [*self._DIFF_CFG, "diff", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv",
+                f"-U{int(context)}", a, b]
+        if paths:
+            args += ["--", *paths]
+        with self._lock:
+            out = self._run(*args, timeout=60.0)
+        return out.decode("utf-8", "surrogateescape")
+
+    def numstat(self, a: str, b: str) -> dict:
+        """{files, additions, deletions}；tree 内容寻址，结果不变，缓存起来。"""
+        if not a or not b or a == b:
+            return {"files": 0, "additions": 0, "deletions": 0}
+        key = (a, b)
+        hit = self._numstat_cache.get(key)
+        if hit is not None:
+            return dict(hit)
+        _check_tree(a), _check_tree(b)
+        with self._lock:
+            out = self._run(*self._DIFF_CFG, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", a, b)
+        files = adds = dels = 0
+        for rec in out.decode("utf-8", "replace").split("\0"):
+            parts = rec.split("\t", 2)
+            if len(parts) < 3:
+                continue
+            files += 1
+            adds += int(parts[0]) if parts[0].isdigit() else 0
+            dels += int(parts[1]) if parts[1].isdigit() else 0
+        res = {"files": files, "additions": adds, "deletions": dels}
+        self._numstat_cache[key] = res
+        return dict(res)
+
+    def existing(self, trees: list[str]) -> set[str]:
+        """这些 tree 里还在影子仓库里的（被清理掉的不在）。"""
+        trees = [t for t in dict.fromkeys(trees) if t and _TREE_RE.fullmatch(t)]
+        if not trees or not (self.gitdir / "HEAD").is_file():
+            return set()
+        with self._lock:
+            try:
+                out = self._run("cat-file", "--batch-check", input=("\n".join(trees) + "\n").encode())
+            except SnapshotError:
+                return set()
+        ok = set()
+        for line in out.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "tree":
+                ok.add(parts[0])
+        return ok
+
+    def gc(self, keep: set[str]) -> dict:
+        """只保留 keep 里的 tree（及其内容）和最近 1 小时内新写的对象，其余删掉。"""
+        if not (self.gitdir / "HEAD").is_file():
+            return {"kept": 0}
+        keep = {t for t in keep if _TREE_RE.fullmatch(t)}
+        with self._lock:
+            present = set()
+            if keep:
+                out = self._run("cat-file", "--batch-check", input=("\n".join(sorted(keep)) + "\n").encode())
+                present = {ln.split()[0] for ln in out.decode("utf-8", "replace").splitlines()
+                           if len(ln.split()) >= 2 and ln.split()[1] == "tree"}
+            refs = self._run("for-each-ref", "--format=%(refname)", "refs/ee/keep/").decode().split()
+            cmds = [f"delete {r}" for r in refs if r.rsplit("/", 1)[-1] not in present]
+            cmds += [f"update {_ref(t)} {t}" for t in sorted(present)]
+            if cmds:
+                self._run("update-ref", "--stdin", input=("\n".join(cmds) + "\n").encode())
+            self._run("reflog", "expire", "--expire=now", "--all", timeout=120.0)
+            self._run("-c", "gc.reflogExpire=now", "gc", "-q", "--prune=1.hour.ago", timeout=600.0)
+            self._numstat_cache.clear()
+        return {"kept": len(present)}
+
     def _inside(self, rel: str) -> bool:
         full = os.path.realpath(self.worktree / rel)
         return full == str(self.worktree) or full.startswith(str(self.worktree) + os.sep)
+
+
+_TREE_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _check_tree(t: str) -> None:
+    if not _TREE_RE.fullmatch(t or ""):
+        raise SnapshotError(f"不是有效的快照：{t!r}")
+
+
+def _ref(tree: str) -> str:
+    return f"refs/ee/keep/{tree}"
 
 
 def _literal(rel: str) -> str:

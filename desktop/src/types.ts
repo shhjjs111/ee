@@ -308,6 +308,8 @@ export type SettingsResponse = {
   };
 };
 
+export type HunkInfo = { id: string; header: string; additions: number; deletions: number; accepted: boolean };
+
 export type DiffFile = {
   path: string;
   old_path: string;
@@ -315,7 +317,9 @@ export type DiffFile = {
   additions: number;
   deletions: number;
   binary: boolean;
+  too_large?: boolean;
   patch: string;
+  hunks?: HunkInfo[];
 };
 
 export type GitReview = {
@@ -326,7 +330,27 @@ export type GitReview = {
   files: DiffFile[];
   additions?: number;
   deletions?: number;
+  /** 非 git 项目：用会话的磁盘快照（会话开始 → 当前）对比（D5-7） */
+  snapshot?: { available: boolean; reason?: string; empty?: boolean; base?: string; since?: number | null };
 };
+
+/** 检查点时间线（D5-7）：kind=turn 是一个回合（回合前/后），kind=restore 是恢复前自动存的状态 */
+export type Checkpoint = {
+  id: string;
+  kind: "turn" | "restore";
+  turn?: number;
+  ts: number | null;
+  text: string;
+  before: string | null;
+  after: string | null;
+  undone: boolean;
+  running: boolean;
+  expired: boolean;
+  after_expired: boolean;
+  stat: { files: number; additions: number; deletions: number } | null;
+};
+
+export type CheckpointList = { available: boolean; reason?: string; checkpoints: Checkpoint[] };
 
 export type TermCreateResult =
   | { ok: true; id: number; pid: number; shell: string; kind: string; cwd: string }

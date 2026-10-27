@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 12:45（Asia/Shanghai，安全与健壮性 fix/audit-safety 合并：web_fetch 拦内网、docread 上限与超时、输出上限、GBK 回退、Windows 路径归一，见「D5 进度」首条；此前后端内核审查 fix/audit-core 合并，见下方「后端内核审查」。注：并行账号写的时间戳可能超前，以 git 提交时间为准）
+最后更新：2026-10-27 13:45（Asia/Shanghai，D5-7 检查点时间线 / 非 git 审阅 / 按块接受合并；此前 fix/audit-safety 安全与健壮性、fix/audit-core 后端内核审查已合并，见下方「D5 进度」）
 
 > **后端内核审查（2026-10-27，fix/audit-core，范围 core/providers/tools，每个 bug 先写失败测试，tests/test_audit_core.py）**：全量 pytest、e2e_ws 通过；ruff 0.17 默认规则报 222 条，几乎全是风格类（RUF012/S110/BLE001 等），未改，无 F 类错误。修复：① fork 子代理的 task/ask_user 占位工具没带「工具使用规则」，子代理每一步都误报“system/tools 与会话开始时不同”（_ForkBlocked 照抄 rules）；② 400 上下文超长/余额不足的错误里提到 max_tokens 等参数名（中转站常带 invalid_request_error）时被当成“参数不支持”永久去掉 max_tokens 并重试，现在 overflow/quota 不走降级（openai_chat.stream）；③ grep/glob 的纯 Python 回退（Windows 上没有 rg 时）在事件循环上同步遍历、读文件，大仓库会卡住整个后端（含中断），改到线程里，并跳过管道/设备文件；④ shell 输出按 4096 字节块各自解码，多字节中文切在块边界变成乱码，改增量解码；⑤ grep 被中断时 rg 子进程不结束；⑥ 自定义子代理定义：一个坏文件（GBK 编码/max_steps 非整数）让全部自定义子代理静默消失，UTF-8 BOM（记事本）开头的定义不被识别，值带引号不去——现在逐文件容错、BOM/GBK、去引号、记日志；⑦ edit 同一处在 edits 与顶层 old_string 各给一遍时误报重叠，去重。已核实无问题：两条队列的送入/退回时序（取出到写历史间无挂起点、TurnDone 后 drain 到任务结束间无挂起点）、修剪的批次/缓存/重放、sysprompt 信任与 BOM/CRLF、花费账本锁与原子写、tool_rules 拼装去重。未改（低风险/待定）：流式中途的 APIError（无 HTTP 状态）一律不重试；tool 消息缺 tool_call_id 时 wire_messages 每次随机补 id（破坏缓存，实际不会出现）；子代理用量合并会让修剪的 requests 计数提前前进（最多让下一次修剪略早）。
 
@@ -197,7 +197,7 @@
    - 已知/后续：管理入口在左栏自动化页而非设置页；只在 ee 运行（含托盘）时调度，无开机自启；一次运行一个回合；worktree 模式分支不自动清理；无会话内 /loop、RRULE（D5-3）；启动补跑早于桌面端连上时那条通知会漏（角标/收件箱正常）；真机 Windows 通知与托盘调度待验证。
 
 **D5 — 并行与扩展**
-1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. 检查点时间线 UI + 非 git 项目审阅 + 按块接受 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」）
+1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. [x] 检查点时间线 UI + 非 git 项目审阅 + 按块接受（2026-10-27，见「D5 进度」） 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」）
 
 **D5 进度**
 
@@ -210,7 +210,15 @@
   - Windows 路径（新 `core/winpath.py` 纯函数 `normalize_win_path`）：去每级结尾点/空格、`:流名:$DATA` 备用数据流、`\\?\` / `\\?\UNC\` 前缀，含 `~` 时用 GetLongPathNameW 对最长存在前缀展开 8.3 短名；`.eeignore` 判断和权限的写路径（deny 规则、工作区内外、`.git` 判断忽略大小写）在 Windows 上先归一。
   - 测试：`tests/test_audit_safety_web.py`、`test_audit_safety_docread.py`、`test_audit_safety_output.py`、`test_audit_safety_winpath.py`（真实 8.3/ADS 用例只在 Windows 跑；卷上没生成短名时 skip）。
   - 已知限制：走代理时目标由代理解析，只能做请求前预检（不能防 rebinding）；DNS 解析失败时预检放行（真正连接也会失败）；allow_private 只能在 config.toml 改，设置页没加开关；超时的文档解析线程无法强杀，只能在下一个检查点停（单页 PDF 解析内部不检查）；GBK 回退是按整条输出“粘住”的，同一条输出里 UTF-8 与 GBK 混排时后半段 UTF-8 会乱码；shell 的 `emit` 实时流不受内存上限限制（界面侧自行截断）。
-
+- **D5-7 检查点时间线 + 非 git 项目审阅 + 按块接受/拒绝**（feat/d5-7，2026-10-27）
+  - 参考了谁、取了哪点：Cline 检查点取“每回合一个检查点、点开对比这一回合改了什么、恢复前先存当前状态可反悔”（ee 只恢复文件；连对话一起回退仍走编辑重发）；OpenCode snapshot 取“影子 git 仓库 tree 对比、按差异文件恢复、定期 gc”（ee 用 refs/ee/keep/* 钉住要留的 tree 再 `gc --prune=1.hour.ago`，一小时宽限防止和正在抓的快照竞争）；Codex/Cursor 取“diff 每块接受/拒绝”：拒绝 = 把这块反向应用到当前文件，接受 = 只做标记、收起这块（不碰 git 暂存区）。
+  - 纯函数 `ee/core/hunks.py`：parse_hunks（只按 \n 切，保留 \r，`\ No newline at end of file` 记到对应侧）、reverse_apply/apply（先按行号精确找、再上下偏移找、再忽略 \r 找；忽略 \r 命中时换回去的行沿用文件换行风格）、fingerprint（只看块内容、去 \r、按界面文本解码，不含行号）。字节用 utf-8+surrogateescape 往返，GBK/任意字节不坏。
+  - 快照 `core/snapshot.py` 新增 diff_text/numstat（缓存）/existing/gc、`repo_key()`；`core/checkpoints.py`：每个会话保留最近 keep_days 天或最近 keep_turns 个回合的 tree（含恢复点），工作区已删且无会话引用的影子仓库整个删（先去只读属性，Windows）；后端启动 2 分钟后清理一次，一天最多一次，正在运行的工作区跳过。配置 `[snapshot] keep_days = 14, keep_turns = 100`（DEFAULTS 里有）。
+  - RPC `server/checkpoint_rpc.py`：checkpoint/list（回合号、时间、用户消息摘要、文件数 +/-、已撤销/进行中/已清理）、checkpoint/diff（mode=turn 回合前→后；before/after = 当前→恢复目标，确认框用）、checkpoint/restore（side=before/after；先把当前存成恢复点 meta.restore_points，最多 50 个；同步用户条目 undone 和 session.turn_trees，/undo 接着按新状态走；给模型加系统提示、清已读缓存、对话里加提示）、checkpoint/gc、review/hunk（accept/unaccept/reject）。git/diff、git/revert_file 加可选 thread_id：非 git 项目改用会话开始的快照 → 当前。“已接受”存 `~/.ee/review/accepted.json`，改动没了自动清掉。
+  - 顺手修：`gitinfo._run` 加 `core.quotepath=false`，之前 git 项目里中文文件名在审阅列表里显示成 `"\344\270..."` 且单文件撤销失败（先写了失败测试）；split_diff 改为只按 \n 切。
+  - 前端：右栏「改动」页头加「改动 / 时间线」切换（记在 localStorage）；非 git 项目显示“自对话开始 HH:MM”的快照对比，单文件撤销 = 恢复成对话开始时的版本；文件展开后每块有「接受」「拒绝」（拒绝先确认，已接受的块收起可撤销，文件全部接受显示 ✓）；时间线新的在上，点开看这一回合的 diff，「恢复到这回合之前/之后」「恢复到这个状态」先算出要改的文件列表再确认。文件 `components/Timeline.tsx`、`DiffView.tsx`（HunkDiff）、`RightPanel.tsx`、`lib/hunks.ts`。
+  - 测试：tests/test_hunks.py 17（真实 git diff 生成，CRLF、中文、GBK/任意字节、7 种无结尾换行组合、0 上下文、随机 40 组）、tests/test_checkpoints.py 6（时间线列/对比/恢复/反悔/重启后可用、非 git 审阅 + 按块 + 撤销、git 按块含 CRLF 与未跟踪新文件、gc 保留与清理与孤儿仓库、配置容错、中文文件名）；hunks.test.ts 5、Timeline.test.tsx 4。pytest 696→（见合并提交）过 2 跳过，vitest 61。
+  - 已知限制：恢复只管快照里的文件（.gitignore 忽略的、>2MB 的未跟踪文件不动）；0 上下文的纯增删块在行号过期时可能定位错（界面每次都重新取 diff，不会遇到）；内容重复的文件里偏移查找可能命中相邻的同样文本；“接受”只是标记，不暂存；时间线 diff 只读（不能在里面按块拒绝）；git 项目的时间线也可用，但审阅页仍按 HEAD；没有在界面截图检查（沙箱缺 Chromium 依赖），Windows 真机未手测。
 - **Pi A2+A7+A1+A8 提示词与工具表瘦身**（合并自 feat/pi-lean，2026-10-26 23:50）
   - 参考：Pi 的“工具描述一两句、细则随启用的工具进系统提示词”和默认只开 4 个工具。
   - A2：`prompts/tools/*.md` 以 `## 规则` 分隔，前为 schema 描述（一两句），后面每条规则只在工具启用时按顺序去重拼成系统提示词「# 工具使用规则」段（`tools.tool_rules`）；base.md 去掉与工具重复的条目；参数描述去重；edit 不再说返回 diff。保留的踩坑规则：shell 语法以 context-update 为准、常驻命令用 background 不用 `&`/start/nohup、read「与上次相同」再读拿全文。

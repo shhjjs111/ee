@@ -1,10 +1,12 @@
 import clsx from "clsx";
-import { ChevronRight, FileCode2, FileDiff, GitBranch, GitCommitHorizontal, RefreshCw, RotateCcw, SearchCheck, SquareTerminal, Undo2 } from "lucide-react";
+import { Check, ChevronRight, FileCode2, FileDiff, GitBranch, GitCommitHorizontal, History, RefreshCw, RotateCcw, SearchCheck, SquareTerminal, Undo2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatWhen, pendingCount } from "../lib/hunks";
 import { useApp, type RightTab } from "../lib/store";
-import type { DiffFile, GitReview } from "../types";
-import { DiffView, Stat } from "./DiffView";
+import type { DiffFile, GitReview, HunkInfo } from "../types";
+import { DiffView, HunkDiff, Stat, type HunkAction } from "./DiffView";
 import { FilesPanel } from "./FilesPanel";
+import { Timeline } from "./Timeline";
 import { TerminalPanel } from "./TerminalPanel";
 import { Button, Spinner, Tip } from "./ui";
 
@@ -15,19 +17,40 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   renamed: { label: "R", cls: "text-accent" },
 };
 
-function FileRow({ f, cwd, onChanged }: { f: DiffFile; cwd: string; onChanged: () => void }) {
+function FileRow({ f, cwd, threadId, snapshot, onChanged }: { f: DiffFile; cwd: string; threadId?: string; snapshot: boolean; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [hunkBusy, setHunkBusy] = useState<string | null>(null);
   const s = useApp();
   const st = STATUS[f.status] ?? STATUS.modified;
   const name = f.path.split("/").pop();
   const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
+  const hunks = f.hunks ?? [];
+  const allAccepted = hunks.length > 0 && pendingCount(hunks) === 0;
+  const onHunk = async (h: HunkInfo, action: HunkAction) => {
+    if (action === "reject" && !confirm(`撤回这块改动（${h.header}）？文件里的这一块会改回原样。`)) return;
+    setHunkBusy(h.id);
+    try {
+      const r = await s.rpc!.call("review/hunk", { cwd, path: f.path, hunk_id: h.id, action, thread_id: threadId });
+      if (action === "reject") s.showToast(r.action === "deleted" ? `已删除新文件 ${f.path}` : "已撤回这块改动");
+      onChanged();
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    } finally {
+      setHunkBusy(null);
+    }
+  };
   const revert = async () => {
-    const msg = f.status === "added" ? `删除新文件 ${f.path}？` : `把 ${f.path} 恢复成最近一次提交的版本？未提交的改动会丢失。`;
+    const msg =
+      f.status === "added"
+        ? `删除新文件 ${f.path}？`
+        : snapshot
+          ? `把 ${f.path} 恢复成这个对话开始时的版本？之后的改动会丢失。`
+          : `把 ${f.path} 恢复成最近一次提交的版本？未提交的改动会丢失。`;
     if (!confirm(msg)) return;
     setBusy(true);
     try {
-      await s.rpc!.call("git/revert_file", { cwd, path: f.path });
+      await s.rpc!.call("git/revert_file", { cwd, path: f.path, thread_id: threadId });
       s.showToast(f.status === "added" ? `已删除 ${f.path}` : `已撤销 ${f.path} 的改动`);
       onChanged();
     } catch (e) {
@@ -49,6 +72,11 @@ function FileRow({ f, cwd, onChanged }: { f: DiffFile; cwd: string; onChanged: (
           {dir && <span className="ml-1.5 text-[12px] text-faint">{dir}</span>}
         </span>
         <span className="flex-1" />
+        {allAccepted && (
+          <Tip label="所有改动块都已接受">
+            <Check size={13} className="shrink-0 text-ok" />
+          </Tip>
+        )}
         <Stat add={f.additions} del={f.deletions} className="shrink-0 group-hover:hidden" />
         <span className="hidden shrink-0 group-hover:flex" onClick={(e) => e.stopPropagation()}>
           <Tip label={f.status === "added" ? "删除这个新文件" : "撤销这个文件的改动"}>
@@ -60,28 +88,38 @@ function FileRow({ f, cwd, onChanged }: { f: DiffFile; cwd: string; onChanged: (
       </div>
       {open && (
         <div className="border-t border-line bg-code">
-          {f.binary ? <div className="px-4 py-3 text-[12px] text-faint">二进制或过大的文件，不显示内容</div> : <DiffView patch={f.patch} />}
+          {f.binary ? (
+            <div className="px-4 py-3 text-[12px] text-faint">二进制或过大的文件，不显示内容</div>
+          ) : hunks.length ? (
+            <HunkDiff patch={f.patch} hunks={hunks} busy={hunkBusy} onAction={onHunk} />
+          ) : (
+            <DiffView patch={f.patch} />
+          )}
         </div>
       )}
     </div>
   );
 }
 
+type ReviewView = "changes" | "timeline";
+
 function Review() {
   const s = useApp();
   const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
   const cwd = d?.cwd ?? s.activeWorkspace;
+  const threadId = d?.id;
   const [data, setData] = useState<GitReview | null>(null);
   const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<ReviewView>(() => (localStorage.getItem("ee.reviewView") === "timeline" ? "timeline" : "changes"));
 
   // 回合中改文件会频繁触发刷新、也可能切换项目：只认最后一次请求的结果
   const gen = useRef(0);
   const load = useCallback(async () => {
     if (!cwd || !s.rpc) return;
-    const tok = ++gen.current;
+    const tok = ++gen.current;            // 切对话/项目后，迟到的旧结果不覆盖
     setLoading(true);
     try {
-      const r = await s.rpc.call("git/diff", { cwd });
+      const r = await s.rpc.call("git/diff", { cwd, thread_id: threadId });
       if (tok === gen.current) setData(r);
     } catch (e) {
       if (tok !== gen.current) return;
@@ -90,11 +128,18 @@ function Review() {
     } finally {
       if (tok === gen.current) setLoading(false);
     }
-  }, [cwd, s.rpc]);
+  }, [cwd, threadId, s.rpc]);
 
   useEffect(() => {
-    load();
-  }, [load, s.reviewNonce]);
+    if (view === "changes") load();
+  }, [load, s.reviewNonce, view]);
+
+  const pick = (v: ReviewView) => {
+    setView(v);
+    localStorage.setItem("ee.reviewView", v);
+  };
+  const snap = !!data && !data.is_repo && !!data.snapshot?.available && !data.snapshot.empty;
+  const listable = !!data && (data.is_repo || snap);
 
   const undo = async () => {
     if (!d) return;
@@ -112,7 +157,19 @@ function Review() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3 text-[12.5px] text-muted">
-        {data?.is_repo ? (
+        <div className="flex shrink-0 rounded-lg bg-soft p-0.5">
+          {(["changes", "timeline"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => pick(v)}
+              className={clsx("flex h-6 items-center gap-1 rounded-md px-2 text-[12px]", view === v ? "bg-bg text-fg shadow-sm" : "text-muted hover:text-fg")}
+            >
+              {v === "changes" ? <FileDiff size={12} /> : <History size={12} />}
+              {v === "changes" ? "改动" : "时间线"}
+            </button>
+          ))}
+        </div>
+        {view === "timeline" ? null : data?.is_repo ? (
           <>
             <GitBranch size={13} />
             <span className="truncate">{data.branch}</span>
@@ -120,8 +177,17 @@ function Review() {
             <span>{data.files.length} 个文件</span>
             {data.files.length > 0 && <Stat add={data.additions ?? 0} del={data.deletions ?? 0} />}
           </>
+        ) : snap ? (
+          <>
+            <Tip label="不是 git 仓库：对比这个对话开始时的快照和现在的文件">
+              <span className="truncate">自对话开始 {formatWhen(data?.snapshot?.since)}</span>
+            </Tip>
+            <span className="text-faint">·</span>
+            <span className="shrink-0">{data!.files.length} 个文件</span>
+            {data!.files.length > 0 && <Stat add={data!.additions ?? 0} del={data!.deletions ?? 0} />}
+          </>
         ) : (
-          <span>{data ? "不是 git 仓库" : ""}</span>
+          <span className="truncate">{data ? "不是 git 仓库" : ""}</span>
         )}
         <span className="flex-1" />
         {d && (
@@ -131,7 +197,7 @@ function Review() {
             </Button>
           </Tip>
         )}
-        {data?.is_repo && data.files.length > 0 && (
+        {view === "changes" && data?.is_repo && data.files.length > 0 && (
           <>
             <Tip label="审查这些改动（/review）">
               <Button size="icon-sm" onClick={() => s.set({ dialog: { kind: "review" } })}>
@@ -146,26 +212,38 @@ function Review() {
           </>
         )}
         <Tip label="刷新">
-          <Button size="icon-sm" onClick={load}>
+          <Button size="icon-sm" onClick={() => (view === "changes" ? load() : useApp.setState((st) => ({ reviewNonce: st.reviewNonce + 1 })))}>
             {loading ? <Spinner size={12} /> : <RefreshCw size={13} />}
           </Button>
         </Tip>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {data && !data.is_repo && (
-          <div className="px-6 py-10 text-center text-[12.5px] leading-relaxed text-faint">
-            {data.git_available ? "这个文件夹不是 git 仓库，没法按文件对比。" : "没有找到 git。安装 Git for Windows 后可以按文件审阅改动。"}
-            <br />
-            仍可用右上角的撤销按钮回退 ee 上一回合的改动。
-          </div>
+        {view === "timeline" ? (
+          <Timeline />
+        ) : (
+          <>
+            {data && !listable && (
+              <div className="px-6 py-10 text-center text-[12.5px] leading-relaxed text-faint">
+                {!data.git_available
+                  ? "没有找到 git。安装 Git for Windows 后可以审阅改动、使用检查点。"
+                  : data.snapshot?.empty
+                    ? "这个文件夹不是 git 仓库。发出第一条消息后，这里会显示从对话开始到现在改过的文件。"
+                    : data.snapshot && !data.snapshot.available
+                      ? `这个文件夹不是 git 仓库，也没有快照（${data.snapshot.reason}）。`
+                      : "这个文件夹不是 git 仓库。打开一个对话后，可以对比对话开始时的快照。"}
+                <br />
+                仍可用右上角的撤销按钮回退 ee 上一回合的改动。
+              </div>
+            )}
+            {listable && data!.files.length === 0 && (
+              <div className="flex flex-col items-center px-6 py-14 text-center text-[12.5px] text-faint">
+                <FileDiff size={28} className="mb-3 opacity-50" />
+                {snap ? "从对话开始到现在没有改动文件" : "工作区没有未提交的改动"}
+              </div>
+            )}
+            {listable && data!.files.map((f) => <FileRow key={f.path} f={f} cwd={cwd} threadId={threadId} snapshot={snap} onChanged={load} />)}
+          </>
         )}
-        {data?.is_repo && data.files.length === 0 && (
-          <div className="flex flex-col items-center px-6 py-14 text-center text-[12.5px] text-faint">
-            <FileDiff size={28} className="mb-3 opacity-50" />
-            工作区没有未提交的改动
-          </div>
-        )}
-        {data?.is_repo && data.files.map((f) => <FileRow key={f.path} f={f} cwd={cwd} onChanged={load} />)}
       </div>
     </div>
   );

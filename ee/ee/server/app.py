@@ -32,7 +32,7 @@ from ee.core.store import SessionStore
 from ee.server import files as F
 from ee.server import gitops
 from ee.server import branch, mcp_rpc, memory_rpc, prompts_rpc, review_rpc, rules_rpc, shell_rpc, worktree_rpc
-from ee.server import hooks_rpc, skills_rpc
+from ee.server import checkpoint_rpc, hooks_rpc, skills_rpc
 from ee.server import settings as S
 from ee.server.threads import Thread
 
@@ -96,6 +96,7 @@ class Backend:
         shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
         rules_rpc.register(self.methods, self)         # permissions/list|remove（永久允许规则，D4-8）
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
+        checkpoint_rpc.register(self.methods, self)    # checkpoint/list|diff|restore|gc、review/hunk（D5-7）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
         from ee.server import sysprompt_rpc
@@ -551,20 +552,56 @@ class Backend:
         return {"setting": name, "kind": sh.kind, "exe": sh.exe, "display": sh.display, "notice": notice}
 
     # ------------------------------------------------------------ git
-    async def git_diff(self, cwd: str) -> dict:
+    async def git_diff(self, cwd: str, thread_id: str | None = None) -> dict:
+        """改动审阅。git 项目：相对 HEAD；非 git 项目且给了 thread_id：会话开始的磁盘快照 → 当前（D5-7）。"""
         if not Path(cwd).is_dir():
             raise RpcError(f"目录不存在：{cwd}")
-        return await asyncio.to_thread(gitops.review, Path(cwd))
-
-    async def git_revert_file(self, cwd: str, path: str) -> dict:
+        res = await asyncio.to_thread(gitops.review, Path(cwd), self.home)
+        if res["is_repo"] or not thread_id or not res["git_available"]:
+            return res
+        t, s, d, base = await self.snapshot_review_ctx(thread_id)
+        if d is None:
+            ds = s._disk_obj
+            res["snapshot"] = {"available": False, "reason": ds.disabled if ds is not None and ds.disabled else "磁盘快照已关闭"}
+            return res
+        if not base:
+            res["snapshot"] = {"available": True, "empty": True}
+            return res
         try:
-            res = await asyncio.to_thread(gitops.revert_file, Path(cwd), path)
+            snap = await asyncio.to_thread(gitops.snapshot_review, d, base, self.home)
+        except Exception as e:  # noqa: BLE001
+            raise RpcError(f"快照对比失败：{e}")
+        first = next((it for it in t.items if it.get("type") == "user" and it.get("tree") == base), {})
+        res.update(files=snap["files"], additions=snap["additions"], deletions=snap["deletions"],
+                   snapshot={"available": True, "base": base, "since": first.get("ts")})
+        return res
+
+    async def git_revert_file(self, cwd: str, path: str, thread_id: str | None = None) -> dict:
+        from ee.core import gitinfo
+        is_repo = (await asyncio.to_thread(gitinfo.status, Path(cwd))).is_repo if Path(cwd).is_dir() else False
+        try:
+            if is_repo or not thread_id:
+                res = await asyncio.to_thread(gitops.revert_file, Path(cwd), path)
+            else:                          # 非 git 项目：恢复成会话开始时快照里的版本（D5-7）
+                t, s, d, base = await self.snapshot_review_ctx(thread_id)
+                if d is None or not base:
+                    raise RpcError("这个会话还没有快照，无法撤销")
+                if t.running:
+                    raise RpcError("运行中不能改文件，先停止这一回合")
+                done = await asyncio.to_thread(d.restore, base, [path])
+                if not done:
+                    raise RpcError(f"路径不在工作区内：{path}")
+                res = {"path": path, "action": "restored" if Path(done[0]).exists() else "deleted"}
         except ValueError as e:
             raise RpcError(str(e))
-        for t in self.threads.values():   # 让模型下次知道文件变了
-            if t.session is not None and os.path.normcase(str(t.cwd)) == os.path.normcase(cwd):
-                t.session.state.files.clear()
+        self.forget_reads(cwd)
         return res
+
+    def forget_reads(self, cwd: str) -> None:
+        """工作区文件被界面改了：清掉同一目录会话的已读缓存，让模型下次重新 read。"""
+        for t in self.threads.values():
+            if t.session is not None and os.path.normcase(str(t.cwd)) == os.path.normcase(str(cwd)):
+                t.session.state.files.clear()
 
 
 # ---------------------------------------------------------------- WebSocket 传输
@@ -702,7 +739,9 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         else:
             print("EE_SERVE_READY " + json.dumps({"port": real_port, "pid": os.getpid()}), flush=True)
         backend.automations.start()                    # 自动化调度（D4-10）：错过的启动后补跑一次
+        gc_task = asyncio.create_task(_snapshot_gc_later(backend), name="ee-snapshot-gc")
         await stop
+    gc_task.cancel()
     watchdog.stop()
     await backend.automations.stop()
     for t in backend.threads.values():
@@ -722,6 +761,23 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             await asyncio.wait_for(asyncio.to_thread(lifeline.kill_descendants), 10)
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _snapshot_gc_later(backend: Backend, delay: float = 120.0) -> None:
+    """启动两分钟后清理一次影子仓库（一天最多一次；正在运行的会话所在的工作区跳过）。"""
+    from ee.core import checkpoints, snapshot
+    try:
+        await asyncio.sleep(delay)
+        cfg = await asyncio.to_thread(load_config, Path.home())
+        days, turns = checkpoints.keep_settings(cfg.data)
+        busy = {snapshot.repo_key(t.meta.get("cwd") or ".") for t in backend.threads.values() if t.running}
+        r = await asyncio.to_thread(checkpoints.gc_all, backend.home, days, turns, False, None, busy)
+        if not r.get("skipped"):
+            log.info("影子仓库清理：%s", r)
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        log.warning("影子仓库清理失败", exc_info=True)
 
 
 def _detach_stdin() -> int | None:
