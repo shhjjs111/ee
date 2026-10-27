@@ -1,6 +1,18 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 13:45（Asia/Shanghai，fix/audit-desktop + thread_id 高危修复、D5-7、D5-3、Pi 第二批 A6/A9/A12 已合并并推送 origin/main：代码提交 `ec082e1`；之后只有 HANDOFF 文档修订（不入 CI，最新以 `git log -1 origin/main` 为准）；全量 pytest 835 过 12 跳过、vitest 106、e2e/selftest 通过；D5-8 未完成；Windows CI 待确认）
+最后更新：2026-10-27 18:20（Asia/Shanghai，本机测试从 29 failed 修到 **838 passed / 13 skipped / 0 failed**；提交 `9cc8e46` + `59afb17` + `1a59975`；D5-8 未完成；Windows CI 待确认）
+
+> **本机测试环境修复（2026-10-27，三个提交）**：接手时本地全量是 `29 failed / 810 passed`，HANDOFF 记的是 `835 passed`，差额全部查清并修掉，现为 **838 passed / 13 skipped / 0 failed**（13m06s）。三类根因：
+>
+> **① Windows 子进程编码（真产品缺陷，`9cc8e46`）**：MCP 服务器子进程按本机代码页（中文 Windows = GBK）输出，而 MCP stdio 传输规定 UTF-8。服务器一发出中文（工具描述、工具结果常有）就写成 GBK 字节，客户端按 UTF-8 解析失败记成「stdout 非 JSON」并一直等到超时，**用户看到的是「连接超时」**。修法：`mcp/client.py:start()` 给子进程注入 `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1`（用户自配 env 在后，仍优先）。同一模式命中 `eval_profiles.py`：事件流里 usage 带 `¥`，GBK 编不出来让子进程崩在 `turn_done` 之前，成绩单被判 `crashed`。
+>
+> **② `user_ee_dirs()` 漏掉真实主目录（真产品缺陷，`9cc8e46`）**：原来只排除 `ee_home()` 与 `Path.home()`。工作区位于真实主目录下时（`C:\Users\alice\proj\foo` 这种很常见的布局），上层 `~/.ee/config.toml` 会被当成项目级配置再叠一遍，**静默盖掉用户级设置**。补上 `os.path.expanduser("~")` 来源；`hooks.py` 的项目文件查找、`sysprompt.py` 的项目级 SYSTEM.md 是同一不变量，一并修正。新增 `tests/test_config_scope.py`（4 例）钉住。
+>
+> **③ 测试依赖开发机环境（`59afb17` + `1a59975`）**：`skills.py:209` 扫 `Path.home()/.agents/skills`，开发机装了技能时每个会话开头多注入一条技能清单消息，让「history 有几条消息」的断言随机失败（CI 干净所以没暴露）。修法：`Session`/`Thread`/`Backend` 加可注入的 `user_home`，6 个创建点透传；`conftest` 加 autouse fixture —— **只替换 `Path.home` 的返回值，不动 HOME/USERPROFILE**，否则 `expanduser("~")` 会跟着漂移，真实 `~/.ee` 反而漏进排除集之外（这一条我踩过，先按改环境变量做的，结果把 ② 的 bug 现场复现了一遍）。另外 `test_bgshell` 原来用 `resolve_shell("auto")` 生成命令语法、会话却按配置用 git-bash，两者不一致时会生成错误语法（PowerShell 的 `& '...'` 交给 bash → 语法错误）；`wait_for` 默认 5s 太紧（见下）。
+>
+> **⚠ 本机 PowerShell 5.1 启动异常慢（环境问题，不是 ee 的 bug，未改代码）**：实测 `powershell.exe -Command "exit 0"` **4.3 秒**，而 `cmd` 0.05s、`git` 0.06s、`csc.exe`（同 .NET Framework）0.09s、`dotnet` 0.03s。换 `-NoLogo`/`-NoProfile`/`-EncodedCommand`/`-MTA`/干净环境变量/输出到 DEVNULL/代理黑洞全部不变；连跑 5 次不变快（排除 JIT）；`-ServerMode` 只要 1.75s 但无法执行命令。**用户朋友的机器上 PowerShell 正常**，所以这是本机环境问题（最可能是实时防护扫描，未验证也不建议为此关防护）。**结论：没有改 `auto` 的默认解析顺序** —— 项目默认值是对的，用户机器有差异，设置页「默认 shell」6 个选项本来就能改（`SettingsPage.tsx:451`、`settings.py:446`）。
+>
+> **跑测试必须用 `.venv` 的 python**：`../.venv/Scripts/python.exe -m pytest -q`。用系统 `python` 会因缺 `openai` 产生 30+ 个假失败（我接手时先撞的就是这个）。`PIP_NO_INDEX=1` 避免测试里的 pip 联网超时。
 
 > **本轮合并验收（2026-10-27，本地 main）**：`835 passed, 12 skipped`（10m20s，`PIP_NO_INDEX=1` 避免测试里的 pip 联网超时）；前端 `vitest 106`、两份 tsc、`vite build` 通过；`ee/scripts/e2e_ws.py` 假模型全流程通过、`ee selftest` 通过。**代码提交 `ec082e1` 已推送 origin/main；之后为 HANDOFF 修订，CI 以代码提交为准。** 12 个跳过是 Windows 平台/权限差异（软链接、mkfifo、tzset、POSIX、Windows sleep 演示、8.3 短名未生成时）。
 
@@ -100,6 +112,18 @@
 - [x] 2026-10-26 13:43 免费搜索：默认 web_search 后端改为 Exa 公共 MCP（https://mcp.exa.ai/mcp，免 key，已实测可用），失败回退 DuckDuckGo HTML（仅 mock 测试，沙箱 IP 被限流）；DeepSeek 搜索改为可选付费项；web_fetch 默认直接 httpx 抓取。待办：老用户 config.toml 里已存 search_backend="deepseek" 的需迁移；search_fallback 设置页暂无选项。
 - 用户决定：不急出新安装包，继续推进功能后统一出包。
 - 2026-10-26 13:50 D3 方案定稿：research/d3-plan.md（A MCP、B 斜杠命令、C 配置迁移+单价、D 附件、E 分叉/编辑重发）。尚未写代码。API key 安全存储方案见 d3-plan.md F 节，未实现。2026-10-26 13:51 Hark 当日额度用尽（次日 12:17 恢复），D3 全部未写代码，接手从 C 节开始。
+
+### 本轮：配置作用域修复（2026-10-27 14:30，**未提交**，待新会话在 ee-main 里走 deliver_task）
+
+- **不变量**：用户级 `~/.ee` 配置只能作为用户级叠一次，绝不能被当成“项目级配置”再叠一遍。
+- **缺陷**：`load_config` 用 `p.resolve() != user_cfg.resolve()` 守卫，而 `user_cfg` 来自 `ee_home()`（`EE_HOME` 可改）。只要 `EE_HOME` 指向别处（测试，或用户按 `ee/ee/config.py:6` 文档明写支持的改位置），守卫失效——真实主目录的 `~/.ee/config.toml` 被当成项目配置叠上来，**静默盖掉用户级设置**。用户改了 `EE_HOME` 后设置页存的值被忽略，是真 bug 而非测试问题。
+- 同一不变量在另外两处也漏了，一并修：`ee/ee/core/hooks.py`（项目 Hooks 会把 `~/.ee/config.toml` 读成项目配置）、`ee/ee/core/sysprompt.py`（`~/.ee/SYSTEM.md` 可能被当成项目级 SYSTEM.md）。
+- **做法**：`ee/ee/config.py` 新增 `user_ee_dirs()`，返回 `{ee_home(), Path.home()/".ee"}` 的解析集；`load_config`、`hooks.project_files`、`sysprompt.project_file` 三处统一按该集合排除。顺带修 `if p is user_cfg` 的身份比较（`Path` 按值比较不保证同实例），改成显式 `resolve()` 比较。
+- **验证（RED→GREEN 均实测）**：新增 `ee/tests/test_config_scope.py`（4 个用例）。先红（`api_key_env` 实得 `DEEPSEEK_API_KEY`）；把 `user_ee_dirs` 临时替换成旧行为后同一用例立刻重红，证明红因来自被测层；修复后 `test_config_scope + test_secrets + test_config_shell + test_sysprompt + test_hooks` = **62 passed**，原先失败的 `test_secrets.py::test_key_priority` 已通过。
+- **既有失败（与本次无关，勿误判）**：`tests/test_mcp.py` 3 个失败（`test_stdio_client_roundtrip` 等，报“连接超时”）。用 `git archive HEAD` 导出干净副本单独跑，同样 `3 failed, 6 passed` —— HEAD 上就存在。未修。
+- **未提交的原因**：本会话工作区根是 `E:\ee建设`（不是 git 仓库，仓库在子目录 `ee-main`），`deliver_task` 无法建立归属基线。改动 4 个文件已全部落盘、`git status` 只有它们：`ee/ee/config.py`（+31/−2）、`ee/ee/core/hooks.py`（+6/−3）、`ee/ee/core/sysprompt.py`（+5/−2）、`ee/tests/test_config_scope.py`（新增 76 行）。
+- **下一步**：在 `E:\ee建设\ee-main` 作为工作区根开新会话，`git status` 确认 4 个文件后走 `deliver_task` 提交。建议 message：`fix: 用户级 .ee 配置不再被当成项目级配置重复叠加`。
+
 
 ## D3 进度（接手从第一个 [ ] 开始；每项做完都提交推送并在此打勾）
 本地开发：`cd ee && pip install -e . pytest && python -m pytest -q`；`cd desktop && npm ci --ignore-scripts && npx tsc --noEmit -p tsconfig.json && npx vitest run`。
