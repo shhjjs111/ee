@@ -222,11 +222,14 @@ def test_readonly_shell_bypasses_denied(tmp_path, cmd):
     assert _policy(tmp_path).check("shell", {"command": cmd}).action == "ask", cmd
 
 
-@pytest.mark.parametrize("cmd", [
-    "sed -n '10,20p' a.py", "sed -n 5p a.py", "sed 's/foo/bar/g' a.py", "sed -n '/def /p' a.py",
-    "sed -E 's#a/b#c#2' a.py", "sed '1d;$d' a.py", "wc -l a.py 2>&1", "rg foo 2>/dev/null",
-    "ls 2> /dev/null", "rg 'foo(' src", 'grep "a{2}" f', "git show HEAD@{1}", "git log -5 2>$null",
-    "Get-ChildItem -Recurse | Select-Object Name",
+@pytest.mark.parametrize("shell,cmd", [   # 按实际 shell 的语法判（单引号在 cmd 里不是引号）
+    ("posix", "sed -n '10,20p' a.py"), ("posix", "sed -n 5p a.py"), ("posix", "sed 's/foo/bar/g' a.py"),
+    ("posix", "sed -n '/def /p' a.py"), ("posix", "sed -E 's#a/b#c#2' a.py"), ("posix", "sed '1d;$d' a.py"),
+    ("posix", "wc -l a.py 2>&1"), ("posix", "rg foo 2>/dev/null"), ("posix", "ls 2> /dev/null"),
+    ("posix", "rg 'foo(' src"), ("posix", 'grep "a{2}" f'), ("posix", "git show HEAD@{1}"),
+    ("powershell", "git log -5 2>$null"), ("powershell", "Get-ChildItem -Recurse | Select-Object Name"),
+    (None, "wc -l a.py 2>&1"), (None, "git show HEAD@{1}"), (None, "Get-ChildItem -Recurse | Select-Object Name"),
 ])
-def test_readonly_shell_common_reads_still_allowed(tmp_path, cmd):
-    assert _policy(tmp_path, "read-only").check("shell", {"command": cmd}).action == "allow", cmd
+def test_readonly_shell_common_reads_still_allowed(tmp_path, shell, cmd):
+    p = PermissionPolicy(mode="read-only", workspace=tmp_path, shell=shell)
+    assert p.check("shell", {"command": cmd}).action == "allow", cmd
