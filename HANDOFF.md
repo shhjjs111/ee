@@ -1,6 +1,6 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-27 13:45（Asia/Shanghai，D5-7 检查点时间线 / 非 git 审阅 / 按块接受合并；此前 fix/audit-safety 安全与健壮性、fix/audit-core 后端内核审查已合并，见下方「D5 进度」）
+最后更新：2026-10-27 14:20（Asia/Shanghai，fix/audit-desktop + thread_id 高危修复、D5-7、D5-3、Pi 第二批 A6/A9/A12 已合并进本地 main；D5-8 未完成；见下方「D5 进度」）
 
 > **后端内核审查（2026-10-27，fix/audit-core，范围 core/providers/tools，每个 bug 先写失败测试，tests/test_audit_core.py）**：全量 pytest、e2e_ws 通过；ruff 0.17 默认规则报 222 条，几乎全是风格类（RUF012/S110/BLE001 等），未改，无 F 类错误。修复：① fork 子代理的 task/ask_user 占位工具没带「工具使用规则」，子代理每一步都误报“system/tools 与会话开始时不同”（_ForkBlocked 照抄 rules）；② 400 上下文超长/余额不足的错误里提到 max_tokens 等参数名（中转站常带 invalid_request_error）时被当成“参数不支持”永久去掉 max_tokens 并重试，现在 overflow/quota 不走降级（openai_chat.stream）；③ grep/glob 的纯 Python 回退（Windows 上没有 rg 时）在事件循环上同步遍历、读文件，大仓库会卡住整个后端（含中断），改到线程里，并跳过管道/设备文件；④ shell 输出按 4096 字节块各自解码，多字节中文切在块边界变成乱码，改增量解码；⑤ grep 被中断时 rg 子进程不结束；⑥ 自定义子代理定义：一个坏文件（GBK 编码/max_steps 非整数）让全部自定义子代理静默消失，UTF-8 BOM（记事本）开头的定义不被识别，值带引号不去——现在逐文件容错、BOM/GBK、去引号、记日志；⑦ edit 同一处在 edits 与顶层 old_string 各给一遍时误报重叠，去重。已核实无问题：两条队列的送入/退回时序（取出到写历史间无挂起点、TurnDone 后 drain 到任务结束间无挂起点）、修剪的批次/缓存/重放、sysprompt 信任与 BOM/CRLF、花费账本锁与原子写、tool_rules 拼装去重。未改（低风险/待定）：流式中途的 APIError（无 HTTP 状态）一律不重试；tool 消息缺 tool_call_id 时 wire_messages 每次随机补 id（破坏缓存，实际不会出现）；子代理用量合并会让修剪的 requests 计数提前前进（最多让下一次修剪略早）。
 
@@ -13,7 +13,7 @@
 > - 工具权限/仓库地图/文档读取：只读白名单再修一批绕过——`sed` 的 e/w/-f、`GIT_CONFIG_*`/`GIT_EXTERNAL_DIFF` 等前置环境变量、`1>`/`2>` 编号重定向、一个 `>/dev/null` 放过其它重定向、PowerShell `( )`/`@()`/`{ }` 脚本块、`<( )`、`sort --compress-program`、`pytest --basetemp/--junitxml`；写路径带空格/引号可绕过工作区与 deny 检查；apply_patch 用 `input` 参数时不查路径；.eeignore 被软链接绕过；读命名管道/设备文件卡死事件循环；repomap 遇管道卡死且收入项目外软链接、子目录 cwd 不认 .eeignore（tests/test_review_tools.py）。副作用：PowerShell `| Where-Object { }` 默认需确认、只读下被拒。
 > - 未修、待用户/产品决定：删 worktree 时 gitignore 文件（.env）不随自动保存；/undo 与编辑重发会覆盖回合后手改的文件且不提示；快照恢复遇 Windows 占用文件只部分恢复；被 lock 的 worktree 仍会删；运行中删自动化不中断那次运行；改时区后已算好的一次仍按旧时区；Electron 强杀后端留孤儿进程（需 Job Object）；GBK 输出显示乱码不崩；Hook stdout/read 大文件无上限；docread 无超时/解压上限；web_fetch 未拦内网地址；Windows 结尾点/空格、`::$DATA`、8.3 短名可能绕过 .eeignore（未在 Windows 实测）；pytest 在只读白名单里会执行仓库代码（有意保留）。
 
-> **并行进行中（2026-10-27 00:45）**：4 个分支开发中，未合并：`feat/d5-3`（自动化 v2：worktree 完善、会话内 /loop）、`feat/d5-7`（检查点时间线、非 git 审阅、按块接受）、`feat/d5-8`（Windows 沙箱 v1，分支 CI 在 Windows 上实测）、`feat/pi-batch2`（A6 details 契约、A12 上下文构成视图、A9 仅增量摘要，80% 阈值不变）。接手时看各分支最新提交信息，做完逐个合并、全量测试、在此打勾。
+> **并行进行中（2026-10-27 14:20 更新）**：D5-7、D5-3、Pi 第二批（A6/A9/A12）已合并进本地 main；`fix/audit-desktop` 与 thread_id 高危修复也已合并。**只剩 D5-8 Windows 沙箱未完成**：远端没有 `feat/d5-8`，原 `/workspace/work/ee-feat-d5-8` 不在本机，代码需找回或重做。D6 未开始。
 
 > **2026-10-26 23:50 状态**：Pi 第一批（A1/A2/A7/A8 精简模式与工具描述压缩、A3 edit、A4 SYSTEM.md、A5 两条队列、A10 错误分类）和 D5-10 全部合并进 main，无未合并分支；pytest 673 过 2 跳过、vitest 52。**沙箱无 DeepSeek key，以上都没做真实任务对比**：打包前用户设好 DEEPSEEK_API_KEY 后跑 `python ee/scripts/eval_profiles.py --runs 3`（full vs lean，10 个任务），再决定 lean 是否设为默认；注意 A2 压缩了 full 模式的工具描述、A3 改了 edit schema，这两项影响默认行为，若真实对比变差就回退对应提交。下一步：D5-3 自动化 v2、D5-7 检查点时间线、D5-8 Windows 沙箱、Pi 第二批（A6 details 契约、A9、A12），再 D6。
 > **CI 修复（2026-10-27 00:20）**：14ce3c1/afbfc4d 起 Windows CI 失败，唯一原因是 `tests/test_sysprompt.py::test_user_system_replaces_base_and_patch_still_appended`：测试用 `write_text("…\r\n…")` 写 SYSTEM.md，Windows 文本模式又把 `\n` 译成 `\r\n`，文件实为 `\r\r\n`，读出多一个空行（产品代码按字节读并归一 CRLF，没问题）。修法：测试改用 `write_bytes(...encode("utf-8"))` 精确写 BOM+CRLF。其余 664 个测试与三个 E2E（含新加的排队/撤回/中断退回检查）在 Windows 上都过。验证：诊断分支 run 40356258429 全绿；main 上 d3559a6 的 run 40358056553 全绿。
@@ -197,9 +197,23 @@
    - 已知/后续：管理入口在左栏自动化页而非设置页；只在 ee 运行（含托盘）时调度，无开机自启；一次运行一个回合；worktree 模式分支不自动清理；无会话内 /loop、RRULE（D5-3）；启动补跑早于桌面端连上时那条通知会漏（角标/收件箱正常）；真机 Windows 通知与托盘调度待验证。
 
 **D5 — 并行与扩展**
-1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. 自动化 v2（worktree 模式、会话内 /loop） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. [x] 检查点时间线 UI + 非 git 项目审阅 + 按块接受（2026-10-27，见「D5 进度」） 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」）
+1. [x] ★git worktree 管理（2026-10-26 19:00，见下方「D5 进度」） 2. [x] ★子代理并行（2026-10-26 21:20，见「D5 进度」） 3. [x] 自动化 v2（worktree 模式、会话内 /loop，2026-10-27，见「D5 进度」） 4. [x] ★Hooks 5. [x] Skills 6. [x] ★仓库地图（tree-sitter tags，2026-10-26 20:00，见「D5 进度」） 7. [x] 检查点时间线 UI + 非 git 项目审阅 + 按块接受（2026-10-27，见「D5 进度」） 8. ★Windows 沙箱 v1（受限令牌 + ACL，只能写工作区，可选禁网） 9. [x] 回答风格（讲解/作业辅导）、按用途分模型、推理强度、预算告警（2026-10-26 22:45，见「D5 进度」） 10. [x] 修剪旧工具输出、fork 式子代理（2026-10-26 23:30，见「D5 进度」） 11. [x] Pi 第二批 A6/A9/A12（2026-10-27，见「D5 进度」）
 
 **D5 进度**
+
+- **thread_id 高危修复 + fix/audit-desktop**（2026-10-27，本地 main）
+  - `thread/delete` 原来直接把 `thread_id` 拼进 `~/.ee/sessions/<id>/`：传 `..` 会 `rmtree(~/.ee)`，传空串会删掉全部会话。现在 `core/ids.py` 只允许 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`，`Backend.call` 所有 RPC 入口校验，`_athread`/`_thread`/`thread_delete` 再校验一次；`thread_delete` 还检查解析后的路径必须直接位于 `sessions/` 下。`thread/delete`、`files/search` 移到工作线程；补齐 cwd/path/query/limit/text 参数类型校验（非法返回 -32602）。
+  - `fix/audit-desktop`：后端 `--parent-pid` 父进程看门狗 + 退出超时硬退出 + 结束子孙进程（`server/lifeline.py`）；主进程重启/启动失败/退出清理；RPC 超时/断线请求不再迟到补发；旧连接状态和迟到 thread/get 不覆盖新界面；设置/MCP/Hooks/技能/记忆切换项目丢弃旧响应；审阅/提交/文件预览只认最后一次请求；发送失败/操作失败给提示。测试 `tests/test_server_audit.py`（17）、`tests/test_lifeline.py`、前端新增 rpc/store/panels/settings 测试。
+  - 已知：Windows 真机未手测；父进程看门狗的实际强杀场景待验证。
+- **D5-3 自动化 v2 + 会话内 /loop**（feat/d5-3，2026-10-27）
+  - 自动化每次运行可新建 `auto-<自动化名>-<时间>` worktree（重名加后缀），运行记录带开始/结束/用时/用量/花费/模型/最多 4000 字日志和改动摘要（文件 +/-）；完成后可合并、压成一份或丢弃；运行中的 worktree 在 Worktree 对话框禁用合并/删除；成功且没有任何改动自动清理（**产品决策待用户确认是否保留**，目前保留）。
+  - 会话内 `/loop`：支持间隔（10m/30s/2h/1d、every/每…）、每天/工作日定时；`/loop list`、`/loop stop <编号>|all`；只在内存，ee 退出即停；忙时 pending、不重复排队；会话删除一并停止。前端 LoopTray、运行历史、worktree 摘要/合并/丢弃、AutomationsPage 测试。
+  - 测试：`tests/test_automations_v2.py`、`tests/test_loops.py` 26 个；前端 98 个（含 D5-7）通过。已知：Windows 真机未手测；/loop 无持久化。
+- **Pi 第二批 A6/A9/A12**（feat/pi-batch2，2026-10-27）
+  - A6：`ToolResult` 正式拆 `output`（给模型）和 `details`（只给界面、持久化到条目）；`tools/details.py`；read/grep/glob/shell 给结构化字段、截断信息、耗时；前端按 details 渲染、可打开全文；旧条目 meta/diff 兼容。
+  - A9：压缩有上次摘要时只把新内容与旧摘要合并（`prompts/compact_update.md`）；主路保住前缀缓存、换压缩模型时只发固定消息+旧摘要、侧路只渲染新内容+`<previous-summary>`；没有新内容不压缩；记录压缩节省。80% 自动压缩阈值不变。
+  - A12：`core/breakdown.py` + RPC `thread/context_breakdown`，按系统提示/工具定义/AGENTS.md/记忆/技能/仓库地图/压缩摘要/历史消息/工具输出/图片统计 token 与占比、修剪/压缩节省和阈值；点上下文圆环打开 `ContextPanel`，内含立即压缩；只读，不冻结前缀。
+  - 测试：`tests/test_details.py`、`test_compaction_incremental.py`、`test_context_breakdown.py` 等 94 个相关后端用例、前端 106 个通过。已知：breakdown 是估算；A9 需真实 key 长会话验证。
 
 - **审查第三轮遗留 · 安全与健壮性**（fix/audit-safety，2026-10-27）：修掉「审查第三轮 · 未修」里 5 项无需产品决策的。
   - 参考：Codex 的子进程输出按 UTF-8 优先、失败再按本机编码解；Apache POI 的 zip 解压比/条目上限思路；常见 SSRF 防护（解析后检查 + 每跳检查 + 连接时钉 IP）。
