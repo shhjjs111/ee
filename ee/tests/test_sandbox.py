@@ -48,11 +48,15 @@ def _run(ws, script_name, body, cfg, sh=None):
 # ------------------------------------------------------------------ 各平台
 
 def test_defaults_and_settings_parse():
-    assert DEFAULTS["sandbox"] == {"enabled": False, "network": True, "readonly_default": True}
-    assert SB.settings({}) == {"enabled": False, "network": True, "readonly_default": True}
+    assert DEFAULTS["sandbox"] == {"enabled": False, "network": True, "readonly_default": True,
+                                   "readonly_network_default": False}
+    assert SB.settings({}) == {"enabled": False, "network": True, "readonly_default": True,
+                               "readonly_network_default": False}
     assert SB.settings({"sandbox": {"enabled": 1, "network": 0}}) == {"enabled": True, "network": False,
-                                                                      "readonly_default": True}
-    assert SB.settings({"sandbox": "bad"}) == {"enabled": False, "network": True, "readonly_default": True}
+                                                                      "readonly_default": True,
+                                                                      "readonly_network_default": False}
+    assert SB.settings({"sandbox": "bad"}) == {"enabled": False, "network": True, "readonly_default": True,
+                                               "readonly_network_default": False}
 
 
 def test_disabled_plan_is_none(workspace):
@@ -142,7 +146,8 @@ def test_disabled_shell_has_no_notice(workspace, ee_home):
 def test_settings_roundtrip(ee_home):
     from ee.server import settings as S
     out = S.get_settings()["settings"]["sandbox"]
-    assert out == {"enabled": False, "network": True, "readonly_default": True, "supported": WIN}
+    assert out == {"enabled": False, "network": True, "readonly_default": True,
+                   "readonly_network_default": False, "supported": WIN}
     st = S.get_settings()["settings"]
     st["sandbox"] = {"enabled": True, "network": False}
     res = S.set_settings(st)["settings"]["sandbox"]

@@ -57,7 +57,10 @@ def settings(data: dict | None) -> dict:
             # 只读/计划模式下即使 enabled=false 也开沙箱：命令白名单是"防误操作"，
             # 不是安全边界（PowerShell 的成员调用语法永远可能还有下一种写法）。
             # 真正的强制隔离是这里的受限令牌 + ACL，而只读模式的威胁正是写。
-            "readonly_default": bool(s.get("readonly_default", True))}
+            "readonly_default": bool(s.get("readonly_default", True)),
+            # 只读/计划模式下默认禁网（用户决定 2026-10-28）：需要联网时用户会明确提要求。
+            # 注意这只拦沙箱里的 shell 子进程；web_search / web_fetch 不经沙箱，不受影响。
+            "readonly_network_default": bool(s.get("readonly_network_default", False))}
 
 
 def supported() -> bool:
@@ -205,9 +208,12 @@ def plan(data: dict | None, workspace: Path, readonly: bool = False) -> SandboxP
     s = settings(data)
     if not (s["enabled"] or (readonly and s["readonly_default"])):
         return None
+    # 只读/计划模式默认禁网（需要联网时用户会明确提要求）。
+    # 只影响沙箱内的 shell 子进程；web_search / web_fetch 不经沙箱，不受影响。
+    net = s["network"] and not (readonly and not s["readonly_network_default"])
     ws = Path(workspace).resolve()
     if not IS_WINDOWS:
-        return SandboxPlan(workspace=ws, active=False, network=s["network"], notice=NOTICE_UNSUPPORTED)
+        return SandboxPlan(workspace=ws, active=False, network=net, notice=NOTICE_UNSUPPORTED)
     try:
         sid = capability_sid(ws)
         tmp = tmp_dir(ws)
@@ -222,7 +228,7 @@ def plan(data: dict | None, workspace: Path, readonly: bool = False) -> SandboxP
         raise
     except Exception as e:  # noqa: BLE001
         raise SandboxError(f"{FAIL_MARK} 准备沙箱失败：{e}") from e
-    return SandboxPlan(workspace=ws, active=True, network=s["network"], sid=sid, tmp=tmp)
+    return SandboxPlan(workspace=ws, active=True, network=net, sid=sid, tmp=tmp)
 
 
 def revoke(workspace: Path) -> bool:

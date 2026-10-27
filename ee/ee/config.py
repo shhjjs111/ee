@@ -72,7 +72,8 @@ DEFAULTS: dict = {
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     # 命令沙箱（D5-8，仅 Windows 隔离写入）：enabled = shell 前台/后台命令在受限令牌里跑，只能写工作区和沙箱临时目录；
     # network=false = 用环境变量拦截联网（代理指向死端口、包管理器离线），尽力而为
-    "sandbox": {"enabled": False, "network": True, "readonly_default": True},
+    "sandbox": {"enabled": False, "network": True, "readonly_default": True,
+                "readonly_network_default": False},
     "network": {"proxy": "system", "connect_timeout": 15, "read_timeout": 90, "retries": 2},
     "providers": {
         "deepseek": {"base_url": "https://api.deepseek.com", "api_key_env": "DEEPSEEK_API_KEY"},
@@ -250,12 +251,15 @@ def sanitize_project_layer(layer: dict, user_cfg: dict) -> tuple[dict, list[str]
         if "network" in sb and bool(sb["network"]) and not bool(us.get("network", True)):
             sb.pop("network")
             dropped.append("sandbox.network")
-        # 只读模式默认开沙箱这一条，项目层只能开不能关（关掉等于削弱隔离）
+        # 只读模式默认开沙箱 / 默认禁网这两条，项目层只能开不能关（关掉等于削弱隔离）
         if "readonly_default" in sb and not bool(sb["readonly_default"]):
             sb.pop("readonly_default")
             dropped.append("sandbox.readonly_default")
+        if "readonly_network_default" in sb and bool(sb["readonly_network_default"]):
+            sb.pop("readonly_network_default")
+            dropped.append("sandbox.readonly_network_default")
         for k in list(sb):
-            if k not in ("enabled", "network", "readonly_default"):
+            if k not in ("enabled", "network", "readonly_default", "readonly_network_default"):
                 sb.pop(k)
                 dropped.append(f"sandbox.{k}")
     return clean, dropped

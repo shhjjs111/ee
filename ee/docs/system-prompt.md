@@ -44,8 +44,11 @@ PowerShell 的 `ForEach-Object` 可以把动作藏在参数里（裸词 `Kill`�
 而只读模式的威胁正是写（删文件、改配置）。所以：
 - **只读 / 计划模式下默认启用沙箱**（即使 `[sandbox] enabled=false`）——
   `[sandbox] readonly_default = false` 可关掉这个默认，但不建议；
-- 要把 ee 用于执行来源不明的内容，请显式开 `[sandbox] enabled=true` 并考虑关联网
-  （`network=false`，v1 只是环境变量尽力而为）。
+- **只读 / 计划模式下默认禁网**（`[sandbox] readonly_network_default`，默认 `false` = 禁）。
+  这只拦沙箱里的 shell 子进程（死代理 + pip/npm/cargo/uv 离线 + `GIT_SSH_COMMAND=false`），
+  **不影响 `web_search` / `web_fetch`**——那两个工具不经沙箱，是用户主动发起的联网搜索，
+  需要时直接说就行；
+- 要把 ee 用于执行来源不明的内容，请显式开 `[sandbox] enabled=true`。
 
 ## RPC
 `sysprompt/info {cwd?, thread_id?}`、`sysprompt/preview {cwd?, thread_id?}`、`sysprompt/trust {cwd, allow_id}`、`sysprompt/untrust {allow_id}`、`sysprompt/set {model_patch}`，详见 `ee/server/sysprompt_rpc.py`。
