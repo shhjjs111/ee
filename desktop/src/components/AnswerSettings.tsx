@@ -1,4 +1,5 @@
 // 设置页「回答与花费」（D5-9）：推理强度默认值与按模型记住的档位、回答风格、按用途分模型、花费上限。
+import { reportError } from "../lib/errors";
 import { Trash2 } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { EFFORT_OPTIONS, effortLabel } from "../lib/slash";
@@ -56,8 +57,8 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
   const [status, setStatus] = useState<BudgetStatus | null>(null);
   useEffect(() => {
     if (!s.rpc) return;
-    s.rpc.call("reasoning/prefs").then((r) => setRemembered(r.remembered ?? {})).catch(() => undefined);
-    s.rpc.call("budget/status", { thread_id: s.activeThreadId ?? undefined }).then(setStatus).catch(() => undefined);
+    s.rpc.call("reasoning/prefs").then((r) => setRemembered(r.remembered ?? {})).catch(reportError("读取思考强度记忆失败"));
+    s.rpc.call("budget/status", { thread_id: s.activeThreadId ?? undefined }).then(setStatus).catch(reportError("读取预算状态失败"));
   }, [s.rpc, resp]);
 
   const effort = draft.reasoning?.effort ?? "";
@@ -97,6 +98,7 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
                     s.rpc
                       ?.call("reasoning/forget", { model: m })
                       .then(() => setRemembered((cur) => Object.fromEntries(Object.entries(cur).filter(([k]) => k !== m))))
+                      .catch(reportError("忘记该模型的思考强度失败"))
                   }
                 >
                   <Trash2 size={11} />

@@ -1,3 +1,4 @@
+import { installGlobalErrorHandlers } from "./lib/errors";
 import * as TT from "@radix-ui/react-tooltip";
 import clsx from "clsx";
 import { AlertTriangle, RotateCw } from "lucide-react";
@@ -100,6 +101,7 @@ export default function App() {
       }
     };
     window.addEventListener("keydown", onKey);
+    const offErrors = installGlobalErrorHandlers(); // 没被处理的失败也弹提示，不再静默
     // D4-5：点通知打开对应会话；托盘菜单动作；托盘提示里显示进行中的会话数
     const offOpen = window.ee?.onOpenThread?.((id) => {
       useApp.getState().openThread(id).catch(() => undefined);
@@ -126,6 +128,7 @@ export default function App() {
       off?.();
       offConn();
       window.removeEventListener("keydown", onKey);
+      offErrors();
     };
   }, []);
 

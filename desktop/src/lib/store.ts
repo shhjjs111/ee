@@ -53,6 +53,8 @@ export type ReviewParams = { kind: "uncommitted" | "branch" | "commit" | "custom
 type Actions = {
   init(rpc: RpcClient): Promise<void>;
   refreshLists(): Promise<void>;
+  /** 拉项目/对话/模型列表，失败时 toast（连接、重连后用）。 */
+  refreshListsSafe(): Promise<void>;
   refreshModels(): Promise<void>;
   openThread(id: string): Promise<void>;
   newThread(cwd?: string | null): void;
@@ -152,13 +154,13 @@ export const useApp = create<State & Actions>((set, get) => ({
       if (!current()) return;
       set({ conn: s });
       if (s === "open") {
-        get().refreshLists().catch(() => undefined);
+        get().refreshListsSafe();
         // 断线重连后：重新拉当前会话，补上断线期间错过的条目
         const id = get().activeThreadId;
         if (wasOpen && id) {
           rpc.call("thread/get", { thread_id: id })
             .then((r) => useApp.setState((st) => ({ details: { ...st.details, [id]: r.thread } })))
-            .catch(() => undefined);
+            .catch((e: Error) => get().showToast(`重连后刷新当前对话失败：${e.message}`, "error"));
         }
         wasOpen = true;
       }
@@ -167,7 +169,7 @@ export const useApp = create<State & Actions>((set, get) => ({
       if (current()) onNotification(method, p);
     });
     rpc.connect();
-    await Promise.all([get().refreshLists(), get().refreshModels()]).catch(() => undefined);
+    await get().refreshListsSafe();
     try {
       const s = await rpc.call("settings/get");
       const theme = s.settings.ui.theme as Theme;
@@ -175,11 +177,19 @@ export const useApp = create<State & Actions>((set, get) => ({
       pushDesktopPrefs(s.settings.ui);
       if (!localStorage.getItem("ee.mode")) set({ draftMode: s.settings.permissions.mode });
       set({ defaultEffort: s.settings.reasoning?.effort ?? "", defaultStyle: s.settings.style?.default ?? "default" });
-    } catch {
-      /* ignore */
+    } catch (e) {
+      get().showToast(`读取设置失败，先用默认设置：${(e as Error).message}`, "error");
     }
     const { activeWorkspace, workspaces } = get();
     if (!activeWorkspace && workspaces[0]) set({ activeWorkspace: workspaces[0].path });
+  },
+
+  async refreshListsSafe() {
+    try {
+      await Promise.all([get().refreshLists(), get().refreshModels()]);
+    } catch (e) {
+      get().showToast(`加载项目、对话或模型列表失败：${(e as Error).message}`, "error");
+    }
   },
 
   async refreshLists() {
@@ -206,7 +216,7 @@ export const useApp = create<State & Actions>((set, get) => ({
       if (still) localStorage.setItem("ee.workspace", t.cwd);
       rpc.call("shell/list", { thread_id: id })
         .then((r) => set((s) => ({ bgProcs: { ...s.bgProcs, [id]: r.procs as BgProc[] } })))
-        .catch(() => undefined);
+        .catch((e: Error) => get().activeThreadId === id && get().showToast(`读取后台命令失败：${e.message}`, "error"));
     } catch (e) {
       if (get().activeThreadId === id) get().showToast((e as Error).message, "error");
     }
@@ -507,7 +517,9 @@ export const useApp = create<State & Actions>((set, get) => ({
   async interrupt() {
     const id = get().activeThreadId;
     if (!id) return;
-    await get().rpc!.call("turn/interrupt", { thread_id: id }).catch(() => undefined);
+    await get()
+      .rpc!.call("turn/interrupt", { thread_id: id })
+      .catch((e: Error) => get().showToast(`停止失败：${e.message}`, "error"));
   },
 
   async answer(callId, answer) {
@@ -582,7 +594,7 @@ function onNotification(method: string, p: any) {
     return;
   }
   if (method === "settings/changed") {
-    st.refreshModels().catch(() => undefined);
+    st.refreshModels().catch((e: Error) => st.showToast(`刷新模型列表失败：${e.message}`, "error"));
     const ss = (p as any)?.settings;
     if (ss) useApp.setState({ defaultEffort: ss.reasoning?.effort ?? "", defaultStyle: ss.style?.default ?? "default" });
     return;

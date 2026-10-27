@@ -1,3 +1,4 @@
+import { reportError } from "../lib/errors";
 import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { ArrowLeft, Check, Cpu, FileText, Gauge, Info, KeyRound, Monitor, Moon, Plug, Plus, Server, SlidersHorizontal, Star, Sun, Trash2, Webhook, Wrench } from "lucide-react";
@@ -317,7 +318,7 @@ export function SettingsPage() {
         setDraft(structuredClone(r.settings));
       })
       .catch((e: Error) => setLoadError(e.message));
-    window.ee?.appInfo().then(setAppInfo).catch(() => undefined);
+    window.ee?.appInfo().then(setAppInfo).catch(reportError("读取应用信息失败"));
   }, [s.rpc, loadNonce]);
 
   const dirty = useMemo(() => {

@@ -1,4 +1,5 @@
 // 子代理卡片、网页搜索/抓取卡片、技能卡片（task / web_search / web_fetch / skill 工具条目的专用渲染）。
+import { reportError } from "../lib/errors";
 import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { Ban, BookOpen, Bot, Check, ChevronRight, Circle, Clock, GitBranch, Globe, Search, X } from "lucide-react";
@@ -42,7 +43,7 @@ function Head({
 }
 
 function openUrl(url: string) {
-  if (window.ee?.openExternal) window.ee.openExternal(url);
+  if (window.ee?.openExternal) window.ee.openExternal(url).catch(reportError("打开链接失败"));
   else window.open(url, "_blank");
 }
 

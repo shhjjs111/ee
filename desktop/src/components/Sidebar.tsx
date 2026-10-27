@@ -1,3 +1,4 @@
+import { reportError } from "../lib/errors";
 import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import {
@@ -143,8 +144,11 @@ export function Sidebar() {
         const m: Record<string, string> = {};
         for (const x of r.results ?? []) m[x.thread.id] = x.hits?.find((h: any) => h.kind !== "title")?.snippet ?? "";
         setHits(m);
-      } catch {
-        if (live) setHits({});
+      } catch (e) {
+        if (live) {
+          setHits({});
+          reportError("全文搜索失败，只按标题筛选")(e);
+        }
       } finally {
         if (live) setSearchBusy(false);
       }

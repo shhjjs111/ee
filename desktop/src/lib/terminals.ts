@@ -1,5 +1,6 @@
 // 内置终端的会话管理：xterm 实例放在 React 之外（切换右侧标签页 / 关掉面板时不销毁），
 // 每个会话一个独立的 holder div，挂到当前可见的容器上即可复用。
+import { reportError } from "./errors";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { create } from "zustand";
@@ -138,7 +139,7 @@ export function newTab(cwd: string): number {
       const tab = useTerms.getState().tabs.find((t) => t.key === key);
       if (tab && tab.status === "exited") {
         term.reset();
-        spawn(key).catch(() => undefined);
+        spawn(key).catch((e) => patch(key, { status: "error", error: String(e) }));
       }
     }
   });
@@ -151,12 +152,12 @@ export function newTab(cwd: string): number {
     if (e.type !== "keydown") return true;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
-      navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+      navigator.clipboard?.writeText(term.getSelection()).catch(reportError("复制到剪贴板失败"));
       term.clearSelection();
       return false;
     }
     if (mod && !e.altKey && e.key.toLowerCase() === "v") {
-      navigator.clipboard?.readText().then((t) => t && term.paste(t)).catch(() => undefined);
+      navigator.clipboard?.readText().then((t) => t && term.paste(t)).catch(reportError("读取剪贴板失败"));
       return false;
     }
     return true;
