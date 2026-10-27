@@ -25,6 +25,7 @@ from ee.core import reasoning as RZ
 from ee.config import ROLES
 from ee.config import ee_home, load_config
 from ee.core.fileindex import FileIndex
+from ee.core.ids import is_thread_id
 from ee.core.permissions import MODE_LABEL, MODES
 from ee.core.secrets import redact
 from ee.core.store import SessionStore
@@ -37,6 +38,10 @@ from ee.server.threads import Thread
 
 log = logging.getLogger("ee.server")
 SLOW_RPC = 5.0     # 秒：超过就记一条日志
+# 这些方法的 thread_id 是可选参数；显式传 None 表示“没有当前会话”。其余方法必须给合法 id。
+OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
+# 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环（对应方法本身仍是同步函数，测试可直接调用）。
+BLOCKING_RPCS = {"thread/delete"}
 
 
 class RpcError(Exception):
@@ -115,12 +120,19 @@ class Backend:
         params = params or {}
         if not isinstance(params, dict):
             raise RpcError("params 必须是对象", -32602)
+        if "thread_id" in params:
+            tid = params["thread_id"]
+            if not (tid is None and method in OPTIONAL_THREAD_ID) and not is_thread_id(tid):
+                raise RpcError("参数错误：thread_id 不合法", -32602)
         try:
-            res = fn(**params)
+            if method in BLOCKING_RPCS:
+                res = await asyncio.to_thread(fn, **params)
+            else:
+                res = fn(**params)
+                if asyncio.iscoroutine(res):
+                    res = await res
         except TypeError as e:
             raise RpcError(f"参数错误：{e}", -32602)
-        if asyncio.iscoroutine(res):
-            res = await res
         return res
 
     # ------------------------------------------------------------ 持久化的小状态（工作区列表）
@@ -139,8 +151,13 @@ class Backend:
         self._desktop_file.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------ 线程
+    def _check_thread_id(self, thread_id: object) -> None:
+        if not is_thread_id(thread_id):
+            raise RpcError("参数错误：thread_id 不合法", -32602)
+
     async def _athread(self, thread_id: str) -> Thread:
         """取线程；不在内存里时在工作线程里读会话文件（大文件不卡事件循环）。"""
+        self._check_thread_id(thread_id)
         t = self.threads.get(thread_id)
         if t is not None:
             return t
@@ -148,6 +165,7 @@ class Backend:
         return self.threads.setdefault(thread_id, t)
 
     def _thread(self, thread_id: str) -> Thread:
+        self._check_thread_id(thread_id)
         t = self.threads.get(thread_id)
         if t is not None:
             return t
@@ -171,6 +189,12 @@ class Backend:
                 "default_model": cfg.default_model, "modes": [{"id": m, "label": MODE_LABEL[m]} for m in MODES]}
 
     async def thread_list(self, cwd: str | None = None, query: str | None = None, limit: int = 200) -> dict:
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            raise RpcError("参数错误：limit 必须是非负整数", -32602)
+        if cwd is not None and not isinstance(cwd, (str, os.PathLike)):
+            raise RpcError("参数错误：cwd 必须是字符串", -32602)
+        if query is not None and not isinstance(query, str):
+            raise RpcError("参数错误：query 必须是字符串", -32602)
         return await asyncio.to_thread(self._thread_list, cwd, query, limit)
 
     def _thread_list(self, cwd: str | None = None, query: str | None = None, limit: int = 200) -> dict:
@@ -178,7 +202,7 @@ class Backend:
         for t in self.threads.values():
             seen[t.id] = t.summary()
         for p in SessionStore.list_sessions(self.home)[: max(limit * 2, 400)]:
-            if p.stem in seen:
+            if p.stem in seen or not is_thread_id(p.stem):
                 continue
             try:
                 seen[p.stem] = {**SessionStore.summary(p), "status": "idle"}
@@ -205,6 +229,8 @@ class Backend:
         out = []
         for g in groups:
             sid = g["thread_id"]
+            if not is_thread_id(sid):
+                continue
             t = self.threads.get(sid)
             try:
                 summ = t.summary() if t is not None else {
@@ -220,6 +246,8 @@ class Backend:
 
     async def thread_start(self, cwd: str, model: str | None = None, mode: str | None = None,
                            worktree: bool | dict | None = None) -> dict:
+        if not isinstance(cwd, (str, os.PathLike)):
+            raise RpcError("参数错误：cwd 必须是字符串", -32602)
         if mode and mode not in MODES:
             raise RpcError(f"未知权限模式：{mode}")
 
@@ -279,6 +307,19 @@ class Backend:
         return {"thread": t.summary()}
 
     def thread_delete(self, thread_id: str) -> dict:
+        self._check_thread_id(thread_id)
+        sessions = (self.home / "sessions").resolve()
+        path = sessions / f"{thread_id}.jsonl"
+        extra = sessions / thread_id
+        # 双保险：即使上面的白名单被绕过，也绝不允许删 sessions 目录本身或它的父目录
+        for p in (path, extra):
+            try:
+                if p.resolve().parent != sessions:
+                    raise RpcError("参数错误：thread_id 不合法", -32602)
+            except OSError:
+                raise RpcError("参数错误：thread_id 不合法", -32602) from None
+        if extra.resolve() == sessions:
+            raise RpcError("参数错误：thread_id 不合法", -32602)
         t = self.threads.pop(thread_id, None)
         if t is not None and t.running:
             t.interrupt()
@@ -287,10 +328,8 @@ class Backend:
                 asyncio.get_running_loop().create_task(t.session.bg.close())
             except RuntimeError:
                 t.session.bg.kill_all_sync()
-        path = self.home / "sessions" / f"{thread_id}.jsonl"
         if path.is_file():
             path.unlink()
-        extra = self.home / "sessions" / thread_id      # 附件等（D3-D）
         if extra.is_dir():
             import shutil
             shutil.rmtree(extra, ignore_errors=True)
@@ -342,6 +381,8 @@ class Backend:
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
                          attachments: list | None = None, effort: str | None = None, style: str | None = None,
                          queue: str | None = None) -> dict:
+        if text is not None and not isinstance(text, str):
+            raise RpcError("参数错误：text 必须是字符串", -32602)
         if not (text or "").strip() and not attachments:
             raise RpcError("消息不能为空")
         text = text or ""
@@ -442,6 +483,8 @@ class Backend:
         return {"workspaces": ws}
 
     async def workspace_open(self, path: str) -> dict:
+        if not isinstance(path, (str, os.PathLike)):
+            raise RpcError("参数错误：path 必须是字符串", -32602)
         def run():
             p = Path(path).expanduser()
             if not p.is_dir():
@@ -460,6 +503,12 @@ class Backend:
         return await asyncio.to_thread(run)
 
     async def files_search(self, cwd: str, query: str = "", limit: int = 20) -> dict:
+        if not isinstance(cwd, (str, os.PathLike)):
+            raise RpcError("参数错误：cwd 必须是字符串", -32602)
+        if not isinstance(query, str):
+            raise RpcError("参数错误：query 必须是字符串", -32602)
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            raise RpcError("参数错误：limit 必须是非负整数", -32602)
         key = os.path.normcase(os.path.abspath(cwd))
         hit = self._indexes.get(key)
         if hit is None or time.time() - hit[0] > 30:
@@ -468,7 +517,7 @@ class Backend:
             self._indexes[key] = (time.time(), idx)
         else:
             idx = hit[1]
-        return {"files": idx.search(query, n=limit)}
+        return {"files": await asyncio.to_thread(idx.search, query, n=limit)}
 
     async def files_tree(self, cwd: str, path: str = "", show_ignored: bool = False) -> dict:
         try:
