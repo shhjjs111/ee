@@ -772,6 +772,9 @@ _PS_SAFE_OPTS = {
     "-sum", "-average", "-maximum", "-minimum", "-count", "-standarddeviation",
     "-line", "-character", "-word", "-culture", "-echo", "-verbose", "-debug",
 }
+# 这几个开关的值是“要执行的成员/脚本”，必须按动作判（支持 PowerShell 前缀缩写）
+_PS_MEMBER_OPTS = {"-membername", "-process", "-expandproperty", "-begin", "-end",
+                   "-filterscript", "-value"}
 # 参数值是属性名/字符串，不会是动作的情况：这些开关后面跟的值一律跳过
 _PS_VALUE_OPTS = {
     "-property", "-properties", "-expandproperty", "-first", "-last", "-skip", "-skipfirst", "-skiplast",
@@ -801,18 +804,29 @@ def _ps_pipeline_safe(name: str, args: list[str]) -> bool:
         a = args[i]
         low = a.lower()
         if a.startswith("-") or (a.startswith("/") and len(a) > 1):
-            # 开关：-MemberName / -Process 的值要按“成员名”再判一次
-            base = low.split(":", 1)[0]
-            if base in ("-membername", "-process", "-expandproperty", "-begin", "-end") and i + 1 < n:
+            # PowerShell 允许 -Param:Value 把值直接跟在参数名后面：-MemberName:Kill。
+            # 必须先按冒号切开分别看——否则 :Kill 会被当成参数名的一部分而漏检。
+            if ":" in low:
+                base, val = low.split(":", 1)
+            else:
+                base, val = low, None
+            if _resolve_member_opt(base):
                 # 这几个开关后面跟的就是“要执行的成员/脚本”，一律按动作判
-                if _looks_like_action(args[i + 1]):
+                target = val if val is not None else (args[i + 1] if i + 1 < n else None)
+                if target is not None and _looks_like_action(target):
                     return False
-                i += 2
+                i += 1 if val is not None else 2
+                continue
+            if val is not None:
+                # 其余开关的冒号值：不是成员名，但也不该当成“未知开关”跳过检查
+                if _looks_like_action(val):
+                    return False
+                i += 1
                 continue
             if base in _PS_VALUE_OPTS and i + 1 < n:
                 i += 2
                 continue
-            if _ps_opt_known(low):
+            if _ps_opt_known(base):
                 i += 1
                 continue
             # 不认识的开关：它后面的裸词可能是成员名，交给下面的裸词判断
@@ -829,6 +843,18 @@ def _ps_pipeline_safe(name: str, args: list[str]) -> bool:
             return False
         i += 1
     return True
+
+
+def _resolve_member_opt(base: str) -> bool:
+    """这个开关是不是“值是待执行成员”的那一类（支持 PowerShell 前缀缩写：-memb → -MemberName）。
+
+    缩写不能太短（-m 会同时命中 -MemberName / -Match），至少 4 个字符。
+    """
+    if base in _PS_MEMBER_OPTS:
+        return True
+    if len(base) < 4:
+        return False
+    return any(o.startswith(base) for o in _PS_MEMBER_OPTS)
 
 
 def _ps_opt_known(low: str) -> bool:

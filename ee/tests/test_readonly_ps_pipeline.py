@@ -37,6 +37,15 @@ DANGEROUS = [
     "Get-Process | ? Kill",
     # Select-Object 的 -ExpandProperty 也能取到方法
     "Get-Process | Select-Object -ExpandProperty Kill",
+    # PowerShell 的冒号赋值形式：-MemberName:Kill（值直接跟在参数名后面）
+    "Get-Process | ForEach-Object -MemberName:Kill",
+    "Get-Process | ForEach-Object -MemberName:Stop-Process",
+    "Get-Process | ForEach-Object -Process:Stop-Process",
+    "Get-Process | ForEach-Object -Process:Kill",
+    "Get-Process | Select-Object -ExpandProperty:Kill",
+    # 冒号形式 + 简写
+    "Get-Process | % -MemberName:Kill",
+    "Get-Process | ForEach-Object -memb:Kill",
 ]
 
 
