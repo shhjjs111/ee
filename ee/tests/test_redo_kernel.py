@@ -88,3 +88,49 @@ def test_compact_refused_while_turn_running(ee_home, workspace):
     r = run(main())
     assert not r["ok"] and "运行中" in r["message"]
     assert s.history[-1]["content"] == "答二" and not s.running
+
+
+# ---------------------------------------------------------------- 3) 重启恢复会话后前缀缓存整段失效
+
+def _persisted_session(workspace, home, script, session_id=None):
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.core.store import SessionStore
+    fake = FakeClient(script)
+    s = Session(load_config(workspace), cwd=workspace, client=fake, persist=True, home=home)
+    if session_id:
+        s.store = SessionStore(home, session_id=session_id)
+        s.history = SessionStore.load_messages(s.store.path)
+    return s, fake
+
+
+def _ser(ms):
+    return [json.dumps(m, ensure_ascii=False, sort_keys=True) for m in ms]
+
+
+def test_resume_keeps_prefix_bytes(ee_home, workspace):
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    a, fa = _persisted_session(workspace, ee_home, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        text_chunks("一好") + finish("stop"),
+        text_chunks("二好") + finish("stop"),
+    ])
+    run(collect(a, "一"))
+    a.set_style("concise")                      # 会话中途切换风格：system 里冻结的仍是开始时的风格
+    run(collect(a, "二"))
+    last = fa.calls[-1]
+    sent_before = last["messages"] + [{"role": "assistant", "content": "二好", "reasoning_content": ""}]
+
+    # 模拟重启：新进程从磁盘恢复（threads.ensure_session 的做法：读历史、按 meta 恢复风格）
+    b, fb = _persisted_session(workspace, ee_home, [text_chunks("三好") + finish("stop")], session_id=a.store.id)
+    b.set_style("concise")
+    run(collect(b, "三"))
+    first = fb.calls[0]
+    assert json.dumps(first["tools"], ensure_ascii=False) == json.dumps(last["tools"], ensure_ascii=False)
+    assert first["messages"][0] == last["messages"][0], "恢复后 system 必须与重启前逐字节一致"
+    n = len(sent_before)
+    want = _ser(sent_before)
+    got = _ser(first["messages"][:n])
+    # 重启前最后一次请求 + 模型回复，必须是恢复后第一次请求的字节前缀
+    assert got[:-1] == want[:-1]
+    assert json.loads(got[-1])["content"] == "二好"

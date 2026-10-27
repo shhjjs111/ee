@@ -607,12 +607,47 @@ class Session:
             self._sys_src = SP.resolve(self.cwd, self.home, self.config.data)
         return self._sys_src
 
+    def _prefix_compat(self) -> str:
+        """决定 system/tools 形状的会话属性；恢复会话时只复用同一组属性下冻结的前缀。"""
+        p = self.spec.profile
+        return f"{self.agent_profile}|{p.prompt_patch}|{p.edit_style}"
+
+    def _restore_prefix(self) -> bool:
+        """重启后恢复会话：复用会话存盘里最后一次冻结的 system+tools（逐字节），而不是按当前文件 / 风格 / MCP 重算。
+
+        原因：前缀缓存按字节匹配。重启后重算的前缀只要差一个字（会话中途切过风格、改过提示词文件、
+        MCP 工具顺序或启停变了），整段历史的缓存都会失效，下一次请求按全价计费。
+        存盘记录被脱敏改写过（sha256 对不上）或属性不同（换了精简模式 / 模型补丁）时不复用。"""
+        if not self.history or not self.store.enabled or not self.store.path.is_file():
+            return False
+        from ee.core.store import SessionStore
+        rec = SessionStore.last_prefix(self.store.path, self._prefix_compat())
+        if not rec:
+            return False
+        try:
+            fp = FrozenPrefix(dict(rec["system"]), list(rec["tools"]), str(rec["sha256"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not fp.verify():
+            return False
+        self.prefix = fp
+        style = rec.get("style")
+        self._prefix_style = style if isinstance(style, str) and style else "default"
+        self._style_switched = False
+        log.info("恢复会话 %s：沿用存盘里冻结的前缀 %s", self.store.id, fp.sha256[:12])
+        return True
+
     def _ensure_prefix(self, emit) -> FrozenPrefix:
+        if self.prefix is None and self._restore_prefix():
+            return self._ensure_prefix(emit)
         if self.prefix is None:
             self._prefix_style = self.style          # 风格段随 system 冻结；之后切换走 <context-update>
             self._style_switched = False
             self.prefix = self.current_prefix()
-            self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model})
+            # 整个前缀落盘：重启恢复会话时逐字节复用（_restore_prefix），保住前缀缓存
+            self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model,
+                                         "compat": self._prefix_compat(), "style": self._prefix_style,
+                                         "system": self.prefix.system, "tools": self.prefix.tools})
             if getattr(self, "hooks_role", "main") != "subagent":
                 for text, level in self.system_sources().notices():
                     emit(Notice(text, level))
