@@ -34,6 +34,8 @@ def _ends_with_newline(path: Path) -> bool:
 
 
 class SessionStore:
+    _tail_checked = False          # 本进程第一次追加前检查过文件末尾是否有没写完的半行
+
     def __init__(self, root: Path, session_id: str | None = None, enabled: bool = True):
         self.root = root / "sessions"
         self.id = session_id or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
