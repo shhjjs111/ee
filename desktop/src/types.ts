@@ -190,6 +190,8 @@ export type Settings = {
   network?: NetworkSettings;
   web?: WebSettings;
   subagent?: SubagentSettings;
+  /** D5-8 命令沙箱：supported 只读（仅 Windows 生效） */
+  sandbox?: SandboxSettings;
   memory?: MemorySettings;
   skills?: SkillsSettings;
   /** 精简模式：full 完整（默认）/ lean 只有 read/write/edit/shell + 短提示词；新对话生效 */
@@ -274,6 +276,7 @@ export type McpServerStatus = {
   server_info?: { name?: string; version?: string } | null;
 };
 export type McpListResponse = { enabled: boolean; servers: McpServerStatus[]; errors: string[]; project_json: string | null };
+export type SandboxSettings = { enabled: boolean; network: boolean; supported?: boolean };
 export type SubagentSettings = { enabled: boolean; max_steps: number; max_parallel?: number; worktree?: boolean };
 export type MemorySettings = { enabled: boolean; workspace: boolean; max_bytes: number; inject?: boolean; tool?: boolean };
 /** [skills]：总开关、兼容 .claude/.agents 目录、禁用的技能名、清单长度上限（D5-5）。 */

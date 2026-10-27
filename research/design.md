@@ -171,4 +171,4 @@ ee/
 - 项目级配置只能收紧（sanitize_project_layer）；后端口令不进子进程；命令按实际 shell 语法拆分并归一后判危险；pytest 需确认。
 - SYSTEM.md 只替换基础段，工具规则始终按启用工具追加；edit 模糊匹配只做定位级符号归一，有疑义报错。
 - 修剪旧工具输出默认关闭；`~/.claude/skills` 默认不读；DeepSeek 推理档位 默认/低/最高/关闭，reasoning_content 带 tools 时全部回传。
-- D5-8 Windows 命令沙箱 v1 已合并：受限令牌 + 能力 SID ACL + Job Object，只限写不限读；禁网仅环境变量尽力而为；项目层只能开沙箱、关联网。
+- D5-8 Windows 命令沙箱 v1 已合并：受限令牌 + 能力 SID ACL + Job Object，只限写不限读；禁网仅环境变量尽力而为；项目层只能开沙箱、关联网；设置页有开关。下一步 D6。

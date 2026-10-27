@@ -325,3 +325,13 @@ def test_project_layer_cannot_disable_sandbox_or_enable_network():
     assert set(dropped) >= {"sandbox.enabled", "sandbox.network", "sandbox.x"}
     clean, dropped = sanitize_project_layer({"sandbox": {"enabled": True, "network": False}}, {})
     assert clean["sandbox"] == {"enabled": True, "network": False} and not dropped
+
+
+def test_settings_set_ignores_readonly_supported(tmp_path, monkeypatch):
+    from ee.server import settings as S
+    monkeypatch.setenv("EE_HOME", str(tmp_path / ".ee"))
+    res = S.set_settings({"sandbox": {"enabled": True, "network": False, "supported": True}})
+    sb = res["settings"]["sandbox"]
+    assert sb["enabled"] is True and sb["network"] is False
+    raw = (tmp_path / ".ee" / "config.toml").read_text(encoding="utf-8")
+    assert "supported" not in raw

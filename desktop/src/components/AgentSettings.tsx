@@ -219,6 +219,7 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   const s = useApp();
   const web = { ...DEFAULT_WEB, ...(draft.web ?? {}) };
   const sub = { max_parallel: 3, worktree: true, ...(draft.subagent ?? { enabled: true, max_steps: 30 }) };
+  const sb = { enabled: false, network: true, ...(draft.sandbox ?? {}) };
   const mem = draft.memory ?? { enabled: true, workspace: true, max_bytes: 8192 };
   const setWeb = (p: Partial<WebSettings>) => up({ web: { ...web, ...p } });
   const backends = resp.choices.search_backends ?? ["exa", "duckduckgo", "deepseek", "tavily", "brave", "off"];
@@ -286,6 +287,14 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
         </Row>
         <Row label="计划提交（present_plan）" desc="计划模式下用它提交方案等你批准；关闭后计划模式直接用文字给方案">
           <Toggle on={draft.present_plan ?? true} onChange={(v) => up({ present_plan: v })} />
+        </Row>
+      </Card>
+      <Card title="命令沙箱" desc="开启后，shell 和后台命令只能写当前工作区和沙箱临时目录，写其它位置会被系统拒绝；读文件不受限制。不是完整的安全边界，配合权限审批使用。对之后执行的命令生效（运行中的回合结束后）。">
+        <Row label="启用沙箱" desc={sb.supported === false ? "当前系统不支持（仅 Windows 生效），开启后命令照常运行并提示未生效" : "Windows 受限令牌 + 工作区写权限 + 作业对象，命令结束时连同子进程一起清理"}>
+          <Toggle on={sb.enabled} onChange={(v) => up({ sandbox: { ...sb, enabled: v } })} />
+        </Row>
+        <Row label="允许联网" desc="关闭后通过代理与离线环境变量拦截 pip / npm / cargo / git 等联网，是尽力而为：不读代理设置、直接连接的程序仍可能联网">
+          <Toggle on={sb.network} onChange={(v) => up({ sandbox: { ...sb, network: v } })} />
         </Row>
       </Card>
       <Card title="网页搜索" desc="web_search 搜索网页、web_fetch 打开网页。每个请求最多等待下面的超时时间，代理跟随「模型与供应商 → 网络」。">

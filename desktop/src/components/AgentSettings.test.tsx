@@ -74,4 +74,15 @@ describe("工具与记忆设置：模式与开关", () => {
     expect(host.textContent).toContain("精简：下面的工具开关在精简模式下不生效");
     await act(async () => root.unmount());
   });
+
+  it("命令沙箱：默认关、允许联网；开关写回草稿；不支持的系统给提示", async () => {
+    const { host, root } = await mount({ sandbox: { enabled: false, network: true, supported: false } });
+    expect(host.textContent).toContain("当前系统不支持（仅 Windows 生效）");
+    await act(async () => switchAfter(host, "启用沙箱").click());
+    expect(latest?.sandbox?.enabled).toBe(true);
+    await act(async () => switchAfter(host, "允许联网").click());
+    expect(latest?.sandbox?.network).toBe(false);
+    expect(latest?.sandbox?.enabled).toBe(true);
+    await act(async () => root.unmount());
+  });
 });
