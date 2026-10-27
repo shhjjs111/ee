@@ -134,3 +134,35 @@ def test_resume_keeps_prefix_bytes(ee_home, workspace):
     # 重启前最后一次请求 + 模型回复，必须是恢复后第一次请求的字节前缀
     assert got[:-1] == want[:-1]
     assert json.loads(got[-1])["content"] == "二好"
+
+
+# ---------------------------------------------------------------- 4) 正文里出现 <think> 字样时后面的回答被吞
+
+def _split(chunks):
+    sp = T.ThinkSplitter()
+    out = []
+    for c in chunks:
+        out += sp.feed(c)
+    out += sp.flush()
+    text = "".join(p for k, p in out if k == "text")
+    reasoning = "".join(p for k, p in out if k == "reasoning")
+    return text, reasoning
+
+
+def test_think_literal_in_body_is_not_swallowed():
+    body = "MiniMax 会把思考放在 <think> 标签里，解析时要注意。后面还有很多回答内容。"
+    text, reasoning = _split([body[i:i + 4] for i in range(0, len(body), 4)])
+    assert text == body and reasoning == ""
+
+
+def test_think_block_at_start_still_parsed():
+    text, reasoning = _split(["\n<thi", "nk>先想想</th", "ink>\n答案里提到 <think> 也照常显示"])
+    assert reasoning == "先想想"
+    assert text == "\n答案里提到 <think> 也照常显示"
+
+
+def test_think_literal_end_to_end(ee_home, workspace):
+    body = "用 `<think>` 标签包裹推理。剩下的说明。"
+    s, fake = make_session(workspace, [text_chunks(body, 2) + finish("stop")])
+    run(collect(s, "问"))
+    assert s.history[-1]["content"] == body and not s.history[-1].get("reasoning")
