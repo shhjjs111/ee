@@ -149,3 +149,14 @@ def test_load_agents_tolerates_bad_files_bom_gbk(tmp_path):
     assert "写手" in defs
     assert "quoted" in defs and defs["quoted"].tools == ["read", "grep"]
     assert defs["broken"].max_steps == 30
+
+
+# ------------------------------------------------------------------ edit：模型同时给 edits 和顶层 old_string（同一处）不应报“重叠”
+def test_parse_edits_dedupes_same_edit_given_twice():
+    from ee.tools.fileops import apply_edits, parse_edits
+    args = {"path": "a.py", "edits": [{"old_string": "x = 1", "new_string": "x = 2"}],
+            "old_string": "x = 1", "new_string": "x = 2"}
+    edits = parse_edits(args)
+    assert len(edits) == 1
+    out, _ = apply_edits("x = 1\ny = 1\n", edits)
+    assert out == "x = 2\ny = 1\n"

@@ -357,7 +357,9 @@ def parse_edits(args: dict) -> list[Edit]:
             raise ToolError(f"edits[{i}] 缺少 old_string。")
         if not isinstance(new, str):
             raise ToolError(f"edits[{i}] 缺少 new_string（删除就传空字符串）。")
-        out.append(Edit(old.replace("\r\n", "\n"), new.replace("\r\n", "\n"), _as_bool(it.get("replace_all", False))))
+        e = Edit(old.replace("\r\n", "\n"), new.replace("\r\n", "\n"), _as_bool(it.get("replace_all", False)))
+        if e not in out:      # 同一处给了两遍（edits 里一份、顶层 old_string 又一份）：只算一次，不报重叠
+            out.append(e)
     return out
 
 
