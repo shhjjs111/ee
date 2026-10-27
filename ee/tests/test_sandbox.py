@@ -168,6 +168,15 @@ except OSError as e:
 
 
 @win_only
+@pytest.mark.parametrize("shell_name", ["cmd", "auto"])
+def test_win_cwd_preserved(workspace, ee_home, shell_name):
+    sh = resolve_shell(shell_name)
+    r = _run(workspace, "c.py", "import os; print('CWD=' + os.getcwd())", _cfg(True), sh=sh)
+    assert f"CWD={workspace}".lower() in r.output.lower() or f"CWD={workspace.resolve()}".lower() in r.output.lower(), \
+        f"{sh.display}: {r.output}"
+
+
+@win_only
 def test_win_write_inside_workspace_ok(workspace, ee_home):
     target = str(workspace / "inside.txt")
     r = _run(workspace, "w.py", WRITE.format(target=target), _cfg(True))

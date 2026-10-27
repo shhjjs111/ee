@@ -572,7 +572,8 @@ class _WinApi:
                 setattr(si, attr, h)
             buf = ct.create_unicode_buffer(cmdline)
             flags = self.CREATE_SUSPENDED | self.CREATE_UNICODE_ENVIRONMENT | self.CREATE_NO_WINDOW
-            if not self.adv.CreateProcessAsUserW(token, None, buf, None, None, True, flags, None, None,
+            cwd = os.getcwd()                         # 显式传工作目录（不传时部分程序会落到自己的安装目录）
+            if not self.adv.CreateProcessAsUserW(token, None, buf, None, None, True, flags, None, cwd,
                                                  ct.byref(si), ct.byref(pi)):
                 raise self._err("以受限令牌启动命令")
             if not self.k32.AssignProcessToJobObject(job, pi.hProcess):
