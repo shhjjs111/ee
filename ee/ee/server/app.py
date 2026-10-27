@@ -156,7 +156,8 @@ class Backend:
 
     def _save_desktop(self, d: dict) -> None:
         self.home.mkdir(parents=True, exist_ok=True)
-        self._desktop_file.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        from ee.core.atomic import write_text as atomic_write
+        atomic_write(self._desktop_file, json.dumps(d, ensure_ascii=False, indent=2))
 
     # ------------------------------------------------------------ 线程
     def _check_thread_id(self, thread_id: object) -> None:

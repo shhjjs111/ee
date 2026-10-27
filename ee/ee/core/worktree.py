@@ -65,9 +65,8 @@ def _load(home: Path | None = None) -> list[dict]:
 def _save(items: list[dict], home: Path | None = None) -> None:
     f = _index_file(home)
     f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, f)
+    from ee.core.atomic import write_text as atomic_write
+    atomic_write(f, json.dumps(items, ensure_ascii=False, indent=2))
 
 
 def _norm(p: Path | str) -> str:

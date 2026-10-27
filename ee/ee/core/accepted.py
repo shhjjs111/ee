@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from pathlib import Path
 
@@ -31,9 +30,8 @@ def _load(home: Path) -> dict:
 def _save(home: Path, data: dict) -> None:
     f = _file(home)
     f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, f)
+    from ee.core.atomic import write_text as atomic_write
+    atomic_write(f, json.dumps(data, ensure_ascii=False))
 
 
 def get(home: Path, root) -> dict[str, set[str]]:

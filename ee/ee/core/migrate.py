@@ -95,7 +95,8 @@ def migrate_user_file(path: Path | None = None) -> bool:
             bak.write_bytes(strip_secret_lines(raw.decode("utf-8")).encode("utf-8"))   # 备份不留明文 key；按字节写，保留原换行
         for dotted, value in writes:
             if dotted == STRIP_SECRETS:
-                path.write_text(strip_secret_lines(path.read_text(encoding="utf-8"), value), encoding="utf-8")
+                from ee.core.atomic import write_text as atomic_write
+                atomic_write(path, strip_secret_lines(path.read_text(encoding="utf-8"), value))
             else:
                 write_setting(dotted, value, path)
         write_setting("config_version", CURRENT_VERSION, path)

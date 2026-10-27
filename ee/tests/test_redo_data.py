@@ -320,3 +320,113 @@ def test_backend_opens_session_with_half_line(ee_home):
         lst = await b.call("thread/list", {})
         assert any(t["id"] == sid for t in lst["threads"])
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------- 5) 配置 / 记忆原子写入
+def test_atomic_write_retries_replace_on_windows_lock(tmp_path, monkeypatch):
+    import os
+
+    from ee.core import atomic
+    d = tmp_path / "d"
+    d.mkdir()
+    f = d / "x.json"
+    f.write_bytes(b"old")
+    real, calls = os.replace, []
+
+    def flaky(a, b):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise PermissionError(5, "拒绝访问。")
+        return real(a, b)
+    monkeypatch.setattr(os, "replace", flaky)
+    atomic.write_bytes(f, b"new\r\n")
+    assert f.read_bytes() == b"new\r\n" and len(calls) == 3
+    assert [p.name for p in d.iterdir()] == ["x.json"]           # 临时文件没留下
+
+
+def test_atomic_write_final_failure_keeps_old_and_cleans_tmp(tmp_path, monkeypatch):
+    import os
+
+    from ee.core import atomic
+    d = tmp_path / "d"
+    d.mkdir()
+    f = d / "x.json"
+    f.write_bytes(b"\xef\xbb\xbfold")
+    monkeypatch.setattr(os, "replace", lambda a, b: (_ for _ in ()).throw(PermissionError(5, "拒绝访问。")))
+    monkeypatch.setattr(atomic.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        atomic.write_text(f, "new")
+    assert f.read_bytes() == b"\xef\xbb\xbfold" and [p.name for p in d.iterdir()] == ["x.json"]
+
+
+@pytest.fixture
+def crash_on_write(monkeypatch):
+    """模拟写到一半崩溃：直接写目标文件的老办法会留下半截文件。"""
+    from pathlib import Path
+
+    def half(self, data, encoding=None, errors=None, newline=None):
+        with open(self, "w", encoding=encoding or "utf-8") as fh:
+            fh.write(data[: len(data) // 2])
+        raise OSError(28, "磁盘已满（模拟崩溃）")
+
+    def half_bytes(self, data):
+        with open(self, "wb") as fh:
+            fh.write(data[: len(data) // 2])
+        raise OSError(28, "磁盘已满（模拟崩溃）")
+    monkeypatch.setattr(Path, "write_text", half)
+    monkeypatch.setattr(Path, "write_bytes", half_bytes)
+
+
+def test_config_write_setting_is_atomic(tmp_path, crash_on_write):
+    from ee import config
+    f = tmp_path / "config.toml"
+    original = '# 我的配置\r\ndefault_model = "deepseek"\r\n\r\n[ui]\r\ntheme = "dark"\r\n'
+    with open(f, "w", encoding="utf-8", newline="") as fh:
+        fh.write(original)
+    try:
+        config.write_setting("ui.theme", "light", f)
+    except OSError:
+        pass
+    text = f.read_bytes().decode("utf-8")
+    assert text == original or ('theme = "light"' in text and "# 我的配置" in text and 'default_model = "deepseek"' in text)
+
+
+def test_config_write_setting_survives_crash_exactly(tmp_path, crash_on_write):
+    from ee import config
+    f = tmp_path / "config.toml"
+    original = 'default_model = "deepseek"\n[ui]\ntheme = "dark"\n'
+    f.open("w", encoding="utf-8").write(original)
+    config.write_setting("ui.theme", "light", f)          # 原子写不经过 Path.write_text，不受模拟崩溃影响
+    assert 'theme = "light"' in f.read_text(encoding="utf-8")
+
+
+def test_save_user_file_and_permissions_retry_replace(tmp_path, ee_home, monkeypatch):
+    import os
+
+    from ee import config
+    from ee.core import rules
+    real, n = os.replace, {"c": 0}
+
+    def flaky(a, b):
+        n["c"] += 1
+        if n["c"] % 2:
+            raise PermissionError(5, "拒绝访问。")      # 每次第一下都失败（杀毒/索引正打开着目标文件）
+        return real(a, b)
+    monkeypatch.setattr(os, "replace", flaky)
+    f = tmp_path / "config.toml"
+    config.save_user_file({"default_model": "x"}, f)
+    assert 'default_model = "x"' in f.read_text(encoding="utf-8")
+    rules._save({"version": 1, "projects": {"p": ["shell(ls)"]}}, ee_home)
+    assert "shell(ls)" in (ee_home / "permissions.json").read_text(encoding="utf-8")
+
+
+def test_memory_writes_are_atomic(tmp_path, crash_on_write):
+    from ee.core import memory
+    f = tmp_path / "memory.md"
+    original = "# 记忆\n\n- 第一条\n- 第二条\n"
+    f.open("w", encoding="utf-8").write(original)
+    memory.add_entry(f, "第三条")
+    memory.remove_entry(f, index=1)
+    assert memory.parse_entries(f.read_text(encoding="utf-8")) == ["第二条", "第三条"]
+    memory.save_text(f, "# 记忆\n\n- 全新\n")
+    assert memory.parse_entries(f.read_text(encoding="utf-8")) == ["全新"]
