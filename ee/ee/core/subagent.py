@@ -194,8 +194,9 @@ def agent_defs(home: Path, cwd: Path) -> dict[str, AgentDef]:
     defs = dict(BUILTIN)
     try:
         defs.update(load_agents([Path(home) / "agents", Path(cwd) / ".ee" / "agents"]))
-    except Exception:  # noqa: BLE001  坏的定义文件不影响内置子代理
-        pass
+    except Exception as e:  # noqa: BLE001  坏的定义文件不影响内置子代理
+        import logging
+        logging.getLogger("ee.agents").warning("加载自定义子代理失败：%s", e)
     return defs
 
 

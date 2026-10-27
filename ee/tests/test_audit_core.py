@@ -133,3 +133,19 @@ def test_rg_killed_on_cancel(tmp_path, monkeypatch):
         time.sleep(0.05)
     os.kill(pid, 9)
     raise AssertionError("取消后 rg 子进程还在运行")
+
+
+# ------------------------------------------------------------------ 自定义子代理：一个坏文件不能让全部消失；BOM / GBK / 引号
+def test_load_agents_tolerates_bad_files_bom_gbk(tmp_path):
+    from ee.core.agents import load_agents
+    d = tmp_path / "agents"
+    d.mkdir()
+    (d / "a_bom.md").write_bytes("\ufeff---\nname: reviewer\ndescription: 审查\n---\n你是审查员\n".encode("utf-8"))
+    (d / "b_gbk.md").write_bytes("---\nname: 写手\ndescription: 中文\n---\n写文章\n".encode("gbk"))
+    (d / "c_bad.md").write_text("---\nname: broken\nmax_steps: 很多\n---\nx\n", encoding="utf-8")
+    (d / "d_quote.md").write_text('---\nname: "quoted"\ntools: [read, "grep"]\n---\ny\n', encoding="utf-8")
+    defs = load_agents([d])
+    assert "reviewer" in defs and defs["reviewer"].prompt == "你是审查员"
+    assert "写手" in defs
+    assert "quoted" in defs and defs["quoted"].tools == ["read", "grep"]
+    assert defs["broken"].max_steps == 30
