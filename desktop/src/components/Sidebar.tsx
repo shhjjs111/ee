@@ -1,3 +1,4 @@
+import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import {
   GitBranch,
@@ -271,7 +272,7 @@ export function Sidebar() {
                       </button>
                     }
                     items={[
-                      { label: "在资源管理器中打开", onSelect: () => window.ee?.openPath(g.path) },
+                      { label: "在资源管理器中打开", onSelect: () => openPath(g.path) },
                       { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
                       { label: "从列表移除", danger: true, onSelect: () => void s.removeWorkspace(g.path) },
                     ]}
