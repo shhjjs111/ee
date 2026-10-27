@@ -7,6 +7,7 @@
   timeout = 20                  # 秒，每个网络请求的总超时
   max_results = 8               # 搜索默认返回条数
   fetch_max_chars = 20000       # 抓取结果默认最多返回多少字符
+  allow_private = false         # web_fetch 默认拒绝本机/内网/链路本地/云元数据地址；true = 放行（自己的内网文档站等）
   deepseek_base_url = ""         # 可选：Search/Fetch 的接口根地址（默认 https://api.deepseek.com）
   tavily_api_key / brave_api_key  # 设置页保存的 key；没有就读环境变量 TAVILY_API_KEY / BRAVE_API_KEY
 DeepSeek Search/Fetch 复用 providers.deepseek 的 key（设置页保存的 api_key 或环境变量 DEEPSEEK_API_KEY）。
@@ -28,9 +29,11 @@ DuckDuckGo：GET https://html.duckduckgo.com/html/?q=…（浏览器 UA），解
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
+import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
@@ -42,12 +45,14 @@ FETCH_BACKENDS = ["direct", "auto", "deepseek", "off"]
 BACKEND_LABEL = {"exa": "Exa", "duckduckgo": "DuckDuckGo", "deepseek": "DeepSeek", "tavily": "Tavily",
                  "brave": "Brave", "direct": "直接抓取"}
 DEFAULT_WEB = {"search_backend": "exa", "search_fallback": ["duckduckgo"], "fetch_backend": "direct",
-               "timeout": 20, "max_results": 8, "fetch_max_chars": 20000}
+               "timeout": 20, "max_results": 8, "fetch_max_chars": 20000,
+               "allow_private": False}
 EXA_URL = "https://mcp.exa.ai/mcp"
 DDG_URL = "https://html.duckduckgo.com/html/"
 SNIPPET_CHARS = {"exa": 800}     # Exa 的 Highlights 是正文片段，给模型多留一点
 KEY_ENV = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_API_KEY"}
 MAX_DOWNLOAD = 3 * 1024 * 1024
+MAX_REDIRECTS = 10
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/126.0 Safari/537.36")
 UA = BROWSER_UA + " ee-agent"
@@ -149,16 +154,19 @@ def _proxy_for(url: str, data: dict | None) -> str | None:
 
 async def request(method: str, url: str, *, data: dict | None = None, headers: dict | None = None,
                   json_body=None, params: dict | None = None, timeout: float = 20,
-                  max_bytes: int = MAX_DOWNLOAD) -> Resp:
-    """一个带总超时、跟随重定向、限制下载大小的请求。网络错误翻译成中文 WebError。"""
+                  max_bytes: int = MAX_DOWNLOAD, follow_redirects: bool = True, guard: bool = False) -> Resp:
+    """一个带总超时、跟随重定向、限制下载大小的请求。网络错误翻译成中文 WebError。
+    guard=True 且直连时，真正建立 TCP 连接前再解析并检查一次地址（防 DNS rebinding）。"""
     import httpx
     proxy = None if _transport is not None else await asyncio.to_thread(_proxy_for, url, data)
-    kw: dict = {"timeout": httpx.Timeout(timeout), "follow_redirects": True, "trust_env": False,
+    kw: dict = {"timeout": httpx.Timeout(timeout), "follow_redirects": follow_redirects, "trust_env": False,
                 "headers": {"User-Agent": UA}}
     if _transport is not None:
         kw["transport"] = _transport
     elif proxy:
-        kw["proxy"] = proxy
+        kw["proxy"] = proxy        # 走代理时目标由代理解析，只能靠请求前的预检
+    elif guard:
+        kw["transport"] = _guarded_transport()
 
     async def go() -> Resp:
         async with httpx.AsyncClient(**kw) as c:
@@ -187,6 +195,159 @@ async def request(method: str, url: str, *, data: dict | None = None, headers: d
         raise WebError(f"{host} 重定向次数过多，放弃。") from None
     except httpx.HTTPError as e:
         raise WebError(f"请求 {host} 失败：{type(e).__name__}: {e}") from None
+
+# ------------------------------------------------------------------ 内网地址拦截（web_fetch 防 SSRF）
+
+# Clash/Surge 等代理的 fake-ip 段（RFC 2544 基准测试段），系统 DNS 会把公网域名解析到这里，必须放行
+_FAKE_IP = ipaddress.ip_network("198.18.0.0/15")
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_BLOCKED_NAMES = ("localhost", "metadata.google.internal", "metadata.goog", "metadata")
+_PRIVATE_HINT = "。确实要访问自己的内网服务，可在 config.toml 的 [web] 里设 allow_private = true"
+
+
+def _parse_ipv4_loose(host: str) -> ipaddress.IPv4Address | None:
+    """按 inet_aton 的宽松写法解析：127.1、2130706433、0x7f.0.0.1、0177.0.0.1 都是 127.0.0.1。"""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    nums = []
+    for p in parts:
+        try:
+            if re.fullmatch(r"0[xX][0-9a-fA-F]*", p):
+                nums.append(int(p[2:] or "0", 16))
+            elif re.fullmatch(r"0[0-7]+", p):
+                nums.append(int(p, 8))
+            elif re.fullmatch(r"[0-9]+", p):
+                nums.append(int(p, 10))
+            else:
+                return None
+        except ValueError:
+            return None
+    last_bits = 32 - 8 * (len(nums) - 1)
+    if any(n > 255 for n in nums[:-1]) or nums[-1] >= (1 << last_bits):
+        return None
+    v = 0
+    for n in nums[:-1]:
+        v = (v << 8) | n
+    v = (v << last_bits) | nums[-1]
+    return ipaddress.IPv4Address(v)
+
+
+def _as_ip(host: str):
+    h = host.strip("[]").split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(h)
+    except ValueError:
+        return _parse_ipv4_loose(h)
+
+
+def blocked_reason_ip(ip) -> str | None:
+    """返回拦截原因（中文），公网地址返回 None。"""
+    if isinstance(ip, str):
+        ip = _as_ip(ip)
+        if ip is None:
+            return None
+    if isinstance(ip, ipaddress.IPv6Address):
+        inner = ip.ipv4_mapped or ip.sixtofour
+        if inner is None and ip in _NAT64:
+            inner = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if inner is not None:
+            return blocked_reason_ip(inner)
+    if isinstance(ip, ipaddress.IPv4Address) and ip in _FAKE_IP:
+        return None
+    if ip.is_loopback or ip.is_unspecified:
+        return f"{ip} 是本机地址"
+    if ip.is_link_local:
+        return f"{ip} 是链路本地地址（含云服务器元数据接口）"
+    if ip.is_multicast:
+        return f"{ip} 是组播地址"
+    if not ip.is_global:
+        return f"{ip} 是内网/保留地址（含云服务器元数据接口）"
+    return None
+
+
+def _resolve(host: str) -> list[str]:
+    """系统 DNS 解析出的全部地址（测试里替换）。"""
+    infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    out: list[str] = []
+    for info in infos:
+        a = str(info[4][0]).split("%", 1)[0]
+        if a not in out:
+            out.append(a)
+    return out
+
+
+def blocked_reason_host(host: str) -> str | None:
+    """只看主机名本身（不解析 DNS）：localhost、元数据域名、各种写法的字面 IP。"""
+    h = (host or "").strip().strip("[]").rstrip(".").lower()
+    if not h:
+        return "主机名为空"
+    if h in _BLOCKED_NAMES or h.endswith(".localhost"):
+        return f"{h} 是本机或云服务器元数据地址"
+    ip = _as_ip(h)
+    return blocked_reason_ip(ip) if ip is not None else None
+
+
+async def check_public_host(host: str) -> None:
+    """主机名本身 + DNS 解析出的每个地址都必须是公网，否则抛 WebError。解析失败不在这里拦（真正连接时也会失败）。"""
+    why = blocked_reason_host(host)
+    if why:
+        raise WebError(f"web_fetch 不访问本机/内网地址：{why}{_PRIVATE_HINT}")
+    if _as_ip(host.strip("[]")) is not None:
+        return
+    try:
+        ips = await asyncio.to_thread(_resolve, host.rstrip("."))
+    except (OSError, UnicodeError):
+        return
+    for a in ips:
+        why = blocked_reason_ip(a)
+        if why:
+            raise WebError(f"web_fetch 不访问本机/内网地址：{host} 解析到 {why}{_PRIVATE_HINT}")
+
+
+class _GuardBackend:
+    """包住 httpcore 的网络后端：连接前自己解析、检查，再连到检查过的 IP（TLS 的 SNI 仍用原主机名）。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        try:
+            import httpcore
+            err_cls = httpcore.ConnectError
+        except Exception:  # noqa: BLE001
+            err_cls = OSError
+        why = blocked_reason_host(host)
+        ips = [host] if why or _as_ip(host) is not None else None
+        if ips is None:
+            try:
+                ips = await asyncio.to_thread(_resolve, host)
+            except (OSError, UnicodeError) as e:
+                raise err_cls(f"解析 {host} 失败：{e}") from None
+        for a in ips:
+            why = why or blocked_reason_ip(a)
+            if why:
+                raise err_cls(f"连接时发现 {host} 指向内网/本机地址：{why}，已拒绝")
+        last: Exception | None = None
+        for a in ips:
+            try:
+                return await self._inner.connect_tcp(a, port, timeout=timeout, local_address=local_address,
+                                                     socket_options=socket_options)
+            except Exception as e:  # noqa: BLE001  多个地址依次尝试
+                last = e
+        raise last or err_cls(f"连不上 {host}")
+
+
+def _guarded_transport():
+    import httpx
+    t = httpx.AsyncHTTPTransport()
+    pool = getattr(t, "_pool", None)
+    if pool is not None and hasattr(pool, "_network_backend"):
+        pool._network_backend = _GuardBackend(pool._network_backend)
+    return t
 
 
 def _api_error(r: Resp, who: str) -> WebError:
@@ -611,9 +772,26 @@ def _check_url(url: str) -> str:
 
 
 async def fetch_direct(url: str, data: dict, timeout: float) -> tuple[str, str, str]:
-    r = await request("GET", url, data=data, timeout=timeout,
-                      headers={"Accept": "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5",
-                               "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
+    allow = bool(web_config(data).get("allow_private"))
+    hdrs = {"Accept": "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+    cur = url
+    for hop in range(MAX_REDIRECTS + 1):     # 手动跟随重定向，每一跳都检查目标地址
+        if not allow:
+            try:
+                await check_public_host(urlparse(cur).hostname or "")
+            except WebError as e:
+                if hop:
+                    raise WebError(f"{url} 重定向到 {cur} 被拦截：{e}") from None
+                raise
+        r = await request("GET", cur, data=data, timeout=timeout, headers=hdrs,
+                          follow_redirects=allow, guard=not allow)
+        loc = r.headers.get("location")
+        if allow or r.status not in (301, 302, 303, 307, 308) or not loc:
+            break
+        cur = _check_url(urljoin(r.url, loc.strip()))
+    else:
+        raise WebError(f"{urlparse(url).hostname} 重定向次数过多，放弃。")
     if r.status >= 400:
         raise WebError(f"打开 {url} 失败：HTTP {r.status}" +
                        ("（网站拒绝了自动访问）" if r.status in (401, 403) else "（页面不存在）" if r.status == 404 else ""),
