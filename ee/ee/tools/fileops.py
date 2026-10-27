@@ -19,6 +19,7 @@ import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
+from ee.core.atomic import write_bytes as atomic_write
 from ee.tools.base import ToolError
 
 BOM = "\ufeff"
@@ -84,14 +85,19 @@ def unencodable(tf: TextFile, new_text: str) -> str | None:
 
 
 def write_text(path: Path, tf: TextFile, new_text: str) -> None:
+    """把 new_text 按原文件的编码/换行/BOM 写回 path。
+
+    **必须原子**：直接 open(path, "wb") 会先 O_TRUNC 清零再写，磁盘满 / 进程被杀 /
+    断电时会留下半截文件，原内容永久丢失。write / edit / apply_patch 三个工具共用
+    这里，所以统一走 core.atomic（临时文件 + fsync + os.replace）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     out = _render(tf, new_text)
     try:
         data = out.encode(tf.encoding)
     except UnicodeEncodeError:
         data = out.encode("utf-8")   # 原编码表示不了（如 GBK 里写 emoji）：改存 UTF-8，不丢字
-    with open(path, "wb") as f:
-        f.write(data)
+    atomic_write(path, data)
 
 
 # ------------------------------------------------------------------ 同一文件的写入排队
