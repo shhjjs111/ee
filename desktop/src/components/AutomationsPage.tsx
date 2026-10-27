@@ -2,10 +2,9 @@
 // + 新建/编辑弹窗（项目、提示词、调度三选一、模型、权限模式、自动审批、worktree）。
 import * as Dialog from "@radix-ui/react-dialog";
 import clsx from "clsx";
-import { Clock, Pencil, Play, Plus, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Clock, FileText, GitBranch, GitMerge, History, Layers, Pencil, Play, Plus, Trash2, X } from "lucide-react";
+import React, { useEffect, useState } from "react";
 import { useAutomations } from "../lib/automationStore";
-import { relTime } from "../lib/reduce";
 import {
   TRIGGER_LABEL,
   WEEKDAYS,
@@ -14,8 +13,12 @@ import {
   formatNextRun,
   parseHHMM,
   runStatus,
+  runTimeline,
   untilText,
+  worktreeChangeText,
+  worktreeStateLabel,
   type Automation,
+  type AutomationRun,
   type Schedule,
 } from "../lib/schedule";
 import { useApp } from "../lib/store";
@@ -38,6 +41,7 @@ export function AutomationsPage() {
     return () => clearInterval(t);
   }, []);
   const ws = useApp((s) => s.activeWorkspace);
+  const runs = a.filter ? a.runs.filter((r) => r.automation_id === a.filter) : a.runs;
   const workspaces = useApp((s) => s.workspaces);
 
   return (
@@ -79,6 +83,7 @@ export function AutomationsPage() {
                 <Tip label={x.enabled ? "停用" : "启用"}>
                   <span><Toggle on={x.enabled} onChange={(v) => a.setEnabled(x.id, v)} /></span>
                 </Tip>
+                <Tip label="只看它的运行历史"><Button size="icon" onClick={() => a.set({ filter: a.filter === x.id ? "" : x.id })}><History size={14} /></Button></Tip>
                 <Tip label="立即运行"><Button size="icon" disabled={x.running} onClick={() => a.runNow(x.id)}><Play size={14} /></Button></Tip>
                 <Tip label="编辑"><Button size="icon" onClick={() => a.set({ editing: { ...x } })}><Pencil size={14} /></Button></Tip>
                 <Tip label="删除">
@@ -92,34 +97,103 @@ export function AutomationsPage() {
 
           <div className="mb-2 flex items-center gap-2">
             <h3 className="flex-1 text-[14px] font-semibold text-fg">运行记录{a.unread ? `（${a.unread} 条未读）` : ""}</h3>
+            <Select
+              side="bottom"
+              className="h-7 border border-line"
+              value={a.filter}
+              onChange={(v) => a.set({ filter: v })}
+              options={[{ value: "", label: "全部自动化" }, ...a.automations.map((x) => ({ value: x.id, label: x.name }))]}
+            />
             {a.unread > 0 && <Button size="sm" onClick={() => a.markRead({ all: true })}>全部标为已读</Button>}
           </div>
           <section className="rounded-2xl border border-line bg-elev">
-            {a.runs.length === 0 && <div className="px-5 py-6 text-center text-[12.5px] text-faint">还没有运行记录</div>}
-            {a.runs.map((r) => {
-              const st = runStatus(r.status);
-              return (
-                <div
-                  key={r.id}
-                  onClick={() => a.openRun(r)}
-                  className={clsx("flex cursor-default gap-3 border-b border-line px-5 py-2.5 last:border-b-0 hover:bg-hover", r.thread_id ? "" : "opacity-80")}
-                >
-                  <span className={clsx("mt-1.5 h-2 w-2 shrink-0 rounded-full", r.unread ? "bg-accent" : "bg-transparent")} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-[13px]">
-                      <span className={clsx("truncate", r.unread ? "font-semibold text-fg" : "text-muted")}>{r.name}</span>
-                      <span className={clsx("shrink-0 text-[12px]", TONE[st.tone])}>{r.status === "running" ? <Spinner size={11} /> : st.label}</span>
-                      <span className="ml-auto shrink-0 text-[11.5px] text-faint">{TRIGGER_LABEL[r.trigger] ?? r.trigger} · {relTime(r.started)}</span>
-                    </div>
-                    {r.summary && <div className={clsx("mt-0.5 line-clamp-2 text-[12px]", r.unread ? "text-fg" : "text-faint")}>{r.summary}</div>}
-                  </div>
-                </div>
-              );
-            })}
+            {runs.length === 0 && <div className="px-5 py-6 text-center text-[12.5px] text-faint">还没有运行记录</div>}
+            {runs.map((r) => <RunRow key={r.id} r={r} now={now} />)}
           </section>
         </div>
       </div>
       <EditDialog />
+    </div>
+  );
+}
+
+/** 一条运行记录：状态、触发方式、开始时间 · 用时 · 花费、摘要；worktree 运行显示改动摘要和合并/丢弃；可展开完整日志。 */
+export function RunRow({ r, now }: { r: AutomationRun; now: number }) {
+  const openRun = useAutomations((s) => s.openRun);
+  const act = useAutomations((s) => s.worktreeAction);
+  const [showLog, setShowLog] = useState(false);
+  const [busy, setBusy] = useState("");
+  const st = runStatus(r.status);
+  const wt = r.worktree;
+  const pending = !!wt && r.status !== "running" && (wt.state ?? "pending") === "pending";
+  const go = async (action: "merge" | "squash" | "discard") => {
+    if (action === "discard" && !confirm(`丢弃这次运行在 ${wt?.branch} 上的全部改动？（worktree 目录和分支都会删除，找不回来）`)) return;
+    setBusy(action);
+    await act(r.id, action);
+    setBusy("");
+  };
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+  return (
+    <div
+      onClick={() => openRun(r)}
+      data-testid="run-row"
+      className={clsx("flex cursor-default gap-3 border-b border-line px-5 py-2.5 last:border-b-0 hover:bg-hover", r.thread_id ? "" : "opacity-80")}
+    >
+      <span className={clsx("mt-1.5 h-2 w-2 shrink-0 rounded-full", r.unread ? "bg-accent" : "bg-transparent")} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 text-[13px]">
+          <span className={clsx("truncate", r.unread ? "font-semibold text-fg" : "text-muted")}>{r.name}</span>
+          <span className={clsx("shrink-0 text-[12px]", TONE[st.tone])}>{r.status === "running" ? <Spinner size={11} /> : st.label}</span>
+          <span className="ml-auto shrink-0 text-[11.5px] text-faint">{TRIGGER_LABEL[r.trigger] ?? r.trigger}</span>
+        </div>
+        <div className="mt-0.5 text-[11.5px] text-faint" title={r.model ? `模型 ${r.model}` : undefined}>
+          {runTimeline(r, now)}
+          {r.thread_id ? " · 点开查看会话" : ""}
+        </div>
+        {r.summary && <div className={clsx("mt-0.5 line-clamp-2 text-[12px]", r.unread ? "text-fg" : "text-faint")}>{r.summary}</div>}
+        {wt && (
+          <div className="mt-1.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-[12px]" onClick={stop}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <GitBranch size={12} className="text-faint" />
+              <span className="mono truncate text-muted" title={wt.path}>{wt.branch}</span>
+              {r.status !== "running" && <span className="text-faint">{worktreeChangeText(wt)}</span>}
+              <span className={clsx("text-faint", wt.state === "merged" && "text-ok")}>{worktreeStateLabel(wt)}</span>
+              {pending && (
+                <span className="ml-auto flex gap-1">
+                  <Tip label="把这次的改动合并进主目录当前分支（保留提交历史），然后删掉 worktree">
+                    <Button size="sm" variant="outline" disabled={!!busy} onClick={() => go("merge")}>{busy === "merge" ? <Spinner size={11} /> : <GitMerge size={12} />} 合并</Button>
+                  </Tip>
+                  <Tip label="改动压成一份放进主目录暂存区，由你自己提交">
+                    <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => go("squash")}>{busy === "squash" ? <Spinner size={11} /> : <Layers size={12} />} 压成一份</Button>
+                  </Tip>
+                  <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => go("discard")}>{busy === "discard" ? <Spinner size={11} /> : <Trash2 size={12} />} 丢弃</Button>
+                </span>
+              )}
+            </div>
+            {pending && !!wt.files?.length && (
+              <div className="mt-1 space-y-0.5">
+                {wt.files.slice(0, 8).map((f) => (
+                  <div key={f.path} className="mono flex gap-2 text-[11.5px]">
+                    <span className="min-w-0 flex-1 truncate text-muted">{f.path}</span>
+                    <span className="text-ok">+{f.additions}</span>
+                    <span className="text-danger">−{f.deletions}</span>
+                  </div>
+                ))}
+                {(wt.file_count ?? wt.files.length) > 8 && <div className="text-[11.5px] text-faint">还有 {(wt.file_count ?? wt.files.length) - 8} 个文件，点开会话或在 Worktree 对话框里查看</div>}
+              </div>
+            )}
+            {wt.error && <div className="mt-1 text-[11.5px] text-warn">{wt.error}</div>}
+          </div>
+        )}
+        {!!r.log && r.log.length > (r.summary?.length ?? 0) && (
+          <div onClick={stop}>
+            <button className="mt-1 flex items-center gap-1 text-[11.5px] text-faint hover:text-fg" onClick={() => setShowLog(!showLog)}>
+              <FileText size={11} /> {showLog ? "收起日志" : "查看完整日志"}
+            </button>
+            {showLog && <pre className="mono mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-bg p-2 text-[11.5px] text-muted">{r.log}</pre>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -243,8 +317,8 @@ function EditDialog() {
             </div>
             <div className="flex items-center gap-3 rounded-xl border border-line px-3 py-2.5">
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] text-fg">在新 worktree 里运行</div>
-                <div className="text-[11.5px] text-faint">每次新建 ee/ 分支的独立目录，改动不碰主目录（仅 git 项目；否则在项目目录里跑）</div>
+                <div className="text-[13px] text-fg">在独立 worktree 中运行</div>
+                <div className="text-[11.5px] text-faint">每次新建 ee/auto-名字-时间 分支的独立目录，改动不碰主目录；跑完在运行记录里看改动并合并或丢弃，没有改动的自动清理（仅 git 项目；否则在项目目录里跑）</div>
               </div>
               <Toggle on={!!d.worktree} onChange={(v) => up({ worktree: v })} />
             </div>

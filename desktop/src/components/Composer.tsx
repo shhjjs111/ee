@@ -21,6 +21,10 @@ import { useApp } from "../lib/store";
 import { SlashMenu } from "./SlashMenu";
 import { mergeDraft, queueKindForKey, splitQueued, type QueueKind } from "../lib/queue";
 import { QueueSendButton, QueueTray } from "./QueueTray";
+import { LoopTray } from "./LoopTray";
+import { LOOP_HELP, loopListText, loopToAutomation, parseLoopArgs, type SessionLoop } from "../lib/loop";
+import { useLoops } from "../lib/loopStore";
+import { useAutomations } from "../lib/automationStore";
 import { Select, Spinner, Tip } from "./ui";
 
 const MODES = [
@@ -74,6 +78,8 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const detail = s.activeThreadId ? s.details[s.activeThreadId] : null;
   const running = !!detail && detail.status !== "idle";
   const queued = useMemo(() => (detail ? splitQueued(detail.items).queued : []), [detail?.items]);
+  const allLoops = useLoops((st) => st.loops);
+  const loops = useMemo(() => allLoops.filter((l) => l.thread_id === s.activeThreadId), [allLoops, s.activeThreadId]);
   const [text, setText] = useState("");
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [files, setFiles] = useState<string[]>([]);
@@ -305,6 +311,9 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         clearInput();
         s.set({ dialog: { kind: "commit" } });
         return true;
+      case "loop":
+        await runLoop(args);
+        return true;
     }
     // 技能：/名字 原样发送，后端把 SKILL.md 全文附在消息前
     if (isSkillCommand(name, prompts, skills)) return false;
@@ -326,6 +335,62 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       s.showToast((e as Error).message, "error");
     }
     return true;
+  }
+
+  /** /loop：会话内定时重复发送（D5-3）。 */
+  async function runLoop(args: string) {
+    const cmd = parseLoopArgs(args);
+    if (cmd.kind === "help") {
+      s.showToast(LOOP_HELP);
+      return;
+    }
+    if (cmd.kind === "list") {
+      clearInput();
+      s.showToast(loopListText(loops));
+      return;
+    }
+    if (cmd.kind === "stop") {
+      if (!s.activeThreadId) {
+        s.showToast("这个会话没有循环", "error");
+        return;
+      }
+      try {
+        const r = await s.rpc!.call("loop/stop", { thread_id: s.activeThreadId, id: cmd.id });
+        clearInput();
+        useLoops.getState().drop(r.stopped ?? []);
+        s.showToast(`已停止循环 ${(r.stopped ?? []).map((x: string) => "#" + x).join("、")}`);
+      } catch (e) {
+        s.showToast((e as Error).message, "error");
+      }
+      return;
+    }
+    try {
+      const id = await s.ensureThread();
+      if (!id) return;
+      const r = await s.rpc!.call("loop/create", { thread_id: id, text: cmd.text });
+      clearInput();
+      const lp = r.loop as SessionLoop;
+      useLoops.getState().upsert(lp);
+      s.showToast(`已创建循环 #${lp.id}：${lp.schedule_text}${lp.note ? `（${lp.note}）` : ""}。关闭 ee 后不保留，可在输入框上方转为自动化`);
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+  }
+
+  async function stopLoop(id: string) {
+    if (!s.activeThreadId) return;
+    try {
+      const r = await s.rpc!.call("loop/stop", { thread_id: s.activeThreadId, id });
+      useLoops.getState().drop(r.stopped ?? []);
+    } catch (e) {
+      s.showToast((e as Error).message, "error");
+    }
+  }
+
+  function convertLoop(lp: SessionLoop) {
+    const ws = detail?.worktree?.repo ?? detail?.workspace ?? detail?.cwd ?? s.activeWorkspace ?? "";
+    useAutomations.getState().set({ editing: loopToAutomation(lp, ws, detail?.model ?? "") });
+    s.set({ view: "automations" });
   }
 
   function pickSlash(it: SlashItem) {
@@ -503,6 +568,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           }
         }}
       >
+        <LoopTray loops={loops} onStop={stopLoop} onConvert={convertLoop} />
         <QueueTray items={queued} onWithdraw={(id) => s.withdrawQueued(id)} />
         {(atts.length > 0 || attBusy) && (
           <div className="flex flex-wrap items-center gap-2 px-3 pt-3">

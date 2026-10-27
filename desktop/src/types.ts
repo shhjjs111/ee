@@ -3,7 +3,7 @@
 export type ItemBase = { id: string; ts?: number; seq?: number };
 
 export type AttachmentMeta = { id: string; name: string; mime: string; size: number; thumb?: string };
-export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
+export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review" | "loop"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
 export type AssistantItem = ItemBase & { type: "assistant"; text: string; reasoning: string; streaming?: boolean };
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 export type ToolItem = ItemBase & {
@@ -417,4 +417,5 @@ export type WorktreeInfo = {
   changed?: number;
   untracked?: number;
   commits?: number;
+  in_use?: string; // 非空：自动化正在里面运行（D5-3），不能合并/删除
 };

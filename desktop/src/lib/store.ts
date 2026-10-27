@@ -60,6 +60,8 @@ type Actions = {
   removeWorkspace(path: string): Promise<void>;
   /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
+  /** 没有当前对话时按草稿（项目、模型、模式、worktree）新建一个，返回会话 id；没选项目返回 null。 */
+  ensureThread(): Promise<string | null>;
   withdrawQueued(itemId: string): Promise<void>;
   startReview(p: ReviewParams): Promise<boolean>;
   interrupt(): Promise<void>;
@@ -218,6 +220,25 @@ export const useApp = create<State & Actions>((set, get) => ({
     set((s) => ({ workspaces: r.workspaces, activeWorkspace: s.activeWorkspace === path ? null : s.activeWorkspace }));
   },
 
+  async ensureThread() {
+    const s = get();
+    if (s.activeThreadId) return s.activeThreadId;
+    if (!s.activeWorkspace) {
+      s.showToast("先在左侧选择或添加一个项目文件夹", "error");
+      return null;
+    }
+    const model = s.draftModel || undefined;
+    const r = await s.rpc!.call("thread/start", { cwd: s.activeWorkspace, model, mode: s.draftMode, worktree: s.draftWorktree || undefined }, s.draftWorktree ? 120000 : undefined);
+    const t = r.thread as ThreadDetail;
+    set((st) => ({
+      draftWorktree: false,
+      details: { ...st.details, [t.id]: t },
+      activeThreadId: t.id,
+      threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
+    }));
+    return t.id;
+  },
+
   async send(text, attachments, queue) {
     const s = get();
     const rpc = s.rpc!;
@@ -227,19 +248,8 @@ export const useApp = create<State & Actions>((set, get) => ({
     let queuing = false;
     try {
       if (!id) {
-        if (!s.activeWorkspace) {
-          s.showToast("先在左侧选择或添加一个项目文件夹", "error");
-          return false;
-        }
-        const r = await rpc.call("thread/start", { cwd: s.activeWorkspace, model, mode, worktree: s.draftWorktree || undefined }, s.draftWorktree ? 120000 : undefined);
-        const t = r.thread as ThreadDetail;
-        id = t.id;
-        set((st) => ({
-          draftWorktree: false,
-          details: { ...st.details, [t.id]: t },
-          activeThreadId: t.id,
-          threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
-        }));
+        id = await get().ensureThread();
+        if (!id) return false;
       }
       queuing = !!queue && (get().details[id]?.status ?? "idle") !== "idle";
       if (!queuing) {
