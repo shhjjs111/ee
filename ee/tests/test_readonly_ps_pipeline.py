@@ -46,6 +46,20 @@ DANGEROUS = [
     # 冒号形式 + 简写
     "Get-Process | % -MemberName:Kill",
     "Get-Process | ForEach-Object -memb:Kill",
+    # 变量 / 动态表达式当成员名：值在运行期才知道，静态看必须是动作
+    # （$env:MYACTION 可以是任意命令名；$x.Kill 是属性取值再当命令）
+    "Get-Process | ForEach-Object $env:MYACTION",
+    "Get-Process | ForEach-Object $env:X",
+    "Get-Process | ForEach-Object $x.Kill",
+    "Get-Process | ForEach-Object $x",
+    "Get-Process | % $env:MYACTION",
+    "Get-Process | ForEach-Object -MemberName $env:X",
+    "Get-Process | ForEach-Object -MemberName $x",
+    "Get-Process | Select-Object -ExpandProperty $env:X",
+    # 子表达式 / 表达式形参
+    "Get-Process | ForEach-Object $(echo Kill)",
+    "Get-Process | ForEach-Object ${env:X}",
+    "Get-Process | Where-Object $env:X",
 ]
 
 

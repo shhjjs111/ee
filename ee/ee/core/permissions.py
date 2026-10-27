@@ -870,15 +870,36 @@ def _looks_like_verb_noun(s: str) -> bool:
     return bool(re.match(r"^[A-Za-z]+-[A-Za-z]+$", s))
 
 
+def _is_dynamic(s: str) -> bool:
+    """这个词是运行期才确定的值（变量、子表达式、脚本块、字符串插值、成员取值）。
+
+    PowerShell 里 `$env:X` 可以是任意命令名、`$x.Kill` 是先取属性再当命令、`$(...)`
+    直接执行命令。静态分析看不出它会变成什么，一律按"可能执行动作"处理。
+    """
+    t = s.strip()
+    if not t:
+        return False
+    if t.startswith("$"):
+        return True                       # $var / $env:X / ${env:X} / $(…) / @(…)
+    if t.startswith("(") or t.startswith("@(") or t.startswith("{"):
+        return True                       # (表达式) / @(数组) / {脚本块}
+    if "${" in t or "$(" in t:
+        return True                       # 字符串里带插值/子表达式
+    return False
+
+
 def _looks_like_action(s: str) -> bool:
-    """这个词是不是“动作”而不是属性名。
+    """这个词是不是"动作"而不是属性名。
 
     属性名（Name / Length / FullName / PSIsContainer）不含连字符；
     动作名要么在已知集合里，要么是 Verb-Noun 形态。
+    运行期才定值的表达式（$env:X、$x.Kill、$(…)）也算——静态看不出它会不会是动作。
     """
     t = s.strip().strip("'\"")
     if not t:
         return False
+    if _is_dynamic(t):
+        return True                       # 动态值：不能证明安全，按动作处理
     low = t.lower()
     if low in _PS_ACTION_MEMBERS:
         return True
