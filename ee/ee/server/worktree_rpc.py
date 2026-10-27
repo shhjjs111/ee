@@ -28,7 +28,12 @@ def register(methods: dict, backend) -> None:
                 repo = str(W.repo_root(cwd))
             except W.WorktreeError:
                 return {"repo": None, "worktrees": []}
-            return {"repo": repo, "worktrees": W.list_for(cwd, backend.home)}
+            items = W.list_for(cwd, backend.home)
+            busy = backend.automations.busy_paths()
+            for w in items:                  # 自动化正在里面跑：界面禁用合并/删除
+                name = busy.get(W._norm(w["path"]))
+                w["in_use"] = f"自动化「{name}」正在这里运行" if name is not None else ""
+            return {"repo": repo, "worktrees": items}
         return await _call(go)
 
     async def create(cwd: str, name: str | None = None, base: str | None = None) -> dict:
@@ -42,6 +47,9 @@ def register(methods: dict, backend) -> None:
         return cwd == key or cwd.startswith(key + "/")
 
     def _refuse_running(path: str) -> None:
+        name = backend.automations.busy_paths().get(W._norm(path))
+        if name is not None:
+            raise RpcError(f"自动化「{name}」正在这个 worktree 里运行，等它结束再操作")
         for t in list(backend.threads.values()):
             if t.running and _in_wt(t, path):
                 raise RpcError("这个 worktree 里还有对话在运行，先停止它")
