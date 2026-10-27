@@ -4,7 +4,9 @@
   worktree/create {cwd, name?, base?}                → {worktree}
   worktree/diff   {path}                             → {worktree, files, additions, deletions}
   worktree/merge  {path, squash?}                    → {merged, autosaved, branch, repo}
-  worktree/remove {path, delete_branch?, force?}     → {removed, autosaved, branch, branch_deleted}
+  worktree/remove {path, delete_branch?, force?}     → {removed, autosaved, branch, branch_deleted,
+                                                        ignored_backup, backed_up, backup_skipped}
+                  被 git worktree lock 锁定的拒删；被 git 忽略的文件删前备份到 ~/.ee/worktree-backups/，ignored_backup 是位置
 thread/start 带 worktree: true | {name?, base?} 时先建 worktree，再在里面开会话（见 app.thread_start）。
 """
 from __future__ import annotations

@@ -4,7 +4,9 @@
 - .worktreeinclude（仓库根，gitignore 语法）：新建时把主目录里“被 git 忽略但需要的”文件复制过去（.env、本地配置…）。
 - 元数据：~/.ee/worktrees/index.json（路径、仓库、分支、基准提交、名字、创建时间）。
 - 删除：有未提交改动时先在它自己的分支上自动提交一次（“删除前自动保存”），默认保留分支，可随时再检出；
-  分支有未合并的提交时，要求 delete_branch 时显式 force。
+  分支有未合并的提交时，要求 delete_branch 时显式 force。被 `git worktree lock` 锁定的一律拒删（force 也不行）。
+  被 git 忽略的文件（.env 等）不进分支，删前复制到 ~/.ee/worktree-backups/<仓库>-<名字>-<时间>/，结果里返回位置
+  （跳过 node_modules 等依赖目录、和主目录同路径内容一样的文件）。
 - 合并回主目录：merge（--no-ff 保留历史）或 squash（改动放进主目录暂存区，用户自己提交）；主目录必须干净。
 所有 git 调用走 ee.proc.run_capture（stdin=DEVNULL、超时杀进程树），Windows 路径用 / 传给 git。
 """
@@ -252,9 +254,94 @@ def _autosave(p: Path, msg: str) -> str | None:
     return _git(["rev-parse", "HEAD"], p, timeout=10).strip()
 
 
+BACKUP_DIR = "worktree-backups"
+_DEP_DIRS = {"node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+             ".gradle", ".next", ".nuxt", ".turbo", ".parcel-cache", ".cache"}
+
+
+def lock_reason(path: Path | str, root: Path | str) -> str | None:
+    """这个 worktree 被 `git worktree lock` 锁定时返回锁定原因（没写原因返回空串），没锁返回 None。"""
+    out = _git(["worktree", "list", "--porcelain"], root, timeout=30, check=False)
+    key = _norm(path)
+    for block in out.replace("\r\n", "\n").split("\n\n"):
+        lines = block.strip().splitlines()
+        if not lines or not lines[0].startswith("worktree "):
+            continue
+        if _norm(lines[0][len("worktree "):]) != key:
+            continue
+        for ln in lines[1:]:
+            if ln == "locked" or ln.startswith("locked "):
+                return ln[len("locked"):].strip()
+        return None
+    return None
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        if not b.is_file() or a.stat().st_size != b.stat().st_size:
+            return False
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            while True:
+                x, y = fa.read(1 << 20), fb.read(1 << 20)
+                if x != y:
+                    return False
+                if not x:
+                    return True
+    except OSError:
+        return False
+
+
+def backup_ignored(info: dict, home: Path | None = None) -> dict:
+    """删 worktree 前把里面被 git 忽略的文件（.env、本地配置…）复制到 ~/.ee/worktree-backups/ 下。
+
+    跳过依赖/缓存目录（node_modules、.venv…）和与主目录同路径文件内容完全一样的（从主目录复制来、没改过）。
+    返回 {dir: 备份目录或 None, files: [相对路径], skipped: [超出大小上限没备份的]}；复制出错直接抛，调用方不删。"""
+    p, root = Path(info["path"]), Path(info["repo"])
+    out = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], p, timeout=120)
+    todo: list[str] = []
+    for rel in [x for x in out.split("\0") if x]:
+        parts = rel.replace("\\", "/").split("/")
+        if any(x in _DEP_DIRS for x in parts[:-1]):
+            continue
+        src = p / rel
+        if not src.is_file() or src.is_symlink() or _same_file(src, root / rel):
+            continue
+        todo.append(rel.replace("\\", "/"))
+    if not todo:
+        return {"dir": None, "files": [], "skipped": []}
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = root_dir(home).parent / BACKUP_DIR / f"{_slug(Path(info['repo']).name) or 'repo'}-{info['name']}-{stamp}"
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = dest.with_name(f"{dest.name.rsplit('~', 1)[0]}~{n}")
+    files, skipped, total = [], [], 0
+    for rel in todo:
+        src = p / rel
+        size = src.stat().st_size
+        if total + size > MAX_INCLUDE_BYTES:
+            skipped.append(rel)
+            continue
+        d = dest / rel
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, d)
+        total += size
+        files.append(rel)
+    if files:
+        note = (f"worktree：{info['path']}\n分支：{info['branch']}\n仓库：{info['repo']}\n"
+                f"备份时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n这些文件被 git 忽略，不在分支里，删除 worktree 前备份到这里。\n")
+        (dest / "_ee-备份说明.txt").write_text(note, encoding="utf-8")
+    return {"dir": str(dest) if files else None, "files": files, "skipped": skipped}
+
+
 def remove(path: Path | str, delete_branch: bool = False, force: bool = False, home: Path | None = None) -> dict:
     info = _find(path, home)
     p, root = Path(info["path"]), Path(info["repo"])
+    if p.is_dir():
+        reason = lock_reason(p, root)
+        if reason is not None:           # 被 git worktree lock 锁定（常见于放在移动硬盘/网络盘上）：不管 force 都不删
+            raise WorktreeError(f"这个 worktree 已被锁定{'（' + reason + '）' if reason else ''}，为免误删没有删除。\n"
+                                f"确定不要了，先在仓库里执行 git worktree unlock \"{str(p)}\" 再删。")
     saved = _autosave(p, "ee：删除 worktree 前自动保存") if p.is_dir() else None
     if delete_branch and not force:      # 先检查再删目录：拒绝时什么都不动（改动已安全提交在分支上）
         unmerged = _git(["rev-list", "--count", f"{info['base']}..refs/heads/{info['branch']}"], root, timeout=10,
@@ -263,7 +350,12 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
                                   f"refs/heads/{info['branch']}", "HEAD"], cwd=root, timeout=10)
         if unmerged not in ("", "0") and code != 0:
             raise WorktreeError(f"分支 {info['branch']} 上有 {unmerged} 个未合并的提交；确定不要了请勾选强制删除")
+    backup = {"dir": None, "files": [], "skipped": []}
     if p.is_dir():
+        try:                             # 被忽略的文件不会被自动保存进分支，删前先备份；备份失败就不删
+            backup = backup_ignored(info, home)
+        except Exception as e:  # noqa: BLE001
+            raise WorktreeError(f"备份 worktree 里被 git 忽略的文件（.env 等）失败，为免丢失没有删除：{e}") from None
         _git(["worktree", "remove", "--force", str(p).replace("\\", "/")], root, timeout=120, check=False)
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
@@ -277,7 +369,8 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
                                   timeout=10, check=False).strip()
     with _LOCK:
         _save([x for x in _load(home) if _norm(x["path"]) != _norm(p)], home)
-    return {"removed": True, "autosaved": saved, "branch": info["branch"], "branch_deleted": branch_deleted}
+    return {"removed": True, "autosaved": saved, "branch": info["branch"], "branch_deleted": branch_deleted,
+            "ignored_backup": backup["dir"], "backed_up": backup["files"], "backup_skipped": backup["skipped"]}
 
 
 def merge(path: Path | str, squash: bool = False, home: Path | None = None) -> dict:

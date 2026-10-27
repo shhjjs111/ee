@@ -187,3 +187,74 @@ def test_checkpoint_restore_blocked_keeps_files_and_drops_restore_point(ee_home,
         lst = await b.call("checkpoint/list", {"thread_id": tid})
         assert not [c for c in lst["checkpoints"] if c["kind"] == "restore"]
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------- 3) worktree：锁定的拒删；删前备份被忽略的文件
+def _git(cwd, *a):
+    import subprocess
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout
+
+
+@pytest.fixture
+def wt_repo(tmp_path):
+    r = tmp_path / "proj"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    (r / "a.txt").write_text("one\n", encoding="utf-8")
+    (r / ".gitignore").write_text(".env\nlocal/\nnode_modules/\n", encoding="utf-8")
+    (r / ".env").write_text("KEY=main\n", encoding="utf-8")
+    (r / ".worktreeinclude").write_text(".env\n", encoding="utf-8")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "init")
+    return r
+
+
+@needs_git
+def test_locked_worktree_is_not_removed(wt_repo, ee_home):
+    from pathlib import Path
+
+    from ee.core import worktree as W
+    info = W.create(wt_repo, "locked", home=ee_home)
+    p = Path(info["path"])
+    (p / "work.txt").write_text("未提交", encoding="utf-8")
+    _git(wt_repo, "worktree", "lock", "--reason", "放在移动硬盘上", str(p))
+    with pytest.raises(W.WorktreeError, match="锁定") as ei:
+        W.remove(p, home=ee_home)
+    assert "放在移动硬盘上" in str(ei.value) and "unlock" in str(ei.value)
+    assert (p / "work.txt").read_text(encoding="utf-8") == "未提交"
+    assert [x["path"] for x in W.list_for(wt_repo, ee_home, with_status=False)] == [str(p)]
+    with pytest.raises(W.WorktreeError, match="锁定"):        # 强制删也不行
+        W.remove(p, delete_branch=True, force=True, home=ee_home)
+    assert p.is_dir()
+
+
+@needs_git
+def test_remove_backs_up_ignored_files(wt_repo, ee_home):
+    from pathlib import Path
+
+    from ee.core import worktree as W
+    info = W.create(wt_repo, "bak", home=ee_home)
+    p = Path(info["path"])
+    (p / ".env").write_bytes(b"KEY=changed-in-worktree\r\n")      # 被 git 忽略、和主目录不同 → 要备份
+    (p / "local").mkdir()
+    (p / "local" / "secret.json").write_text("{}", encoding="utf-8")
+    (p / "node_modules").mkdir()
+    (p / "node_modules" / "dep.js").write_text("x", encoding="utf-8")  # 依赖目录：不备份
+    r = W.remove(p, home=ee_home)
+    assert not p.exists()
+    bak = Path(r["ignored_backup"])
+    assert ee_home in bak.parents
+    assert (bak / ".env").read_bytes() == b"KEY=changed-in-worktree\r\n"
+    assert (bak / "local" / "secret.json").is_file() and not (bak / "node_modules").exists()
+    assert sorted(r["backed_up"]) == [".env", "local/secret.json"]
+
+
+@needs_git
+def test_remove_skips_backup_when_ignored_files_unchanged(wt_repo, ee_home):
+    from pathlib import Path
+
+    from ee.core import worktree as W
+    info = W.create(wt_repo, "same", home=ee_home)             # .env 从主目录原样复制过来，没改过
+    r = W.remove(Path(info["path"]), home=ee_home)
+    assert r["ignored_backup"] is None and r["backed_up"] == []

@@ -165,9 +165,14 @@ export function WorktreeDialog() {
                               disabled={!!busy}
                               onClick={() =>
                                 run("d" + wt.path, async () => {
-                                  await rpc!.call("worktree/remove", { path: wt.path, delete_branch: confirm.branch, force: confirm.force }, 180000);
+                                  const r = await rpc!.call("worktree/remove", { path: wt.path, delete_branch: confirm.branch, force: confirm.force }, 180000);
                                   setConfirm(null);
-                                }, "已删除 worktree")
+                                  s.showToast(
+                                    r?.ignored_backup
+                                      ? `已删除 worktree。里面 ${r.backed_up?.length ?? 0} 个被 git 忽略的文件（.env 等）已备份到 ${r.ignored_backup}`
+                                      : "已删除 worktree",
+                                  );
+                                })
                               }
                             >
                               确认删除
