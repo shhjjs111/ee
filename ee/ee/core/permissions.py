@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -370,7 +371,11 @@ def command_prefix(seg: str) -> str:
 
 
 def _clean_path(p: str) -> str:
-    return p.strip().strip('"').strip("'")
+    p = p.strip().strip('"').strip("'")
+    if os.name == "nt" and p:     # Windows：结尾点/空格、::$DATA、8.3 短名都指向同一个文件，先归一再比规则
+        from ee.core.winpath import normalize_win_path
+        p = normalize_win_path(p)
+    return p
 
 
 def _match_rule(rule: str, tool: str, subject: str) -> bool:
@@ -556,7 +561,7 @@ class PermissionPolicy:
                 if any(_match_rule(r, tool, str(ap)) for r in self.allow):
                     continue
                 return Decision("ask", f"写工作区外的文件：{ap}", prefix=d)
-            if ".git" in ap.relative_to(ws).parts:
+            if ".git" in [x.lower() for x in ap.relative_to(ws).parts]:
                 return Decision("ask", f"修改 .git 内部文件：{ap}", prefix="")
         return Decision("allow")
 

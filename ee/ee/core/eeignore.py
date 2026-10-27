@@ -112,6 +112,9 @@ class EeIgnore:
     def ignored(self, path: Path | str, is_dir: bool | None = None) -> bool:
         if not self.rules:
             return False
+        if os.name == "nt":       # secret.env. / secret.env::$DATA / 8.3 短名 / \\?\ 前缀都归成同一个文件
+            from ee.core.winpath import normalize_win_path
+            path = Path(normalize_win_path(str(path)))
         d = is_dir if is_dir is not None else Path(path).is_dir()
         # 软链接：被忽略的文件/目录本身可能是指向别处的链接，完全解析后的路径就不在规则范围内了。
         # 所以除了完全解析的路径，还要按“只解析到某一级祖先、其余部分照字面”的各种写法都判一次，任一命中即忽略。
