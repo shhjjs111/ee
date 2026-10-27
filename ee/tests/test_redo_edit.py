@@ -155,3 +155,165 @@ def test_system_md_tool_rules_follow_enabled_tools(ee_home, workspace):
     assert text.startswith("X\n\n# 工具使用规则\n")
     rules = tool_rules(s.tools)
     assert rules and all(f"- {r}" in text for r in rules)
+
+
+# ------------------------------------------------------------------ 4) eval_profiles.py：Windows 可用 + --preset
+
+import io
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+import eval_profiles as E  # noqa: E402
+
+TASK_MD = """---
+id: 01-demo
+title: 演示
+kind: feature
+check: python -c "import pathlib,sys; sys.exit(0 if pathlib.Path('done.txt').exists() else 1)"
+check_cwd: .
+---
+把它做完。
+"""
+
+FAKE = r'''
+import json, sys, pathlib, subprocess, time
+args = sys.argv[1:]
+if "--help" in args or "-h" in args:
+    print("usage: ee exec [-C CD] [--max-steps N] [--json]" + (" [--profile P]" if PROFILE_FLAG else ""))
+    sys.exit(0)
+if "--profile" in args and not PROFILE_FLAG:
+    print("error: unrecognized arguments: --profile", file=sys.stderr); sys.exit(2)
+prompt = sys.stdin.read()
+cwd = pathlib.Path(args[args.index("-C") + 1])
+def ev(**d): print(json.dumps(d, ensure_ascii=False), flush=True)
+ev(type="session", id="x", profile="full", version=VERSION)
+if "挂住" in prompt:
+    g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])   # 孙进程继承管道
+    import os; pathlib.Path(os.environ["EVAL_PID_FILE"]).write_text(str(g.pid))
+    time.sleep(60)
+ev(type="usage", prompt_tokens=TOKENS, completion_tokens=5)
+(cwd / "done.txt").write_text(VERSION)
+ev(type="turn_done", reason="completed", duration_ms=100,
+   usage={"prompt": TOKENS, "completion": 5, "hit": 0, "cost": 0.01, "currency": "¥"})
+'''
+
+
+def _fake(version, tokens, profile_flag):
+    return f"VERSION = {version!r}\nTOKENS = {tokens}\nPROFILE_FLAG = {profile_flag}\n" + FAKE
+
+
+def _git(*a, cwd):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True,
+                   capture_output=True)
+
+
+@pytest.fixture
+def evrepo(tmp_path):
+    repo = tmp_path / "repo"
+    pkg = repo / "ee" / "ee"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__main__.py").write_text(_fake("base", 3000, False), encoding="utf-8")
+    _git("init", "-q", cwd=repo)
+    _git("add", ".", cwd=repo)
+    _git("commit", "-qm", "base", cwd=repo)
+    (pkg / "__main__.py").write_text(_fake("cur", 800, True), encoding="utf-8")
+    _git("commit", "-qam", "cur", cwd=repo)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (tasks / "01-demo.md").write_text(TASK_MD, encoding="utf-8")
+    return repo, tasks
+
+
+def _gbk_console(monkeypatch):
+    out = io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="strict")
+    err = io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="strict")
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    return out, err
+
+
+def test_eval_gbk_console_does_not_crash(evrepo, tmp_path, monkeypatch):
+    repo, tasks = evrepo
+    fake = tmp_path / "fake_ee.py"
+    fake.write_text(_fake("x", 1000, True), encoding="utf-8")
+    monkeypatch.setenv("FAKE_KEY", "sk-test")
+    _gbk_console(monkeypatch)
+    code = E.main(["--repo", str(repo), "--tasks-dir", str(tasks), "--runs", "1", "--profiles", "full",
+                   "--key-env", "FAKE_KEY", "--ee", str(fake)])
+    assert code == 0
+
+
+def test_eval_timeout_kills_process_tree(evrepo, tmp_path, monkeypatch):
+    repo, tasks = evrepo
+    (tasks / "01-demo.md").write_text(TASK_MD.replace("把它做完。", "挂住"), encoding="utf-8")
+    fake = tmp_path / "fake_ee.py"
+    fake.write_text(_fake("x", 1000, True), encoding="utf-8")
+    monkeypatch.setenv("FAKE_KEY", "sk-test")
+    monkeypatch.setenv("EVAL_PID_FILE", str(tmp_path / "grandchild.pid"))
+    out = tmp_path / "out"
+    t0 = time.monotonic()
+    code = E.main(["--repo", str(repo), "--tasks-dir", str(tasks), "--runs", "1", "--profiles", "full",
+                   "--key-env", "FAKE_KEY", "--ee", str(fake), "--timeout", "3", "--out", str(out)])
+    assert time.monotonic() - t0 < 30
+    rec = json.loads((out / "results.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert code == 0 and rec["reason"] == "timeout"
+    # 整棵进程树都要结束（Windows 上孙进程拿着管道不放会让 communicate 一直等）
+    pid = int((tmp_path / "grandchild.pid").read_text())
+    time.sleep(0.5)
+    alive = True
+    try:
+        os.kill(pid, 0)
+        st = Path(f"/proc/{pid}/stat")
+        alive = not (st.exists() and st.read_text().split()[2] == "Z")
+    except OSError:
+        alive = False
+    assert not alive
+
+
+def test_eval_check_argv_without_shell():
+    argv = E.check_argv('python -m pytest -q tests/a.py tests/_eval_check.py')
+    assert argv == [sys.executable, "-m", "pytest", "-q", "tests/a.py", "tests/_eval_check.py"]
+    argv = E.check_argv('python -c "import sys; sys.exit(0)"')
+    assert argv == [sys.executable, "-c", "import sys; sys.exit(0)"]
+    assert E.check_argv("python -m pytest && echo ok") is None      # 有 shell 运算符才交给 shell
+
+
+def test_eval_ee_cmd_resolution(tmp_path):
+    py = tmp_path / "x y" / "fake.py"
+    py.parent.mkdir()
+    py.write_text("", encoding="utf-8")
+    assert E.resolve_ee_cmd(str(py)) == [sys.executable, str(py)]
+    assert E.resolve_ee_cmd(None) == [sys.executable, "-m", "ee"]
+    bat = tmp_path / "ee.cmd"
+    bat.write_text("", encoding="utf-8")
+    assert E.resolve_ee_cmd(str(bat), windows=True) == ["cmd.exe", "/d", "/s", "/c", str(bat)]
+
+
+def test_eval_preset_definitions():
+    assert E.PRESETS["a2"]["base"] == "a6e2b22~1"     # 等同 a6e2b22^；cmd.exe 里 ^ 是转义符
+    assert E.PRESETS["a3"]["base"] == "4cc28dc~1"
+
+
+def test_eval_preset_worktree_compare(evrepo, tmp_path, monkeypatch):
+    repo, tasks = evrepo
+    monkeypatch.setenv("FAKE_KEY", "sk-test")
+    out = tmp_path / "out"
+    code = E.main(["--repo", str(repo), "--tasks-dir", str(tasks), "--runs", "1", "--key-env", "FAKE_KEY",
+                   "--preset", "a2", "--base", "HEAD~1", "--out", str(out)])
+    assert code == 0
+    rows = [json.loads(x) for x in (out / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    by = {r["variant"]: r for r in rows}
+    assert set(by) == {"base", "cur"}
+    assert by["base"]["prompt_tokens"] == 3000 and by["cur"]["prompt_tokens"] == 800   # 基线确实跑的旧代码
+    assert all(r["passed"] for r in rows)
+    summary = (out / "summary.md").read_text(encoding="utf-8")
+    assert "base" in summary and "cur" in summary and "HEAD~1" in summary
+    wt = subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout
+    assert len(wt.strip().splitlines()) == 1                                       # 基线 worktree 已清理
