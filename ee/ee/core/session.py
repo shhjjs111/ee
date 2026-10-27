@@ -154,6 +154,7 @@ class Session:
         self._style_switched = False               # 会话中途切换过风格（之后用 <context-update> 子块说明当前风格）
         self._turn_role: str | None = None         # 本回合按哪个用途取模型（review）；计划模式自动用 plan
         self._role_clients: dict = {}
+        self._closing: list = []                   # 换模型时丢下的旧 client，等 aclose() 统一释放
         self.budget = BudgetGuard(config.data, self.home)
         self.budget_owner = True                   # 子代理共用主会话的 BudgetGuard，不负责回合重置
         self.budget_root = None                    # 子代理：主会话（会话花费按主会话合计算）
@@ -194,6 +195,7 @@ class Session:
         self.tools = build_tools(spec.profile, self.config, agent=self.agent_profile)
         self.tool_map = {t.name: t for t in self.tools}
         self._install_mcp()
+        self._drop_client()          # 旧 client 的连接池要释放，不能只丢引用
         self._client = None
         if not same_prefix:
             self.prefix = None
@@ -201,6 +203,35 @@ class Session:
         self.effort = RZ.canonical(spec.profile, RZ.resolve(self.config.data, self.home, spec.alias))
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"
                 "换模型后服务端缓存会从零开始。")
+
+    def _drop_client(self) -> None:
+        """换模型时把旧 client 摘下来，交给 aclose() 统一释放。
+
+        不能在这里 await（set_model 是同步方法、调用路径很多），也不该在无事件循环时
+        直接丢掉引用——那样连接池就永远漏了。统一记进 _closing，aclose() 时一并关。
+        """
+        old = getattr(self, "_client", None)
+        self._client = None
+        if old is not None and getattr(old, "aclose", None) is not None:
+            self._closing.append(old)
+
+    async def aclose(self) -> None:
+        """释放本会话持有的所有 HTTP 连接池（主 client + 按角色缓存的 + 换模型丢下的）。
+
+        服务退出、会话删除、测试收尾都该调；重复调用安全。
+        """
+        clients = [self._client, *self._role_clients.values(), *self._closing]
+        self._client = None
+        self._role_clients.clear()
+        self._closing.clear()
+        for c in clients:
+            close = getattr(c, "aclose", None)
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception as e:    # noqa: BLE001  一个关不掉不该挡住其他
+                log.info("关闭模型客户端时出错（忽略）：%s", e)
 
     def set_mode(self, mode: str) -> None:
         self.policy.set_mode(mode)

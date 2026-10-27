@@ -118,6 +118,30 @@ class ChatClient:
         self.retries = retries if retries is not None else (self.np.retries if self.np else 3)
         self.client = client
         self.notices: list[str] = []
+        self._closed = False
+
+    async def aclose(self) -> None:
+        """释放 HTTP 连接池。
+
+        自建的 AsyncOpenAI 持有 httpx 连接池，不关就会一直占着连接和 fd：
+        换模型（Session.set_model）与新建会话都会再造一个，长跑下来会堆积，
+        Windows 上表现为 WinError 10053 这类"已建立的连接被中止"的偶发失败。
+        外部传进来的 client（测试替身）不归我们管；重复调用安全。
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self.np is None:        # client 是调用方传进来的，不负责关闭
+            return
+        close = getattr(self.client, "close", None)
+        if close is None:
+            return
+        try:
+            res = close()
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception as e:     # noqa: BLE001  关闭失败不该影响调用方
+            log.info("关闭模型客户端时出错（忽略）：%s", e)
 
     def where(self) -> str:
         host = self.spec.base_url or "默认接口"

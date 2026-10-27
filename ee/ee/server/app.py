@@ -348,6 +348,13 @@ class Backend:
                 asyncio.get_running_loop().create_task(t.session.bg.close())
             except RuntimeError:
                 t.session.bg.kill_all_sync()
+            # 连带释放 HTTP 连接池，否则删掉的会话会一直占着连接
+            aclose = getattr(t.session, "aclose", None)
+            if aclose is not None:
+                try:
+                    asyncio.get_running_loop().create_task(aclose())
+                except RuntimeError:
+                    pass                             # 没有事件循环：随进程退出释放
         if path.is_file():
             path.unlink()
         if extra.is_dir():
@@ -820,6 +827,14 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         await asyncio.wait_for(mcp_shutdown(), 8)       # 关掉 MCP 子进程
     except Exception:  # noqa: BLE001
         pass
+    # 释放各会话的 HTTP 连接池（换模型/换 key 会堆出多个 AsyncOpenAI）
+    for t in backend.threads.values():
+        s = t.session
+        if s is not None and getattr(s, "aclose", None) is not None:
+            try:
+                await asyncio.wait_for(s.aclose(), 5)
+            except Exception:  # noqa: BLE001
+                pass
     if exit_on_stdin_eof or parent_pid:                 # 作为桌面端内核运行：残留的子孙进程一并结束
         try:
             await asyncio.wait_for(asyncio.to_thread(lifeline.kill_descendants), 10)
