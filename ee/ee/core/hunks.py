@@ -49,8 +49,9 @@ class Hunk:
 
     @property
     def fingerprint(self) -> str:
-        body = "\n".join(tag + t.rstrip("\r") for tag, t in self.lines)
-        return hashlib.sha1(body.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+        # 按界面上看到的文本算（解码不了的字节 → �），这样界面拿到的 patch 和后端重新算的 patch 指纹一致
+        body = display("\n".join(tag + t.rstrip("\r") for tag, t in self.lines))
+        return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
 
     def text(self) -> str:
         return "\n".join([self.header, *(tag + t for tag, t in self.lines)])

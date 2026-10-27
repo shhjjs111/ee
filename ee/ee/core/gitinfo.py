@@ -41,7 +41,8 @@ def _run(args: list[str], cwd: Path, timeout: float = 10) -> tuple[int, str]:
     exe = git_exe()
     if not exe:
         return 127, ""
-    code, out, _ = run_capture([exe, *args], cwd=cwd, timeout=timeout)
+    # core.quotepath=false：中文等非 ASCII 文件名原样输出，不然 diff 头 / status / ls-files 里是 "\344\270\255" 这种转义
+    code, out, _ = run_capture([exe, "-c", "core.quotepath=false", *args], cwd=cwd, timeout=timeout)
     if code == 124:
         log.warning("git %s 超时（%ss），cwd=%s", " ".join(args[:2]), timeout, cwd)
         return 1, ""
