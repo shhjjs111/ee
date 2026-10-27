@@ -51,6 +51,15 @@ LAST_STEP_NOTE = ("[系统提示] 已达到本回合允许的最大步数。请�
 INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执行）。"
 
 
+class RestoreConflict(Exception):
+    """要恢复的文件在 ee 改完之后又被用户改过：conflicts = 相对路径，tree = 检测时的当前工作区快照。"""
+
+    def __init__(self, conflicts: list[str], tree: str | None = None):
+        super().__init__("这些文件在 ee 改完之后又被改过：" + "、".join(conflicts))
+        self.conflicts = list(conflicts)
+        self.tree = tree
+
+
 class Session:
     def __init__(self, config: Config, model: str | None = None, cwd: Path | None = None, mode: str | None = None,
                  client=None, client_factory: Callable | None = None, persist: bool = True,
@@ -444,65 +453,123 @@ class Session:
         if restored:
             self.add_note(note + "\n" + "\n".join(restored))
 
-    def revert_trees(self, entries: list[tuple[str, str | None]]) -> list[str] | None:
+    def revert_trees(self, entries: list[tuple[str, str | None]], force: bool = False,
+                     on_restore_point=None) -> list[str] | None:
         """编辑重发：entries = 被撤回的各回合 (回合前 tree, 回合后 tree)，第一项是被编辑的那条消息。
-        把这些回合改过的文件恢复到第一项的回合前版本。磁盘快照不可用返回 None。"""
+        把这些回合改过的文件恢复到第一项的回合前版本。磁盘快照不可用返回 None。
+
+        用户在这些回合之后（或两回合之间）手改过其中的文件：force=False 时抛 RestoreConflict，什么都不动；
+        force=True 时先把当前工作区 tree 交给 on_restore_point（存成恢复点，可反悔）再恢复。"""
         d = self.disk()
         if d is None or not entries or not entries[0][0]:
             return None
         base = entries[0][0]
-        now = None
-        paths: list[str] = []
         try:
+            cur = d.capture()
+            paths: list[str] = []
             for before, after in entries:
                 if not before:
                     continue
-                if not after:
-                    now = now or d.capture()
-                    after = now
+                after = after or cur
                 paths += d.changed(before, after) if after else []
-            restored = d.restore(base, paths)
+            paths = list(dict.fromkeys(paths))
+            conflicts = self._conflicts(d, entries, cur, paths)
         except Exception as e:  # noqa: BLE001
             log.warning("磁盘快照恢复失败：%s", e)
             return None
+        if conflicts and not force:
+            raise RestoreConflict(conflicts, cur)
+        if force and cur and on_restore_point is not None and paths:
+            on_restore_point(cur)
+        note = "[系统提示] 用户编辑并重发了之前的消息，以下文件已恢复到那条消息之前的内容（如需再改请重新 read）："
+        from ee.core.snapshot import RestorePartial
+        try:
+            restored = self._disk_restore(d, base, paths, note)
+        except RestorePartial:
+            self._drop_turn_trees(base)      # 编辑重发照常进行（调用方如实报告没恢复的文件）
+            raise
+        if restored is None:
+            return None
+        self._drop_turn_trees(base)
+        self._after_restore(restored, note)
+        return restored
+
+    def _drop_turn_trees(self, base: str) -> None:
         for i, e in enumerate(self.turn_trees):
             if e.get("before") == base:
                 del self.turn_trees[i:]
                 break
-        self._after_restore(restored, "[系统提示] 用户编辑并重发了之前的消息，以下文件已恢复到那条消息之前的内容（如需再改请重新 read）：")
-        return restored
 
-    def _disk_undo(self) -> list[str] | None:
+    def _disk_restore(self, d, tree: str, paths: list[str], note: str = "") -> list[str] | None:
+        """预检没过（RestoreBlocked，一个没动）/ 恢复到一半（RestorePartial）原样抛给调用方如实报告；
+        其他失败（git 出错）返回 None，调用方回退内存快照。"""
+        from ee.core.snapshot import RestoreBlocked, RestorePartial
+        try:
+            return d.restore(tree, paths)
+        except RestoreBlocked:
+            raise
+        except RestorePartial as e:
+            self._after_restore(e.restored, note or "[系统提示] 以下文件已被恢复成之前的内容（如需再改请重新 read）：")
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning("磁盘快照恢复失败：%s", e)
+            return None
+
+    @staticmethod
+    def _conflicts(d, entries: list[tuple[str, str | None]], cur: str | None, paths: list[str]) -> list[str]:
+        """要恢复的文件里，哪些在 ee 的回合结束后被别人（用户/编辑器）改过：
+        回合后 tree → 下一回合前 tree（两回合之间）、最后一回合后 tree → 当前。回合后没有快照的（中断）无从比较。"""
+        want = set(paths)
+        if not want:
+            return []
+        hit: set[str] = set()
+        for i, (_before, after) in enumerate(entries):
+            nxt = entries[i + 1][0] if i + 1 < len(entries) else cur
+            if after and nxt and after != nxt:
+                hit |= want & set(d.changed(after, nxt))
+        if hit and cur and entries[0][0]:     # 当前内容已经和恢复目标一样的（比如上次恢复到一半已写好的）不会丢东西
+            hit &= set(d.changed(entries[0][0], cur))
+        return sorted(hit)
+
+    def _disk_undo(self, force: bool = False, on_restore_point=None) -> list[str] | None:
         d = self.disk()
         if d is None or not any(e.get("before") for e in self.turn_trees):
             return None
-        now = None
+        cur = None
         for e in reversed(self.turn_trees):
             if e.get("undone") or not e.get("before"):
                 continue
-            after = e.get("after")
-            if not after:
-                now = now or d.capture()
-                after = now
             try:
+                cur = cur or d.capture()
+                after = e.get("after") or cur
                 paths = d.changed(e["before"], after) if after else []
                 if not paths:
                     continue
-                restored = d.restore(e["before"], paths)
+                conflicts = self._conflicts(d, [(e["before"], e.get("after"))], cur, paths)
             except Exception as ex:  # noqa: BLE001
                 log.warning("磁盘快照撤销失败：%s", ex)
                 return None
+            if conflicts and not force:
+                raise RestoreConflict(conflicts, cur)
+            if force and cur and on_restore_point is not None:
+                on_restore_point(cur)
+            note = "[系统提示] 用户执行了 /undo，以下文件已恢复到你上一回合修改之前的内容（如需再改请重新 read）："
+            restored = self._disk_restore(d, e["before"], paths, note)   # 恢复到一半：不标已撤销，关掉占用后可再撤一次
+            if restored is None:
+                return None
             e["undone"] = True
             self.last_undo_tree = e["before"]
-            self._after_restore(restored, "[系统提示] 用户执行了 /undo，以下文件已恢复到你上一回合修改之前的内容（如需再改请重新 read）：")
+            self._after_restore(restored, note)
             return restored
         return []
 
-    def undo(self) -> list[str]:
+    def undo(self, force: bool = False, on_restore_point=None) -> list[str]:
         """/undo：把最近一个有改动、还没撤销过的回合的文件改动恢复成改动前。
-        有磁盘快照时按回合前后 tree 的差异恢复（含 shell 改的文件，重启后也行）；否则用内存快照。"""
+        有磁盘快照时按回合前后 tree 的差异恢复（含 shell 改的文件，重启后也行）；否则用内存快照。
+        磁盘快照下发现用户在回合后手改过要恢复的文件：force=False 抛 RestoreConflict（不动文件），
+        force=True 先调 on_restore_point(当前 tree) 存恢复点再恢复。"""
         self.last_undo_tree = None
-        res = self._disk_undo()
+        res = self._disk_undo(force, on_restore_point)
         if res is not None:
             return res
         layers = self.state.snapshots

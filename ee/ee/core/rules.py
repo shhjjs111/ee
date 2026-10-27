@@ -45,11 +45,8 @@ def _load(home: Path | None = None) -> dict:
 
 
 def _save(data: dict, home: Path | None = None) -> None:
-    f = _file(home)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, f)
+    from ee.core.atomic import write_text as atomic_write
+    atomic_write(_file(home), json.dumps(data, ensure_ascii=False, indent=2))   # 原子写，Windows 上替换失败会重试
 
 
 def rules_for(cwd: Path | str, home: Path | None = None) -> list[str]:

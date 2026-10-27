@@ -37,6 +37,27 @@ class SnapshotError(Exception):
     pass
 
 
+class RestoreBlocked(SnapshotError):
+    """预检没过：这些文件写不了（被占用/只读…），一个文件都没动。blocked = [(相对路径, 原因)]。"""
+
+    def __init__(self, blocked: list[tuple[str, str]]):
+        self.blocked = list(blocked)
+        super().__init__("这些文件现在写不了（可能被其他程序占用），没有恢复任何文件：\n"
+                         + "\n".join(f"{p}（{why}）" for p, why in self.blocked[:20])
+                         + (f"\n……等 {len(self.blocked)} 个" if len(self.blocked) > 20 else ""))
+
+
+class RestorePartial(SnapshotError):
+    """恢复到一半有文件失败：restored = 已恢复的绝对路径，failed = [(相对路径, 原因)]。"""
+
+    def __init__(self, restored: list[str], failed: list[tuple[str, str]]):
+        self.restored = list(restored)
+        self.failed = list(failed)
+        super().__init__(f"只恢复了 {len(self.restored)} 个文件，这些没恢复：\n"
+                         + "\n".join(f"{p}（{why}）" for p, why in self.failed[:20])
+                         + (f"\n……等 {len(self.failed)} 个" if len(self.failed) > 20 else ""))
+
+
 def _git() -> str | None:
     from ee.core.gitinfo import git_exe
     return git_exe()
@@ -167,31 +188,76 @@ class DiskSnapshot:
         return [p for p in out.decode("utf-8", "replace").split("\0") if p]
 
     def restore(self, tree: str, paths: list[str]) -> list[str]:
-        """把 paths（相对路径）恢复成 tree 里的版本；返回实际处理过的绝对路径。"""
+        """把 paths（相对路径）恢复成 tree 里的版本，tree 里没有的删除；返回实际处理过的绝对路径。
+
+        先预检：所有要写/删的目标都能打开写（Windows 上被别的程序锁住的文件打不开），有一个不行就
+        抛 RestoreBlocked，一个文件都不动。预检通过后逐个文件写（临时文件 + 替换），中途失败不停下，
+        最后抛 RestorePartial，如实列出已恢复 / 没恢复的文件。"""
         paths = [p for p in dict.fromkeys(paths) if p and self._inside(p)]
         if not paths:
             return []
-        done: list[str] = []
+        _check_tree(tree)
         with self._lock:
-            present: set[str] = set()
+            entries: dict[str, tuple[str, str]] = {}          # 相对路径 → (mode, blob sha)
             for chunk in _chunks(paths, 200):
-                out = self._run("ls-tree", "-r", "-z", "--name-only", tree, "--", *chunk)
-                present |= {p for p in out.decode("utf-8", "replace").split("\0") if p}
-            keep = [p for p in paths if p in present]
-            for chunk in _chunks(keep, 200):
-                self._run("checkout", "-f", tree, "--", *chunk)
+                out = self._run("ls-tree", "-r", "-z", tree, "--", *chunk)
+                for rec in out.decode("utf-8", "surrogateescape").split("\0"):
+                    meta, _, rel = rec.partition("\t")
+                    bits = meta.split()
+                    if rel and len(bits) == 3 and bits[1] == "blob":
+                        entries[rel] = (bits[0], bits[2])
+            blocked: list[tuple[str, str]] = []
             for p in paths:
                 full = self.worktree / p
-                if p not in present:
+                if p not in entries and not (full.is_file() or full.is_symlink()):
+                    continue                                  # 要删的文件本来就不在了
+                try:
+                    _probe_writable(full)
+                except OSError as e:
+                    blocked.append((p, _why(e)))
+            if blocked:
+                raise RestoreBlocked(blocked)
+            done: list[str] = []
+            failed: list[tuple[str, str]] = []
+            for chunk in _chunks(paths, 200):
+                want = [entries[p][1] for p in chunk if p in entries]
+                try:
+                    blobs = self._blobs(want) if want else {}
+                except SnapshotError as e:
+                    failed += [(p, str(e)) for p in chunk]
+                    continue
+                for p in chunk:
+                    full = self.worktree / p
                     try:
-                        if full.is_file() or full.is_symlink():
+                        if p in entries:
+                            mode, sha = entries[p]
+                            _put(full, blobs[sha], mode)
+                        elif full.is_file() or full.is_symlink():
                             full.unlink()
                             _prune_empty(full.parent, self.worktree)
-                    except OSError as e:
-                        log.warning("删除 %s 失败：%s", p, e)
+                    except (OSError, KeyError) as e:
+                        log.warning("恢复 %s 失败：%s", p, e)
+                        failed.append((p, _why(e)))
                         continue
-                done.append(str(full))
+                    done.append(str(full))
+        if failed:
+            raise RestorePartial(done, failed)
         return done
+
+    def _blobs(self, shas: list[str]) -> dict[str, bytes]:
+        """cat-file --batch 一次取出这些 blob 的原始字节。"""
+        out = self._run("cat-file", "--batch", input=("\n".join(dict.fromkeys(shas)) + "\n").encode(), timeout=120.0)
+        res: dict[str, bytes] = {}
+        i = 0
+        while i < len(out):
+            nl = out.index(b"\n", i)
+            head = out[i:nl].decode("ascii", "replace").split()
+            if len(head) < 3:                                 # "<sha> missing"
+                raise SnapshotError(f"快照里缺少对象：{' '.join(head)}")
+            size = int(head[2])
+            res[head[0]] = out[nl + 1:nl + 1 + size]
+            i = nl + 1 + size + 1
+        return res
 
     # ------------------------------------------------------------ 检查点时间线（D5-7）
     _DIFF_CFG = ("-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false",
@@ -298,6 +364,47 @@ def _literal(rel: str) -> str:
 def _chunks(xs: list[str], n: int):
     for i in range(0, len(xs), n):
         yield xs[i:i + n]
+
+
+def _why(e: BaseException) -> str:
+    if isinstance(e, PermissionError):
+        return "被其他程序占用或没有写权限"
+    if isinstance(e, IsADirectoryError):
+        return "同名的是一个文件夹"
+    return getattr(e, "strerror", None) or str(e) or type(e).__name__
+
+
+def _probe_writable(full: Path) -> None:
+    """预检：能不能写/删这个文件。存在的文件以读写方式打开一下（Windows 上被锁的文件这里就会失败）；
+    不存在的文件检查最近一级已存在的上级目录可写。不行就抛 OSError。"""
+    if full.is_symlink():
+        return
+    if full.exists():
+        if full.is_dir():
+            raise IsADirectoryError(21, "同名的是一个文件夹", str(full))
+        fd = os.open(full, os.O_RDWR | getattr(os, "O_BINARY", 0))
+        os.close(fd)
+        return
+    d = full.parent
+    while not d.exists() and d != d.parent:
+        d = d.parent
+    if not d.is_dir():
+        raise NotADirectoryError(20, "上级路径不是文件夹", str(d))
+    if not os.access(d, os.W_OK):
+        raise PermissionError(13, "目录没有写权限", str(d))
+
+
+def _put(full: Path, data: bytes, mode: str = "100644") -> None:
+    """写回一个文件的原始字节：同目录临时文件 + 替换（替换失败时 Windows 上稍等重试）。"""
+    from ee.core.atomic import write_bytes
+    if full.is_symlink():
+        full.unlink()
+    write_bytes(full, data)
+    if os.name != "nt" and mode == "100755":
+        try:
+            os.chmod(full, 0o755)
+        except OSError:
+            pass
 
 
 def _prune_empty(d: Path, root: Path) -> None:

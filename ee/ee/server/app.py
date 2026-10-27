@@ -156,7 +156,8 @@ class Backend:
 
     def _save_desktop(self, d: dict) -> None:
         self.home.mkdir(parents=True, exist_ok=True)
-        self._desktop_file.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        from ee.core.atomic import write_text as atomic_write
+        atomic_write(self._desktop_file, json.dumps(d, ensure_ascii=False, indent=2))
 
     # ------------------------------------------------------------ 线程
     def _check_thread_id(self, thread_id: object) -> None:
@@ -350,17 +351,40 @@ class Backend:
         self.notify("thread/deleted", {"thread_id": thread_id})
         return {"ok": True}
 
-    async def thread_undo(self, thread_id: str) -> dict:
+    async def thread_undo(self, thread_id: str, force: bool = False) -> dict:
+        """/undo。要恢复的文件在回合后被用户改过时返回 {needs_confirm, conflicts}、不动文件；
+        前端确认后带 force=true 再调：先把当前工作区存成恢复点（时间线里可反悔）再恢复。"""
+        from ee.core.session import RestoreConflict
+        from ee.server.checkpoint_rpc import add_restore_point, restore_point_view
         t = await self._athread(thread_id)
         s = await t.ensure_session_async()
         if s.running:
             raise RpcError("运行中不能撤销")
-        restored = await asyncio.to_thread(s.undo)
+        box: dict = {}
+
+        def keep(tree: str) -> None:
+            box["rp"] = add_restore_point(t, tree, "执行 /undo 前的文件（含你手改的内容）")
+
+        from ee.core.snapshot import RestoreBlocked, RestorePartial
+        try:
+            restored = await asyncio.to_thread(s.undo, bool(force), keep)
+        except RestoreConflict as e:
+            return {"restored": [], "needs_confirm": True, "conflicts": e.conflicts}
+        except RestoreBlocked as e:          # 预检没过：一个文件都没动
+            raise RpcError(f"撤销失败：{e}\n关掉占用这些文件的程序后再撤销一次。")
+        except RestorePartial as e:          # 恢复到一半：如实报告，这一回合不标已撤销，可再撤一次
+            t._add({"type": "notice", "level": "warn",
+                    "text": f"撤销只完成了一部分：{e}\n已恢复：\n" + "\n".join(e.restored)
+                            + "\n关掉占用这些文件的程序后再撤销一次即可补上。"})
+            self.notify("git/changed", {"cwd": t.meta.get("cwd")})
+            return {"restored": e.restored, "failed": [{"path": p, "reason": why} for p, why in e.failed],
+                    "partial": True, "restore_point": restore_point_view(box.get("rp"))}
         if s.last_undo_tree:
             t.mark_undone(s.last_undo_tree)
         if restored:
             t._add({"type": "notice", "text": "已撤销上一回合的文件改动：\n" + "\n".join(restored), "level": "info"})
-        return {"restored": restored}
+            self.notify("git/changed", {"cwd": t.meta.get("cwd")})
+        return {"restored": restored, "restore_point": restore_point_view(box.get("rp"))}
 
     async def thread_compact(self, thread_id: str) -> dict:
         t = await self._athread(thread_id)

@@ -6,6 +6,24 @@ import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
 
+
+/** 快照恢复只完成一部分（有文件被占用）：如实提示已恢复几个、哪些没恢复。 */
+export function partialToast(done: number, failed: { path: string; reason?: string }[]): string {
+  const names = failed.slice(0, 5).map((f) => f.path).join("、");
+  const more = failed.length > 5 ? ` 等 ${failed.length} 个` : "";
+  return `只恢复了 ${done} 个文件，${names}${more} 没恢复（可能被其他程序占用），关掉占用的程序后再试一次`;
+}
+
+/** 撤销 / 编辑重发前发现用户在回合后手改过要恢复的文件：确认框文字。 */
+export function conflictPrompt(conflicts: string[], action: string): string {
+  const shown = conflicts.slice(0, 10).join("\n");
+  const more = conflicts.length > 10 ? `\n……等 ${conflicts.length} 个文件` : "";
+  return (
+    `${action}会把下面这些文件恢复到 ee 改动之前，但它们在 ee 改完之后又被改过（可能是你手动改的）：\n\n${shown}${more}\n\n` +
+    "继续的话，恢复前会先把当前状态存成检查点，之后可在时间线里恢复回来。继续吗？"
+  );
+}
+
 export type View = "chat" | "settings" | "automations";
 export type Theme = "system" | "dark" | "light";
 export type RightTab = "review" | "terminal" | "files";
@@ -433,8 +451,18 @@ export const useApp = create<State & Actions>((set, get) => ({
       return;
     }
     try {
-      const r = await s.rpc!.call("thread/undo", { thread_id: id });
-      s.showToast(r.restored?.length ? `已恢复 ${r.restored.length} 个文件` : "上一回合没有可撤销的文件改动");
+      let r = await s.rpc!.call("thread/undo", { thread_id: id });
+      if (r.needs_confirm) {
+        if (!confirm(conflictPrompt(r.conflicts ?? [], "撤销上一回合"))) return;
+        r = await s.rpc!.call("thread/undo", { thread_id: id, force: true });
+      }
+      if (r.partial) s.showToast(partialToast(r.restored?.length ?? 0, r.failed ?? []), "error");
+      else
+        s.showToast(
+          r.restored?.length
+            ? `已恢复 ${r.restored.length} 个文件${r.restore_point ? "（恢复前的状态已存为检查点，可在时间线里恢复回来）" : ""}`
+            : "上一回合没有可撤销的文件改动",
+        );
       set((st) => ({ reviewNonce: st.reviewNonce + 1 }));
     } catch (e) {
       s.showToast((e as Error).message, "error");
@@ -467,16 +495,23 @@ export const useApp = create<State & Actions>((set, get) => ({
     if (!id) return false;
     try {
       set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id]: Date.now() } }));
-      const r = await s.rpc!.call("thread/edit_resend", {
-        thread_id: id,
-        item_id: itemId,
-        text,
-        model: s.draftModel || undefined,
-        mode: s.draftMode,
-      });
+      const params = { thread_id: id, item_id: itemId, text, model: s.draftModel || undefined, mode: s.draftMode };
+      let r = await s.rpc!.call("thread/edit_resend", params);
+      if (r.needs_confirm) {
+        if (!confirm(conflictPrompt(r.conflicts ?? [], "编辑重发"))) {
+          set((st) => {
+            const rest = { ...st.turnStartedAt };
+            delete rest[id];
+            return { turnStartedAt: rest };
+          });
+          return false;
+        }
+        r = await s.rpc!.call("thread/edit_resend", { ...params, force: true });
+      }
       const t = r.thread as ThreadDetail;
       set((st) => ({ details: { ...st.details, [id]: { ...t, status: "running" } }, reviewNonce: st.reviewNonce + 1 }));
-      if (r.restored?.length) s.showToast(`已恢复 ${r.restored.length} 个文件并重新发送`);
+      if (r.failed?.length) s.showToast(partialToast(r.restored?.length ?? 0, r.failed), "error");
+      else if (r.restored?.length) s.showToast(`已恢复 ${r.restored.length} 个文件并重新发送`);
       return true;
     } catch (e) {
       set((st) => {

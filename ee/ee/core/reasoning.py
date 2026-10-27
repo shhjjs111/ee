@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from pathlib import Path
 
@@ -104,9 +103,8 @@ def remember(home: Path, alias: str, level: str) -> None:
         d["effort"] = eff
         p = _prefs_path(home)
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, p)
+        from ee.core.atomic import write_text as atomic_write
+        atomic_write(p, json.dumps(d, ensure_ascii=False, indent=2))
 
 
 def configured(data: dict, alias: str) -> str:

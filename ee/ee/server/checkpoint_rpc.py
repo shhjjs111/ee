@@ -21,6 +21,7 @@ from pathlib import Path
 
 from ee.core import checkpoints as C
 from ee.core import hunks
+from ee.core.snapshot import RestoreBlocked, RestorePartial
 
 MAX_RESTORE_POINTS = 50
 
@@ -42,6 +43,20 @@ def session_base(t) -> str | None:
     """会话开始时的 tree（第一个有快照的回合的回合前）。"""
     ents = turn_entries(t)
     return ents[0][1]["tree"] if ents else None
+
+
+def add_restore_point(t, tree: str, label: str) -> dict:
+    """把当前工作区 tree 存成会话的“恢复点”（时间线里可以恢复回来反悔），返回恢复点。"""
+    users = [it for _, it in turn_entries(t)]
+    rp = {"id": "rp-" + secrets.token_hex(6), "ts": time.time(), "tree": tree, "label": label,
+          "undone": {it["id"]: bool(it.get("undone")) for it in users}}
+    t.meta["restore_points"] = ([*(t.meta.get("restore_points") or []), rp])[-MAX_RESTORE_POINTS:]
+    t.save_meta()
+    return rp
+
+
+def restore_point_view(rp: dict | None) -> dict | None:
+    return None if not rp else {"id": rp["id"], "kind": "restore", "ts": rp["ts"], "text": rp["label"]}
 
 
 def register(methods: dict, backend) -> None:
@@ -185,11 +200,21 @@ def register(methods: dict, backend) -> None:
         if not paths:
             return {"restored": [], "restore_point": None, "label": label}
         users = [it for _, it in turn_entries(t)]
-        rp = {"id": "rp-" + secrets.token_hex(6), "ts": time.time(), "tree": cur,
-              "label": f"执行「恢复到{label}」前的文件", "undone": {it["id"]: bool(it.get("undone")) for it in users}}
-        t.meta["restore_points"] = ([*(t.meta.get("restore_points") or []), rp])[-MAX_RESTORE_POINTS:]
-        t.save_meta()
-        restored = d.restore(target, paths)
+        rp = add_restore_point(t, cur, f"执行「恢复到{label}」前的文件")
+        try:
+            restored = d.restore(target, paths)
+        except RestoreBlocked as e:          # 预检没过：一个文件都没动，刚存的恢复点也撤掉
+            t.meta["restore_points"] = [x for x in t.meta.get("restore_points") or [] if x.get("id") != rp["id"]]
+            t.save_meta()
+            raise RpcError(f"恢复失败：{e}\n关掉占用这些文件的程序后再试。")
+        except RestorePartial as e:          # 恢复到一半：如实报告；恢复点保留，可以恢复回去
+            s._after_restore(e.restored, f"[系统提示] 用户在检查点时间线里把工作区文件恢复到了{label}，但只恢复了一部分，以下文件已变化（如需再改请重新 read）：")
+            rel = [os.path.relpath(p, d.worktree).replace("\\", "/") for p in e.restored]
+            t._add({"type": "notice", "level": "warn",
+                    "text": f"恢复到{label}只完成了一部分：{e}\n恢复前的状态已存为检查点，可在时间线里恢复回去。"})
+            return {"restored": rel, "label": label, "partial": True,
+                    "failed": [{"path": p, "reason": why} for p, why in e.failed],
+                    "restore_point": restore_point_view(rp)}
         # 同步“已撤销”标记，/undo 之后按新状态继续
         if kind == "turn":
             for m, it in turn_entries(t):
@@ -212,7 +237,7 @@ def register(methods: dict, backend) -> None:
         t._add({"type": "notice", "level": "info",
                 "text": f"已把文件恢复到{label}（{len(rel)} 个文件）。恢复前的状态已存为检查点，可在时间线里恢复回来。"})
         return {"restored": rel, "label": label,
-                "restore_point": {"id": rp["id"], "kind": "restore", "ts": rp["ts"], "text": rp["label"]}}
+                "restore_point": restore_point_view(rp)}
 
     async def restore(thread_id: str, checkpoint_id: str, side: str = "before") -> dict:
         t, s = await _session(thread_id)

@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from ee.core.atomic import write_text as atomic_write
 from ee.core.instructions import project_root
 
 FILE_NAME = "memory.md"
@@ -96,8 +97,7 @@ def add_entry(path: Path, text: str) -> tuple[int, list[str]]:
     if not body.endswith("\n"):
         body += "\n"
     body += f"- {t}\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding="utf-8")
+    atomic_write(path, body)
     entries.append(t)
     return len(entries), entries
 
@@ -146,16 +146,15 @@ def remove_entry(path: Path, index: int | None = None, match: str | None = None)
         else:
             skipping = False
         out.append(line)
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    atomic_write(path, "\n".join(out) + "\n")
     removed = entries.pop(k)
     return removed, entries
 
 
 def save_text(path: Path, text: str) -> list[str]:
     """整份覆盖（设置页编辑用）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
     t = text if text.endswith("\n") or not text else text + "\n"
-    path.write_text(t, encoding="utf-8")
+    atomic_write(path, t)
     return parse_entries(t)
 
 

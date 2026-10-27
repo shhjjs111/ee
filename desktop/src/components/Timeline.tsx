@@ -7,6 +7,7 @@ import { useApp } from "../lib/store";
 import type { Checkpoint, CheckpointList, DiffFile } from "../types";
 import { DiffView, Stat } from "./DiffView";
 import { Button, Spinner } from "./ui";
+import { partialToast } from "../lib/store";
 
 type DiffResult = { files: DiffFile[]; additions: number; deletions: number };
 
@@ -80,7 +81,8 @@ function Row({
       );
       if (!ok) return;
       const r = await s.rpc!.call("checkpoint/restore", { thread_id: threadId, checkpoint_id: cp.id, side });
-      s.showToast(r.restored.length ? `已恢复到${r.label}（${r.restored.length} 个文件）` : "文件已经是这个状态了");
+      if (r.partial) s.showToast(partialToast(r.restored.length, r.failed ?? []), "error");
+      else s.showToast(r.restored.length ? `已恢复到${r.label}（${r.restored.length} 个文件）` : "文件已经是这个状态了");
       onRestored();
     } catch (e) {
       s.showToast((e as Error).message, "error");

@@ -11,26 +11,52 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 import uuid
 from pathlib import Path
 
+log = logging.getLogger("ee.store")
+
+
+def _ends_with_newline(path: Path) -> bool:
+    """文件不存在、为空或以换行结尾返回 True。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 0:
+                return True
+            f.seek(-1, os.SEEK_END)
+            return f.read(1) == b"\n"
+    except OSError:
+        return True
+
 
 class SessionStore:
+    _tail_checked = False          # 本进程第一次追加前检查过文件末尾是否有没写完的半行
+
     def __init__(self, root: Path, session_id: str | None = None, enabled: bool = True):
         self.root = root / "sessions"
         self.id = session_id or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         self.enabled = enabled
         self.path = self.root / f"{self.id}.jsonl"
+        self._tail_checked = False
 
     def append(self, kind: str, data: dict) -> None:
         if not self.enabled:
             return
         try:
             self.root.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as f:
-                from ee.core.secrets import redact
-                f.write(redact(json.dumps({"t": time.time(), "kind": kind, **data}, ensure_ascii=False)) + "\n")
+            from ee.core.secrets import redact
+            line = (redact(json.dumps({"t": time.time(), "kind": kind, **data}, ensure_ascii=False)) + "\n").encode("utf-8")
+            if not self._tail_checked:
+                # 上次崩溃可能留下没写完的半行：先补一个换行，新记录另起一行，不和半行粘成一条坏行
+                self._tail_checked = True
+                if not _ends_with_newline(self.path):
+                    line = b"\n" + line
+            with open(self.path, "ab") as f:
+                f.write(line)
         except OSError:
             pass
 
@@ -51,26 +77,44 @@ class SessionStore:
 
     @staticmethod
     def _records(path: Path):
+        """逐行读出记录。坏行（崩溃时写了一半、不是合法 UTF-8 / JSON、不是对象）跳过并记日志，不影响其他行。"""
         try:
-            text = path.read_text(encoding="utf-8")
+            raw = path.read_bytes()
         except OSError:
             return
-        for line in text.splitlines():
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        bad = 0
+        for no, line in enumerate(raw.split(b"\n"), 1):
+            line = line.strip()
+            if not line:
                 continue
+            try:
+                rec = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as e:
+                rec, why = None, e
+            else:
+                why = "不是 JSON 对象"
+            if not isinstance(rec, dict):
+                bad += 1
+                if bad <= 5:
+                    log.warning("会话文件 %s 第 %d 行损坏（可能是崩溃时没写完），已跳过：%s", path.name, no, str(why)[:120])
+                continue
+            yield rec
+        if bad > 5:
+            log.warning("会话文件 %s 共跳过 %d 行坏记录", path.name, bad)
 
     @staticmethod
     def load_messages(path: Path) -> list[dict]:
         out = []
         for rec in SessionStore._records(path):
             if rec.get("kind") == "message":
-                out.append(rec["message"])
+                if isinstance(rec.get("message"), dict):
+                    out.append(rec["message"])
             elif rec.get("kind") == "reset":
                 out = []
             elif rec.get("kind") == "rewind":
-                out = out[: int(rec.get("to", len(out)))]
+                out = out[: _int(rec.get("to"), len(out))]
             elif rec.get("kind") == "prune":
                 _apply_prune(out, rec)
         return out
@@ -89,21 +133,23 @@ class SessionStore:
                 last_t = t
             kind = rec.get("kind")
             if kind == "message":
-                messages.append(rec["message"])
+                if isinstance(rec.get("message"), dict):
+                    messages.append(rec["message"])
             elif kind == "reset":
                 messages = []
             elif kind == "rewind":
-                messages = messages[: int(rec.get("to", len(messages)))]
+                messages = messages[: _int(rec.get("to"), len(messages))]
             elif kind == "prune":
                 _apply_prune(messages, rec)
             elif kind == "truncate":
-                cut = int(rec.get("from_seq", 0))
-                items = {k: v for k, v in items.items() if int(v.get("seq", 0)) < cut}
+                cut = _int(rec.get("from_seq"), 0)
+                items = {k: v for k, v in items.items() if _int(v.get("seq"), 0) < cut}
             elif kind == "meta":
-                meta.update(rec.get("meta") or {})
+                if isinstance(rec.get("meta"), dict):
+                    meta.update(rec["meta"])
             elif kind == "item":
-                it = rec.get("item") or {}
-                if it.get("id"):
+                it = rec.get("item")
+                if isinstance(it, dict) and it.get("id"):
                     items[it["id"]] = it
         if not items:   # 老会话（终端版）没有 item 记录：从消息粗略还原
             items = {it["id"]: it for it in _items_from_messages(messages)}
@@ -112,7 +158,7 @@ class SessionStore:
         if not meta.get("title"):
             first_user = next((it for it in items.values() if it.get("type") == "user"), None)
             meta["title"] = _title(first_user["text"]) if first_user else "新对话"
-        ordered = sorted(items.values(), key=lambda it: it.get("seq", 0))
+        ordered = sorted(items.values(), key=lambda it: _int(it.get("seq"), 0))
         return {"messages": messages, "items": ordered, "meta": meta}
 
     @staticmethod
@@ -127,9 +173,19 @@ class SessionStore:
                 "workspace": (meta.get("worktree") or {}).get("repo") or meta.get("cwd", "")}
 
 
+def _int(v, default: int) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _apply_prune(messages: list[dict], rec: dict) -> None:
     from ee.core.prune import apply
-    apply(messages, list(rec.get("items") or []))
+    try:
+        apply(messages, list(rec.get("items") or []))
+    except (TypeError, ValueError, AttributeError) as e:   # 坏的 prune 记录：跳过，不影响打开会话
+        log.warning("跳过一条无法解析的修剪记录：%s", e)
 
 
 def strip_context(text: str) -> str:

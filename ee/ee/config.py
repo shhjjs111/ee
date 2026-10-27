@@ -379,8 +379,8 @@ def write_setting(dotted: str, value, path: Path | None = None) -> Path:
             if lines and lines[-1].strip():
                 lines.append("")
             lines += [f"[{section}]", new_line]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    from ee.core.atomic import write_text as atomic_write
+    atomic_write(path, "\n".join(lines) + "\n")       # 临时文件 + 替换：写到一半崩溃也不会留下半截配置
     return path
 
 
@@ -455,9 +455,8 @@ def save_user_file(data: dict, path: Path | None = None) -> Path:
                 strip_secret_lines(path.read_text(encoding="utf-8")), encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             pass
-    tmp = path.with_suffix(".toml.tmp")
-    tmp.write_text(dump_toml(data), encoding="utf-8")
-    os.replace(tmp, path)
+    from ee.core.atomic import write_text as atomic_write
+    atomic_write(path, dump_toml(data))
     return path
 
 
