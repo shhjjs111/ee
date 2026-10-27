@@ -78,6 +78,8 @@ describe("SystemPromptSettings", () => {
       ),
     );
     expect(document.body.textContent).toContain("未信任（不生效）");
+    // 没有打开对话时不能带 thread_id: null（后端会当成非法 thread_id，整个分区只剩报错）
+    for (const [m, p] of calls.filter(([m]) => m.startsWith("sysprompt/"))) expect(p.thread_id, m).not.toBeNull();
     expect(document.body.textContent).toContain("系统提示词不是安全边界");
     const trustBtn = [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === "信任")!;
     await act(async () => trustBtn.click());
@@ -87,6 +89,7 @@ describe("SystemPromptSettings", () => {
     const pv = [...document.querySelectorAll("button")].find((b) => b.textContent?.includes("查看最终系统提示词"))!;
     await act(async () => pv.click());
     expect(document.body.textContent).toContain("最终的系统提示词内容");
+    for (const [m, p] of calls.filter(([m]) => m.startsWith("sysprompt/"))) expect(p.thread_id, m).not.toBeNull();
     expect(document.body.textContent).toContain("新对话会用的版本");
     await act(async () => root.unmount());
   });

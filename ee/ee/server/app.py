@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -42,6 +43,15 @@ SLOW_RPC = 5.0     # 秒：超过就记一条日志
 OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
 # 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环（对应方法本身仍是同步函数，测试可直接调用）。
 BLOCKING_RPCS = {"thread/delete"}
+
+
+def _thread_id_optional(fn) -> bool:
+    """处理函数自己把 thread_id 声明成可选（默认 None）时，null 就是“没有当前对话”，不算非法。"""
+    try:
+        p = inspect.signature(fn).parameters.get("thread_id")
+    except (TypeError, ValueError):
+        return False
+    return p is not None and p.default is None
 
 
 class RpcError(Exception):
@@ -130,7 +140,7 @@ class Backend:
             raise RpcError("params 必须是对象", -32602)
         if "thread_id" in params:
             tid = params["thread_id"]
-            if not (tid is None and method in OPTIONAL_THREAD_ID) and not is_thread_id(tid):
+            if not (tid is None and (method in OPTIONAL_THREAD_ID or _thread_id_optional(fn))) and not is_thread_id(tid):
                 raise RpcError("参数错误：thread_id 不合法", -32602)
         try:
             if method in BLOCKING_RPCS:

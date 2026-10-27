@@ -181,3 +181,17 @@ def test_rpc_info_preview_trust(ee_home, workspace):
         from ee.config import load_user_file
         assert load_user_file()["system_prompt"]["allowed_project"] == []
     asyncio.run(go())
+
+
+def test_rpc_null_thread_id_allowed_for_optional_handlers(ee_home, workspace):
+    """设置页在没有打开对话时会带 thread_id: null；sysprompt/info|preview 的 thread_id 本来就是可选的，不能被通用校验拦掉。"""
+    async def go():
+        b, _fake, _ev = make_backend(ee_home, [])
+        info = await b.call("sysprompt/info", {"cwd": str(workspace), "thread_id": None})
+        assert info["cwd"] == str(workspace)
+        pv = await b.call("sysprompt/preview", {"cwd": str(workspace), "thread_id": None})
+        assert pv["frozen"] is False
+        # 必填 thread_id 的方法仍然拒绝 null
+        with pytest.raises(Exception, match="thread_id"):
+            await b.call("thread/get", {"thread_id": None})
+    asyncio.run(go())

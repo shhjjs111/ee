@@ -53,7 +53,7 @@ export function SystemPromptSettings() {
     const tok = ++gen.current;
     setErr(null);
     s.rpc
-      .call("sysprompt/info", { cwd, thread_id: threadId })
+      .call("sysprompt/info", { cwd, thread_id: threadId ?? undefined })
       .then((r: SysPromptInfo) => {
         if (tok === gen.current) setInfo(r);
       })
@@ -84,7 +84,7 @@ export function SystemPromptSettings() {
     setBusy("preview");
     setErr(null);
     try {
-      setPreview(await s.rpc!.call("sysprompt/preview", { cwd, thread_id: threadId }));
+      setPreview(await s.rpc!.call("sysprompt/preview", { cwd, thread_id: threadId ?? undefined }));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
