@@ -74,6 +74,8 @@ export type ReviewParams = { kind: "uncommitted" | "branch" | "commit" | "custom
 type Actions = {
   init(rpc: RpcClient): Promise<void>;
   refreshLists(): Promise<void>;
+  /** 补拉子会话真实状态（changed_count / terminal_reason），卡片要用。 */
+  refreshChildStatus(): Promise<void>;
   /** 拉项目/对话/模型列表，失败时 toast（连接、重连后用）。 */
   refreshListsSafe(): Promise<void>;
   refreshModels(): Promise<void>;
@@ -218,6 +220,33 @@ export const useApp = create<State & Actions>((set, get) => ({
     const rpc = get().rpc!;
     const [ws, th] = await Promise.all([rpc.call("workspace/list"), rpc.call("thread/list", { limit: 300 })]);
     set({ workspaces: ws.workspaces, threads: th.threads });
+    void get().refreshChildStatus();
+  },
+
+  /** 拉子会话的真实状态（D6-1 U8/U9）。
+   *
+   *  `thread/updated` 只带 summary() 里有的字段，`changed_count` 要现算（读 worktree 的
+   *  git status），拿不到就永远是空的——卡片上的「N 处改动」得靠这一步补。
+   *  逐个子会话查：一个坏了不影响其他（thread/status 对坏的 worktree 返回 0）。
+   */
+  async refreshChildStatus() {
+    const rpc = get().rpc;
+    if (!rpc) return;
+    const kids = get().threads.filter((t) => t.orchestrator_parent_id);
+    if (!kids.length) return;
+    const results = await Promise.all(kids.map(async (t) => {
+      try {
+        const r = await rpc.call("thread/status", { parent_id: t.orchestrator_parent_id, child_id: t.id });
+        return r?.thread ?? null;
+      } catch {
+        return null;   // 父会话已删/子会话不在：静默跳过，不能让一次失败拖垮整个列表
+      }
+    }));
+    const byId = new Map(results.filter(Boolean).map((x) => [x.id as string, x]));
+    if (!byId.size) return;
+    set((s) => ({
+      threads: s.threads.map((t) => (byId.has(t.id) ? { ...t, ...byId.get(t.id)! } : t)),
+    }));
   },
 
   async refreshModels() {

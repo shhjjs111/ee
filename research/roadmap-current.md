@@ -70,7 +70,7 @@ D6-1 的 U1–U7 已全部提交并推送（`9d867f6`、`d68af00`、`58e1e67`、
 - Electron 桌面端实际渲染与交互。
 - 真实 MCP 服务器跨项目行为、真实模型评测。
 - `ee\scripts\e2e_ws.py` 已实跑通过（普通 / `--blackhole` / 编排三种场景），但**未接入 CI**。编排闭环已验通：`thread/create_child` → `thread/wait` → 终态 `completed` → `thread/children` 能列出，exit=0。
-- 桌面端尚未调用 `thread/children` 拿 `changed_count`（U8 卡片的改动数仍为空）；RPC 已就绪，属前端接线未做。
+- 桌面端已接 `thread/status`：`refreshChildStatus` 在列表加载后补拉子会话的 `changed_count` 与终态，U8 卡片的「N 处改动」不再是空的。逐个子会话查、单个失败静默跳过。
 
 延后项（未做，保留原因）：
 

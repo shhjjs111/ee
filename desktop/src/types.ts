@@ -127,6 +127,8 @@ export type ThreadSummary = {
   /** 派发记录（D6-1 U2）：末条带 terminal_reason。判「跑完了」还是「被杀/超预算」只能看它，
    *  status 的 idle 同时覆盖两种情况。 */
   runs?: ThreadRun[];
+  /** 末条 run 的终态（D6-1 U8）：`thread/status` 直接给这个平铺字段，卡片按它判成败。 */
+  terminal_reason?: string | null;
   /** 子会话 worktree 的改动数（D6-1 U8）：由 thread_status 给出，列表里不查也能显示。 */
   changed_count?: number;
   worktree?: { path: string; branch: string; repo: string; name: string } | null; // D5-1

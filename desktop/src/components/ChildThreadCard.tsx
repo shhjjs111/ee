@@ -12,8 +12,11 @@ export function terminalText(t: ThreadSummary): string {
   if (t.status === "running") return "运行中";
   if (t.status === "waiting_approval") return "等待批准";
   if (t.status === "compacting") return "压缩中";
+  // 两个来源都要认：thread/list 带的是 runs 末条；thread/status 直接给平铺的
+  // terminal_reason（refreshChildStatus 拉回来的）。只看一种会有一半场景显示「空闲」。
   const run = (t.runs ?? []).at(-1);
-  switch (run?.terminal_reason) {
+  const reason = t.terminal_reason ?? run?.terminal_reason;
+  switch (reason) {
     case "completed":
       return "完成";
     case "budget":
@@ -35,7 +38,7 @@ export function terminalText(t: ThreadSummary): string {
 
 /** 终态的颜色：成功绿、需注意黄、失败红、其余灰。 */
 function tone(t: ThreadSummary): string {
-  const r = (t.runs ?? []).at(-1)?.terminal_reason;
+  const r = t.terminal_reason ?? (t.runs ?? []).at(-1)?.terminal_reason;
   if (t.status === "waiting_approval") return "text-warn";
   if (t.status === "running") return "text-muted";
   if (r === "completed") return "text-ok";

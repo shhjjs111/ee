@@ -53,6 +53,12 @@ describe("终态文案", () => {
     expect(terminalText(t)).toBe("已中断");
   });
 
+
+  it("thread/status 给的是平铺 terminal_reason（没有 runs），也要显示终态", () => {
+    const t = child({ status: "idle", terminal_reason: "budget" });
+    expect(terminalText(t)).toBe("超预算停止");
+  });
+
   it("completed 才是完成", () => {
     const t = child({ runs: [{ id: "run_1", started: 1, status: "done", terminal_reason: "completed" }] });
     expect(terminalText(t)).toBe("完成");
