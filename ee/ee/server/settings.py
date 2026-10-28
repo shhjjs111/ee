@@ -262,6 +262,13 @@ def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
     for k in ("todo", "present_plan"):
         if new.get(k) is not None:
             out[k] = bool(new[k])
+    # LSP 诊断（D6-2 / T9）：设置页只能开/关。**不接受 command**——指定可执行文件
+    # 等于提权，那个只能写在用户自己的配置里（且项目层也只能收紧）。
+    if isinstance(new.get("lsp"), dict):
+        cur = dict(out.get("lsp") or {})
+        if new["lsp"].get("enabled") is not None:
+            cur["enabled"] = bool(new["lsp"]["enabled"])
+        out["lsp"] = cur
     if isinstance(new.get("web"), dict):
         n = new["web"]
         w = dict(out.get("web") or {})

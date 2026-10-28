@@ -219,6 +219,9 @@ export type Settings = {
   profile?: "full" | "lean";
   todo?: boolean;
   present_plan?: boolean;
+  /** LSP 诊断（D6-2）：开启后模型能看到语言服务器的类型错误。
+   *  注意：开启时 repo_map 工具会让位（见 tools/__init__.py），关掉就回来。 */
+  lsp?: { enabled?: boolean };
   mcp?: McpSettings;
   secrets?: SecretsInfo; // 只读：凭据存储后端说明
   providers: Record<string, ProviderSettings>;

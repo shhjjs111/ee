@@ -540,3 +540,40 @@ def _lsp_ctx(ws):
     from types import SimpleNamespace
     return ToolContext(cwd=ws, state=ToolState(), output_dir=ws / ".out",
                        extra={"session": SimpleNamespace()})
+
+
+# ---------------------------------------------------------------- U6 设置可见性
+
+def test_settings_accepts_lsp_toggle():
+    """设置页要能开关 lsp（后端白名单必须放行，否则前端点了没用）。"""
+    from ee.server.settings import _d2_in
+
+    out: dict = {}
+    _d2_in({"lsp": {"enabled": True}}, out)
+    assert (out.get("lsp") or {}).get("enabled") is True
+
+    out2: dict = {}
+    _d2_in({"lsp": {"enabled": False}}, out2)
+    assert (out2.get("lsp") or {}).get("enabled") is False
+
+
+def test_settings_rejects_unknown_lsp_fields():
+    """lsp 只接受 enabled；不能通过设置页塞进可执行文件路径（安全边界）。"""
+    from ee.server.settings import _d2_in
+
+    out: dict = {}
+    _d2_in({"lsp": {"enabled": True, "command": ["C:/evil.exe"]}}, out)
+    got = out.get("lsp") or {}
+    assert "command" not in got, f"设置页不该能指定启动命令：{got}"
+
+
+def test_settings_lsp_coexists_with_repo_map():
+    """开关 lsp 不能顺手改动 repo_map 的配置（互斥是工具表的事，不是配置的事）。
+
+    否则用户关掉 lsp 会发现 repo_map 也没了——那正是我们想避免的"静默变更"。
+    """
+    from ee.server.settings import _d2_in
+
+    out = {"repo_map": {"enabled": True}}
+    _d2_in({"lsp": {"enabled": True}}, out)
+    assert (out.get("repo_map") or {}).get("enabled") is True

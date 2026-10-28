@@ -288,6 +288,12 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
         <Row label="计划提交（present_plan）" desc="计划模式下用它提交方案等你批准；关闭后计划模式直接用文字给方案">
           <Toggle on={draft.present_plan ?? true} onChange={(v) => up({ present_plan: v })} />
         </Row>
+        <Row
+          label="LSP 诊断（lsp）"
+          desc="改完文件后让模型看到语言服务器的类型错误，不用靠跑测试猜。需要装 pyright（Python）或 typescript-language-server（TS），没有的话工具会明确说未取得诊断。开启期间「仓库地图」工具会让位——两者都是理解代码，而工具表有 token 预算；关掉就回来。"
+        >
+          <Toggle on={draft.lsp?.enabled ?? false} onChange={(v) => up({ lsp: { ...(draft.lsp ?? {}), enabled: v } })} />
+        </Row>
       </Card>
       <Card title="命令沙箱" desc="开启后，shell 和后台命令只能写当前工作区和沙箱临时目录，写其它位置会被系统拒绝；读文件不受限制。不是完整的安全边界，配合权限审批使用。对之后执行的命令生效（运行中的回合结束后）。">
         <Row label="启用沙箱" desc={sb.supported === false ? "当前系统不支持（仅 Windows 生效），开启后命令照常运行并提示未生效" : "Windows 受限令牌 + 工作区写权限 + 作业对象，命令结束时连同子进程一起清理"}>
