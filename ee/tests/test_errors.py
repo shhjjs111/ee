@@ -115,7 +115,11 @@ def test_rate_limit_retried_honoring_retry_after():
     t0 = time.monotonic()
     fake, evs, err = _drive([HttpErr(429, "Rate limit reached", {"retry-after-ms": "200"}), OK])
     assert err is None and len(fake.calls) == 2
-    assert time.monotonic() - t0 >= 0.2
+    # 服务端说等 200ms。断言不能卡在 0.2 这个硬边界上：CI 上实测出现过 0.188s
+    # （Windows 定时器粒度 15.6ms + 事件循环取整），本机实测 0.203~0.219s。
+    # 放宽到 0.15 仍能区分"真的等了"与"完全没等"（0 等待时这里会是 ~0.00x）。
+    elapsed = time.monotonic() - t0
+    assert elapsed >= 0.15, f"没有按 Retry-After 等待（仅 {elapsed:.3f}s）"
     notes = [v for k, v in evs if k == "notice"]
     assert any("限流" in n and "第 1 次重试" in n for n in notes)
 
