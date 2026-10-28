@@ -1,20 +1,56 @@
 """端到端排查脚本：拉起 ee 后端 + 假模型服务器，模拟桌面端发“你好”，打印全部消息。
 
-用法：python ee/scripts/e2e_ws.py [--blackhole] <后端命令...>
-  --blackhole：模型地址指向“接受连接但永不回应”的端点，断言回合在超时内以错误结束（界面能看到错误）。
-例：  python ee/scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
-      python ee/scripts/e2e_ws.py desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
+用法（**必须在 ee/ 目录内执行**，见下方说明）：
+  cd ee
+  ../.venv/Scripts/python.exe scripts/e2e_ws.py ../.venv/Scripts/python.exe -m ee serve --exit-on-stdin-eof
+  ../.venv/Scripts/python.exe scripts/e2e_ws.py --blackhole <后端命令...>
+
+  --blackhole：模型地址指向“接受连接但永不回应”的端点，断言回合在超时内以错误结束。
+
+为什么必须在 ee/ 里跑：`python -m ee` 要求 `ee` 是一个**常规包**。在仓库根执行时，
+`ee/` 这个目录本身会被当成命名空间包（`ee.__file__` 是 None），子进程 `-m ee` 找不到
+`ee/ee/__init__.py` 里的 `__version__`，启动即崩：`ImportError: cannot import name '__version__'`。
+脚本会自己检查这一点并在启动后端前报错，而不是让后端崩掉之后才在日志里发现。
 """
 import asyncio, json, os, pathlib, secrets, socket, subprocess, sys, tempfile, threading, time
 
 import websockets
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+PKG = ROOT / "ee" / "ee"   # 真正的包目录（含 __init__.py）：<repo>/ee/ee/
 T0 = time.time()
 
 
 def log(*a):
     print(f"[{time.time()-T0:6.2f}]", *a, flush=True)
+
+
+def check_package():
+    """确认**子进程**能拿到真正的包。
+
+    注意检查对象不是本进程：以脚本方式运行时 `sys.path[0]` 是 `ee/scripts/`，
+    Python 从那里向上就能找到 `ee/ee/__init__.py`，`import ee` 一切正常。
+    但后端是以 `-m ee` 从**当前工作目录**启动的，cwd 在仓库根时 `ee/` 会被当成
+    命名空间包（`ee.__file__` 是 None、没有 `__version__`），启动即崩：
+    `ImportError: cannot import name '__version__'`。
+
+    所以这里查的是 `PKG/__init__.py` 是否存在、以及能否在 cwd 下以常规包形态导入。
+    """
+    init = PKG / "__init__.py"
+    if not init.is_file():
+        raise SystemExit(f"!! 找不到 {init}，仓库结构不对。")
+    # 用子进程复现 -m ee 的解析结果，避免本进程 sys.path 的干扰
+    probe = ("import ee,sys;"
+             "f=getattr(ee,'__file__',None);v=getattr(ee,'__version__',None);"
+             "sys.exit(0 if (f and v) else 1)")
+    r = subprocess.run([sys.executable, "-c", probe], cwd=os.getcwd(),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if r.returncode != 0:
+        raise SystemExit(
+            "!! 在当前目录用 `python -m ee` 启动后端会失败：`ee` 被解析成命名空间包"
+            "（没有 __version__）。\n"
+            f"   请在包目录内执行，例如：\n     cd {PKG.parent}\n"
+            f"     {sys.executable} scripts/e2e_ws.py {sys.executable} -m ee serve --exit-on-stdin-eof")
 
 
 def blackhole():
@@ -169,4 +205,5 @@ async def main(cmd, hole=False):
 
 args = sys.argv[1:]
 hole = bool(args) and args[0] == "--blackhole"
+check_package()          # 启动后端前先确认 -m ee 能跑，否则只会看到后端崩在 import 上
 asyncio.run(main(args[1:] if hole else args, hole))
