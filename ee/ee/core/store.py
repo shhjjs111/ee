@@ -165,6 +165,9 @@ class SessionStore:
             items = {it["id"]: it for it in _items_from_messages(messages)}
         meta.setdefault("created", first_t)
         meta["updated"] = last_t
+        # 上一个进程中途被杀留下的 running 按 interrupted 呈现（D6-1 U7）：不这么做的话
+        # 重启后 terminal_reason 是 None，界面和编排都会把中断的回合当成「空闲且正常结束」。
+        _close_stale_runs(meta)
         if not meta.get("title"):
             first_user = next((it for it in items.values() if it.get("type") == "user"), None)
             meta["title"] = _title(first_user["text"]) if first_user else "新对话"
@@ -191,6 +194,30 @@ def _int(v, default: int) -> int:
         return int(v)
     except (TypeError, ValueError):
         return default
+
+
+def _close_stale_runs(meta: dict) -> None:
+    """把「上次进程被杀时还在跑」的回合按 interrupted 呈现（D6-1 U7）。
+
+    进程在回合中途被杀时，磁盘上留着 `status="running"` 的 run，`terminal_reason` 是 None。
+    读的时候必须报成 interrupted：`status` 只有 idle/running，单靠它推不出「跑完了」还是
+    「被杀」，界面和编排都会把中断的回合当成「空闲」——编排据此判定任务已完成是最坏的结果。
+
+    判定依据是 pid：写这条 running 的不是当前进程，就一定不是"正在跑"（本进程创建的 run
+    在内存里，不会走读路径）。老记录没有 pid 字段，同样只能来自已经不在的进程。
+
+    只改返回值，**不写回磁盘**：查询不该有副作用（I9 的同一条精神），而且每次读到同样结果。
+    finished 留 None——不知道确切时刻就不编造。
+    """
+    runs = meta.get("runs")
+    if not isinstance(runs, list):
+        return
+    me = os.getpid()
+    for r in runs:
+        if isinstance(r, dict) and r.get("status") == "running" and r.get("pid") != me:
+            r["status"] = "done"
+            r["terminal_reason"] = "interrupted"
+    meta["runs"] = runs
 
 
 def _apply_prune(messages: list[dict], rec: dict) -> None:

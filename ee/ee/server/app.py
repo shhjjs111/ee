@@ -342,6 +342,38 @@ class Backend:
         self.notify("thread/updated", {"thread": t.summary()})
         return {"thread": t.summary()}
 
+    def _detach_children(self, thread_id: str) -> None:
+        """删除父会话时把子会话的父关系解开，**不级联删子会话、也不碰它的 worktree**（D6-1 U7）。
+
+        三条理由：
+        * 级联删会连带毁掉子会话 worktree 里还没合并的改动，而用户删的可能只是"这个话题"。
+        * 留着 `orchestrator_parent_id` 就会留下一个指向已删会话的悬空子级：它既不能再被
+          派发（父会话已经不在了，`_own_parent` 会拒绝），也不再出现在任何父会话的列表里。
+        * 子会话本身仍然是一个正常会话，用户还能打开它、续跑、自己合并 worktree。
+
+        内存里和磁盘上都要处理：重启后没点开过的子会话只在磁盘上，只改内存会留下永久孤儿。
+        磁盘部分直接追加一条 meta 记录（会话是只追加的 jsonl，后写的覆盖先写的）。
+        """
+        for t in list(self.threads.values()):
+            if t.meta.get("orchestrator_parent_id") != thread_id:
+                continue
+            t.meta.pop("orchestrator_parent_id", None)
+            t.meta.pop("orchestrator_role", None)
+            t.save_meta()
+            self.notify("thread/updated", {"thread": t.summary()})
+        for p in SessionStore.list_sessions(self.home):
+            if not is_thread_id(p.stem) or p.stem == thread_id or p.stem in self.threads:
+                continue                       # 已删的那个、以及上面处理过的内存会话
+            try:
+                s = SessionStore.summary(p)
+            except Exception:  # noqa: BLE001  单个坏文件不影响删除
+                continue
+            if s.get("orchestrator_parent_id") != thread_id:
+                continue
+            # 直接追加一条 meta：会话是只追加的 jsonl，后写的覆盖先写的，其余元数据不受影响
+            SessionStore(self.home, session_id=p.stem).meta({"orchestrator_parent_id": None,
+                                                              "orchestrator_role": None})
+
     def thread_delete(self, thread_id: str) -> dict:
         self._check_thread_id(thread_id)
         sessions = (self.home / "sessions").resolve()
@@ -358,6 +390,7 @@ class Backend:
             raise RpcError("参数错误：thread_id 不合法", -32602)
         self.loops.remove_thread(thread_id)              # 会话内 /loop 一并停止
         self.orchestrator.forget(thread_id)              # 子会话被删：名额占用一起回收，否则 16 个后建不出新的
+        self._detach_children(thread_id)                 # 子会话留下（含 worktree），只解开父关系（D6-1 U7）
         t = self.threads.pop(thread_id, None)
         if t is not None:
             # 先标记：还在跑的回合收尾时不能再把 jsonl 写回来（否则删除后“复活”成残记录）

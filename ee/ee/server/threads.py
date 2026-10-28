@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -419,9 +420,15 @@ class Thread:
                                                "usage": self.usage, "context_left": self.context_left})
 
     def _new_run(self, text: str, initiator: str = "user") -> dict:
-        """记一次派发。终态由 _finish 写入，不能靠 status=idle 推断成功。"""
+        """记一次派发。终态由 _finish 写入，不能靠 status=idle 推断成功。
+
+        `pid` 是判断「这条 running 还是不是活的」的依据：进程被杀后磁盘上留着 running，
+        下次启动读到时只要 pid 不是自己，就知道那个回合永远不会有终态（见
+        `store._close_stale_runs`）。
+        """
         run = {"id": _new_id("run"), "started": time.time(), "finished": None,
-               "status": "running", "terminal_reason": None, "initiator": initiator}
+               "status": "running", "terminal_reason": None, "initiator": initiator,
+               "pid": os.getpid()}
         runs = self.meta.setdefault("runs", [])
         runs.append(run)
         del runs[:-RUNS_KEEP]

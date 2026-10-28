@@ -12,6 +12,9 @@
 报「没有启用指挥能力」），回合结束必须释放运行名额（靠 notify 释放会被 listener 的
 `except Exception: pass` 吞掉，名额静默泄漏）。
 
+U7 的三条重启/删除语义在同一文件末尾：**I6** 重启把遗留 running 标成 interrupted、
+**I7** 删除父会话不级联删子会话 worktree、重启不重放回合。
+
 全程假模型，不联网、不启真实模型；需要 git 的用例在无 git 环境自动跳过。
 """
 import asyncio
@@ -24,6 +27,7 @@ import pytest
 
 from conftest import FakeClient, finish, text_chunks, tool_chunks
 from ee.core.providers.openai_chat import ChatClient
+from ee.core.store import SessionStore
 from ee.server.app import Backend, RpcError
 from ee.server.orchestrator import Orchestrator, OrchestratorError
 from ee.tools import build_tools
@@ -350,3 +354,196 @@ def test_tools_include_create_and_send(ee_home, workspace):
     from ee.config import load_config
     names = {t.name for t in build_tools("full", load_config(workspace))}
     assert {"threads_list", "thread_status", "thread_wait", "thread_create", "thread_send"} <= names
+
+
+# ---------------------------------------------------------------- U7：重启与删除语义
+#
+# 三条语义都是「上一个进程死了」之后的状态，所以测试的构造方式都是：在 b1 里把状态写进磁盘，
+# 再新建一个 Backend 当作重启后的新进程。不真的杀进程——那在测试里不可控，而磁盘上的残留
+# 记录形状才是被断言的对象。
+
+def _crashed_run(run_id="run_dead"):
+    """进程在回合中途被杀时磁盘上留下的记录：start_turn → _new_run → save_meta 的产物。"""
+    return {"id": run_id, "started": 1.0, "finished": None, "status": "running",
+            "terminal_reason": None, "initiator": "user"}
+
+
+def test_restart_marks_running_as_interrupted(ee_home, repo):
+    """遗留 running 的回合在重启后必须是 interrupted，不能报成「空闲且没有终态」（I6）。
+
+    `status` 只有 idle/running，靠它推不出「跑完了」还是「被杀」；`terminal_reason` 才是判据。
+    这里同时钉住两条读路径：未加载会话的磁盘发现（list_children）与打开会话后的内存态。
+    """
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="跑到一半", mode="read-only",
+                                                  worktree=False))["thread"]["id"]
+        return pid, cid
+
+    pid, cid = asyncio.run(go())
+    SessionStore(ee_home, session_id=cid).meta({"runs": [_crashed_run()]})
+    path = ee_home / "sessions" / f"{cid}.jsonl"
+
+    b2 = Backend(home=ee_home, persist=True)
+    assert cid not in b2.threads, "确认是冷缓存，走的是磁盘路径"
+
+    kid = Orchestrator(b2).list_children(pid)[0]
+    assert kid["status"] == "idle"
+    assert kid["terminal_reason"] == "interrupted", "重启后遗留 running 必须报成 interrupted"
+
+    # 打开会话（内存路径）也要一致
+    st = Orchestrator(b2).status(pid, cid)
+    assert st["terminal_reason"] == "interrupted"
+    assert SessionStore.summary(path)["runs"][-1]["terminal_reason"] == "interrupted"
+    assert SessionStore.summary(path)["runs"][-1]["status"] == "done"
+
+
+def test_restart_keeps_finished_runs_untouched(ee_home, repo):
+    """只动遗留 running：正常结束的回合不能被改写（否则历史里的真实终态被抹掉）。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="跑完了", mode="read-only",
+                                                  worktree=False))["thread"]["id"]
+        return pid, cid
+
+    pid, cid = asyncio.run(go())
+    SessionStore(ee_home, session_id=cid).meta({"runs": [
+        {"id": "run_ok", "started": 1.0, "finished": 2.0, "status": "done",
+         "terminal_reason": "budget", "initiator": "user"}]})
+
+    b2 = Backend(home=ee_home, persist=True)
+    kid = Orchestrator(b2).list_children(pid)[0]
+    assert kid["terminal_reason"] == "budget"
+    assert Orchestrator(b2).status(pid, cid)["terminal_reason"] == "budget"
+
+
+def test_parent_delete_keeps_child_worktree(ee_home, repo):
+    """删除父会话不级联删子会话：worktree 目录、分支、会话文件都还在，只解开父关系（I7）。
+
+    级联删会直接毁掉子会话里未合并的改动；留着父指针则会让子会话变成一个指向已删会话的
+    悬空子级（它既不能再被派发，也不再出现在任何父会话的列表里）。
+    """
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="有改动的子任务", mode="default"))["thread"]["id"]
+        wt = dict(b.threads[cid].meta["worktree"])
+        # 子会话在 worktree 里留下未提交的改动：删除父会话绝不能把它一起带走
+        (Path(wt["path"]) / "work.txt").write_text("还没合并\n", encoding="utf-8")
+
+        await b.call("thread/delete", {"thread_id": pid})
+
+        path = ee_home / "sessions" / f"{cid}.jsonl"
+        assert path.is_file(), "子会话文件被连带删掉了"
+        assert Path(wt["path"]).is_dir(), "子会话 worktree 目录被连带删掉了"
+        assert (Path(wt["path"]) / "work.txt").is_file(), "子会话的改动被连带删掉了"
+        assert git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{wt['branch']}").strip(), "子会话分支被删了"
+
+        # 父关系解开：不再是任何会话的子级，也不再挂着一个已删除的父
+        kept = b.threads[cid]
+        assert kept.meta.get("orchestrator_parent_id") in (None, ""), kept.meta.get("orchestrator_parent_id")
+        assert kept.meta.get("orchestrator_role") in (None, "")
+        # 父已删：不能再从这个身份派发任何东西
+        with pytest.raises(OrchestratorError):
+            await Orchestrator(b).create_child(pid, title="不该建出来", mode="read-only", worktree=False)
+
+    asyncio.run(go())
+
+
+def test_parent_delete_detaches_unloaded_child(ee_home, repo):
+    """重启后再删父会话：子会话不在内存里，照样要把磁盘上的父指针解开（否则永远是孤儿）。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="不在内存", mode="read-only",
+                                                 worktree=False))["thread"]["id"]
+        b.threads.pop(cid)                      # 模拟重启后还没点开这个子会话
+        await b.call("thread/delete", {"thread_id": pid})
+        return cid
+
+    cid = asyncio.run(go())
+    path = ee_home / "sessions" / f"{cid}.jsonl"
+    assert path.is_file(), "子会话文件被连带删掉了"
+    s = SessionStore.summary(path)
+    assert s.get("orchestrator_parent_id") in (None, "")
+    assert s.get("orchestrator_role") in (None, "")
+
+
+def test_restart_does_not_replay_turns(ee_home, repo):
+    """重启只是把状态读出来，不能顺手再跑一回合（会自动花钱、还会改用户文件）。
+
+    三个可观察点：不自动加载会话、不构造名额控制器（构造即代表准备派发）、run 记录不增加。
+    """
+    enable(ee_home)
+    script = [text_chunks("做完了") + finish("stop")]
+
+    async def go():
+        b, _, _ = make_backend(ee_home, script)
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="跑一回合", mode="read-only", worktree=False,
+                                                  prompt="做事"))["thread"]["id"]
+        await b.threads[cid].task
+        return pid, cid
+
+    pid, cid = asyncio.run(go())
+    path = ee_home / "sessions" / f"{cid}.jsonl"
+    before = len(SessionStore.summary(path)["runs"])
+
+    b2 = Backend(home=ee_home, persist=True)
+    assert b2.threads == {}, "新进程启动不该预先加载任何会话"
+    assert b2.slots is None, "新进程启动不该为派发做准备（名额控制器是惰性构造的）"
+
+    kids = Orchestrator(b2).list_children(pid)
+    assert [k["status"] for k in kids] == ["idle"]
+    assert b2.threads == {}, "列子会话触发了自动加载/运行"
+    assert len(SessionStore.summary(path)["runs"]) == before, "重启后不该多出一次回合"
+    assert Orchestrator(b2).status(pid, cid)["status"] == "idle"
+    assert len(SessionStore.summary(path)["runs"]) == before
+
+
+def test_detached_child_survives_as_standalone(ee_home, repo):
+    """父被删后子会话还能自己继续用：打开、续跑，不再走名额（它已经没有父了）。"""
+    enable(ee_home)
+    script = [text_chunks("自己做完了") + finish("stop")]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="独立了", mode="read-only",
+                                                  worktree=False))["thread"]["id"]
+        await b.call("thread/delete", {"thread_id": pid})
+        await b.call("turn/start", {"thread_id": cid, "text": "自己继续"})
+        await b.threads[cid].task
+        return await wait_for(ev, "turn/completed", lambda p: p["thread_id"] == cid)
+
+    done = asyncio.run(go())
+    assert done["reason"] == "completed"
+
+
+def test_running_run_in_this_process_is_not_rewritten(ee_home, workspace):
+    """本进程正在跑的 run 不能被当成「遗留 running」（U7 的边界，别把判据写成"状态=running 就改"）。
+
+    判据必须是 pid：`SessionStore.summary` 也被 `headless` / automations 这类"扫全部会话文件"
+    的路径用，那些路径会读到本进程里**真的正在跑**的会话。只看 status 会把它标成 interrupted，
+    界面就会在回合进行中显示"已中断"。
+    """
+    import os
+    path = ee_home / "sessions"
+    sid = "20261028-120000-live01"
+    st = SessionStore(ee_home, session_id=sid)
+    st.meta({"title": "正在跑", "cwd": str(workspace),
+             "runs": [{"id": "run_live", "started": 1.0, "finished": None, "status": "running",
+                       "terminal_reason": None, "initiator": "user", "pid": os.getpid()}]})
+    got = SessionStore.summary(path / f"{sid}.jsonl")["runs"][-1]
+    assert got["status"] == "running", "本进程正在跑的回合被误标成结束了"
+    assert got["terminal_reason"] is None
