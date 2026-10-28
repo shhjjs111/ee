@@ -2,9 +2,16 @@
 
 ## 当前接手入口（2026-10-28）
 
-以 `research\roadmap-current.md` 为当前路线。此次获批执行 Wave 0–2（T1–T6）：先统一文档与 CI，再处理 worktree/MCP/预算与会话生命周期。D6 尚未开始，不直接接回 `.rivet\scratch\d6-1-wip\`。
+以 `research\roadmap-current.md` 为当前路线。稳定化 Wave 0–2（T1–T6）与 D6-1 指挥会话的 Wave A/B（U1–U7）均已完成并提交；D6-1 的 Wave C（U8 桌面端接管、U9 端到端）与 D6-2（LSP）尚未开始。不要接回 `.rivet\scratch\d6-1-wip\`——那是被放弃的草稿，正式实现已在 `ee\ee\server\orchestrator.py`。
 
 本批 T1：已整理现行/历史文档边界并修复下方已知损坏片段；纯文档改动，未运行测试。后续提交与验证分别记录到当前路线，不复用历史测试数报绿。
+
+**开发环境（重要，会直接造成假红）**：一律用仓库根的 `.venv`，不要用 PATH 里的 `python`。本机两个解释器并存，PATH 上是 `D:\Anaconda3\python.exe`（3.14），它缺 `openai` 与 `tree_sitter`，而这两个依赖是延迟导入的——大部分测试照常通过，只在触及真客户端、Windows 沙箱、仓库地图时才失败，表现为「代码坏了」的假象。实测对照：同一批文件在 Anaconda 下 17 failed，在 `.venv` 下 0 failed。
+
+```powershell
+./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q      # 全量
+```
+
 
 ## 历史记录归档（以下不再是开工指令）
 

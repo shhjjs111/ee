@@ -22,12 +22,21 @@ ee selftest                                  # 检查打包是否完整（openai
 ```
 
 ## 开发
+必须用虚拟环境，不要用 PATH 里的 `python`：`openai` 与 `tree_sitter` 是延迟导入，装错解释器时大部分测试仍会通过，只在触及真客户端、Windows 沙箱、仓库地图时才失败——看起来像代码坏了，实际是环境不对。
+
 ```powershell
-cd ee
-pip install -e .
-python -m pytest -q
+uv venv .venv                                        # 在仓库根建，只建一次（本机 .venv 就是 uv 建的，里面没有 pip）
+uv pip install --python .venv/Scripts/python.exe -e "ee[test]"
+./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q
+```
+没有 uv 时用标准库建环境，但**必须显式装 test 依赖**：
+```powershell
+python -m venv .venv
+./.venv/Scripts/python.exe -m pip install -e "ee[test]"
 ```
 需要 Python 3.11+。建议装 ripgrep（`winget install BurntSushi.ripgrep.MSVC`），没有也能用。
+
+当前实测基线（2026-10-28，全量）：`1578 passed / 15 skipped / 0 failed`，约 17 分钟。只想跑相关子集时把测试文件路径附在命令后即可。
 
 ## 配置
 - 用户配置：`%USERPROFILE%\.ee\config.toml`，桌面端设置页会读写它（保存前备份为 `.bak`，注释不保留）
