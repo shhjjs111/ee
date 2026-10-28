@@ -270,6 +270,7 @@ class ChatClient:
         yield ("status", "已连接，等待模型输出…")
         comp = Completion()
         calls: list[dict] = []
+        active: dict[int, int] = {}   # index → 当前活跃槽在 calls 里的下标（见 _accumulate）
         splitter = T.ThinkSplitter()  # 所有家族都识别 <think>，MiniMax 等靠它
         try:
             async for chunk in stream:
@@ -303,7 +304,7 @@ class ChatClient:
                             comp.content += piece
                         yield (kind, piece)
                 for tc in T._get(delta, "tool_calls") or []:
-                    _accumulate(calls, tc)
+                    _accumulate(calls, tc, active)
             for kind, piece in splitter.flush():
                 if kind == "reasoning":
                     comp.reasoning += piece
@@ -334,7 +335,17 @@ class ChatClient:
         yield ("done", comp)
 
 
-def _accumulate(calls: list[dict], tc: Any) -> None:
+def _accumulate(calls: list[dict], tc: Any, active: dict | None = None) -> None:
+    """把流式 tool_call 的一个分块拼进 calls。
+
+    active：**每个 index 当前活跃的是哪个槽**（list 下标）。中转站会把多个调用都塞进
+    同一个 index、只有第一块带 id、参数分多块下发。原来的判断是"id 变了且旧参数已完整
+    才算新调用"——但 A 还在流式传输时 B 就到达，条件不成立，B 的第一块被拼进 A，
+    两个调用的 arguments 都变成非法 JSON（这一步两次调用全失败）。
+
+    现在用 active 记住"这个 index 现在归谁"：带新 id 的块一律开新槽并接管该 index；
+    不带 id 的后续块追加到 active 指向的那个槽。
+    """
     idx = T._get(tc, "index")
     tid = T._get(tc, "id")
     fn = T._get(tc, "function")
@@ -342,22 +353,33 @@ def _accumulate(calls: list[dict], tc: Any) -> None:
     args = T._get(fn, "arguments") or ""
     if not isinstance(args, str):
         args = json.dumps(args, ensure_ascii=False)
+    if active is None:
+        active = {}
     slot = None
-    if idx is not None and idx < len(calls):
-        slot = calls[idx]
-        # 某些中转站同一 index 塞多个完整调用：id 变了且旧参数已完整 → 当新调用
-        if tid and slot.get("id") and tid != slot["id"] and _complete(slot["function"]["arguments"]):
-            slot = None
-    elif idx is None and tid:
-        slot = next((c for c in calls if c.get("id") == tid), None)
-    elif idx is None and calls and not tid:
-        slot = calls[-1]
+    if tid:
+        # 带 id：要么是已有槽的重复下发，要么是一个新调用
+        same = next((c for c in calls if c.get("id") == tid), None)
+        if same is not None:
+            slot = same
+        else:
+            slot = None                       # 新调用 → 下面新建并接管该 index
+    elif idx is not None:
+        # 不带 id：追加到该 index 当前活跃的槽（B 开始后就是 B，不是 calls[0]）
+        pos = active.get(idx)
+        if pos is not None and 0 <= pos < len(calls):
+            slot = calls[pos]
+        elif idx < len(calls):
+            slot = calls[idx]                 # 没有 active 记录时退回按下标（老行为）
+    if slot is None and idx is None and calls and not tid:
+        slot = calls[-1]                      # 完全没有 index 也没有 id：兜底到最后一个
     if slot is None:
         slot = {"id": tid or "", "type": "function", "function": {"name": "", "arguments": ""}}
         if idx is not None and idx >= len(calls):
             while len(calls) < idx:
                 calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
         calls.append(slot)
+        if idx is not None:
+            active[idx] = len(calls) - 1      # 该 index 现在归这个新槽
     if tid and not slot.get("id"):
         slot["id"] = tid
     if name and not slot["function"]["name"]:
