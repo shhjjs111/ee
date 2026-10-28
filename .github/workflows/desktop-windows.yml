@@ -1,5 +1,8 @@
 name: desktop-windows
 
+# 验证与发布分开：
+# - push main / pull_request / 手动（不勾打包）→ 只验证
+# - 手动触发并勾选 package=true → 先完整验证，验证通过后才允许打包上传
 on:
   push:
     branches: [main]
@@ -7,19 +10,97 @@ on:
       - "ee/**"
       - "desktop/**"
       - ".github/workflows/desktop-windows.yml"
+  pull_request:
+    paths:
+      - "ee/**"
+      - "desktop/**"
+      - ".github/workflows/desktop-windows.yml"
   workflow_dispatch:
+    inputs:
+      package:
+        description: "验证通过后构建并上传 Windows 安装包"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: desktop-windows-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
-  build:
+  verify:
+    name: verify
     runs-on: windows-latest
     timeout-minutes: 45
-    env:
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ee/pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Python backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "./ee[test]"
+
+      - name: Backend tests
+        working-directory: ee
+        timeout-minutes: 25
+        run: python -m pytest -q -o faulthandler_timeout=150
+
+      - name: E2E with source backend (python -m ee serve)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: python ee/scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
+
+      - name: Install desktop deps
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: npm ci
+
+      - name: Frontend unit tests (vitest)
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        timeout-minutes: 15
+        run: npm test
+
+      - name: Typecheck (renderer + electron)
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: npm run typecheck
+
+      - name: Smoke-test node-pty (ConPTY prebuild, N-API)
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: node scripts/pty-smoke.cjs
+
+      - name: Build renderer + electron main
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: npm run build
+
+  package:
+    name: package
+    # 只有手动触发且明确勾选打包时才发布；必须先通过同一提交的 verify
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.package }}
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -40,40 +121,33 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "./ee[test]" pyinstaller
 
-      - name: Backend tests
-        working-directory: ee
-        timeout-minutes: 20
-        run: python -m pytest -q -o faulthandler_timeout=150
-
-      - name: E2E with source backend (python -m ee serve)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 5
-        run: python ee/scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
+      - name: Record resolved dependencies (release manifest)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build-info | Out-Null
+          python -m pip freeze --all | Out-File -Encoding utf8 build-info/python-freeze.txt
+          git rev-parse HEAD | Out-File -Encoding utf8 build-info/commit.txt
 
       - name: Install desktop deps
-        if: ${{ !cancelled() }}
         working-directory: desktop
         run: npm ci
 
-      - name: Smoke-test node-pty (ConPTY prebuild, N-API)
-        if: ${{ !cancelled() }}
+      - name: Record desktop dependency tree
         working-directory: desktop
-        run: node scripts/pty-smoke.cjs
+        shell: pwsh
+        run: npm ls --all --json | Out-File -Encoding utf8 ../build-info/npm-ls.json
 
       - name: Build renderer + electron main
-        if: ${{ !cancelled() }}
         working-directory: desktop
         run: npm run build
 
       - name: Build backend (PyInstaller onedir)
-        if: ${{ !cancelled() }}
         working-directory: desktop
         env:
           EE_PYTHON: python
         run: node scripts/build-backend.mjs
 
       - name: Smoke-test packaged backend
-        if: ${{ !cancelled() }}
         working-directory: desktop
         shell: pwsh
         run: |
@@ -92,29 +166,24 @@ jobs:
           if (-not $ok) { throw "backend did not print EE_SERVE_READY" }
 
       - name: Packaged backend selftest (openai/httpx/certifi/encodings)
-        if: ${{ !cancelled() }}
         working-directory: desktop
         run: resources/backend/ee-backend/ee-backend.exe selftest --secrets
 
       - name: E2E with packaged backend (fake model, stdin pipe + git workspace)
-        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: python ee/scripts/e2e_ws.py desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
 
       - name: E2E with packaged backend (black-hole endpoint must time out with an error)
-        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: python ee/scripts/e2e_ws.py --blackhole desktop/resources/backend/ee-backend/ee-backend.exe serve --exit-on-stdin-eof
 
       - name: Package NSIS installer
-        if: ${{ !cancelled() }}
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --win --publish never
 
       - name: Check node-pty is packaged outside asar
-        if: ${{ !cancelled() }}
         working-directory: desktop
         shell: pwsh
         run: |
@@ -125,8 +194,13 @@ jobs:
           Write-Host "node-pty packaged OK"
 
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
         with:
           name: ee-windows-installer
           path: desktop/release/*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ee-release-manifest
+          path: build-info/**
           if-no-files-found: error
