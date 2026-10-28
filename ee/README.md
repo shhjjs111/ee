@@ -51,7 +51,13 @@ python -m venv .venv
 ## 日志与排错
 - 后端日志：`ee-backend.log`，位置依次为环境变量 `EE_LOG_DIR`（桌面端传入）→ Windows `%APPDATA%\ee\logs` → `~/.ee/logs`。记录每次 RPC 失败、慢 RPC（≥5 秒）、回合开始/结束、模型请求开始/结束/异常（含 traceback）、所用代理；事件循环卡住 ≥8 秒会把卡住处的调用栈写进去。
 - 桌面端日志：同目录 `backend.log`（后端启动命令、stdout/stderr、界面侧 RPC 失败、重连、自动重启）。
-- 端到端自检：`python ee/scripts/e2e_ws.py [--blackhole] <后端命令>`（拉起假模型服务器，模拟发“你好”；`--blackhole` 测超时报错）。
+- 端到端自检：**必须在 `ee/` 目录内执行**，否则 `python -m ee` 拿到的 `ee` 是命名空间包（没有 `__version__`），后端启动即崩：
+  ```powershell
+  cd ee
+  ../.venv/Scripts/python.exe scripts/e2e_ws.py ../.venv/Scripts/python.exe -m ee serve --exit-on-stdin-eof
+  ../.venv/Scripts/python.exe scripts/e2e_ws.py --blackhole ../.venv/Scripts/python.exe -m ee serve --exit-on-stdin-eof
+  ```
+  脚本会先自检目录，站错地方会立刻报错并给出可直接粘贴的命令。`--blackhole` 测超时路径。尚未接入 CI。
 - 子进程一律走 `ee/proc.py:run_capture`（stdin=DEVNULL、超时杀进程树）；不要直接 `subprocess.run`，也不要在事件循环上同步跑子进程或慢 IO（用 `asyncio.to_thread`）。原因见仓库根 HANDOFF.md 的 Windows 无响应问题。
 
 ## 协议速览

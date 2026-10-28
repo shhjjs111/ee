@@ -18,7 +18,8 @@
 | D6-1 Wave B / U5 | 窄接口 `OrchestratorAPI` 与三个读工具（list/status/wait） | 已完成并验证 | `ee\ee\core\orchestrator.py`、`server\orchestrator.py`、`tools\orchestrate.py`；`ee\tests\test_orchestrator_tools.py` |
 | D6-1 Wave B / U6 | 写工具（create/send）与审批冒泡 | 已完成并验证 | 同上 + `server\threads.py` 的 `_bubble_to_parent`；`ee\tests\test_orchestrator_flow.py` |
 | D6-1 Wave B / U7 | 重启把遗留 running 标为 interrupted、父删不级联删 worktree、重启不重放回合 | 已完成并验证 | `ee\ee\core\store.py` 的 `_close_stale_runs`、`server\app.py` 的 `_detach_children`；`ee\tests\test_orchestrator_flow.py` |
-| 后续 D6-1 Wave C / U8–U9 | 桌面端左栏树形与子会话卡片、假模型端到端 | 未开始，任务书见 plans | `desktop\src\components\Sidebar.tsx`、新增 `ChildThreadCard.tsx`；`ee\scripts\e2e_ws.py` |
+| D6-1 Wave C / U8 | 桌面端左栏树形与子会话卡片、审批冒泡落盘 | 已完成并验证 | `desktop\src\components\ChildThreadCard.tsx`、`Sidebar.tsx`、`lib\store.ts`；`ChildThreadCard.test.tsx`、`SidebarChildIndent.test.tsx`、`lib\childApproval.test.ts` |
+| D6-1 Wave C / U9 | 假模型端到端脚本可用 | 部分完成（见下方未执行项） | `ee\scripts\e2e_ws.py`；`ee\tests\test_e2e_wait.py` |
 | 后续 D6-2 | 版本化 LSP 诊断、可信启动与进程回收 | 未开始 | 先 Python 与 TypeScript/JavaScript，不自动安装服务器 |
 | 后置 | best-of-n、文件交接、Goal、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
@@ -68,7 +69,7 @@ D6-1 的 U1–U7 已全部提交并推送（`9d867f6`、`d68af00`、`58e1e67`、
 - 全量 pytest 已在项目 `.venv` 下执行过一次（1578 passed / 15 skipped / 0 failed）；日常仍按波次跑相关子集。
 - Electron 桌面端实际渲染与交互。
 - 真实 MCP 服务器跨项目行为、真实模型评测。
-- `ee\scripts\e2e_ws.py` 尚未接入 CI，也没有「创建子会话 → wait → 校验终态」的编排场景（D6-1 U9 待做）。
+- `ee\scripts\e2e_ws.py` 已修好等待逻辑并实跑通过（普通与 `--blackhole` 两种模式），但**未接入 CI**；「创建子会话 → wait → 校验终态」的编排场景**没做**——服务面没有编排 RPC（只有给模型用的五个 `thread_*` 工具），要做需先补 `thread/children|status|wait`。这是 D6-1 U9 的剩余项，也是 U8 卡片显示真实改动数的前置。
 
 延后项（未做，保留原因）：
 

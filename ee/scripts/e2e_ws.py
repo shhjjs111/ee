@@ -53,6 +53,24 @@ def check_package():
             f"     {sys.executable} scripts/e2e_ws.py {sys.executable} -m ee serve --exit-on-stdin-eof")
 
 
+def turn_finished(notes):
+    """回合是否已经结束。判据是 turn/completed——工具条目出现不代表结束：
+    只读工具跑完还有后续步骤，拿它当结束条件会提前收工。"""
+    return any(n["method"] == "turn/completed" for n in notes)
+
+
+def pending_approvals(notes):
+    """还没响应的审批条目。
+
+    只看 type == "approval"。todo/read/grep 这些只读工具在 READ_TOOLS 里，**不发审批**；
+    ask_user 是 question 类型、响应方式也不同。把这些混进来就会误判成"需要响应"，
+    或者反过来——像原先那样只等 approval 而在全只读的场景里空等 60 秒。
+    """
+    return [n["params"]["item"] for n in notes
+            if n["method"] == "item/started"
+            and (n["params"].get("item") or {}).get("type") == "approval"]
+
+
 def blackhole():
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
@@ -140,11 +158,14 @@ async def main(cmd, hole=False):
             await rpc("turn/start", {"thread_id": tid, "text": "你好"})
             await rpc("settings/get", timeout=5)      # 回合进行中，其他 RPC 必须照常秒回
             for _ in range(600):
-                if any(n["method"] == "turn/completed" for n in notes): break
-                if any(n["method"] == "item/started" and n["params"]["item"].get("type") == "approval" for n in notes):
-                    a = [n for n in notes if n["method"] == "item/started" and n["params"]["item"].get("type") == "approval"][-1]
-                    notes.remove(a)
-                    await rpc("approval/respond", {"thread_id": tid, "call_id": a["params"]["item"].get("call_id"), "choice": "once"})
+                if turn_finished(notes): break
+                # 有待响应审批就回复一次。原先只等 approval 而不先判断回合是否已结束，
+                # 在全只读工具的场景（假模型 step 0 就是）里必然空等到超时。
+                for it in pending_approvals(notes):
+                    for n in [x for x in notes if x.get("params", {}).get("item") is it]:
+                        notes.remove(n)
+                    await rpc("approval/respond", {"thread_id": tid, "call_id": it.get("call_id"),
+                                                   "choice": "once"})
                 await asyncio.sleep(0.1)
             else:
                 log("!!! 60s 内没有 turn/completed"); ok = False
@@ -203,7 +224,10 @@ async def main(cmd, hole=False):
     sys.exit(0 if ok else 1)
 
 
-args = sys.argv[1:]
-hole = bool(args) and args[0] == "--blackhole"
-check_package()          # 启动后端前先确认 -m ee 能跑，否则只会看到后端崩在 import 上
-asyncio.run(main(args[1:] if hole else args, hole))
+if __name__ == "__main__":
+    # 只在作为脚本运行时才做这些：被 import（例如测试）时不该启动后端、也不该因
+    # 当前目录不对就 SystemExit——那会让这个模块无法被任何地方复用。
+    args = sys.argv[1:]
+    hole = bool(args) and args[0] == "--blackhole"
+    check_package()      # 启动后端前先确认 -m ee 能跑，否则只会看到后端崩在 import 上
+    asyncio.run(main(args[1:] if hole else args, hole))
