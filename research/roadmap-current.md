@@ -4,7 +4,7 @@
 
 ## 当前执行范围
 
-本批已执行稳定化 Wave 0–2（T1–T6），并已完成 D6-1 指挥会话的全部三个 Wave（U1–U9）。D6-2（LSP）尚未开始。完整方案见 plans/2026-10-28-stabilization-and-d6.md 与 plans/2026-10-28-d6-1-orchestrator-tasks.md；本页是当前入口与验证记录。
+本批已执行稳定化 Wave 0–2（T1–T6），已完成 D6-1 指挥会话的全部三个 Wave（U1–U9），并已完成 D6-2（LSP 诊断）的 U1–U6。完整方案见 plans/2026-10-28-stabilization-and-d6.md、plans/2026-10-28-d6-1-orchestrator-tasks.md、plans/2026-10-29-d6-2-lsp-tasks.md；本页是当前入口与验证记录。
 
 | 阶段 | 工作 | 当前状态 | 生产入口 / 验证入口 |
 |---|---|---|---|
@@ -20,7 +20,7 @@
 | D6-1 Wave B / U7 | 重启把遗留 running 标为 interrupted、父删不级联删 worktree、重启不重放回合 | 已完成并验证 | `ee\ee\core\store.py` 的 `_close_stale_runs`、`server\app.py` 的 `_detach_children`；`ee\tests\test_orchestrator_flow.py` |
 | D6-1 Wave C / U8 | 桌面端左栏树形与子会话卡片、审批冒泡落盘 | 已完成并验证 | `desktop\src\components\ChildThreadCard.tsx`、`Sidebar.tsx`、`lib\store.ts`；`ChildThreadCard.test.tsx`、`SidebarChildIndent.test.tsx`、`lib\childApproval.test.ts` |
 | D6-1 Wave C / U9 | 假模型端到端脚本 + 编排闭环 | 已完成并验证 | `ee\scripts\e2e_ws.py`；`ee\tests\test_e2e_wait.py`；`server\app.py` 的 `thread/create_child\|children\|status\|wait` |
-| 后续 D6-2 | 版本化 LSP 诊断、可信启动与进程回收 | 未开始 | 先 Python 与 TypeScript/JavaScript，不自动安装服务器 |
+| D6-2 / T9 | 版本化 LSP 诊断、可信启动与进程回收 | **已完成并验证（U1–U6）** | `ee/core/lsp/{client,servers,manager,diagnostics,notify}.py`、`ee/tools/lsp.py`、`ee/tests/test_lsp.py`（30 例）、`tests/fake_lsp_server.py`；设置页开关。只支持 python / typescript，不自动安装服务器 |
 | 后置 | best-of-n、文件交接、Goal、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
 ## 已有能力，不重复建设
