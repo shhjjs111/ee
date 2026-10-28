@@ -95,3 +95,37 @@ describe("发送失败", () => {
     expect(useApp.getState().composerDraft?.text).toBe("你好");
   });
 });
+
+describe("删除会话", () => {
+  it("删掉之后详情、后台命令、计时缓存一起清掉（不留幽灵数据）", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "t1",
+      threads: [{ id: "t1", title: "a", status: "idle" } as any, { id: "t2", title: "b", status: "idle" } as any],
+      details: { t1: detail("t1", "/A"), t2: detail("t2", "/B") },
+      bgProcs: { t1: [{ id: 1 } as any] },
+      turnStartedAt: { t1: 123 },
+    });
+    const p = useApp.getState().deleteThread("t1");
+    await Promise.resolve();
+    f.calls.find((c) => c.method === "thread/delete")!.resolve({ ok: true });
+    expect(await p).toBe(true);
+    const st = useApp.getState();
+    expect(st.details.t1).toBeUndefined();
+    expect(st.bgProcs.t1).toBeUndefined();
+    expect(st.turnStartedAt.t1).toBeUndefined();
+    expect(st.threads.map((x) => x.id)).toEqual(["t2"]);
+    expect(st.activeThreadId).toBeNull();
+  });
+
+  it("别处删除（后端通知）也要清掉详情缓存", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: null, details: { t9: detail("t9", "/X") }, bgProcs: { t9: [{ id: 2 } as any] } });
+    void useApp.getState().init(f.rpc);
+    f.emitNotif("thread/deleted", { thread_id: "t9" });
+    const st = useApp.getState();
+    expect(st.details.t9).toBeUndefined();
+    expect(st.bgProcs.t9).toBeUndefined();
+  });
+});

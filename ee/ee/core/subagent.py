@@ -486,9 +486,18 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
 
 
 def worktree_note(summ: dict) -> str:
-    """写型子代理在 worktree 里的结果，给主代理看的说明。"""
-    if summ.get("removed") or not summ.get("files"):
+    """写型子代理在 worktree 里的结果，给主代理看的说明。
+
+    只说事实：`removed=True` 才是删掉了。保留但没统计到文件（diff 失败/不确定）时，
+    不能写成“没有改动、已删除”——用户会据此以为没有东西要救。
+    """
+    if summ.get("removed"):
         return "[worktree] 子代理没有改任何文件，临时 worktree 和分支已删除。"
+    if not summ.get("files"):
+        why = summ.get("kept_reason") or "没有统计到文件"
+        return (f"[worktree] 没有统计到文件改动，但为免丢失已保留 worktree（{why}）：目录 {summ.get('path')}，"
+                f"分支 {summ.get('branch')}。里面的内容可能是子代理的成果，请先检查再决定是否删除"
+                f"（项目菜单「Worktree…」）。")
     lines = [f"[worktree] 子代理的改动在独立分支 {summ['branch']} 上（目录 {summ['path']}），没有进入主目录："
              f"{summ['file_count']} 个文件 +{summ['additions']} -{summ['deletions']}"]
     for f in summ["files"][:30]:

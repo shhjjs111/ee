@@ -36,11 +36,13 @@ class WorktreeError(Exception):
     pass
 
 
-def _git(args: list[str], cwd: Path | str, timeout: float = 60, check: bool = True) -> str:
+def _git(args: list[str], cwd: Path | str, timeout: float = 60, check: bool = True,
+         env: dict | None = None) -> str:
     exe = gitinfo.git_exe()
     if not exe:
         raise WorktreeError("没有找到 git，worktree 需要安装 Git")
-    code, out, err = run_capture([exe, "-c", "core.quotepath=false", "-c", "core.longpaths=true", *args], cwd=cwd, timeout=timeout)
+    code, out, err = run_capture([exe, "-c", "core.quotepath=false", "-c", "core.longpaths=true", *args],
+                                 cwd=cwd, timeout=timeout, env=env)
     if check and code != 0:
         msg = smart_decode(err or out).strip() or f"git {' '.join(args[:2])} 失败（{code}）"
         raise WorktreeError(msg[:2000])
@@ -215,16 +217,61 @@ def info_for_dir(cwd: Path | str, home: Path | None = None) -> dict | None:
     return None
 
 
+def _index_diff(p: Path, base: str) -> tuple[bool, str, str]:
+    """用临时索引算「base → 当前工作区」的全部改动，不碰真实索引。
+
+    为什么不用真实索引：以前为了让未跟踪文件出现在 diff 里，直接执行
+    `git add -A --intent-to-add`。这是只读查询（编排状态、卡片刷新、审阅面板都会调），
+    却把用户暂存区改成了「全部意图添加」——查询后 `git commit` 会提交它们。
+
+    返回 (ok, diff 文本, 错误说明)。git 失败时 ok=False：**调用方必须保留成果**，
+    不能把“读不到”当成“没有改动”（自动化收尾据此删除会丢代码）。
+    """
+    import tempfile
+    exe = gitinfo.git_exe()
+    if not exe:
+        return False, "", "没有找到 git"
+    fd, tmp = tempfile.mkstemp(prefix="ee-index-", suffix=".tmp")
+    os.close(fd)
+    try:
+        os.unlink(tmp)          # 空文件会被 git 当成损坏的索引：删掉让它自己建
+    except OSError:
+        pass
+    env = {**os.environ, "GIT_INDEX_FILE": tmp}
+    try:
+        code, _, err = run_capture([exe, "-c", "core.quotepath=false", "-c", "core.longpaths=true",
+                                    "add", "-A", "--", "."], cwd=p, timeout=120, env=env)
+        if code != 0:
+            why = smart_decode(err).strip()[:300] or f"退出码 {code}"
+            return False, "", f"git add 失败：{why}"
+        code, out, err = run_capture([exe, "-c", "core.quotepath=false", "-c", "core.longpaths=true",
+                                      "diff", "--cached", "--no-color", "--no-ext-diff", base],
+                                     cwd=p, timeout=120, env=env)
+        if code != 0:
+            why = smart_decode(err).strip()[:300] or f"退出码 {code}"
+            return False, "", f"git diff 失败：{why}"
+        return True, out.decode("utf-8", "replace"), ""
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def diff(path: Path | str, home: Path | None = None) -> dict:
-    """相对基准的全部改动（已提交 + 未提交 + 未跟踪），按文件拆好给审阅面板。"""
+    """相对基准的全部改动（已提交 + 未提交 + 未跟踪），按文件拆好给审阅面板。
+
+    ok=True 才表示这份文件列表可信；ok=False 时 files 为空但**不代表没有改动**，
+    调用方不得据此做删除/覆盖。
+    """
     from ee.server.gitops import split_diff
     info = _find(path, home)
     p = Path(info["path"])
-    _git(["add", "-A", "--intent-to-add"], p, timeout=60, check=False)    # 让未跟踪文件出现在 diff 里
-    text = _git(["diff", "--no-color", "--no-ext-diff", info["base"]], p, timeout=60, check=False)
-    files = split_diff(text)
+    ok, text, why = _index_diff(p, info["base"])
+    files = split_diff(text) if ok else []
     return {"worktree": status(info), "files": files,
-            "additions": sum(f["additions"] for f in files), "deletions": sum(f["deletions"] for f in files)}
+            "additions": sum(f["additions"] for f in files), "deletions": sum(f["deletions"] for f in files),
+            "ok": ok, "error": why}
 
 
 def _ident(cwd: Path) -> list[str]:
@@ -334,7 +381,9 @@ def backup_ignored(info: dict, home: Path | None = None) -> dict:
     return {"dir": str(dest) if files else None, "files": files, "skipped": skipped}
 
 
-def remove(path: Path | str, delete_branch: bool = False, force: bool = False, home: Path | None = None) -> dict:
+def remove(path: Path | str, delete_branch: bool = False, force: bool = False, home: Path | None = None,
+           discard_unbacked: bool = False) -> dict:
+    """删除 worktree。discard_unbacked=True 才允许删掉“没能备份的被忽略文件”。"""
     info = _find(path, home)
     p, root = Path(info["path"]), Path(info["repo"])
     if p.is_dir():
@@ -356,6 +405,14 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
             backup = backup_ignored(info, home)
         except Exception as e:  # noqa: BLE001
             raise WorktreeError(f"备份 worktree 里被 git 忽略的文件（.env 等）失败，为免丢失没有删除：{e}") from None
+        if backup["skipped"] and not discard_unbacked:
+            # 这些文件既不在分支里、也没有备份副本：删掉就真没了。默认拒绝，要删必须显式要求。
+            shown = "、".join(backup["skipped"][:20])
+            more = f"（共 {len(backup['skipped'])} 个）" if len(backup["skipped"]) > 20 else ""
+            raise WorktreeError(
+                f"这些被 git 忽略的文件没能备份，为免丢失没有删除：{shown}{more}\n"
+                f"备份目录：{backup['dir'] or '（无）'}\n"
+                "确认这些文件不要了，请先手动备份，或明确选择「丢弃未备份文件」后再删。")
         _git(["worktree", "remove", "--force", str(p).replace("\\", "/")], root, timeout=120, check=False)
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
@@ -370,7 +427,8 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
     with _LOCK:
         _save([x for x in _load(home) if _norm(x["path"]) != _norm(p)], home)
     return {"removed": True, "autosaved": saved, "branch": info["branch"], "branch_deleted": branch_deleted,
-            "ignored_backup": backup["dir"], "backed_up": backup["files"], "backup_skipped": backup["skipped"]}
+            "ignored_backup": backup["dir"], "backed_up": backup["files"], "backup_skipped": backup["skipped"],
+            "discarded_unbacked": list(backup["skipped"]) if discard_unbacked else []}
 
 
 def merge(path: Path | str, squash: bool = False, home: Path | None = None) -> dict:

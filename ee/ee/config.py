@@ -262,6 +262,36 @@ def sanitize_project_layer(layer: dict, user_cfg: dict) -> tuple[dict, list[str]
             if k not in ("enabled", "network", "readonly_default", "readonly_network_default"):
                 sb.pop(k)
                 dropped.append(f"sandbox.{k}")
+    bud = clean.get("budget")
+    if "budget" in clean and not isinstance(bud, dict):
+        clean.pop("budget")
+        dropped.append("budget")
+    elif isinstance(bud, dict):
+        ub = user_cfg.get("budget") or {}
+        for k in ("session", "daily", "monthly"):
+            if k not in bud:
+                continue
+            try:
+                want, have = float(bud[k]), float(ub.get(k) or 0)
+            except (TypeError, ValueError):
+                bud.pop(k)
+                dropped.append(f"budget.{k}")
+                continue
+            # 0 表示“不限”。用户设了正数上限时，项目不能清零，也不能调大。
+            if have > 0 and (want <= 0 or want > have):
+                bud.pop(k)
+                dropped.append(f"budget.{k}")
+        if "action" in bud:
+            rank = {"warn": 0, "pause": 1}
+            if rank.get(str(bud["action"]), -1) < rank.get(str(ub.get("action") or "warn"), 0):
+                bud.pop("action")
+                dropped.append("budget.action")
+        for k in [k for k in bud if k not in ("session", "daily", "monthly", "action")]:
+            # warn_ratio / currency / unattended：项目层没有可安全放宽的方向，一律不采纳
+            bud.pop(k)
+            dropped.append(f"budget.{k}")
+        if not bud:
+            clean.pop("budget")
     return clean, dropped
 
 

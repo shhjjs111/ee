@@ -354,7 +354,8 @@ def _mcp_out(data: dict) -> dict:
                          "enabled": bool(d.get("enabled", True)), "trusted": bool(d.get("trusted", False))}
     return {"enabled": bool(m.get("enabled", True)), "startup_timeout": m.get("startup_timeout", 20),
             "tool_timeout": m.get("tool_timeout", 120), "project_json": bool(m.get("project_json", True)),
-            "allowed_project": list(m.get("allowed_project") or []), "servers": servers}
+            "allowed_project": list(m.get("allowed_project") or []),
+            "trusted_project": list(m.get("trusted_project") or []), "servers": servers}
 
 
 def _mcp_in(new: dict, out: dict) -> None:
@@ -374,6 +375,9 @@ def _mcp_in(new: dict, out: dict) -> None:
             m[k] = int(v)
     if n.get("allowed_project") is not None:
         m["allowed_project"] = [str(x) for x in n["allowed_project"] if str(x).strip()]
+    if n.get("trusted_project") is not None:
+        # 项目服务器的「信任」只能记在用户配置里（项目 .mcp.json 自己写的 trusted 不生效）
+        m["trusted_project"] = [str(x) for x in n["trusted_project"] if str(x).strip()]
     if isinstance(n.get("servers"), dict):
         servers = {}
         for name, d in n["servers"].items():

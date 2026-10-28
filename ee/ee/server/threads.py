@@ -100,6 +100,7 @@ class Thread:
         self.usage: dict = {}
         self.context_left: float | None = None
         self.compacting = False
+        self.deleted = False           # 已删除：迟到的条目/元数据不能再写回磁盘
         self.status_text = ""          # 临时状态（正在连接模型…），不落盘
 
     # ------------------------------------------------------------ 内核会话（懒加载）
@@ -178,7 +179,7 @@ class Thread:
         alias = self.session.spec.alias
         try:
             self.session.spec = cfg.resolve_model(alias)   # 例如价格 / key 改了
-            self.session._client = None
+            self.session._drop_client()                    # 旧连接池要登记待释放，不能只丢引用
         except ValueError:
             self.session.set_model(cfg.default_model)
             self.meta["model"] = self.session.spec.alias
@@ -224,11 +225,13 @@ class Thread:
 
     def save_meta(self) -> None:
         self.meta["updated"] = time.time()
-        if self.persist:
+        if self.persist and not self.deleted:
             SessionStore(self.home, session_id=self.id).meta(self.meta)
 
     # ------------------------------------------------------------ 条目
     def _store_item(self, it: dict) -> None:
+        if self.deleted:
+            return                     # 会话已删除：运行中的回合收尾也不重建文件
         if self.persist:
             (self.session.store if self.session else SessionStore(self.home, session_id=self.id)).item(it)
 

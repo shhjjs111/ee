@@ -1,5 +1,6 @@
 """测试用的假 MCP 服务器（stdio，一行一条 JSON）。也可 import handle() 给 HTTP 测试用。"""
 import json
+import os
 import sys
 
 TOOLS_P1 = [
@@ -34,6 +35,10 @@ def handle(msg):
         p = msg.get("params") or {}
         name, args = p.get("name"), p.get("arguments") or {}
         if name == "echo":
+            if args.get("text") == "__cwd__":
+                # 让测试能分辨"这次调用落在哪个工作区的连接上"
+                return {"jsonrpc": "2.0", "id": mid,
+                        "result": {"content": [{"type": "text", "text": "cwd:" + os.getcwd()}]}}
             return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": f"echo:{args.get('text')}"}]}}
         if name == "add":
             return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": str(args.get("a", 0) + (args.get("b") or 0))}]}}

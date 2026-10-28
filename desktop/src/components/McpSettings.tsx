@@ -7,7 +7,7 @@ import { useApp } from "../lib/store";
 import type { McpListResponse, McpServerSettings, McpServerStatus, McpSettings as McpCfg, Settings, SettingsResponse } from "../types";
 import { Button, Field, Input, Select, Spinner, Tip } from "./ui";
 
-const DEFAULT_MCP: McpCfg = { enabled: true, startup_timeout: 20, tool_timeout: 120, project_json: true, allowed_project: [], servers: {} };
+const DEFAULT_MCP: McpCfg = { enabled: true, startup_timeout: 20, tool_timeout: 120, project_json: true, allowed_project: [], trusted_project: [], servers: {} };
 
 const STATUS: Record<string, [string, string]> = {
   ready: ["已连接", "bg-add"],
@@ -284,6 +284,7 @@ export function McpSettings({ draft, resp, up }: { draft: Settings; resp: Settin
   const name = newName.trim();
   const nameBad = !name || !MCP_NAME_RE.test(name) || name in mcp.servers;
   const allowed = new Set(mcp.allowed_project);
+  const trusted = new Set(mcp.trusted_project ?? []);
 
   return (
     <>
@@ -374,6 +375,7 @@ export function McpSettings({ draft, resp, up }: { draft: Settings; resp: Settin
             <div className="space-y-3">
               {project.map((p) => {
                 const ok = allowed.has(p.allow_id);
+                const trustedOne = ok && trusted.has(p.allow_id);
                 return (
                   <div key={p.name} className="rounded-xl border border-line p-3.5">
                     <div className="flex items-center gap-2">
@@ -390,7 +392,8 @@ export function McpSettings({ draft, resp, up }: { draft: Settings; resp: Settin
                         variant={ok ? "outline" : "primary"}
                         size="sm"
                         className="h-7"
-                        onClick={() => setMcp({ allowed_project: ok ? mcp.allowed_project.filter((x) => x !== p.allow_id) : [...mcp.allowed_project, p.allow_id] })}
+                        onClick={() => setMcp({ allowed_project: ok ? mcp.allowed_project.filter((x) => x !== p.allow_id) : [...mcp.allowed_project, p.allow_id],
+                          trusted_project: ok ? (mcp.trusted_project ?? []).filter((x) => x !== p.allow_id) : (mcp.trusted_project ?? []) })}
                       >
                         {ok ? "撤销允许" : (
                           <>
@@ -398,9 +401,23 @@ export function McpSettings({ draft, resp, up }: { draft: Settings; resp: Settin
                           </>
                         )}
                       </Button>
+                      {ok && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          title="调用它的工具不再询问（只读模式下也放行它的只读工具）。信任只记在你的配置里，项目文件改不了它。"
+                          onClick={() => setMcp({ trusted_project: trustedOne
+                            ? (mcp.trusted_project ?? []).filter((x) => x !== p.allow_id)
+                            : [...(mcp.trusted_project ?? []), p.allow_id] })}
+                        >
+                          {trustedOne ? "取消信任" : "信任"}
+                        </Button>
+                      )}
                     </div>
                     <div className="mono mt-1.5 truncate text-[12px] text-faint">{p.transport === "stdio" ? [p.command, ...p.args].join(" ") : p.url}</div>
                     {!ok && <div className="mt-1 text-[12px] text-muted">项目文件里的命令会在本机运行，确认可信再允许。配置内容改了需要重新允许。</div>}
+                    {ok && !trustedOne && <div className="mt-1 text-[12px] text-faint">允许只表示能连接；要免去每次调用的询问，另点「信任」（项目文件里的 trusted 不算数）。</div>}
                     {tests[`project:${p.name}`]?.err && <div className="mt-2 text-[12px] text-danger">{tests[`project:${p.name}`]?.err}</div>}
                     {tests[`project:${p.name}`]?.result && <ToolList st={tests[`project:${p.name}`]!.result!} />}
                   </div>

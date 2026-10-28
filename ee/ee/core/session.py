@@ -675,7 +675,7 @@ class Session:
         for st in states:
             if st.status == "ready":
                 for spec in st.tools:
-                    t = McpTool(mgr, st.cfg.name, spec, trusted=st.cfg.trusted, timeout=timeout)
+                    t = McpTool(mgr, st.handle, spec, trusted=st.cfg.trusted, timeout=timeout)
                     if t.name in seen:
                         continue
                     seen.add(t.name)

@@ -283,6 +283,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   async deleteThread(id) {
     try {
       await get().rpc!.call("thread/delete", { thread_id: id });
+      forgetThread(id);
       return true;
     } catch (e) {
       get().showToast(`删除失败：${(e as Error).message}`, "error");
@@ -580,6 +581,25 @@ export const useApp = create<State & Actions>((set, get) => ({
   },
 }));
 
+/** 会话删除后统一清理：列表、详情、后台命令、计时缓存都不留幽灵数据。 */
+function forgetThread(id: string) {
+  useApp.setState((s) => {
+    const details = { ...s.details };
+    delete details[id];
+    const bgProcs = { ...s.bgProcs };
+    delete bgProcs[id];
+    const turnStartedAt = { ...s.turnStartedAt };
+    delete turnStartedAt[id];
+    return {
+      details,
+      bgProcs,
+      turnStartedAt,
+      threads: s.threads.filter((x) => x.id !== id),
+      activeThreadId: s.activeThreadId === id ? null : s.activeThreadId,
+    };
+  });
+}
+
 function setStatusText(id: string, text: string) {
   useApp.setState((s) => (s.details[id] ? { details: { ...s.details, [id]: { ...s.details[id], status_text: text } } } : {}));
 }
@@ -609,10 +629,8 @@ function onNotification(method: string, p: any) {
     return;
   }
   if (method === "thread/deleted") {
-    useApp.setState((s) => ({
-      threads: s.threads.filter((x) => x.id !== p.thread_id),
-      activeThreadId: s.activeThreadId === p.thread_id ? null : s.activeThreadId,
-    }));
+    // 列表从任何地方删掉都要一致：详情/后台命令/计时缓存不能留着（否则会显示已删会话的数据）
+    forgetThread(p.thread_id);
     return;
   }
   if (method === "shell/updated") {

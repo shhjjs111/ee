@@ -98,7 +98,9 @@ function WorktreeInfo({ wt, running }: { wt: NonNullable<SubagentRecord["worktre
             ? "独立 worktree，改动不进主目录"
             : wt.removed
               ? "没有改动，已删除"
-              : `${wt.file_count ?? files.length} 个文件 +${wt.additions ?? 0} -${wt.deletions ?? 0}`}
+              : files.length > 0
+                ? `${wt.file_count ?? files.length} 个文件 +${wt.additions ?? 0} -${wt.deletions ?? 0}`
+                : `已保留 worktree（${wt.kept_reason || "没有统计到改动"}）`}
         </span>
       </div>
       {!running && !wt.removed && files.length > 0 && (

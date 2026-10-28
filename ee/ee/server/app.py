@@ -175,13 +175,25 @@ class Backend:
             raise RpcError("参数错误：thread_id 不合法", -32602)
 
     async def _athread(self, thread_id: str) -> Thread:
-        """取线程；不在内存里时在工作线程里读会话文件（大文件不卡事件循环）。"""
+        """取线程；不在内存里时在工作线程里读会话文件（大文件不卡事件循环）。
+
+        同一个会话的加载是单飞的：两个请求同时进来时，后来者等第一个读完再用同一份 Thread。
+        否则会各自读一次文件、各建一个 Thread/Session（后写入的覆盖先写入的），两边就分叉了。
+        """
         self._check_thread_id(thread_id)
         t = self.threads.get(thread_id)
         if t is not None:
             return t
-        t = await asyncio.to_thread(self._thread, thread_id)
-        return self.threads.setdefault(thread_id, t)
+        locks = getattr(self, "_load_locks", None)
+        if locks is None:
+            locks = self._load_locks = {}
+        lock = locks.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            t = self.threads.get(thread_id)          # 等锁期间可能已被前一个请求建好
+            if t is not None:
+                return t
+            t = await asyncio.to_thread(self._thread, thread_id)
+            return self.threads.setdefault(thread_id, t)
 
     def _thread(self, thread_id: str) -> Thread:
         self._check_thread_id(thread_id)
@@ -341,6 +353,9 @@ class Backend:
             raise RpcError("参数错误：thread_id 不合法", -32602)
         self.loops.remove_thread(thread_id)              # 会话内 /loop 一并停止
         t = self.threads.pop(thread_id, None)
+        if t is not None:
+            # 先标记：还在跑的回合收尾时不能再把 jsonl 写回来（否则删除后“复活”成残记录）
+            t.deleted = True
         if t is not None and t.running:
             t.interrupt()
         if t is not None and t.session is not None:      # 会话删除：杀掉它的后台命令（D4-6）

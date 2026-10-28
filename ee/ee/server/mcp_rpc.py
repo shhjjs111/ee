@@ -27,13 +27,15 @@ def register(methods: dict, backend) -> None:
             return data, servers, errors, pj
         data, servers, errors, pj = await asyncio.to_thread(go)
         from ee.mcp.manager import get_manager
-        live = {s["name"]: s for s in get_manager().snapshot()}
+        mgr = get_manager()
         out = []
+        where = Path(cwd) if cwd else None
         for sc in servers:
             row = sc.summary()
-            st = live.get(sc.name)
-            if st and st.get("allow_id") == sc.allow_id:
-                row.update({"status": st["status"], "error": st["error"], "tools": st["tools"]})
+            # 按连接身份取状态：同名服务器在不同工作区是不同连接，不能按名字挑"最近的"
+            st = mgr.state_for(sc, where)
+            if st is not None:
+                row.update({"status": st.status, "error": st.error, "tools": st.summary()["tools"]})
             else:
                 row.update({"status": "needs_approval" if (sc.source == "project" and not sc.enabled)
                             else ("disabled" if not sc.enabled else "idle"), "error": "", "tools": []})

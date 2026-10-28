@@ -90,11 +90,17 @@ def parse_server(name: str, d: dict, source: str = "user") -> ServerConfig:
     args = e.get("args") or []
     if isinstance(args, str):
         args = args.split()
+    enabled = bool(d.get("enabled", True))
+    trusted = bool(d.get("trusted", False))
+    if source == "project":
+        # 项目 .mcp.json 跟着仓库走：它不能自己把服务器标成“不用再问”。
+        # 用户想信任某个项目服务器，在 ~/.ee/config.toml 的 mcp.trusted_project 里记 name:sha8。
+        trusted = False
     return ServerConfig(name=name, transport=transport, command=str(e.get("command") or "").strip(),
                         args=[str(a) for a in args], env={str(k): str(v) for k, v in (e.get("env") or {}).items()},
                         cwd=str(e.get("cwd") or ""), url=url,
                         headers={str(k): str(v) for k, v in (e.get("headers") or {}).items()},
-                        enabled=bool(d.get("enabled", True)), trusted=bool(d.get("trusted", False)),
+                        enabled=enabled, trusted=trusted,
                         source=source, raw=raw)
 
 
@@ -129,6 +135,16 @@ def _user_allowed() -> set[str]:
         return set()
 
 
+def _user_trusted() -> set[str]:
+    """用户侧记过信任的项目服务器（name:sha8）。只从 ~/.ee/config.toml 读，项目不能自授。"""
+    try:
+        from ee.config import load_user_file
+        m = (load_user_file() or {}).get("mcp") or {}
+        return set(str(x) for x in (m.get("trusted_project") or []))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def load_servers(data: dict, cwd: Path | None) -> tuple[list[ServerConfig], list[str]]:
     """返回 (服务器列表, 出错说明)。项目服务器未被允许时 enabled=False（界面可一键允许）。"""
     m = mcp_settings(data)
@@ -143,6 +159,7 @@ def load_servers(data: dict, cwd: Path | None) -> tuple[list[ServerConfig], list
                 errors.append(f"读取 {pj} 失败：{e}")
                 servers = {}
             allowed = _user_allowed()
+            trusted = _user_trusted()
             for name, d in servers.items():
                 try:
                     sc = parse_server(str(name), d, source="project")
@@ -151,6 +168,8 @@ def load_servers(data: dict, cwd: Path | None) -> tuple[list[ServerConfig], list
                     continue
                 if sc.allow_id not in allowed:
                     sc.enabled = False
+                # 信任要用户单独记过；只“允许连接”不等于“免询问”
+                sc.trusted = sc.allow_id in trusted
                 out[sc.name] = sc
     for name, d in (m.get("servers") or {}).items():
         try:

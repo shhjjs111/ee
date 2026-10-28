@@ -4,9 +4,10 @@
   worktree/create {cwd, name?, base?}                → {worktree}
   worktree/diff   {path}                             → {worktree, files, additions, deletions}
   worktree/merge  {path, squash?}                    → {merged, autosaved, branch, repo}
-  worktree/remove {path, delete_branch?, force?}     → {removed, autosaved, branch, branch_deleted,
-                                                        ignored_backup, backed_up, backup_skipped}
+  worktree/remove {path, delete_branch?, force?, discard_unbacked?} → {removed, autosaved, branch, branch_deleted,
+                                                        ignored_backup, backed_up, backup_skipped, discarded_unbacked}
                   被 git worktree lock 锁定的拒删；被 git 忽略的文件删前备份到 ~/.ee/worktree-backups/，ignored_backup 是位置
+                  备份不完整（backup_skipped 非空）时默认拒绝删除，除非 discard_unbacked=true
 thread/start 带 worktree: true | {name?, base?} 时先建 worktree，再在里面开会话（见 app.thread_start）。
 """
 from __future__ import annotations
@@ -62,12 +63,14 @@ def register(methods: dict, backend) -> None:
         backend.notify("git/changed", {"cwd": r["repo"]})
         return r
 
-    async def remove(path: str, delete_branch: bool = False, force: bool = False) -> dict:
+    async def remove(path: str, delete_branch: bool = False, force: bool = False,
+                     discard_unbacked: bool = False) -> dict:
         _refuse_running(path)            # 在这个 worktree 里还在跑的会话先停
         for t in list(backend.threads.values()):     # 先结束后台命令：Windows 上运行中的进程会占住目录，删不掉
             if _in_wt(t, path) and t.session is not None:
                 await t.session.bg.close()
-        return await _call(W.remove, path, bool(delete_branch), bool(force), backend.home)
+        return await _call(W.remove, path, bool(delete_branch), bool(force), backend.home,
+                           bool(discard_unbacked))
 
     methods["worktree/list"] = list_
     methods["worktree/create"] = create

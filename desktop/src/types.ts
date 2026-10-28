@@ -256,6 +256,8 @@ export type McpSettings = {
   tool_timeout: number;
   project_json: boolean;
   allowed_project: string[];
+  /** 用户侧记过信任的项目服务器（name:sha8）。项目 .mcp.json 自己写的 trusted 不生效。 */
+  trusted_project?: string[];
   servers: Record<string, McpServerSettings>;
 };
 export type McpToolInfo = { name: string; description: string; read_only: boolean };
@@ -296,6 +298,8 @@ export type SubagentWorktree = {
   deletions?: number;
   commits?: string[];
   removed?: boolean;
+  kept?: boolean;
+  kept_reason?: string; // 没删的原因（diff 失败/结果未知），界面要说事实
 };
 export type SubagentRecord = {
   id?: string;
@@ -478,6 +482,28 @@ export type WorktreeInfo = {
   untracked?: number;
   commits?: number;
   in_use?: string; // 非空：自动化正在里面运行（D5-3），不能合并/删除
+};
+
+/** worktree/diff：ok=false 时 files 为空不代表没有改动（后端 git 读取失败）。 */
+export type WorktreeDiff = {
+  worktree: WorktreeInfo;
+  files: { path: string; additions: number; deletions: number; status?: string; binary?: boolean }[];
+  additions: number;
+  deletions: number;
+  ok: boolean;
+  error: string;
+};
+
+/** worktree/remove：backup_skipped 非空表示有被忽略的文件没能备份（默认拒绝删除）。 */
+export type WorktreeRemoveResult = {
+  removed: boolean;
+  autosaved?: string | null;
+  branch: string;
+  branch_deleted: boolean;
+  ignored_backup: string | null;
+  backed_up: string[];
+  backup_skipped: string[];
+  discarded_unbacked?: string[];
 };
 
 /** thread/context_breakdown（后端 ee/core/breakdown.py）：上下文构成。token 为估算。 */

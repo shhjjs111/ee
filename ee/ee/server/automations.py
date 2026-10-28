@@ -474,7 +474,14 @@ class Automations:
                 wt = self._create_worktree(a, run, cwd)
                 cwd = Path(wt["path"])
             except W.WorktreeError as e:
-                note = f"没能新建 worktree（{e}），本次直接在项目目录里运行。"
+                # 隔离失败不能悄悄变成“在项目目录里跑”：写型任务会直接改主目录。
+                # 只读任务改不了文件，才允许回退，而且回退必须写进运行记录。
+                mode = a.get("mode") or "read-only"
+                if mode != "read-only":
+                    raise RuntimeError(
+                        f"没能新建 worktree（{e}）。这个任务会改文件，为免改动落到项目目录，本次运行已取消。"
+                        "可以改用只读模式，或在能建 worktree 的 git 仓库里运行。") from None
+                note = f"没能新建 worktree（{e}），只读任务本次直接在项目目录里运行。"
         meta = {"cwd": str(cwd.resolve()), "model": a.get("model") or "", "mode": a.get("mode") or "read-only",
                 "title": a["name"], "created": time.time(), "source": "automation", "automation_id": a["id"],
                 "automation_run_id": run["id"]}
@@ -524,6 +531,12 @@ class Automations:
         except Exception as e:  # noqa: BLE001
             log.warning("统计 worktree 改动失败：%s", path, exc_info=True)
             info.update(state="pending", error=f"统计改动失败：{e}"[:300])
+            return
+        if not d.get("ok", True):
+            # 读不到 ≠ 没有改动。以前这里会把“未知”当成空结果，然后删掉 worktree 和分支。
+            why = d.get("error") or "git 读取失败"
+            log.warning("无法确认 worktree 改动，保留不删：%s（%s）", path, why)
+            info.update(state="pending", error=f"无法确认改动（{why}），已保留 worktree"[:300])
             return
         files = d.get("files") or []
         commits = int((d.get("worktree") or {}).get("commits") or 0)

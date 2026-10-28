@@ -16,7 +16,7 @@ export function WorktreeDialog() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<{ wt: WorktreeInfo; branch: boolean; force: boolean } | null>(null);
+  const [confirm, setConfirm] = useState<{ wt: WorktreeInfo; branch: boolean; force: boolean; discard: boolean } | null>(null);
 
   const current = useRef(path);
   current.current = path;
@@ -139,7 +139,7 @@ export function WorktreeDialog() {
                           </Button>
                         </Tip>
                         <div className="flex-1" />
-                        <Button size="sm" variant="ghost" disabled={!!busy || !!wt.in_use} onClick={() => setConfirm({ wt, branch: false, force: false })}>
+                        <Button size="sm" variant="ghost" disabled={!!busy || !!wt.in_use} onClick={() => setConfirm({ wt, branch: false, force: false, discard: false })}>
                           <Trash2 size={12} /> 删除
                         </Button>
                       </div>
@@ -155,6 +155,10 @@ export function WorktreeDialog() {
                               分支有未合并的提交也删除（找不回来）
                             </label>
                           )}
+                          <label className="flex items-center gap-2 text-danger">
+                            <input type="checkbox" checked={confirm.discard} onChange={(e) => setConfirm({ ...confirm, discard: e.target.checked })} />
+                            忽略文件没能备份时也删除（那些文件找不回来）
+                          </label>
                           <div className="flex justify-end gap-2">
                             <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
                               取消
@@ -165,12 +169,16 @@ export function WorktreeDialog() {
                               disabled={!!busy}
                               onClick={() =>
                                 run("d" + wt.path, async () => {
-                                  const r = await rpc!.call("worktree/remove", { path: wt.path, delete_branch: confirm.branch, force: confirm.force }, 180000);
+                                  const r = await rpc!.call("worktree/remove", { path: wt.path, delete_branch: confirm.branch, force: confirm.force, discard_unbacked: confirm.discard }, 180000);
                                   setConfirm(null);
+                                  const lost = r?.backup_skipped?.length ?? 0;
                                   s.showToast(
-                                    r?.ignored_backup
-                                      ? `已删除 worktree。里面 ${r.backed_up?.length ?? 0} 个被 git 忽略的文件（.env 等）已备份到 ${r.ignored_backup}`
-                                      : "已删除 worktree",
+                                    lost
+                                      ? `已删除 worktree，但有 ${lost} 个被 git 忽略的文件没备份就被丢弃了`
+                                      : r?.ignored_backup
+                                        ? `已删除 worktree。里面 ${r.backed_up?.length ?? 0} 个被 git 忽略的文件（.env 等）已备份到 ${r.ignored_backup}`
+                                        : "已删除 worktree",
+                                    lost ? "error" : "info",
                                   );
                                 })
                               }

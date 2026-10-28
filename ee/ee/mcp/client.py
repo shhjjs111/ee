@@ -99,6 +99,11 @@ class _Base:
         await self._send({"jsonrpc": "2.0", "id": rid, "result": result})
 
     async def request(self, method: str, params: dict | None = None, timeout: float = 30) -> dict:
+        """发一条请求并等响应。**timeout 覆盖发送 + 等响应全过程**。
+
+        以前只对 future 用 wait_for，发送本身不计时：HTTP 传输的 _send 就在等响应，
+        读取超时是 300 秒，于是工具调用配的 tool_timeout 根本管不住它。
+        """
         if self.closed:
             raise McpError("连接已关闭")
         self._next_id += 1
@@ -108,9 +113,13 @@ class _Base:
         msg = {"jsonrpc": "2.0", "id": rid, "method": method}
         if params is not None:
             msg["params"] = params
-        try:
+
+        async def send_then_wait():
             await self._send(msg)
-            return await asyncio.wait_for(fut, timeout)
+            return await fut
+
+        try:
+            return await asyncio.wait_for(send_then_wait(), timeout)
         except asyncio.TimeoutError:
             raise McpError(f"{method} 超时（{timeout:g} 秒）") from None
         finally:
