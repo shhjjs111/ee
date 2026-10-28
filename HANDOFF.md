@@ -1,6 +1,16 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-最后更新：2026-10-28（Asia/Shanghai，**审查报告 7 个问题全部修复并推送 main** `ebf9c80`；全量 pytest **1480 passed / 15 skipped / 0 failed**（15m44s）；**Windows CI run #66 绿**；下一步 D6）
+## 当前接手入口（2026-10-28）
+
+以 `research\roadmap-current.md` 为当前路线。此次获批执行 Wave 0–2（T1–T6）：先统一文档与 CI，再处理 worktree/MCP/预算与会话生命周期。D6 尚未开始，不直接接回 `.rivet\scratch\d6-1-wip\`。
+
+本批 T1：已整理现行/历史文档边界并修复下方已知损坏片段；纯文档改动，未运行测试。后续提交与验证分别记录到当前路线，不复用历史测试数报绿。
+
+## 历史记录归档（以下不再是开工指令）
+
+下文的“当前进行中”“接手第一步”“未提交”“下一步”均为记录当时的状态，不能据此提交、推送或重做功能。历史测试/CI 数字未在本批复验。旧的 key 明文、必须 Git 才能审阅等限制已被后续实现替代。
+
+历史最后更新：2026-10-28（Asia/Shanghai，**审查报告 7 个问题全部修复并推送 main** `ebf9c80`；全量 pytest **1480 passed / 15 skipped / 0 failed**（15m44s）；**Windows CI run #66 绿**；下一步 D6）
 
 > **接手第一步（2026-10-28）**：这一轮的修复**已经合并到 main**（`90b3512`，快进合并，全量 0 failed）。
 > 修的是"静默改错/静默放行"类问题（详见下面「本轮：安全与正确性六连修」）。
@@ -21,16 +31,10 @@
 >   整块统一平移）把 new 按 old→原文 偏移对齐；`@@` 定位行也要求唯一。
 >   **测试 `tests/test_apply_patch_safety.py`（14 例）**。
 >
-> - **`d2b9aff` 动态表达式不能当 PowerShell 管道成员名**：我上一轮说"变量间接由上游 `# 接手说明（给接手的 AI / 另一个账号）
-
- 检查拦着"
->   **是错的**——`_has_code_syntax` 只查 `( ) { }`，从不查 `# 接手说明（给接手的 AI / 另一个账号）
-
-。实测放行
->   `ForEach-Object $env:MYACTION` / `$x.Kill` / `% $env:X`。修法：新增 `_is_dynamic()`（`# 接手说明（给接手的 AI / 另一个账号）
-
- 开头、
->   `(`/`{` 开头、字符串含 `${`/`$(`），`_looks_like_action` 遇到动态值直接判 True（fail-closed）。
+> - **`d2b9aff` 动态表达式不能当 PowerShell 管道成员名**：旧结论误认为变量间接调用已被上游检查拦住，后来已纠正。
+>   `_has_code_syntax` 对括号/脚本块的检查不足以覆盖变量成员名；`ForEach-Object $env:MYACTION`、
+>   `$x.Kill`、`% $env:X` 需要单独识别。新增 `_is_dynamic()`，变量或动态表达式直接拒绝。
+>   此段原记录混入标题导致损坏，按现有修复说明重新整理；不改变历史修复结论。
 >   **测试 `tests/test_readonly_ps_pipeline.py`（93 例）**。
 >
 > - **`0495fd3` 补上参数冒号形式**：`-MemberName:Kill` 绕过——上一版 `low.split(":",1)[0]` 只拿
@@ -89,13 +93,8 @@
 >   **测试 `tests/test_worktree_finish_safety.py`（5 例）**。
 >
 > - **问题 6（中）混合换行文件改一处全文变 CRLF**（`tools/fileops.py`）：
->   `eol = "
-" if "
-" in s else "
-"` —— 只要文件里任一处是 CRLF，整篇就被当 CRLF，
->   写回时把所有 `
-` 换成 `
-`。混合换行文件（Windows 编辑器 + 脚本生成）改一行 → 整文件重写。
+>   原实现只要检测到任一 CRLF 就把整篇当作 CRLF，写回时统一替换换行；混合换行文件
+>   （Windows 编辑器 + 脚本生成）改一行会导致全文换行变化。原损坏的内联代码片段已改为此说明。
 >   修法：`TextFile` 新增 `line_eols` 逐行记原换行符，`_render` 按行还原，
 >   新增行才用主风格（多数派，平手取首个出现的）。
 >   **测试 `tests/test_mixed_eol.py`（7 例）**。
@@ -105,8 +104,7 @@
 >
 > **续修踩的坑（我引入又修掉的）**：⑥ `TextFile` 新字段忘了 `from dataclasses import field`，
 > import 就崩；⑦ `_render` 第一版把 `line_eols` 末尾那个占位 `""` 当成可用换行符，
-> 导致末尾追加一行丢掉结尾换行（`d = 4` 而非 `d = 4
-`）——被既有测试
+> 导致末尾追加一行丢掉结尾换行（`d = 4` 而非 `d = 4\n`）——被既有测试
 > `test_crlf_multi_edit_keeps_crlf` 抓住。
 
 > **问题 7：同 index 多工具调用参数串槽（2026-10-28，`ebf9c80`）**

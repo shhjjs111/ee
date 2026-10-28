@@ -1,11 +1,15 @@
 # D6 实施手册（给接手的人）
 
 > 写于 2026-10-27 22:50（Asia/Shanghai）。基线：`main 59b11d1`，Windows CI run 40522096425 绿，pytest 1050 passed / 14 skipped，vitest 139。
-> 本文件是 D6 的唯一操作手册。HANDOFF.md 仍是总进度来源；每做完一项都要回到 HANDOFF 打勾。
+> 本文件保留 D6 的原始提案，不再是当前操作手册。当前顺序、范围与验证边界见 roadmap-current.md：先完成 Wave 0–2 稳定化，再授权 D6。下方工期、接口和交付清单均需按新方案校准，不能直接恢复本地 WIP。
 
 ---
 
-## 0. 开工前必读（不读会做错）
+## 历史约定与提案（不作为本批执行指令）
+
+当前实施采用定向 RED→GREEN 与分阶段验证，提交、测试和审查分开登记；不要求每个小改动跑全量，也不自动推送、发布或删除分支。后续编排关系须与普通 fork 的 parent_id 分离；status 不能修改 Git 索引，idle 不等于成功；LSP 需版本化诊断；迁移不能假定影子快照覆盖所有文件。
+
+## 0. 原始开工说明（历史）
 
 ### 0.1 项目是什么
 - **ee**：个人 AI 编程 Agent。Python 内核（`ee serve`，WebSocket JSON-RPC）+ Electron/React 桌面端。**只要 Windows 桌面端，不做终端版**。
@@ -335,7 +339,7 @@ class OrchestratorAPI(Protocol):
 - [ ] 远端临时分支已删除
 
 ## 遗留问题（D6 期间顺手评估）
-- `apply_patch` 是否存在与 edit 类似的危险 trim 模糊匹配（edit 已修，apply_patch 未查）。若有，按 edit 的做法改为“宁可报错不误改”。
+- `apply_patch` 的危险 strip 匹配已经在 `3efbbe3` 修复，已有 `ee\tests\test_apply_patch_safety.py`；不再列为未查。其它编辑安全改动仍须按各自回归用例验证。
 - 分支会话（branched sessions）的冻结前缀继承。
 - 保存时脱敏的历史消息，重启后无法完全字节一致（影响缓存命中，不影响正确性）。
 - `~/.claude/skills` 加载开关目前只有配置项，设置页没开关。

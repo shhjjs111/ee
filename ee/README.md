@@ -2,9 +2,11 @@
 
 这是 ee 桌面端的内核和本地服务。平时不用直接打交道：桌面端启动时会自动拉起它。没有终端交互界面。
 
+当前路线与验证状态见仓库根的 `research\roadmap-current.md`；历史设计不代表当前待办。
+
 ## 它做什么
 - 工具调用循环：read、write、edit、shell、grep、glob、todo（GPT 家族额外有 apply_patch）
-- 网页：web_search（后端可选 DeepSeek Search〔默认，复用 DeepSeek key〕/ Tavily / Brave / 关闭）、web_fetch（DeepSeek Fetch 或本机直接抓取 + HTML 转文本，长页面截断可续读），每个请求默认 20 秒超时，代理跟随 `[network]`
+- 网页：web_search（默认 Exa，失败回退 DuckDuckGo；也可选 DeepSeek/Tavily/Brave/关闭）、web_fetch（默认本机直接抓取 + HTML 转文本，也可选 DeepSeek，长页面截断可续读），每个请求默认 20 秒超时，代理跟随 `[network]`
 - 子代理：task 工具派生独立上下文的子代理（explore 只读 / general 继承权限 / 自定义 `~/.ee/agents/*.md`、`.ee/agents/*.md`），可指定最大步数和模型；审批照常弹给用户，中断会一并停止子代理，只把 `<task_result>` 报告交回主代理
 - 长期记忆：`~/.ee/memory.md`（用户级）+ `<项目>/.ee/memory.md`（工作区级），memory 工具增/列/删；新会话开始时作为固定消息注入（默认上限 8KiB，会话内不变，保住前缀缓存）
 - 多模型：只走 OpenAI Chat Completions 协议，内置 DeepSeek、Qwen、Kimi、GLM、MiniMax、豆包、GPT、Claude、Gemini 的家族档案（各家的小差异在这里抹平）
@@ -30,7 +32,7 @@ python -m pytest -q
 ## 配置
 - 用户配置：`%USERPROFILE%\.ee\config.toml`，桌面端设置页会读写它（保存前备份为 `.bak`，注释不保留）
 - 项目配置：项目目录下 `.ee/config.toml`（设置页不改它）
-- API key：设置页里直接填（明文存配置文件），或填环境变量名，比如 `DEEPSEEK_API_KEY`
+- API key：设置页保存到 Windows 凭据管理器（不可用时使用受保护的后备存储），或填环境变量名，比如 `DEEPSEEK_API_KEY`。读取优先级：凭据存储 > 旧版配置明文 > 环境变量；启动时迁移旧明文，设置接口不返回完整 key。
 - 网页搜索（设置 → 工具与记忆，或 `[web]`）：`search_backend = "exa" | "duckduckgo" | "deepseek" | "tavily" | "brave" | "off"`，默认 `exa`（免费、无需 key，Exa 公共 MCP 端点；有 `EXA_API_KEY` 时会带上）；`duckduckgo` 免费但可能被限流；主后端出错时按 `search_fallback = ["duckduckgo"]` 依次回退（`[]` = 不回退），全部失败才报错。`fetch_backend = "direct" | "auto" | "deepseek" | "off"`，默认 `direct`（本机直接抓取，免费）；`timeout = 20`、`max_results = 8`；Tavily/Brave 的 key 存 `tavily_api_key` / `brave_api_key` 或用环境变量 `TAVILY_API_KEY` / `BRAVE_API_KEY`。DeepSeek Search/Fetch 为可选付费项，自 2026-11-01 00:00（北京时间）起按成功请求计费，各 $0.75/千次。
 - 子代理 `[subagent]`：`enabled = true`、`max_steps = 30`（默认步数）、`max_steps_limit = 100`
 - 记忆 `[memory]`：`enabled = true`、`workspace = true`、`max_bytes = 8192`

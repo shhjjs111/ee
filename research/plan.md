@@ -1,5 +1,7 @@
 # 集百家之长：个人 Agent 设计与计划（2026-10-25）
 
+> **历史草案，已被替代。** 当前路线与状态见 roadmap-current.md。下方未勾选项是当时的设计记录，不代表当前功能缺失；终端界面方向已取消，不据此重复实施。
+
 来源笔记：research/codex.md、claude-code.md、opencode.md、tianshu.md
 
 ## 设计取舍

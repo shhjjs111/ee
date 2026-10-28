@@ -1,5 +1,7 @@
 # 个人 Agent 详细设计 v1（2026-10-25）
 
+> **历史设计与逐日追加记录，不是当前实施规格。** 当前入口见 roadmap-current.md。早期 TUI、宽松 edit 匹配、pytest 免审批、0.86 压缩阈值和 key 仅取环境变量等描述已被后续决策替代；保留原文用于追溯，不得按旧段落恢复已废弃行为。当前为 Electron 桌面端；pytest 不属只读命令；编辑有歧义即拒绝；默认压缩阈值 0.8；key 优先凭据存储。
+
 代号暂定 `ee`（命令行 `ee`），Python 3.11+。**多模型通用**（2026-10-25 用户要求：随便接什么模型都能用、都适配好）；DeepSeek 是默认和省钱主力，不是唯一。
 来源：research/{codex,claude-code,opencode,tianshu}.md；UI 参照 codex-rs/tui。
 
