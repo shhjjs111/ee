@@ -132,3 +132,40 @@ def test_parses_real_exec_jsonl(ee_home, workspace):
     s = E.summarize_events(out.splitlines())
     assert code == 0 and s["reason"] == "completed" and s["profile"] == "lean"
     assert s["steps"] == 1 and s["prompt_tokens"] == 1234 and s["cache_hit_tokens"] == 1000 and s["cost"] is not None
+
+
+# ---------------------------------------------------------------- --ee 默认值（cwd 无关）
+
+def test_default_ee_cmd_does_not_depend_on_cwd(tmp_path, monkeypatch):
+    """默认的 ee 命令不能依赖 cwd。
+
+    评测会把子进程的 cwd 切到临时副本（`-C <root>`），而 `python -m ee` 要求 cwd 在
+    ee/ 包目录内——cwd 一旦切走，`ee` 就会被解析成命名空间包、`__version__` 缺失，
+    子进程立刻 ImportError 退出。表现是 `no_output · 0 步`，一分钱没花但也什么都没测到。
+
+    所以默认命令必须是一个**绝对路径的可执行文件**（venv 里的 ee.exe），
+    或者显式带上包目录让它可被导入。
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from scripts.eval_profiles import resolve_ee_cmd
+
+    cmd = resolve_ee_cmd(None)
+    assert cmd, "默认命令不能为空"
+    # 判据一：不能是 "python -m ee" 这种依赖 cwd 的形式
+    assert not (len(cmd) >= 3 and cmd[1] == "-m"), f"默认命令仍依赖 cwd：{cmd}"
+    # 判据二：第一个元素是可执行文件（绝对路径或能在 PATH 找到）
+    first = cmd[0]
+    looks_exe = Path(first).is_file() or importlib.util.find_spec("shutil") is not None and bool(
+        __import__("shutil").which(first))
+    assert looks_exe, f"默认命令的第一个元素不是可执行文件：{first}"
+
+
+def test_explicit_ee_exe_is_used_as_is(tmp_path):
+    """显式给可执行文件路径时原样使用（这是我们验证过的可用方式）。"""
+    from scripts.eval_profiles import resolve_ee_cmd
+
+    exe = tmp_path / "ee.exe"
+    exe.write_text("", encoding="utf-8")
+    assert resolve_ee_cmd(str(exe)) == [str(exe)]

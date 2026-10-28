@@ -147,9 +147,24 @@ def check_argv(cmd: str) -> list[str] | None:
 
 
 def resolve_ee_cmd(spec: str | None, windows: bool = WINDOWS) -> list[str]:
-    """--ee 的写法：省略 = 当前 Python 的 -m ee；.py = 用当前 Python 跑；.cmd/.bat 要经 cmd.exe；
-    带空格又不是现成文件 = 整条命令按空格拆。"""
+    """--ee 的写法：省略 = 优先用旁路可执行文件，否则退回当前 Python 的 -m ee；
+    .py = 用当前 Python 跑；.cmd/.bat 要经 cmd.exe；带空格又不是现成文件 = 整条命令按空格拆。
+
+    为什么默认不直接用 `python -m ee`：评测调用时会把子进程 cwd 切到临时副本
+    （`cmd += ["-C", str(root)]`），而 `-m ee` 要求 cwd 能找到 ee 包、且它是**常规包**。
+    cwd 一旦切到别处，`ee` 会被解析成命名空间包（`__file__` 是 None、没有 `__version__`），
+    子进程启动即 `ImportError`，评测结果是 `no_output · 0 步`——看起来像模型没输出，
+    实际是被测程序根本没起来。所以默认先找与当前解释器同目录的 `ee(.exe)`：
+    可执行文件不依赖 cwd。
+    """
     if not spec:
+        exe_dir = Path(sys.executable).parent
+        for name in ("ee.exe", "ee.cmd", "ee.bat", "ee") if windows else ("ee",):
+            cand = exe_dir / name
+            if cand.is_file():
+                if windows and name.lower().endswith((".cmd", ".bat")):
+                    return ["cmd.exe", "/d", "/s", "/c", str(cand)]
+                return [str(cand)]
         return [sys.executable, "-m", "ee"]
     p = Path(spec)
     if spec.lower().endswith(".py") and p.is_file():
