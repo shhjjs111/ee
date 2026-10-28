@@ -100,6 +100,17 @@ export type EffortSupport = { effort: boolean; off: boolean; levels?: string[]; 
 
 export type ThreadStatus = "idle" | "running" | "waiting_approval" | "compacting";
 
+/** 一次派发（D6-1 U2）。`terminal_reason` 只有跑完才有值；`status=running` 且进程已死时
+ *  后端会在读取时归一成 `done + interrupted`。 */
+export type ThreadRun = {
+  id: string;
+  started: number;
+  finished?: number | null;
+  status: "running" | "done";
+  terminal_reason?: string | null;
+  initiator?: string;
+};
+
 export type ThreadSummary = {
   id: string;
   title: string;
@@ -113,6 +124,11 @@ export type ThreadSummary = {
   /** 指挥关系（D6-1）：只有被指挥会话派发的子会话才有值；普通分叉不写它。 */
   orchestrator_parent_id?: string | null;
   orchestrator_role?: "orchestrator" | "child" | null;
+  /** 派发记录（D6-1 U2）：末条带 terminal_reason。判「跑完了」还是「被杀/超预算」只能看它，
+   *  status 的 idle 同时覆盖两种情况。 */
+  runs?: ThreadRun[];
+  /** 子会话 worktree 的改动数（D6-1 U8）：由 thread_status 给出，列表里不查也能显示。 */
+  changed_count?: number;
   worktree?: { path: string; branch: string; repo: string; name: string } | null; // D5-1
   workspace?: string; // 归属的项目目录（worktree 对话归到主仓库）
   effort?: Effort | string; // D5-9：会话级推理强度
@@ -455,6 +471,19 @@ declare global {
 }
 
 // 后台命令（D4-6，后端 ee/core/bgproc.py BgProc.info()）
+/** 子会话阻塞在审批或提问上（D6-1 U8，通知 `thread/child_approval`）。
+ *  用户的注意力在父会话，这条把「哪个子任务卡住了、卡的什么」带到父界面。 */
+export type ChildApprovalNote = {
+  parent_id: string;
+  thread_id: string;
+  kind: "approval" | "question" | string;
+  child_title: string;
+  call_id: string;
+  tool: string;
+  summary: string;
+  detail?: string;
+};
+
 export type BgProc = {
   id: string;
   command: string;

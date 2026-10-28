@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { approvalNotice, turnCompletedNotice } from "./notify";
-import type { BgProc, ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
+import type { BgProc, ChildApprovalNote, ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
 import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
@@ -42,6 +42,9 @@ type State = {
   activeWorkspace: string | null;
   turnStartedAt: Record<string, number>;
   bgProcs: Record<string, BgProc[]>; // 每个会话的后台命令（D4-6）
+  /** 子会话阻塞在审批/提问上，按父会话 id 记一条（D6-1 U8）。
+   *  用户看的是父会话界面；不留这个标记，子任务会静默卡到超时。 */
+  pendingChildApprovals: Record<string, ChildApprovalNote>;
   models: ModelInfo[];
   defaultModel: string;
   draftModel: string | null;
@@ -116,6 +119,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   activeWorkspace: localStorage.getItem("ee.workspace"),
   turnStartedAt: {},
   bgProcs: {},
+  pendingChildApprovals: {},
   models: [],
   defaultModel: "",
   draftModel: null,
@@ -611,7 +615,7 @@ function setStatus(id: string, status: ThreadSummary["status"]) {
   }));
 }
 
-function onNotification(method: string, p: any) {
+export function onNotification(method: string, p: any) {
   const st = useApp.getState();
   if (method === "thread/updated") {
     const t = p.thread as ThreadSummary;
@@ -624,8 +628,28 @@ function onNotification(method: string, p: any) {
       const exists = s.threads.some((x) => x.id === t.id);
       const threads = exists ? s.threads.map((x) => (x.id === t.id ? { ...x, ...t } : x)) : [t, ...s.threads];
       const details = s.details[t.id] ? { ...s.details, [t.id]: { ...s.details[t.id], ...t } } : s.details;
-      return { threads, details };
+      // 子会话不再等审批（已响应/已跑完）：父会话上那条提示要一起撤掉，
+      // 否则卡片永远停在「等待批准」。只撤指向这个子会话的，不影响别的子任务。
+      let pendingChildApprovals = s.pendingChildApprovals;
+      if (t.status !== "waiting_approval") {
+        const stale = Object.entries(pendingChildApprovals).find(([, n]) => n.thread_id === t.id);
+        if (stale) {
+          pendingChildApprovals = { ...pendingChildApprovals };
+          delete pendingChildApprovals[stale[0]];
+        }
+      }
+      return { threads, details, pendingChildApprovals };
     });
+    return;
+  }
+  if (method === "thread/child_approval") {
+    // 子会话阻塞在审批/提问上（D6-1 U8）：按父会话记一条，并在子会话那一行显示等待态。
+    // 用户在看父会话，不把这条带到父界面的话，子任务会静默卡到超时。
+    const note = p as ChildApprovalNote;
+    useApp.setState((s) => ({
+      pendingChildApprovals: { ...s.pendingChildApprovals, [note.parent_id]: note },
+      threads: s.threads.map((t) => (t.id === note.thread_id ? { ...t, status: "waiting_approval" as const } : t)),
+    }));
     return;
   }
   if (method === "thread/deleted") {

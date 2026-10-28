@@ -4,6 +4,7 @@ import clsx from "clsx";
 import {
   GitBranch,
   GitFork,
+  CornerDownRight,
   ChevronRight,
   Clock,
   Folder,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { relTime } from "../lib/reduce";
+import { ChildThreadCard } from "./ChildThreadCard";
 import { useApp } from "../lib/store";
 import { useAutomations } from "../lib/automationStore";
 import type { ThreadSummary } from "../types";
@@ -32,10 +34,14 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
   const s = useApp();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(t.title);
+  // 指挥会话派发的子任务缩进一级（D6-1 U8）。只认 orchestrator_parent_id：
+  // parent_id 是普通分叉的来源（branch.py 写入），分叉出来的对话仍是平级会话，缩进会误导。
+  const isChild = !!t.orchestrator_parent_id;
   return (
     <div
       className={clsx(
-        "group relative flex h-8 cursor-default items-center gap-2 rounded-lg pl-7 pr-1.5 text-[13px] transition-colors",
+        "group relative flex h-8 cursor-default items-center gap-2 rounded-lg pr-1.5 text-[13px] transition-colors",
+        isChild ? "pl-11" : "pl-7",
         active ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg",
       )}
       onClick={() => !editing && s.openThread(t.id)}
@@ -65,6 +71,11 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
           {t.parent_id && (
             <Tip label="分叉出来的对话">
               <GitFork size={12} className="shrink-0 text-faint" />
+            </Tip>
+          )}
+          {isChild && (
+            <Tip label="父会话派发的子任务">
+              <CornerDownRight size={12} className="shrink-0 text-accent" />
             </Tip>
           )}
           <span className="min-w-0 flex-1 truncate">{t.title}</span>
@@ -307,6 +318,11 @@ export function Sidebar() {
                   {g.threads.slice(0, 50).map((t) => (
                     <div key={t.id}>
                       <ThreadRow t={t} active={t.id === s.activeThreadId && s.view === "chat"} />
+                      {/* 子会话额外给一张卡片（D6-1 U8）：状态点看不清「跑完了」还是「超预算/中断」，
+                          卡片把终态、分支和改动数摊开；普通会话不显示，避免噪声。 */}
+                      {!q && t.orchestrator_parent_id && (
+                        <ChildThreadCard t={t} onOpen={(id) => void s.openThread(id)} />
+                      )}
                       {q && hits[t.id] && (
                         <div
                           className="cursor-default truncate pb-1 pl-7 pr-2 text-[11.5px] text-faint hover:text-muted"
