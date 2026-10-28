@@ -4,7 +4,7 @@
 
 ## 当前执行范围
 
-本批已执行稳定化 Wave 0–2（T1–T6），并已完成 D6-1 指挥会话的 Wave A/B（U1–U7）。D6-1 的 Wave C（U8 桌面端接管、U9 端到端）与 D6-2（LSP）尚未开始。完整方案见 plans/2026-10-28-stabilization-and-d6.md 与 plans/2026-10-28-d6-1-orchestrator-tasks.md；本页是当前入口与验证记录。
+本批已执行稳定化 Wave 0–2（T1–T6），并已完成 D6-1 指挥会话的全部三个 Wave（U1–U9）。D6-2（LSP）尚未开始。完整方案见 plans/2026-10-28-stabilization-and-d6.md 与 plans/2026-10-28-d6-1-orchestrator-tasks.md；本页是当前入口与验证记录。
 
 | 阶段 | 工作 | 当前状态 | 生产入口 / 验证入口 |
 |---|---|---|---|
@@ -69,7 +69,7 @@ D6-1 的 U1–U7 已全部提交并推送（`9d867f6`、`d68af00`、`58e1e67`、
 - 全量 pytest 已在项目 `.venv` 下执行过一次（1578 passed / 15 skipped / 0 failed）；日常仍按波次跑相关子集。
 - Electron 桌面端实际渲染与交互。
 - 真实 MCP 服务器跨项目行为、真实模型评测。
-- `ee\scripts\e2e_ws.py` 已实跑通过（普通 / `--blackhole` / 编排三种场景），但**未接入 CI**。编排闭环已验通：`thread/create_child` → `thread/wait` → 终态 `completed` → `thread/children` 能列出，exit=0。
+- `ee\scripts\e2e_ws.py` 已接入 CI 并实跑通过（普通 / `--blackhole` / 编排三种场景）。CI 的源码后端那一步原先缺 `working-directory: ee`，从仓库根跑会因命名空间包崩溃，已修。编排闭环已验通：`thread/create_child` → `thread/wait` → 终态 `completed` → `thread/children` 能列出，exit=0。
 - 桌面端已接 `thread/status`：`refreshChildStatus` 在列表加载后补拉子会话的 `changed_count` 与终态，U8 卡片的「N 处改动」不再是空的。逐个子会话查、单个失败静默跳过。
 
 延后项（未做，保留原因）：

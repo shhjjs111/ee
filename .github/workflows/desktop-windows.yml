@@ -66,7 +66,11 @@ jobs:
       - name: E2E with source backend (python -m ee serve)
         if: ${{ !cancelled() }}
         timeout-minutes: 5
-        run: python ee/scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
+        # 必须从 ee/ 里跑：从仓库根执行时 `ee` 会被解析成命名空间包（__file__ 是 None、
+        # 没有 __version__），后端子进程 `-m ee` 启动即崩 ImportError。脚本现在会自检
+        # 并在报错里指出正确目录，但把它放在正确目录里更好。
+        working-directory: ee
+        run: python scripts/e2e_ws.py python -m ee serve --exit-on-stdin-eof
 
       - name: Install desktop deps
         if: ${{ !cancelled() }}
