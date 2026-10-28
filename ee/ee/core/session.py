@@ -155,6 +155,11 @@ class Session:
         self.memory_sources: list[str] = []        # 本会话注入的记忆文件
         self._sys_src: SP.SystemSources | None = None   # 本会话的 SYSTEM.md / APPEND_SYSTEM.md（开始时解析一次后冻结）
         self.skill_names: list[str] = []           # 本会话清单里列出的技能（D5-5）
+        # LSP 诊断（D6-2 / T9）：懒建。没启用时永远是 None，工具据此如实报 unavailable。
+        # 放在 Session 上而不是全局，是因为诊断缓存属于"这个会话看到的这些文件版本"。
+        self.lsp_store = None
+        self.lsp_notifier = None
+        self.lsp_manager = None
         self._skills_cat = None
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
@@ -1227,10 +1232,42 @@ class Session:
         self._ok[cid] = res.ok
         details = finalize_details(name, res, int((time.monotonic() - t0) * 1000), trunc)
         emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, details))
+        # LSP（D6-2 / T9）：写成功后同步文件变更，让下一次取诊断拿到新版本。
+        # 只记日志、不影响工具结果——诊断失败不能反噬已经成功的写入。
+        if res.ok and name in ("write", "edit", "apply_patch"):
+            try:
+                await self._notify_lsp(args, res)
+            except Exception as e:  # noqa: BLE001
+                log.info("LSP 变更通知失败（忽略）：%s", e)
         if res.meta.get("kind") == "plan":
             emit(PlanUpdate(res.meta.get("items", [])))
         if res.ok and res.meta.get("end_turn"):
             self._end_turn = True
+
+    async def _notify_lsp(self, args: dict, res) -> None:
+        """把写成功后的文件内容同步给语言服务器（didOpen / didChange）。
+
+        没启用 LSP、没绑到服务器、文件读不出来——都直接返回，不抛。
+        调用方已经把它们包在 try 里了，这里再稳一层：诊断是辅助信息，
+        不能因为同步失败就让用户以为"文件没写成功"。
+        """
+        if self.lsp_notifier is None:
+            return
+        from ee.tools.lsp import uri_for
+
+        raw = (res.meta or {}).get("path") or args.get("path") or ""
+        if not raw:
+            return
+        path = self.cwd / raw if not Path(raw).is_absolute() else Path(raw)
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        uri = uri_for(path)
+        lang = _language_of(path)
+        if self.lsp_notifier.client_for(path=str(path), uri=uri) is None:
+            return
+        await self.lsp_notifier.changed(str(path), uri, text, language=lang)
 
     async def _guarded_run(self, cid: str, tool, args: dict, emit, pre=None) -> ToolResult:
         if pre is None:
@@ -1490,3 +1527,16 @@ def _friendly_error_raw(e: Exception) -> str:
     if status:
         return f"请求失败（{status}）：{str(e)[:500]}"
     return f"{name}: {str(e)[:500]}"
+
+
+# 扩展名 → LSP languageId。只覆盖 MVP 支持的语言（python / typescript）。
+_LANG_BY_SUFFIX = {
+    ".py": "python", ".pyi": "python",
+    ".ts": "typescript", ".tsx": "typescriptreact",
+    ".js": "javascript", ".jsx": "javascriptreact",
+    ".json": "json",
+}
+
+
+def _language_of(path: Path) -> str:
+    return _LANG_BY_SUFFIX.get(path.suffix.lower(), "plaintext")

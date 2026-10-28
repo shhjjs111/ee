@@ -76,6 +76,12 @@ DEFAULTS: dict = {
     # 指挥会话（D6-1）：一个会话派发多个真正的子会话。默认关（多五个工具是固定 token 开销）；
     # 项目层只能关、只能调小。max_children 是同时运行数，max_total_children 是子会话总数。
     "orchestrator": {"enabled": False, "max_children": 4, "max_total_children": 16},
+    # LSP 诊断（D6-2 / T9）：让模型改完文件看到语言服务器的类型错误。默认关——工具 schema
+    # 是固定 token 开销，还进冻结前缀；没装服务器时它也只会一直报 unavailable。
+    # **开启后 repo_map 工具会让位**（两个都是"理解代码"，而 full 工具表只剩 79 token
+    # 余量）；关掉 lsp 它就会回来。memory 不受影响。
+    # 服务器路径来自用户配置；项目配置只能关闭或收紧，不能指定可执行文件。
+    "lsp": {"enabled": False},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     # 命令沙箱（D5-8，仅 Windows 隔离写入）：enabled = shell 前台/后台命令在受限令牌里跑，只能写工作区和沙箱临时目录；
     # network=false = 用环境变量拦截联网（代理指向死端口、包管理器离线），尽力而为

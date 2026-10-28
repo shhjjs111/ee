@@ -64,3 +64,83 @@ def test_every_tool_description_is_short(ee_home, workspace, profile):
         assert f["description"].count("。") + f["description"].count("；") <= 3, f["name"]
         for k, v in (f["parameters"].get("properties") or {}).items():
             assert len(v.get("description", "")) <= 70, (f["name"], k)
+
+
+def test_lsp_tool_schema_is_small():
+    """lsp 工具的 schema 开销要小（它是可选项，不能挤占基础预算太多）。
+
+    背景：full 工具表已用到 4421/4500，只剩 79 token 余量。lsp 打开后是 4583，
+    超了 83。这不是措辞问题——schema 本身 315 字符（约 143 token）就已超余量。
+    所以这里只管住"别再变大"，并把这个事实记下来：**加任何新工具前先看预算**。
+    """
+    import json as _json
+
+    from ee.tools.lsp import LspTool
+
+    schema = _json.dumps(LspTool().schema(), ensure_ascii=False)
+    assert len(schema) <= 400, f"lsp schema 变大到 {len(schema)} 字符，会进一步挤压预算：{schema[:200]}"
+
+
+def test_full_budget_headroom_is_known():
+    """把 full 工具表的余量钉住：余量小于 100 token 时，加工具前必须重新评估。
+
+    这条不是"必须通过"的功能断言，而是**变更护栏**：如果某天有人加了个工具
+    把余量吃到 0 以下，这条会先失败，而不是等到用户开了某个可选工具才崩。
+    """
+    s, p = _prefix(workspace_fixture())
+    n = approx_tokens(p)
+    assert n <= FULL_LIMIT, f"full 前缀 {n} 已超上限 {FULL_LIMIT}"
+    headroom = FULL_LIMIT - n
+    # 只记录，不强制要求正余量——但小于 0 一定失败（上面已断言）
+    print(f"full 前缀 {n}/{FULL_LIMIT}，余量 {headroom} token")
+
+
+def workspace_fixture():
+    import tempfile
+    from pathlib import Path
+    p = Path(tempfile.mkdtemp())
+    return p
+
+
+def test_lsp_on_keeps_budget_and_drops_repo_map():
+    """开 lsp 时预算不能超，且被去掉的必须是 repo_map（不是 memory）。
+
+    背景：full 工具表已经用到 4421/4500，只剩 79 余量；lsp 的 schema 约 143 token，
+    直接加会超 83。FULL_LIMIT 是 2026-10-26 用真实 tokenizer 实测（3,822）反推的
+    护栏（近似 4,398，取 4,500 留余量），不该为了提高它而改动——那会把它从
+    "实测基准"退化成"当前值记录"。
+
+    所以改成能力互斥：repo_map 和 lsp 都是"理解代码"，有 lsp 的实时诊断时
+    静态仓库地图价值下降。**memory 不能动**——它和 lsp 毫无交集，砍掉会让用户
+    遇到"开了 A 结果 B 没了"这种最难排查的问题。
+    """
+    from ee.tools import build_tools, agent_profile
+
+    ws = workspace_fixture()
+    s, _ = make_session(ws, [])
+    s.config.data["lsp"] = {"enabled": True}
+    s.agent_profile = agent_profile(s.config)
+    s.tools = build_tools(s.profile, s.config, agent=s.agent_profile)
+    s.tool_map = {t.name: t for t in s.tools}
+    p = s.current_prefix()
+
+    names = [t["function"]["name"] for t in p.tools]
+    n = approx_tokens(p)
+    assert n <= FULL_LIMIT, f"开 lsp 后前缀 {n} 超上限 {FULL_LIMIT}"
+    assert "lsp" in names, f"开了 lsp 但工具表里没有：{names}"
+    assert "repo_map" not in names, f"开 lsp 后 repo_map 应当让位：{names}"
+    assert "memory" in names, f"memory 不该被 lsp 挤掉：{names}"
+
+
+def test_lsp_off_restores_repo_map():
+    """关掉 lsp 后 repo_map 要回来（互斥是单向的，不是永久损失）。"""
+    from ee.tools import build_tools, agent_profile
+
+    ws = workspace_fixture()
+    s, _ = make_session(ws, [])
+    s.config.data["lsp"] = {"enabled": False}
+    s.agent_profile = agent_profile(s.config)
+    s.tools = build_tools(s.profile, s.config, agent=s.agent_profile)
+    names = [t.name for t in s.tools]
+    assert "repo_map" in names, f"关 lsp 后 repo_map 应当恢复：{names}"
+    assert "lsp" not in names

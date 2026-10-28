@@ -401,3 +401,142 @@ def test_changed_content_bumps_version_and_fingerprint():
     res = st.get(d.uri)
     # 内容变了但还没收到新诊断：不能把旧诊断当成本版本的
     assert res.status != "fresh" or res.diagnostics == []
+
+
+# ---------------------------------------------------------------- U5 工具接入
+
+@pytest.fixture
+def lsp_env(tmp_path, monkeypatch):
+    """一个带 LSP 能力的会话环境：Fake client + DiagStore。"""
+    from ee.core.lsp import manager as M
+    from ee.core.lsp import diagnostics as D
+
+    started = []
+    mgr = M.LspManager(client_factory=_counting_factory(started), idle_ttl=0)
+    store = D.DiagStore()
+    return {"mgr": mgr, "store": store, "started": started, "root": str(tmp_path)}
+
+
+def test_lsp_tool_returns_fresh_diagnostics(lsp_env, tmp_path):
+    """工具返回该文件当前版本的诊断。"""
+    from ee.tools.lsp import LspTool
+    from ee.core.lsp import diagnostics as D
+
+    root = lsp_env["root"]
+    f = tmp_path / "a.py"
+    f.write_text("x: int = 'type error'\n", encoding="utf-8")
+
+    async def go():
+        from ee.tools.lsp import uri_for
+        store: D.DiagStore = lsp_env["store"]
+        u = uri_for(f)
+        doc = store.open(D.Doc(uri=u, version=1, text=f.read_text(encoding="utf-8")))
+        store.on_publish({"uri": doc.uri, "version": 1,
+                          "diagnostics": [{"message": "类型错误", "severity": 1,
+                                           "range": {"start": {"line": 0, "character": 0},
+                                                     "end": {"line": 0, "character": 1}}}]})
+        tool = LspTool(manager=lsp_env["mgr"], store=store, root=root)
+        r = await tool.run({"path": str(f)}, _lsp_ctx(tmp_path))
+        assert r.ok
+        assert "类型错误" in r.output
+        assert r.meta.get("status") == "fresh"
+
+    run(go())
+
+
+def test_lsp_tool_reports_unavailable_not_clean(lsp_env, tmp_path):
+    """没有服务器时必须明确说「未取得诊断」，不能显示成没有错误。"""
+    from ee.tools.lsp import LspTool
+    from ee.core.lsp import diagnostics as D
+
+    f = tmp_path / "b.py"
+    f.write_text("y = 1\n", encoding="utf-8")
+
+    async def go():
+        from ee.tools.lsp import uri_for
+        u = uri_for(f)
+        store = D.DiagStore()
+        store.open(D.Doc(uri=u, version=1, text="y = 1\n"))
+        store.set_status(u, D.UNAVAILABLE, "语言服务器未安装")
+        tool = LspTool(manager=lsp_env["mgr"], store=store, root=lsp_env["root"])
+        r = await tool.run({"path": str(f)}, _lsp_ctx(tmp_path))
+        assert r.ok                       # 取不到诊断不等于工具失败
+        assert "未取得诊断" in r.output
+        assert "未安装" in r.output or "不可用" in r.output
+        assert r.meta.get("status") == "unavailable"
+        assert r.meta.get("clean") is False
+
+    run(go())
+
+
+def test_write_success_triggers_notify(tmp_path):
+    """写工具成功后要通知服务器（didChange），否则模型拿不到新诊断。"""
+    from ee.core.lsp import notify as N
+    from ee.core.lsp import diagnostics as D
+
+    calls = []
+
+    class FakeClient:
+        closed = False
+
+        async def notify(self, method, params=None):
+            calls.append((method, params))
+
+    store = D.DiagStore()
+    store.open(D.Doc(uri="file:///c.py", version=1, text="v1"))
+    hook = N.Notifier(store=store)
+    hook.attach("file:///c.py", FakeClient())
+
+    async def go():
+        await hook.changed("/c.py", "file:///c.py", "v2 content")
+        await hook.opened("/c.py", "file:///c.py", "v2 content")
+        methods = [m for m, _ in calls]
+        assert "textDocument/didChange" in methods or "textDocument/didOpen" in methods
+
+    run(go())
+
+
+def test_notify_failure_does_not_fail_write(tmp_path):
+    """通知抛异常时，写工具必须仍然成功（诊断不能反噬编辑）。"""
+    from ee.core.lsp import notify as N
+    from ee.core.lsp import diagnostics as D
+
+    class BadClient:
+        closed = False
+
+        async def notify(self, method, params=None):
+            raise RuntimeError("pipe broken")
+
+    store = D.DiagStore()
+    store.open(D.Doc(uri="file:///d.py", version=1, text="v1"))
+    hook = N.Notifier(store=store)
+    hook.attach("file:///d.py", BadClient())
+
+    async def go():
+        # 不抛异常
+        await hook.changed("/d.py", "file:///d.py", "v2")
+        assert hook.last_error is not None   # 但要留下痕迹
+
+    run(go())
+
+
+def test_no_server_edit_still_succeeds(tmp_path):
+    """完全没有 LSP 时，写文件本身必须成功。"""
+    from ee.core.lsp import notify as N
+    from ee.core.lsp import diagnostics as D
+
+    store = D.DiagStore()
+    hook = N.Notifier(store=store)        # 没有任何 attach
+
+    async def go():
+        await hook.changed("/e.py", "file:///e.py", "content")   # 不该抛
+        assert hook.last_error is None
+
+    run(go())
+
+
+def _lsp_ctx(ws):
+    from ee.tools.base import ToolContext, ToolState
+    from types import SimpleNamespace
+    return ToolContext(cwd=ws, state=ToolState(), output_dir=ws / ".out",
+                       extra={"session": SimpleNamespace()})
