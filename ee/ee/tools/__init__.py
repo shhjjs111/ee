@@ -27,7 +27,8 @@ def agent_profile(config=None) -> str:
     return v if v in AGENT_PROFILES else "full"
 
 
-def build_tools(profile, config=None, agent: str | None = None) -> list[Tool]:
+def build_tools(profile, config=None, agent: str | None = None,
+                orchestrator_role: str | None = None) -> list[Tool]:
     """agent：full / lean，默认取配置；会话开始时决定，之后冻结。lean 的工具表与 full 的前四个逐字节相同（除 shell 的 background 说明）。"""
     from ee.tools.plan import PresentPlanTool
     data0 = getattr(config, "data", config) or {}
@@ -74,9 +75,13 @@ def build_tools(profile, config=None, agent: str | None = None) -> list[Tool]:
         tools.append(SkillTool())
     # 指挥会话（D6-1）：默认关，只有用户显式启用且不是 lean 才注入。
     # 五个工具是固定 token 开销，还进冻结前缀，所以不能无条件给。
-    if (data.get("orchestrator") or {}).get("enabled") and (agent or agent_profile(config)) != "lean":
-        from ee.tools.orchestrate import ThreadsListTool, ThreadStatusTool, ThreadWaitTool
-        tools += [ThreadsListTool(), ThreadStatusTool(), ThreadWaitTool()]
+    # 子会话一律不给：它自己没有子会话，给了只会让它误以为还能再分派。
+    if ((data.get("orchestrator") or {}).get("enabled") and (agent or agent_profile(config)) != "lean"
+            and orchestrator_role != "child"):
+        from ee.tools.orchestrate import (ThreadCreateTool, ThreadSendTool, ThreadsListTool,
+                                          ThreadStatusTool, ThreadWaitTool)
+        tools += [ThreadsListTool(), ThreadStatusTool(), ThreadWaitTool(),
+                  ThreadCreateTool(), ThreadSendTool()]
     return tools
 
 

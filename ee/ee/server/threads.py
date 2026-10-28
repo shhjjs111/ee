@@ -74,7 +74,8 @@ class Thread:
     def __init__(self, tid: str, home: Path, notify: Callable[[str, dict], None], meta: dict,
                  messages: list[dict] | None = None, items: list[dict] | None = None,
                  client_factory: Callable | None = None, persist: bool = True,
-                 configure: Callable | None = None, user_home: Path | None = None):
+                 configure: Callable | None = None, user_home: Path | None = None,
+                 orchestrator=None):
         self.id = tid
         self.home = home
         self.user_home = Path(user_home) if user_home is not None else Path.home()
@@ -103,6 +104,7 @@ class Thread:
         self.compacting = False
         self.deleted = False           # 已删除：迟到的条目/元数据不能再写回磁盘
         self.status_text = ""          # 临时状态（正在连接模型…），不落盘
+        self.orchestrator = orchestrator   # 指挥会话（D6-1）：回合结束要回收名额
 
     # ------------------------------------------------------------ 内核会话（懒加载）
     @property
@@ -122,7 +124,11 @@ class Thread:
         # 精简模式（profile）跟着对话走：记在 meta 里，设置页切换只影响新对话；功能上线前的旧对话按 full
         agent = self.meta.get("profile") or ("full" if self._pending_messages else None)
         s = Session(cfg, model=model, cwd=self.cwd, mode=mode, client_factory=self.client_factory,
-                    persist=self.persist, home=self.home, agent=agent, user_home=self.user_home)
+                    persist=self.persist, home=self.home, agent=agent, user_home=self.user_home,
+                    orchestrator_role=self.meta.get("orchestrator_role"))
+        # 指挥会话（D6-1）：工具只拿到窄接口与本会话 id，拿不到 Backend，也就碰不到别的会话
+        s.orchestrator = self.orchestrator
+        s.thread_id = self.id
         s.store = SessionStore(self.home, session_id=self.id, enabled=self.persist)
         if self._pending_messages:
             s.history = list(self._pending_messages)
@@ -429,6 +435,13 @@ class Thread:
 
     def _finish(self, reason: str) -> None:
         self._close_run(reason)
+        # 运行名额在回合真正结束时回收。不走 notify：Backend.notify 对 listener 的异常是
+        # `except Exception: pass`，靠通知释放会在某个 listener 抛错时静默泄漏名额。
+        if self.orchestrator is not None:
+            try:
+                self.orchestrator.release(self.id)
+            except Exception:  # noqa: BLE001  回收失败不能拖垮回合收尾
+                log.warning("回收子会话名额失败（%s）", self.id, exc_info=True)
         if self.status_text:
             self.status_text = ""
             self.notify("turn/status", {"thread_id": self.id, "text": ""})
@@ -460,7 +473,8 @@ class Thread:
     # ------------------------------------------------------------ 模型生成标题（D5-9，roles.title）
     def _maybe_ai_title(self) -> None:
         s = self.session
-        if s is None or self.meta.get("title_ai_done") or self.meta.get("source") in ("exec", "automation"):
+        if s is None or self.meta.get("title_ai_done") or self.meta.get("source") in (
+                "exec", "automation", "orchestrator"):
             return
         if not bool((s.config.data.get("title") or {}).get("ai", False)):
             return
@@ -536,6 +550,22 @@ class Thread:
                                            persist=False)
         return self.cur_assistant
 
+    def _bubble_to_parent(self, kind: str, call_id: str, tool: str = "", title: str = "",
+                          detail: str = "", prefix: str = "") -> None:
+        """子会话的阻塞请求同时告诉父会话——用户正在看的是父会话那个界面。
+
+        审批与提问是同一个阻塞语义：只冒泡一种，另一种就会静默卡到回合被中断。
+        通知里带 parent_id 而不是让客户端自己推，因为磁盘上未加载的子会话也要能冒泡到。
+        """
+        pid = self.meta.get("orchestrator_parent_id")
+        if not pid:
+            return
+        self.notify("thread/child_approval", {
+            "parent_id": pid, "thread_id": self.id, "kind": kind,
+            "child_title": self.meta.get("title") or "子会话",
+            "call_id": call_id, "tool": tool, "summary": title,
+            "detail": _clip(detail or "", 2000), "prefix": prefix})
+
     def _on_event(self, ev) -> None:
         if isinstance(ev, Status):
             if ev.text != self.status_text:
@@ -589,6 +619,7 @@ class Thread:
             if ev.future is not None:
                 self.approvals[ev.call_id] = (ev.future, it)
             self.notify("thread/updated", {"thread": self.summary()})
+            self._bubble_to_parent("question", ev.call_id, "ask_user", ev.question)
         elif isinstance(ev, ApprovalRequest):
             from ee.core.rules import rule_from_decision
             it = self._add({"type": "approval", "call_id": ev.call_id, "tool": ev.tool, "title": ev.title,
@@ -598,6 +629,7 @@ class Thread:
             if ev.future is not None:
                 self.approvals[ev.call_id] = (ev.future, it)
             self.notify("thread/updated", {"thread": self.summary()})
+            self._bubble_to_parent("approval", ev.call_id, ev.tool, ev.title, ev.detail, ev.prefix)
         elif isinstance(ev, PlanUpdate):
             if self.plan_item is None:
                 self.plan_item = self._add({"type": "plan", "items": ev.items})

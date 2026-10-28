@@ -72,6 +72,10 @@ class Backend:
         self.client_factory = client_factory
         self.persist = persist
         self.threads: dict[str, Thread] = {}
+        # 指挥会话（D6-1 U6）：名额控制器首次派发时按父会话生效配置构造，此前为 None。
+        self.slots = None
+        from ee.server.orchestrator import Orchestrator
+        self.orchestrator = Orchestrator(self)
         self.listeners: list[Callable[[str, dict], Any]] = []
         self._indexes: dict[str, tuple[float, FileIndex]] = {}
         self.methods: dict[str, Callable] = {
@@ -208,7 +212,8 @@ class Backend:
         if not meta.get("cwd") or not Path(meta["cwd"]).is_dir():
             meta["cwd"] = meta.get("cwd") or str(Path.home())
         t = Thread(thread_id, self.home, self.notify, meta, messages=d["messages"], items=d["items"],
-                   client_factory=self.client_factory, persist=self.persist, user_home=self.user_home)
+                   client_factory=self.client_factory, persist=self.persist, user_home=self.user_home,
+                   orchestrator=self.orchestrator)
         self.threads[thread_id] = t
         return t
 
@@ -307,7 +312,7 @@ class Backend:
             if wt:
                 meta["worktree"] = {"path": wt["path"], "branch": wt["branch"], "repo": wt["repo"], "name": wt["name"]}
             t = Thread(store.id, self.home, self.notify, meta, client_factory=self.client_factory,
-                       persist=self.persist, user_home=self.user_home)
+                       persist=self.persist, user_home=self.user_home, orchestrator=self.orchestrator)
             try:
                 t.ensure_session()
             except ValueError as e:
@@ -352,6 +357,7 @@ class Backend:
         if extra.resolve() == sessions:
             raise RpcError("参数错误：thread_id 不合法", -32602)
         self.loops.remove_thread(thread_id)              # 会话内 /loop 一并停止
+        self.orchestrator.forget(thread_id)              # 子会话被删：名额占用一起回收，否则 16 个后建不出新的
         t = self.threads.pop(thread_id, None)
         if t is not None:
             # 先标记：还在跑的回合收尾时不能再把 jsonl 写回来（否则删除后“复活”成残记录）

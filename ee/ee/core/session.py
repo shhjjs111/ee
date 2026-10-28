@@ -64,7 +64,7 @@ class Session:
     def __init__(self, config: Config, model: str | None = None, cwd: Path | None = None, mode: str | None = None,
                  client=None, client_factory: Callable | None = None, persist: bool = True,
                  shell: str | None = None, home: Path | None = None, agent: str | None = None,
-                 user_home: Path | None = None):
+                 user_home: Path | None = None, orchestrator_role: str | None = None):
         self.config = config
         self.cwd = Path(cwd or config.cwd).resolve()
         self.home = home or ee_home()
@@ -79,7 +79,13 @@ class Session:
         self.spec = config.resolve_model(model)
         # 精简模式 full / lean：会话开始时定下（恢复会话时沿用会话记下的），之后切模型也不变
         self.agent_profile = agent if agent in AGENT_PROFILES else agent_profile(config)
-        self.tools = build_tools(self.spec.profile, config, agent=self.agent_profile)
+        # 指挥会话（D6-1）：子会话拿到的工具表里没有 thread_*（它不能再建子会话）；
+        # 窄接口与调用者身份由所属 Thread 在构造后注入，普通会话保持 None。
+        self.orchestrator_role = "child" if orchestrator_role == "child" else None
+        self.orchestrator = None
+        self.thread_id = None
+        self.tools = build_tools(self.spec.profile, config, agent=self.agent_profile,
+                                 orchestrator_role=self.orchestrator_role)
         self.tool_map = {t.name: t for t in self.tools}
         self.prefix: FrozenPrefix | None = None
         self.history: list[dict] = []
@@ -192,7 +198,8 @@ class Session:
         same_prefix = (spec.profile.prompt_patch == self.spec.profile.prompt_patch and
                        spec.profile.edit_style == self.spec.profile.edit_style)
         self.spec = spec
-        self.tools = build_tools(spec.profile, self.config, agent=self.agent_profile)
+        self.tools = build_tools(spec.profile, self.config, agent=self.agent_profile,
+                                 orchestrator_role=self.orchestrator_role)
         self.tool_map = {t.name: t for t in self.tools}
         self._install_mcp()
         self._drop_client()          # 旧 client 的连接池要释放，不能只丢引用
@@ -1222,7 +1229,11 @@ class Session:
                           emit=lambda s: emit(ToolOutput(cid, s)),
                           timeout_default=int(self.config.data.get("bash_timeout", 120)),
                           extra={"session": self, "emit_event": emit, "call_id": cid, "config": self.config,
-                                 "home": self.home})
+                                 "home": self.home,
+                                 # 指挥会话（D6-1）：窄接口与调用者身份都由所属 Thread 注入。
+                                 # 普通会话这里是 None，工具据此明确说"没有启用指挥能力"，
+                                 # 而不是凭空猜一个身份去改别人的会话。
+                                 "orchestrator": self.orchestrator, "thread_id": self.thread_id})
         try:
             return await tool.run(args, ctx)
         except ToolError as e:
