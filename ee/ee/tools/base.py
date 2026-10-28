@@ -85,6 +85,7 @@ class ToolContext:
     shell: Any = None                                    # ShellInfo，由 session 提供当前值
     emit: Callable[[str], None] = lambda s: None         # 流式输出（bash）
     timeout_default: int = 120
+    max_timeout: int = 0                                 # >0 = 单次命令的硬上限（秒），0 = 只受工具自身的 MAX_TIMEOUT 约束
     extra: dict = field(default_factory=dict)
 
     def resolve(self, p: str) -> Path:

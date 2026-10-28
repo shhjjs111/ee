@@ -223,3 +223,25 @@ def test_background_commands_killed_at_exit(ee_home, workspace):
     assert te["ok"], te
     procs = [p for m in list(bgproc._ALL) for p in m.procs.values() if p.command == cmd]
     assert procs and all(not p.running for p in procs)
+
+
+def test_tool_end_reports_duration_and_timeout(ee_home, workspace):
+    """tool_end 必须带出工具自身的耗时与超时标记。
+
+    起因：性能诊断时只看得到「模型请求开始 / 结束」两条日志，工具执行耗时完全没有出口，
+    于是把整回合墙钟除以步数当成了每步延迟。details 里本来就有 duration_ms / timed_out
+    （tools/details.py 的 CommonDetails），问题只是 headless 没把它写进 JSON 事件流。
+    """
+    script = [
+        tool_chunks(0, "c1", "shell", {"command": "echo hi"}) + finish("tool_calls"),
+        text_chunks("跑完了") + finish("stop"),
+    ]
+    code, out, _, _ = run_exec(ee_home, script, ["-C", str(workspace), "--mode", "auto", "--json", "跑命令"])
+    assert code == 0
+    te = next(e for e in events_of(out) if e["type"] == "tool_end")
+    assert te["name"] == "shell"
+    # 耗时：每个工具都要有，否则外部无法把模型时间与工具时间分开
+    assert isinstance(te.get("duration_ms"), int) and te["duration_ms"] >= 0, te
+    # 超时与退出码：shell 专有，用来区分「跑完但失败」和「跑太久被掐断」
+    assert te.get("timed_out") is False, te
+    assert te.get("exit") == 0, te

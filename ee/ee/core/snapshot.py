@@ -72,6 +72,8 @@ class DiskSnapshot:
         self.disabled = ""            # 非空 = 不可用的原因
         self._lock = threading.Lock()
         self._ready = False
+        self._big_stamp: int | None = None       # 上次算大文件时工作区根的 mtime
+        self._big_cache: list[str] = []          # 与 _big_stamp 配套的大文件列表
         self._numstat_cache: dict[tuple[str, str], dict] = {}
         if not self.exe:
             self.disabled = "没有找到 git"
@@ -106,15 +108,85 @@ class DiskSnapshot:
             raise SnapshotError(f"git {args[0]} 失败：{'超时' if code == 124 else msg}")
         return out
 
+    # 影子仓库的固定配置。值全是常量，所以不必逐个 `git config`——
+    # 每个 git 子进程在 Windows 上恒定约 70–100ms（与工作量无关，实测 init 203ms、
+    # 每次 config 78–109ms），5 次 config 就是 450ms 左右，全花在进程启动上。
+    # 改为 init 之后直接把这几个键追加进 .git/config：实测 524ms → 145ms。
+    _CORE_KEYS = (("autocrlf", "false"), ("longpaths", "true"), ("quotepath", "false"))
+    _GC_KEYS = (("auto", "0"),)
+
+    def _write_config(self) -> None:
+        """把固定配置写进影子仓库的 .git/config（不启动 git 进程）。
+
+        只在 _ensure 里建仓后调用一次，此时 config 是 git init 刚写的标准内容。
+        写法保守：已有的键不重复加，缺的 [gc] 段才补一个段头。
+        写完用一次 `git config --list --local` 校验解析无误——万一格式写坏了，
+        宁可退回逐个 `git config` 也不要留一个坏配置让后续所有 capture 失败。"""
+        cfg = self.gitdir / "config"
+        try:
+            text = cfg.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        lines = text.splitlines()
+        if not lines:
+            # config 空的（init 没写出来，或被外部删了）：没有段头就没法追加，
+            # 让 git 重新 init 一次拿到标准骨架，再走兜底的逐个 config。
+            self._run("init", "-q")
+            self._config_via_git()
+            return
+        flat = "\n".join(lines)
+
+        def present(key: str) -> bool:
+            return any(ln.strip().split("=")[0].strip() == key for ln in lines)
+
+        add_core = [f"\t{k} = {v}" for k, v in self._CORE_KEYS if not present(k)]
+        if add_core:
+            # 插到第一个段头的最后一个键之后（git init 的 config 只有 [core] 一个段）
+            last = max((i for i, ln in enumerate(lines)
+                        if ln.startswith("[")) or [0])
+            i = last
+            for j in range(last + 1, len(lines)):
+                if lines[j].startswith("["):
+                    break
+                if lines[j].strip():
+                    i = j
+            lines[i + 1:i + 1] = add_core
+        add_gc = [f"\t{k} = {v}" for k, v in self._GC_KEYS if not present(k)]
+        if add_gc:
+            if "[gc]" not in flat:
+                lines += ["[gc]", *add_gc]
+            else:
+                lines += add_gc
+        try:
+            cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            # 校验：解析不了就退回逐个 git config（这次慢一点，但不会留下坏配置）
+            out = self._run("config", "--list", "--local")
+            want = {**dict(self._CORE_KEYS), **dict(self._GC_KEYS)}
+            got = {}
+            for ln in out.decode("utf-8", "replace").splitlines():
+                if "=" in ln:
+                    k, v = ln.split("=", 1)
+                    got[k.strip().split(".")[-1]] = v.strip()
+            if any(got.get(k) != v for k, v in want.items()):
+                raise SnapshotError("配置校验不通过")
+        except (OSError, SnapshotError) as e:  # noqa: BLE001
+            log.warning("影子仓库配置内联失败（%s），退回逐个 git config", e)
+            self._config_via_git()
+
+    def _config_via_git(self) -> None:
+        """兜底路径：逐个 `git config`（慢，但一定对）。只在上面校验失败时走。"""
+        for k, v in self._CORE_KEYS:
+            self._run("config", f"core.{k}", v)
+        for k, v in self._GC_KEYS:
+            self._run("config", f"gc.{k}", v)
+
     def _ensure(self) -> None:
         if self._ready:
             return
         if not (self.gitdir / "HEAD").is_file():
             self.gitdir.mkdir(parents=True, exist_ok=True)
             self._run("init", "-q")
-            for k, v in (("core.autocrlf", "false"), ("core.symlinks", "false"), ("core.longpaths", "true"),
-                         ("gc.auto", "0"), ("core.quotepath", "false")):
-                self._run("config", k, v)
+            self._write_config()
             (self.gitdir / "ee-worktree.txt").write_text(str(self.worktree), encoding="utf-8")
         self._write_excludes([])
         # 影子仓库的 info/attributes 优先级最高：屏蔽项目 .gitattributes 里的 text/eol/filter（LFS）/编码转换，
@@ -152,6 +224,20 @@ class DiskSnapshot:
         f.write_text(text, encoding="utf-8")
 
     def _big_untracked(self) -> list[str]:
+        """列出超过阈值、需要排除的未跟踪大文件。
+
+        每次 capture 都算一遍的话，光这一次 `git ls-files` 就是约 65ms 的进程启动开销
+        （Windows 上所有 git 子进程都是这个量级，实测 62–78ms，与工作区大小无关）。
+        而大文件很少新增——用工作区根目录的 mtime 当廉价信号：没变就复用上次结果。
+        目录 mtime 不会因为子目录里改文件而变，所以这只是"很可能没变"的乐观判断；
+        判断失误的代价是某个新大文件没被排除，它最多让本次 add 慢一点，不影响快照正确性
+        （add -A 照样把它算进去，快照仍然是完整的工作区状态）。"""
+        try:
+            stamp = self.worktree.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        if stamp is not None and self._big_stamp == stamp:
+            return list(self._big_cache)
         out = self._run("ls-files", "-z", "--others", "--exclude-standard", timeout=CAPTURE_TIMEOUT)
         big = []
         for rel in out.decode("utf-8", "replace").split("\0"):
@@ -162,6 +248,7 @@ class DiskSnapshot:
                     big.append(rel)
             except OSError:
                 continue
+        self._big_stamp, self._big_cache = stamp, list(big)
         return big
 
     # ------------------------------------------------------------ 接口

@@ -290,7 +290,16 @@ def test_eval_ee_cmd_resolution(tmp_path):
     py.parent.mkdir()
     py.write_text("", encoding="utf-8")
     assert E.resolve_ee_cmd(str(py)) == [sys.executable, str(py)]
-    assert E.resolve_ee_cmd(None) == [sys.executable, "-m", "ee"]
+    # 默认命令**不能**依赖 cwd。历史上这里断言的是 `[python, "-m", "ee"]`，
+    # 而那正是 1bc0e12 修掉的缺陷：评测会把子进程 cwd 切到临时副本，`-m ee`
+    # 在那里解析不到包，表现为 `no_output · 0 步`（一分钱没花，也什么都没测到）。
+    # 1bc0e12 改了实现但漏改这条断言，全量套件里就一直红着。
+    cmd = E.resolve_ee_cmd(None)
+    assert cmd, "默认命令不能为空"
+    assert not (len(cmd) >= 2 and cmd[1] == "-m"), f"默认命令仍依赖 cwd：{cmd}"
+    # 要么是现成的可执行文件，要么是 -c + sys.path 这种不依赖 cwd 的形式
+    first_is_exe = Path(cmd[0]).is_file() or bool(__import__("shutil").which(cmd[0]))
+    assert first_is_exe, f"首个元素不是可执行文件：{cmd[0]}"
     bat = tmp_path / "ee.cmd"
     bat.write_text("", encoding="utf-8")
     assert E.resolve_ee_cmd(str(bat), windows=True) == ["cmd.exe", "/d", "/s", "/c", str(bat)]

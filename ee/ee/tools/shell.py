@@ -192,6 +192,8 @@ class ShellTool(Tool):
             raise ToolError("command 为空")
         shell = ctx.shell or resolve_shell("auto")
         timeout = min(MAX_TIMEOUT, max(1, int(args.get("timeout") or ctx.timeout_default)))
+        if ctx.max_timeout > 0:                      # 会话级硬上限：模型显式传更大的 timeout 也不越界
+            timeout = min(timeout, max(1, int(ctx.max_timeout)))
         cwd = ctx.resolve(args["workdir"]) if args.get("workdir") else ctx.cwd
         if not cwd.is_dir():
             raise ToolError(f"workdir 不存在：{cwd}")

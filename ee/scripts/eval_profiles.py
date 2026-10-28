@@ -165,6 +165,15 @@ def resolve_ee_cmd(spec: str | None, windows: bool = WINDOWS) -> list[str]:
                 if windows and name.lower().endswith((".cmd", ".bat")):
                     return ["cmd.exe", "/d", "/s", "/c", str(cand)]
                 return [str(cand)]
+        # 最后手段：让 `-m ee` 不依赖 cwd。HERE = <repo>/ee/scripts，包目录是 <repo>/ee/ee。
+        # 裸 `-m ee` 会让评测再次退化成 `no_output · 0 步`——这正是 1bc0e12 想修、
+        # 但只修了「旁边有 ee.exe」这条正常路径的那个缺陷。
+        pkg = HERE.parent / "ee"
+        if (pkg / "__init__.py").is_file():
+            return [sys.executable, "-c",
+                    "import sys; sys.path.insert(0, sys.argv[1]);"
+                    " from ee.cli import main; sys.exit(main(sys.argv[2:]))",
+                    str(pkg.parent)]
         return [sys.executable, "-m", "ee"]
     p = Path(spec)
     if spec.lower().endswith(".py") and p.is_file():
@@ -332,12 +341,43 @@ def summarize_events(lines: list[str]) -> dict:
     done = next((e for e in reversed(ev) if e.get("type") == "turn_done"), {})
     usage = done.get("usage") or {}
     tool_ends = [e for e in ev if e.get("type") == "tool_end"]
+    # 把模型时间与工具时间分开记：只有 duration_s（整回合墙钟）时，
+    # 一步跑满 600 秒的命令会让「平均每步耗时」看起来像模型慢，实测就踩过这个坑。
+    # 同时按 call_id 把 tool_start 的参数接回来——慢命令到底在跑什么，
+    # 靠 tool_end.duration_ms 是看不出来的（命令原文曾经因此彻底丢失）。
+    starts = {e.get("call_id"): e for e in ev if e.get("type") == "tool_start"}
+
+    def _what(e: dict) -> str:
+        """这条工具调用实际在做什么：命令 / 路径 / 模式，取一个够定位的摘要。"""
+        args = (starts.get(e.get("call_id")) or {}).get("args") or {}
+        for k in ("command", "path", "pattern", "query", "url", "id"):
+            v = args.get(k)
+            if v:
+                s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                return s if len(s) <= 160 else s[:160] + "…"
+        return e.get("summary") or ""
+
+    tools = [{"name": e.get("name"), "duration_ms": e.get("duration_ms"),
+              "timed_out": bool(e.get("timed_out")), "ok": bool(e.get("ok")),
+              "what": _what(e)}
+             for e in tool_ends]
+    timed = [t for t in tools if isinstance(t["duration_ms"], (int, float))]
+    tool_s = round(sum(t["duration_ms"] for t in timed) / 1000, 1) if timed else 0.0
+    slowest = max(timed, key=lambda t: t["duration_ms"], default=None)
     return {
         "reason": done.get("reason") or ("no_output" if not ev else "crashed"),
         "steps": sum(1 for e in ev if e.get("type") == "usage"),
         "tool_calls": sum(1 for e in ev if e.get("type") == "tool_start"),
         "edit_failures": sum(1 for e in tool_ends if e.get("name") in ("edit", "apply_patch") and e.get("status") == "error"),
         "tool_errors": sum(1 for e in tool_ends if e.get("status") == "error"),
+        "tool_s": tool_s,                                    # 工具执行总耗时（来自 tool_end.duration_ms）
+        "tool_timed_out": sum(1 for t in tools if t["timed_out"]),
+        "slowest_tool": ({"name": slowest["name"], "duration_ms": slowest["duration_ms"],
+                          "what": slowest["what"]} if slowest else None),
+        # 每条工具调用的 (名称, 秒, 是否超时, 在做什么)，按耗时降序；排查慢在哪一步用
+        "tools": [{"name": t["name"], "s": round((t["duration_ms"] or 0) / 1000, 1),
+                   "timed_out": t["timed_out"], "what": t["what"]}
+                  for t in sorted(timed, key=lambda x: -x["duration_ms"])],
         "prompt_tokens": int(usage.get("prompt") or 0),
         "completion_tokens": int(usage.get("completion") or 0),
         "cache_hit_tokens": int(usage.get("hit") or 0),
@@ -370,6 +410,10 @@ def run_once(task: Task, profile: str, idx: int, args, repo: Path, engine: Engin
             cmd += ["-m", args.model]
         if args.max_steps:
             cmd += ["--max-steps", str(args.max_steps)]
+        # 单次命令硬上限：不给的话，模型传 timeout=600 就能合法占满 10 分钟，
+        # 一条跑不完的命令把整轮耗时全盖住（实测三次 600.3 秒空档就是这么来的）。
+        if args.max_tool_timeout:
+            cmd += ["--max-tool-timeout", str(args.max_tool_timeout)]
         cmd.append("-")
         t0 = time.monotonic()
         # 子进程按本机代码页输出（中文 Windows 是 GBK），而事件流里有 ¥ 之类的字符
@@ -424,6 +468,11 @@ def aggregate(results: list[dict]) -> dict:
             "avg_cost": _avg(costs) if all(c is not None for c in costs) else None,
             "currency": next((r.get("currency") for r in rs if r.get("currency")), "¥"),
             "avg_duration": _avg([r.get("duration_s") for r in rs]),
+            # 工具耗时单独统计：avg_duration 是整回合墙钟，两者相减才是模型+启动开销
+            "avg_tool_s": _avg([r.get("tool_s") for r in rs]),
+            "tool_timed_out": sum(r.get("tool_timed_out", 0) for r in rs),
+            "slowest_tool": max((r.get("slowest_tool") for r in rs if r.get("slowest_tool")),
+                                key=lambda t: t["duration_ms"], default=None),
             "edit_failures": sum(r.get("edit_failures", 0) for r in rs),
         }
     return out
@@ -440,14 +489,18 @@ def render(results: list[dict], tasks: list[Task], preset: dict | None = None) -
         lines += [f"# 改前/改后对比：{preset['title']}", "",
                   f"- base = 基线 {preset['base']}（{preset.get('sha', '')}），cur = 当前工作区代码", ""]
     lines += ["## 总体", "",
-             "| 模式 | 次数 | 完成率 | 平均步数 | 平均工具调用 | 平均输入 token | 平均输出 token | 缓存命中率 | 平均花费 | 平均耗时(s) | edit 失败 |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| 模式 | 次数 | 完成率 | 平均步数 | 平均工具调用 | 平均输入 token | 平均输出 token | 缓存命中率 | 平均花费 | 平均耗时(s) | 其中工具(s) | 超时工具 | 最慢单次 | edit 失败 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for prof in sorted(agg):
         a = agg[prof]
         cost = "—" if a["avg_cost"] is None else f"{a['currency']}{a['avg_cost']:.4f}"
+        slow = a.get("slowest_tool")
+        slow_s = (f"{slow['name']} {slow['duration_ms'] / 1000:.1f}s"
+                  + (f" `{slow.get('what', '')[:60]}`" if slow.get("what") else "")) if slow else "—"
         lines.append(f"| {prof} | {a['runs']} | {a['pass_rate']:.0%} | {_f(a['avg_steps'])} | {_f(a['avg_tool_calls'])} | "
                      f"{a['avg_prompt']:.0f} | {_f(a['avg_completion'], '{:.0f}')} | {_f(a['hit_rate'], '{:.0%}')} | "
-                     f"{cost} | {_f(a['avg_duration'])} | {a['edit_failures']} |")
+                     f"{cost} | {_f(a['avg_duration'])} | {_f(a.get('avg_tool_s'))} | {a.get('tool_timed_out', 0)} | "
+                     f"{slow_s} | {a['edit_failures']} |")
     profs = sorted(agg)
     lines += ["", "## 按任务（完成次数 / 总次数，平均步数）", "", "| 任务 | " + " | ".join(profs) + " |",
               "|---|" + "---|" * len(profs)]
@@ -480,6 +533,9 @@ def render(results: list[dict], tasks: list[Task], preset: dict | None = None) -
         lines.append(f"- edit 失败：base {b['edit_failures']} 次，cur {c['edit_failures']} 次")
         if b["avg_steps"] is not None and c["avg_steps"] is not None:
             lines.append(f"- 平均步数：base {b['avg_steps']:.1f}，cur {c['avg_steps']:.1f}")
+        # 工具耗时单列：墙钟变慢时先看落在这边还是模型那边
+        if b.get("avg_tool_s") is not None and c.get("avg_tool_s") is not None:
+            lines.append(f"- 平均工具耗时：base {b['avg_tool_s']:.1f}s，cur {c['avg_tool_s']:.1f}s")
     return "\n".join(lines) + "\n"
 
 
@@ -525,6 +581,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--runs", type=int, default=3, help="每个任务每种模式跑几次")
     p.add_argument("--model", help="模型名（默认用 ee 配置里的默认模型）")
     p.add_argument("--max-steps", type=int, default=40)
+    p.add_argument("--max-tool-timeout", type=int, default=180,
+                   help="单次命令的硬上限秒数（默认 180）。设 0 关闭——不建议：一条跑不完的命令"
+                        "能占满 shell 自带的 600 秒上限，整轮耗时会全被它盖住")
     p.add_argument("--timeout", type=float, default=900, help="单次 ee exec 超时秒数")
     p.add_argument("--check-timeout", type=float, default=300)
     p.add_argument("--ee", dest="ee_cmd", default=None,

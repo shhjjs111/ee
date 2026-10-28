@@ -136,3 +136,77 @@ def test_undo_keeps_user_edits_to_other_files(ee_home, workspace):
         assert [p for p in r["restored"] if p.endswith("a.txt")] and not (workspace / "a.txt").exists()
         assert (workspace / "mine.txt").read_text(encoding="utf-8") == "用户自己写的"
     asyncio.run(go())
+
+
+def test_shadow_repo_config_is_written_and_valid(workspace, ee_home):
+    """影子仓库的固定配置必须真的写进去、且 git 能解析。
+
+    这条守的是一个性能优化的正确性：原先 `_ensure()` 用 5 次 `git config` 逐个写，
+    每个 git 子进程在 Windows 上恒定 70–100ms（与工作量无关），5 次就是 450ms。
+    现在改成 init 之后直接把这几个常量键追加进 .git/config（实测 656ms → 312ms），
+    但"直接写文件"一旦格式写坏，后续每次 capture 都会失败——所以既要有校验，
+    也要有兜底路径。这里把结果钉住。"""
+    d = _ds(workspace, ee_home)
+    d._ensure()
+    cfg = (d.gitdir / "config").read_text(encoding="utf-8")
+    assert "[core]" in cfg
+    assert "\tautocrlf = false" in cfg
+    assert "\tlongpaths = true" in cfg
+    assert "\tquotepath = false" in cfg
+    # gc.auto 必须在 [gc] 段里，不能塞在 [core] 下
+    assert "[gc]" in cfg and "\tauto = 0" in cfg
+    core_part = cfg.split("[gc]")[0]
+    assert "auto = 0" not in core_part
+
+
+def test_shadow_repo_config_survives_empty_config(workspace, ee_home):
+    """config 被清空（或 git init 没写出来）时必须能自愈，不能留一个坏仓库。
+
+    空文件没有段头，直接追加会写出 git 解析不了的内容；这条路径会重新 init
+    再走逐个 config 的兜底。"""
+    d = _ds(workspace, ee_home)
+    d.gitdir.mkdir(parents=True, exist_ok=True)
+    d._run("init", "-q")
+    (d.gitdir / "config").write_text("", encoding="utf-8")
+    d._write_config()
+    for key, want in (("core.autocrlf", "false"), ("core.longpaths", "true"), ("gc.auto", "0")):
+        cur = d._run("config", key).decode().strip()
+        assert cur == want, f"{key} 应为 {want}，实际 {cur!r}"
+    # 仓库仍然可用
+    assert d.capture()
+
+
+def test_shadow_repo_config_idempotent(workspace, ee_home):
+    """重复调用不能把同一个键写两遍（git 会取最后一个，但配置会越来越脏）。"""
+    d = _ds(workspace, ee_home)
+    d._ensure()
+    first = (d.gitdir / "config").read_text(encoding="utf-8")
+    d._ready = False
+    d._ensure()
+    second = (d.gitdir / "config").read_text(encoding="utf-8")
+    assert first == second
+    assert second.count("autocrlf") == 1
+    assert second.count("auto = 0") == 1
+
+
+def test_shadow_repo_costs_at_most_two_git_calls(workspace, ee_home):
+    """建影子仓库时最多启动 2 个 git 进程（init + 一次校验），而不是 6–7 个。
+
+    这是真正的性能不变量：Windows 上每个 git 子进程恒定 70–100ms，与工作量无关
+    （实测 init 203ms、每次 config 78–109ms）。原先 init + 5 次 config = 656ms，
+    现在 init + 一次 `config --list` 校验 = 312ms。
+    上面几条测试只验"配置最终对不对"，回滚成逐个 config 它们照样绿——
+    所以要直接数进程次数，否则这条优化可以在无人察觉时被改回去。"""
+    d = _ds(workspace, ee_home)
+    calls = []
+    orig = d._run
+
+    def counting(*args, **kw):
+        calls.append(args[0] if args else "")
+        return orig(*args, **kw)
+
+    d._run = counting
+    d._ensure()
+    assert calls.count("init") == 1
+    assert calls.count("config") == 1, f"应为 1 次 config（校验），实际 {calls.count('config')} 次：{calls}"
+    assert len(calls) <= 2, f"建仓启动了 {len(calls)} 个 git 进程：{calls}"

@@ -99,6 +99,9 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                    help="追加 allow 规则（同 config.toml permissions.allow 的写法，如 'shell(git status*)'），可多次")
     p.add_argument("--deny", action="append", default=[], metavar="规则", help="追加 deny 规则，可多次")
     p.add_argument("--max-steps", type=int, metavar="N", help="本回合最多几步（默认用配置 max_steps）")
+    p.add_argument("--max-tool-timeout", type=int, metavar="秒",
+                   help="单次命令的硬上限（秒）：模型显式传更大的 timeout 也不越界。"
+                        "无人值守时建议配上，否则一条跑不完的命令能占满 shell 的 600 秒上限。")
     p.add_argument("--profile", choices=["full", "lean"],
                    help="新会话用完整模式还是精简模式（默认用配置 profile；续接时沿用会话原来的）")
     p.add_argument("--json", action="store_true", help="stdout 输出 JSONL 事件流")
@@ -148,8 +151,10 @@ class Printer:
 
 
 # ------------------------------------------------------------------ 无人值守的公共部分（ee exec 与自动化 D4-10 共用）
-def unattended_configure(max_steps: int | None = None, allow=(), deny=(), profile: str | None = None) -> Callable:
-    """建会话前改配置：关掉 ask_user（没人回答）、可选步数上限、追加 allow/deny 规则。"""
+def unattended_configure(max_steps: int | None = None, allow=(), deny=(), profile: str | None = None,
+                         max_tool_timeout: int | None = None) -> Callable:
+    """建会话前改配置：关掉 ask_user（没人回答）、可选步数上限、追加 allow/deny 规则、
+    可选单次命令耗时硬上限。"""
     allow, deny = list(allow or []), list(deny or [])
 
     def configure(cfg) -> None:
@@ -160,6 +165,9 @@ def unattended_configure(max_steps: int | None = None, allow=(), deny=(), profil
             d["max_steps"] = max(1, int(max_steps))
         if profile:
             d["profile"] = profile
+        if max_tool_timeout:
+            # 无人值守时一条跑不完的命令没人能中断：不给硬上限，模型传 timeout=600 就能合法占满 10 分钟
+            d["shell_max_timeout"] = max(1, int(max_tool_timeout))
         if allow or deny:
             perms = dict(d.get("permissions") or {})
             perms["allow"] = list(perms.get("allow") or []) + allow
@@ -229,6 +237,15 @@ def _make_thread_class():
                 out, cut = _clip(ev.output or "")
                 d = {"call_id": ev.call_id, "name": ev.name, "ok": ev.ok, "status": status,
                      "summary": ev.summary, "output": out, "truncated": cut}
+                # 工具自身的耗时与超时标记：不带的话，外部只能看到「模型请求开始了/结束了」，
+                # 工具时间里发生的一切都是黑箱（性能诊断时因此把整回合墙钟除以步数当成了模型延迟）。
+                dur = ev.meta.get("duration_ms")
+                if isinstance(dur, (int, float)):
+                    d["duration_ms"] = int(dur)
+                if "timed_out" in ev.meta:
+                    d["timed_out"] = bool(ev.meta["timed_out"])
+                if ev.meta.get("kind") == "shell" and ev.meta.get("exit") is not None:
+                    d["exit"] = ev.meta["exit"]
                 if ev.diff:
                     d["diff"] = _clip(ev.diff)[0]
                 if ev.meta.get("kind") == "plan_proposal":      # 计划模式提交的方案：最终回答就是它
@@ -305,7 +322,8 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
 
     cls = _make_thread_class()
 
-    configure = unattended_configure(args.max_steps, args.allow, args.deny, getattr(args, "profile", None))
+    configure = unattended_configure(args.max_steps, args.allow, args.deny, getattr(args, "profile", None),
+                                     getattr(args, "max_tool_timeout", None))
     kw = dict(client_factory=client_factory, persist=not args.no_persist, configure=configure)
     resumed = bool(args.resume or args.last)
     if resumed:

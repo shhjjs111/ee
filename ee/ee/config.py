@@ -25,6 +25,10 @@ DEFAULTS: dict = {
     "max_steps": 50,
     "shell": "auto",                 # auto | pwsh | powershell | cmd | bash | gitbash
     "bash_timeout": 120,
+    # 单次命令的硬上限（秒），0 = 不额外限制（仍受工具自身 600 秒上限约束）。
+    # bash_timeout 只是默认值——模型可以在 tool call 里显式传更大的 timeout，一路到 600。
+    # 无人值守场景（评测 / 自动化）设成 120 之类，免得一条跑不完的命令吃掉整轮时间预算。
+    "shell_max_timeout": 0,
     "background_shell": True,
     # 精简模式：full（默认）| lean（只有 read/write/edit/shell + 短系统提示词）；新会话生效，权限审批不变
     "profile": "full",

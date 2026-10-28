@@ -116,12 +116,19 @@ class Session:
             except ShellNotFound:
                 self.shell = None
         self.policy.shell = self.shell.syntax if self.shell else None   # 权限按实际 shell 的语法拆命令
-        self.git = gitinfo.status(self.cwd)
+        # 注意：这里不能改成惰性求值。曾经试过（想省掉构造时那次 git status），结果
+        # `thread/detail` 之类的 RPC 会在**它自己**第一次访问 .git 时才跑 git 子进程，
+        # 把 git 的 200ms+ 同步阻塞搬到了服务线程的热路径上——
+        # test_robustness.py::test_slow_git_does_not_block_other_rpcs 立刻抓到（卡 1.6s）。
+        # 保持构造时算好：那时还在建会话的路径上，之后的读取都是纯内存访问。
+        self._git: gitinfo.GitStatus | None = gitinfo.status(self.cwd)
         self.gh = gitinfo.gh_exe() is not None
         self.queue = Q.InputQueue()          # 运行中排队的用户消息（插话 / 待追加）
         self.notes: list[str] = []           # 例如用户 !命令 的输出，随下一条消息发给模型
         self.turns = 0
         self.turn_starts: list[int] = []     # 每个回合首条 user 消息在 history 里的位置（回退用）
+        # 本回合是否可能出现文件改动（由 _access 累积）。只读回合收尾不必再抓一次快照。
+        self._turn_may_write = False
         # D4-1 磁盘快照：每回合 {"before": tree, "after": tree|None, "undone": bool}；重启后由 threads 从条目重建
         self.turn_trees: list[dict] = []
         self.disk_enabled = bool((config.data.get("snapshot") or {}).get("disk", True))
@@ -698,7 +705,20 @@ class Session:
         self._install_mcp()
 
     def refresh_git(self) -> None:
-        self.git = gitinfo.status(self.cwd)
+        self._git = gitinfo.status(self.cwd)
+
+    @property
+    def git(self):
+        """当前 git 状态（构造时就算好，refresh_git 刷新）。读它永远是纯内存访问。
+
+        别改成惰性求值：那会把 git 子进程挪到第一个访问者身上，
+        `thread/detail` 这类 RPC 会因此同步阻塞事件循环
+        （test_robustness.py::test_slow_git_does_not_block_other_rpcs 守着这条）。"""
+        return self._git
+
+    @git.setter
+    def git(self, v) -> None:
+        self._git = v
 
     def context_left(self) -> float:
         return 1.0 - self.stats.context_used(self.profile.context_window)
@@ -896,11 +916,18 @@ class Session:
             while True:
                 ev = await q.get()
                 if isinstance(ev, TurnDone) and self.turn_trees and self.turn_trees[-1].get("after") is None:
-                    try:
-                        ev.tree_after = await asyncio.to_thread(self.disk_capture)
-                    except Exception:  # noqa: BLE001
-                        ev.tree_after = None
-                    self.turn_trees[-1]["after"] = ev.tree_after
+                    # 只读回合不可能有文件改动，before 就是 after：那一次 capture 的结论是
+                    # 提前已知的，却要花 3 个 git 子进程（实测 140–220ms）。省掉。
+                    # 留下 after=None 也不影响 /undo：_disk_undo 里写的是
+                    # `after = e.get("after") or cur`，缺了就退回实时快照。
+                    if self._turn_may_write:
+                        try:
+                            ev.tree_after = await asyncio.to_thread(self.disk_capture)
+                        except Exception:  # noqa: BLE001
+                            ev.tree_after = None
+                        self.turn_trees[-1]["after"] = ev.tree_after
+                    else:
+                        self.turn_trees[-1]["after"] = self.turn_trees[-1].get("before")
                 if isinstance(ev, TurnDone) and self.queue:   # 没送入的排队消息退回界面（之后没有挂起点，不会再有人排进来）
                     yield QueueReturned([q.to_dict() for q in self.queue.drain()])
                 yield ev
@@ -943,6 +970,7 @@ class Session:
             self._add_user(text, images)
             if images and not self.profile.vision:
                 emit(Notice(f"当前模型 {self.spec.alias} 不支持看图，这 {len(images)} 张图片没有发给模型（换支持图像的模型，例如 deepseek-flash）。", "warn"))
+            self._turn_may_write = False       # 本回合的写标记从这里重新累积
             tree = await asyncio.to_thread(self.disk_capture)
             if tree:
                 self.turn_trees.append({"before": tree, "after": None, "undone": False})
@@ -1117,16 +1145,27 @@ class Session:
         return self.guard.end_step(outcomes)
 
     def _access(self, tool, args: dict, err: str | None) -> str:
-        """调用的访问类型（D5-2）：read 可并发 / write 独占且保序 / free 不过闸门。"""
+        """调用的访问类型（D5-2）：read 可并发 / write 独占且保序 / free 不过闸门。
+
+        顺便记下本回合有没有可能出现文件改动（_turn_may_write）。只读回合不必在收尾再抓
+        一次磁盘快照——before 和 after 必然相同，那一次 capture 的结论是提前就知道的，
+        却要花掉 3 个 git 子进程（Windows 上每个约 70ms，实测 capture 约 140–220ms）。"""
         if tool is None or err is not None:
             return parallel.READ          # 直接回错误，不碰任何东西
         fn = getattr(tool, "access", None)
         if fn is not None:
             try:
-                return fn(args, self)
+                kind = fn(args, self)
             except Exception:  # noqa: BLE001
+                self._turn_may_write = True
                 return parallel.WRITE
-        return parallel.READ if tool.read_only else parallel.WRITE
+            if kind != parallel.READ:
+                self._turn_may_write = True
+            return kind
+        kind = parallel.READ if tool.read_only else parallel.WRITE
+        if kind != parallel.READ:
+            self._turn_may_write = True
+        return kind
 
     async def _dispatch(self, prepared: list, emit) -> None:
         """一步里的调用同时派发，按读写闸门并发/排队；单个调用出错不影响其它调用；取消传给所有调用。"""
@@ -1228,6 +1267,10 @@ class Session:
         ctx = ToolContext(cwd=self.cwd, state=self.state, output_dir=self.home / "tool-output", shell=self.shell,
                           emit=lambda s: emit(ToolOutput(cid, s)),
                           timeout_default=int(self.config.data.get("bash_timeout", 120)),
+                          # 会话级硬上限：bash_timeout 只是默认值，模型可以在 tool call 里显式传更大的
+                          # timeout（schema 允许到 600）。无人值守运行（评测 / 自动化）时一条跑不完的
+                          # 命令就能吃掉 600 秒，把整轮耗时完全盖住。配了 shell_max_timeout 就封顶。
+                          max_timeout=int(self.config.data.get("shell_max_timeout") or 0),
                           extra={"session": self, "emit_event": emit, "call_id": cid, "config": self.config,
                                  "home": self.home,
                                  # 指挥会话（D6-1）：窄接口与调用者身份都由所属 Thread 注入。

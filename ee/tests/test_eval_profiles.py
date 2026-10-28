@@ -169,3 +169,88 @@ def test_explicit_ee_exe_is_used_as_is(tmp_path):
     exe = tmp_path / "ee.exe"
     exe.write_text("", encoding="utf-8")
     assert resolve_ee_cmd(str(exe)) == [str(exe)]
+
+
+def test_summarize_events_splits_tool_time_from_wall_clock():
+    """工具耗时必须能从事件流里单独算出来。
+
+    起因：原先只有 turn_done.duration_ms（整回合墙钟），性能诊断时只能拿它除以步数，
+    把「一条命令跑满 600 秒」误读成「每步模型都慢」。tool_end 现在带 duration_ms /
+    timed_out，汇总要能把两者分开，并指出最慢的那一次。
+    """
+    lines = [
+        json.dumps({"type": "session", "profile": "full"}),
+        json.dumps({"type": "usage", "prompt_tokens": 100, "completion_tokens": 10}),
+        json.dumps({"type": "tool_start", "name": "shell", "call_id": "c1"}),
+        # 一次正常的快调用
+        json.dumps({"type": "tool_end", "name": "read", "call_id": "c2", "status": "ok",
+                    "duration_ms": 40, "timed_out": False}),
+        # 一次跑满上限的慢调用——正是实测里 600.3 秒那种
+        json.dumps({"type": "tool_end", "name": "shell", "call_id": "c1", "status": "error",
+                    "duration_ms": 600_300, "timed_out": True}),
+        json.dumps({"type": "turn_done", "reason": "completed", "duration_ms": 669_000,
+                    "usage": {"prompt": 95735, "completion": 1747, "hit": 86784}}),
+    ]
+    s = E.summarize_events(lines)
+    assert s["tool_s"] == 600.3                     # 600_300 + 40 ms → 秒
+    assert s["tool_timed_out"] == 1
+    assert s["slowest_tool"]["name"] == "shell"
+    assert s["slowest_tool"]["duration_ms"] == 600_300
+    assert s["duration_s"] == 669.0                 # 墙钟仍然是整回合
+    # 关键区分：工具只占 600.3s，剩下约 68.7s 才是模型 + 启动开销
+    assert s["duration_s"] - s["tool_s"] < 100
+
+
+def test_summarize_events_without_tool_timings_is_safe():
+    """老版本 ee 的事件流没有 duration_ms：不能炸，也不能把 None 加起来。"""
+    lines = [
+        json.dumps({"type": "tool_end", "name": "read", "call_id": "c1", "status": "ok"}),
+        json.dumps({"type": "turn_done", "reason": "completed", "duration_ms": 1000,
+                    "usage": {"prompt": 1, "completion": 1}}),
+    ]
+    s = E.summarize_events(lines)
+    assert s["tool_s"] == 0.0
+    assert s["slowest_tool"] is None
+    assert s["tool_timed_out"] == 0
+
+
+def test_summarize_events_records_what_slow_tool_was_doing():
+    """最慢的那次工具调用必须能看出「在跑什么」。
+
+    起因：实测里出现过 180.3 秒的 shell 调用，但结果文件里只有
+    {'name': 'shell', 'duration_ms': 180328} —— 命令原文丢了，没法判断是
+    合理的全量测试还是模型跑偏。tool_start 事件本来就带 args，汇总时按
+    call_id 接回来即可。
+    """
+    lines = [
+        json.dumps({"type": "tool_start", "call_id": "c1", "name": "shell",
+                    "summary": "pytest", "args": {"command": "python -m pytest -q", "timeout": 600}}),
+        json.dumps({"type": "tool_end", "call_id": "c1", "name": "shell", "status": "error",
+                    "duration_ms": 180_328, "timed_out": True}),
+        json.dumps({"type": "tool_start", "call_id": "c2", "name": "read",
+                    "summary": "读文件", "args": {"path": "ee/core/context.py"}}),
+        json.dumps({"type": "tool_end", "call_id": "c2", "name": "read", "status": "ok",
+                    "duration_ms": 12}),
+        json.dumps({"type": "turn_done", "reason": "completed", "duration_ms": 200_000,
+                    "usage": {"prompt": 100, "completion": 10}}),
+    ]
+    s = E.summarize_events(lines)
+    assert s["slowest_tool"]["duration_ms"] == 180_328
+    assert s["slowest_tool"]["what"] == "python -m pytest -q"      # 命令原文不再丢
+    # tools 按耗时降序，且每条都带上下文
+    assert [t["name"] for t in s["tools"]] == ["shell", "read"]
+    assert s["tools"][0]["timed_out"] is True and s["tools"][0]["s"] == 180.3
+    assert s["tools"][1]["what"].endswith("context.py")
+
+
+def test_summarize_events_tool_without_start_is_safe():
+    """tool_end 找不到对应的 tool_start（事件流被截断）时不能炸。"""
+    lines = [
+        json.dumps({"type": "tool_end", "call_id": "zz", "name": "shell", "status": "ok",
+                    "duration_ms": 5, "summary": "Ran ls"}),
+        json.dumps({"type": "turn_done", "reason": "completed", "duration_ms": 10,
+                    "usage": {"prompt": 1, "completion": 1}}),
+    ]
+    s = E.summarize_events(lines)
+    assert s["slowest_tool"]["duration_ms"] == 5
+    assert s["slowest_tool"]["what"] == "Ran ls"        # 退回 summary
