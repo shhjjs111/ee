@@ -110,6 +110,9 @@ export type ThreadSummary = {
   updated?: number;
   status: ThreadStatus;
   parent_id?: string | null; // 分叉来源（D3-E）
+  /** 指挥关系（D6-1）：只有被指挥会话派发的子会话才有值；普通分叉不写它。 */
+  orchestrator_parent_id?: string | null;
+  orchestrator_role?: "orchestrator" | "child" | null;
   worktree?: { path: string; branch: string; repo: string; name: string } | null; // D5-1
   workspace?: string; // 归属的项目目录（worktree 对话归到主仓库）
   effort?: Effort | string; // D5-9：会话级推理强度

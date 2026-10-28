@@ -34,6 +34,7 @@ from ee.core.store import SessionStore, _title
 log = logging.getLogger("ee.thread")
 
 UI_OUTPUT_LIMIT = 30_000          # 发给界面的单个工具输出上限（模型侧另有截断规则）
+RUNS_KEEP = 5                     # meta 里只留最近几次派发（防止会话元数据无限长）
 
 
 def _clip(s: str, n: int = UI_OUTPUT_LIMIT) -> str:
@@ -202,6 +203,11 @@ class Thread:
                 "model": self.meta.get("model", ""), "mode": self.meta.get("mode", ""),
                 "created": self.meta.get("created"), "updated": self.meta.get("updated"), "status": self.status,
                 "parent_id": self.meta.get("parent_id"), "source": self.meta.get("source"),
+                # 指挥关系与普通分叉分开：parent_id 是分叉来源（branch.py 写入、左栏显示分叉图标），
+                # orchestrator_parent_id 才是"由哪个指挥会话派发"，权限与树形都只认后者。
+                "orchestrator_parent_id": self.meta.get("orchestrator_parent_id"),
+                "orchestrator_role": self.meta.get("orchestrator_role"),
+                "runs": list(self.meta.get("runs") or []),
                 "worktree": self.meta.get("worktree"),          # D5-1：在 worktree 里的对话 {path, branch, repo, name}
                 "effort": self.session.effort if self.session else self.meta.get("effort", ""),   # D5-9
                 "effort_support": self.session.effort_support() if self.session else None,
@@ -307,6 +313,7 @@ class Thread:
             s.queue_input(text, qkind, qid=user["id"])
             return {"queued": True, "item_id": user["id"], "queue": qkind}
         user = self._add(user_item)
+        self._new_run(text, initiator=kind or "user")
         if not any(it.get("type") == "user" for it in self.items[:-1]) or self.meta.get("title") in (None, "", "新对话"):
             self.meta["title"] = _title(display or text)
         self.save_meta()
@@ -405,7 +412,23 @@ class Thread:
                 self.notify("turn/completed", {"thread_id": self.id, "reason": "error", "duration_ms": 0,
                                                "usage": self.usage, "context_left": self.context_left})
 
+    def _new_run(self, text: str, initiator: str = "user") -> dict:
+        """记一次派发。终态由 _finish 写入，不能靠 status=idle 推断成功。"""
+        run = {"id": _new_id("run"), "started": time.time(), "finished": None,
+               "status": "running", "terminal_reason": None, "initiator": initiator}
+        runs = self.meta.setdefault("runs", [])
+        runs.append(run)
+        del runs[:-RUNS_KEEP]
+        return run
+
+    def _close_run(self, reason: str) -> None:
+        """回合结束：把 reason 写进当前 run，供界面/编排判断真实结果。"""
+        runs = self.meta.get("runs") or []
+        if runs and runs[-1].get("status") == "running":
+            runs[-1].update(status="done", finished=time.time(), terminal_reason=reason)
+
     def _finish(self, reason: str) -> None:
+        self._close_run(reason)
         if self.status_text:
             self.status_text = ""
             self.notify("turn/status", {"thread_id": self.id, "text": ""})

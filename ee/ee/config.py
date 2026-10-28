@@ -69,6 +69,9 @@ DEFAULTS: dict = {
     "style": {"default": "default"},
     # 花费上限（D5-9）：0 = 不限；action = warn（仅提醒）| pause（暂停并询问）；currency 跟单价币种
     "budget": {"session": 0, "daily": 0, "monthly": 0, "action": "warn", "warn_ratio": 0.8, "currency": "¥"},
+    # 指挥会话（D6-1）：一个会话派发多个真正的子会话。默认关（多五个工具是固定 token 开销）；
+    # 项目层只能关、只能调小。max_children 是同时运行数，max_total_children 是子会话总数。
+    "orchestrator": {"enabled": False, "max_children": 4, "max_total_children": 16},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     # 命令沙箱（D5-8，仅 Windows 隔离写入）：enabled = shell 前台/后台命令在受限令牌里跑，只能写工作区和沙箱临时目录；
     # network=false = 用环境变量拦截联网（代理指向死端口、包管理器离线），尽力而为
@@ -292,6 +295,33 @@ def sanitize_project_layer(layer: dict, user_cfg: dict) -> tuple[dict, list[str]
             dropped.append(f"budget.{k}")
         if not bud:
             clean.pop("budget")
+    orch = clean.get("orchestrator")
+    if "orchestrator" in clean and not isinstance(orch, dict):
+        clean.pop("orchestrator")
+        dropped.append("orchestrator")
+    elif isinstance(orch, dict):
+        uo = user_cfg.get("orchestrator") or {}
+        # 开启只能由用户做：项目层自己打开等于给仓库加了五个可派发子会话的工具
+        if "enabled" in orch and bool(orch["enabled"]) and not bool(uo.get("enabled", False)):
+            orch.pop("enabled")
+            dropped.append("orchestrator.enabled")
+        for k in ("max_children", "max_total_children"):
+            if k not in orch:
+                continue
+            try:
+                want, have = int(orch[k]), int(uo.get(k) or 0)
+            except (TypeError, ValueError):
+                orch.pop(k)
+                dropped.append(f"orchestrator.{k}")
+                continue
+            if have > 0 and want > have:
+                orch.pop(k)
+                dropped.append(f"orchestrator.{k}")
+        for k in [k for k in orch if k not in ("enabled", "max_children", "max_total_children")]:
+            orch.pop(k)
+            dropped.append(f"orchestrator.{k}")
+        if not orch:
+            clean.pop("orchestrator")
     return clean, dropped
 
 
