@@ -14,7 +14,7 @@
 | Wave 1 / T4 | MCP 连接绑定工作区/配置、用户侧信任、总截止时间 | 已完成并验证 | `ee\ee\mcp\`、`server\mcp_rpc.py`；`ee\tests\test_mcp_isolation.py` |
 | Wave 1 / T5 | 项目只能收紧预算；隔离失败不回退写主目录 | 已完成并验证 | `ee\ee\config.py`、`server\automations.py`；`ee\tests\test_budget_and_isolation.py` |
 | Wave 2 / T6 | 会话加载单飞、删除不复活、设置重载释放客户端、前端清理幽灵数据 | 已完成并验证 | `ee\ee\server\app.py`、`threads.py`；`desktop\src\lib\store.ts`；`ee\tests\test_session_lifecycle.py`、`desktop\src\lib\store.test.ts` |
-| 后续 D6-1 | 持久子会话、并发与预算、审批冒泡、桌面接管 | 未开始 | 本地 WIP 仅供参考，不是生产实现 |
+| 后续 D6-1 | 持久子会话、并发与预算、审批冒泡、桌面接管 | 任务书已就绪，待授权实施 | plans/2026-10-28-d6-1-orchestrator-tasks.md |
 | 后续 D6-2 | 版本化 LSP 诊断、可信启动与进程回收 | 未开始 | 先 Python 与 TypeScript/JavaScript，不自动安装服务器 |
 | 后置 | best-of-n、文件交接、Goal、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
