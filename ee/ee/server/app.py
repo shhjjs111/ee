@@ -86,6 +86,12 @@ class Backend:
             "thread/get": self.thread_get,
             "thread/rename": self.thread_rename,
             "thread/delete": self.thread_delete,
+            # 编排（D6-1 U9）：服务面入口。工具那五个只给模型用，界面与端到端脚本
+            # 拿不到子会话列表和真实改动数。
+            "thread/children": self.thread_children,
+            "thread/status": self.thread_status,
+            "thread/wait": self.thread_wait,
+            "thread/create_child": self.thread_create_child,
             "thread/undo": self.thread_undo,
             "thread/compact": self.thread_compact,
             "thread/context_breakdown": self.thread_context_breakdown,
@@ -341,6 +347,64 @@ class Backend:
         t.save_meta()
         self.notify("thread/updated", {"thread": t.summary()})
         return {"thread": t.summary()}
+
+    # ------------------------------------------------------------ 编排 RPC（D6-1 U9）
+    def thread_children(self, parent_id: str) -> dict:
+        """列出某个会话派发的子会话。
+
+        父会话不存在时报错而不是返回空列表：空列表会被读成"没有子会话"，
+        与"父会话写错了"混为一谈。
+        """
+        from ee.server.orchestrator import OrchestratorError
+        self._check_thread_id(parent_id)
+        if self.threads.get(parent_id) is None and not (self.home / "sessions" / f"{parent_id}.jsonl").is_file():
+            raise RpcError(f"会话不存在：{parent_id}", 404)
+        try:
+            return {"threads": self.orchestrator.list_children(parent_id)}
+        except OrchestratorError as e:
+            raise RpcError(str(e), -32602) from None
+
+    def thread_status(self, parent_id: str, child_id: str) -> dict:
+        """单个子会话的详细状态（含 worktree 真实改动数，供界面卡片用）。"""
+        from ee.server.orchestrator import OrchestratorError
+        self._check_thread_id(parent_id)
+        self._check_thread_id(child_id)
+        try:
+            return {"thread": self.orchestrator.status(parent_id, child_id)}
+        except OrchestratorError as e:
+            raise RpcError(str(e), -32602) from None
+
+    async def thread_wait(self, parent_id: str, child_ids: list[str],
+                          timeout: float | None = None) -> dict:
+        """等这些子会话都不在运行（或超时）。取消等待不等于停止子任务。"""
+        from ee.server.orchestrator import OrchestratorError
+        self._check_thread_id(parent_id)
+        if not isinstance(child_ids, list) or not child_ids:
+            raise RpcError("参数错误：child_ids 必须是非空数组", -32602)
+        for cid in child_ids:
+            self._check_thread_id(cid)
+        try:
+            return await self.orchestrator.wait(parent_id, child_ids, timeout)
+        except OrchestratorError as e:
+            raise RpcError(str(e), -32602) from None
+
+    async def thread_create_child(self, parent_id: str, title: str = "", prompt: str | None = None,
+                                  mode: str | None = None, worktree: bool = True) -> dict:
+        """从服务面派发子会话（D6-1 U9）。
+
+        与模型用的 `thread_create` 工具走同一个 `create_child`，四条不变量一条不少：
+        父关系由服务端写、共享 cwd 只能只读、名额在发起运行时预留、子会话不能再建孙。
+        这里只是多一个入口，不放宽任何判定。
+        """
+        from ee.server.orchestrator import OrchestratorError
+        self._check_thread_id(parent_id)
+        if mode and mode not in MODES:
+            raise RpcError(f"未知权限模式：{mode}")
+        try:
+            return await self.orchestrator.create_child(parent_id, title=title, prompt=prompt,
+                                                        mode=mode, worktree=bool(worktree))
+        except OrchestratorError as e:
+            raise RpcError(str(e), -32602) from None
 
     def _detach_children(self, thread_id: str) -> None:
         """删除父会话时把子会话的父关系解开，**不级联删子会话、也不碰它的 worktree**（D6-1 U7）。

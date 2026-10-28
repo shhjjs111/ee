@@ -98,6 +98,9 @@ class Orchestrator:
             run = _last_run(t.meta)
             out.append({"id": t.id, "title": t.meta.get("title") or "新对话", "status": t.status,
                         "terminal_reason": run.get("terminal_reason"), "run_id": run.get("id"),
+                        # 界面按它判断是不是子任务、缩进挂在哪个父会话下
+                        "orchestrator_parent_id": t.meta.get("orchestrator_parent_id"),
+                        "orchestrator_role": t.meta.get("orchestrator_role"),
                         "cwd": t.meta.get("cwd", ""), "mode": t.meta.get("mode", ""),
                         "worktree": t.meta.get("worktree"),
                         "last_message": _last_assistant(t.items),
@@ -116,6 +119,8 @@ class Orchestrator:
             run = _last_run({"runs": s.get("runs")})
             out.append({"id": sid, "title": s.get("title") or "新对话", "status": "idle",
                         "terminal_reason": run.get("terminal_reason"), "run_id": run.get("id"),
+                        "orchestrator_parent_id": s.get("orchestrator_parent_id"),
+                        "orchestrator_role": s.get("orchestrator_role"),
                         "cwd": s.get("cwd", ""), "mode": s.get("mode", ""),
                         "worktree": s.get("worktree"), "last_message": "",
                         "created": s.get("created"), "updated": s.get("updated")})

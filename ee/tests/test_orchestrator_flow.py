@@ -547,3 +547,129 @@ def test_running_run_in_this_process_is_not_rewritten(ee_home, workspace):
     got = SessionStore.summary(path / f"{sid}.jsonl")["runs"][-1]
     assert got["status"] == "running", "本进程正在跑的回合被误标成结束了"
     assert got["terminal_reason"] is None
+
+
+# ---------------------------------------------------------------- 编排 RPC（D6-1 U9）
+#
+# 编排能力原先只以工具形式给模型用，服务面没有入口。桌面端因此拿不到子会话列表与
+# 真实改动数（U8 卡片的 changed_count 只能靠模型自己调 thread_status 才有），
+# 端到端脚本也无法从一个 RPC 客户端验证「派发 → 等终态」这条链路。
+
+
+def test_thread_children_lists_only_own_children(ee_home, repo):
+    """thread/children 只列本会话派发的子会话；普通分叉不是子会话。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        other = await _parent(b, repo)
+        orch = Orchestrator(b)
+        cid = (await orch.create_child(pid, title="甲", mode="read-only", worktree=False))["thread"]["id"]
+        # 另一个父会话的子会话不该出现
+        await orch.create_child(other, title="乙", mode="read-only", worktree=False)
+
+        got = await b.call("thread/children", {"parent_id": pid})
+        ids = [x["id"] for x in got["threads"]]
+        assert ids == [cid]
+        assert got["threads"][0]["orchestrator_parent_id"] == pid
+
+    asyncio.run(go())
+
+
+def test_thread_children_rejects_unknown_parent(ee_home, repo):
+    """父会话不存在时必须报错，不能悄悄返回空列表（会被误读成"没有子会话"）。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        with pytest.raises(RpcError):
+            await b.call("thread/children", {"parent_id": "20260101-000000-nope00"})
+
+    asyncio.run(go())
+
+
+def test_thread_child_status_returns_changed_count(ee_home, repo):
+    """thread/status 给界面用它需要的字段：终态与真实改动数。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="改文件", mode="default"))["thread"]["id"]
+        wt = Path(b.threads[cid].meta["cwd"])
+        (wt / "new.txt").write_text("x\n", encoding="utf-8")
+
+        got = (await b.call("thread/status", {"parent_id": pid, "child_id": cid}))["thread"]
+        assert got["id"] == cid
+        assert got["changed_count"] >= 1, got
+
+    asyncio.run(go())
+
+
+def test_thread_wait_returns_terminal_reason(ee_home, repo):
+    """等子会话跑完，终态要如实带回来（wait 是编排闭环的最后一环）。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [text_chunks("做完了") + finish("stop")])
+        pid = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(pid, title="跑一下", mode="read-only", worktree=False,
+                                                  prompt="做事"))["thread"]["id"]
+        got = await b.call("thread/wait", {"parent_id": pid, "child_ids": [cid], "timeout": 30},
+                           )
+        kids = got["threads"]
+        assert [k["id"] for k in kids] == [cid]
+        assert kids[0]["terminal_reason"] == "completed"
+        assert got["timed_out"] is False
+
+    asyncio.run(go())
+
+
+def test_thread_wait_rejects_foreign_child(ee_home, repo):
+    """不是自己的子会话一律拒绝：这条边界丢了好比把别人的会话交给调用方。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        other = await _parent(b, repo)
+        cid = (await Orchestrator(b).create_child(other, title="别家的", mode="read-only",
+                                                  worktree=False))["thread"]["id"]
+        with pytest.raises(RpcError):
+            await b.call("thread/wait", {"parent_id": pid, "child_ids": [cid]})
+
+    asyncio.run(go())
+
+
+def test_thread_create_child_rpc(ee_home, repo):
+    """服务面能派发子会话，并且父关系由服务端写（工具参数里没有 parent 字段）。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        got = await b.call("thread/create_child", {"parent_id": pid, "title": "从 RPC 建的",
+                                                   "mode": "read-only", "worktree": False})
+        child = got["thread"]
+        assert child["orchestrator_parent_id"] == pid
+        assert b.threads[child["id"]].meta["orchestrator_role"] == "child"
+        # 建完能立刻从父会话列出来
+        listed = (await b.call("thread/children", {"parent_id": pid}))["threads"]
+        assert [x["id"] for x in listed] == [child["id"]]
+
+    asyncio.run(go())
+
+
+def test_thread_create_child_rpc_rejects_non_readonly_shared_cwd(ee_home, repo):
+    """共享 cwd 只能只读——这条不变量不能因为多了个 RPC 入口就放宽。"""
+    enable(ee_home)
+
+    async def go():
+        b, _, _ = make_backend(ee_home, [])
+        pid = await _parent(b, repo)
+        with pytest.raises(RpcError):
+            await b.call("thread/create_child", {"parent_id": pid, "title": "想写文件",
+                                                 "mode": "default", "worktree": False})
+
+    asyncio.run(go())

@@ -71,6 +71,24 @@ def pending_approvals(notes):
             and (n["params"].get("item") or {}).get("type") == "approval"]
 
 
+def orchestrator_verdict(child):
+    """判定子会话是否成功完成，返回 (ok, 原因)。
+
+    `status` 只有 idle/running/waiting_approval/compacting，idle 同时覆盖「跑完了」和
+    「超预算/被杀」。判成功只能看 run 的 terminal_reason——把它当成「等 idle 就算完成」
+    正是 D6-1 U2 要纠正的误报。
+    """
+    st = (child or {}).get("status")
+    reason = (child or {}).get("terminal_reason")
+    if st == "running":
+        return False, "子会话还在跑（status=running），wait 没等到终态"
+    if not reason:
+        return False, "子会话没有 terminal_reason：无法判断是跑完还是被中断"
+    if reason != "completed":
+        return False, f"子会话终态是 {reason}，不是 completed"
+    return True, ""
+
+
 def blackhole():
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
@@ -94,6 +112,12 @@ async def main(cmd, hole=False):
     ws_dir.mkdir()
     (ws_dir / "a.txt").write_text("hi", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=ws_dir)
+    # 编排默认关，且**只能由用户级配置打开**（项目层自己开等于给仓库加了五个可派发
+    # 子会话的工具，config.sanitize_project_layer 会把它丢掉）。所以写用户级 config.toml，
+    # 必须在 thread/start 之前——enabled 是建会话时读的。EE_HOME 是 home/.ee。
+    ee_home_dir = home / ".ee"
+    ee_home_dir.mkdir(parents=True, exist_ok=True)
+    (ee_home_dir / "config.toml").write_text("[orchestrator]\nenabled = true\n", encoding="utf-8")
     fake = subprocess.Popen([sys.executable, str(ROOT / "desktop/scripts/fake_model_server.py"), "18080"])
     token = secrets.token_hex(8)
     env = {**os.environ, "EE_SERVE_TOKEN": token, "HOME": str(home), "USERPROFILE": str(home),
@@ -150,6 +174,9 @@ async def main(cmd, hole=False):
                 s["providers"]["fake"] = {"base_url": "http://127.0.0.1:18080/v1", "api_key": "sk-fake"}
             s["models"]["fake-gpt"] = {"provider": "fake", "model": "fake-gpt", "family": "default"}
             s["default_model"] = "fake-gpt"
+            # 编排默认关（config 默认 enabled=False），这里显式打开：U9 要验的派发链路
+            # 只在启用时才存在。用户配置不受影响（用的是临时 home）。
+            s.setdefault("orchestrator", {})["enabled"] = True
             await rpc("settings/set", {"settings": s})
             await rpc("workspace/open", {"path": str(ws_dir)})
             th = await rpc("thread/start", {"cwd": str(ws_dir)})
@@ -205,6 +232,34 @@ async def main(cmd, hole=False):
                     log("!!! 中断后没有退回待追加的消息", r2, back); ok = False
                 else:
                     log("排队 / 撤回 / 中断退回 正常")
+            if not hole and ok:
+                # 编排（D6-1 U9）：派发 → 等终态 → 校验终态可判定。这是 U9 的核心闭环：
+                # 只验「能列出子会话」是不够的，真正要证明的是 wait 能等到并如实带回终态。
+                notes.clear()
+                made = await rpc("thread/create_child", {"parent_id": tid, "title": "端到端子任务",
+                                                         "mode": "read-only", "worktree": False,
+                                                         "prompt": "算一下 2+2"})
+                child = (made or {}).get("thread") or {}
+                cid = child.get("id")
+                if not cid:
+                    log("!!! 派发子会话失败", made); ok = False
+                elif child.get("orchestrator_parent_id") != tid:
+                    log("!!! 子会话父关系不对", child.get("orchestrator_parent_id"), tid); ok = False
+                else:
+                    log(f"子会话已派发：{cid}")
+                    waited = await rpc("thread/wait", {"parent_id": tid, "child_ids": [cid],
+                                                       "timeout": 60}, timeout=90)
+                    kids = (waited or {}).get("threads") or []
+                    good, why = orchestrator_verdict(kids[0] if kids else {})
+                    if not good:
+                        log("!!! 编排终态不可判定：", why, kids[:1]); ok = False
+                    else:
+                        log(f"编排正常：{cid} 终态 {kids[0].get('terminal_reason')}")
+                    # 列一下确认能从父会话看见它
+                    listed = (await rpc("thread/children", {"parent_id": tid}) or {}).get("threads") or []
+                    if cid not in [x.get("id") for x in listed]:
+                        log("!!! thread/children 没列出刚建的子会话", listed); ok = False
+                    await rpc("thread/delete", {"thread_id": cid})
         except Exception as e:
             log("!!! 失败", repr(e)); ok = False
         rt.cancel()
