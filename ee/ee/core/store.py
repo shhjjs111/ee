@@ -179,6 +179,9 @@ class SessionStore:
                 "model": meta.get("model", ""), "mode": meta.get("mode", ""),
                 "created": meta.get("created"), "updated": meta.get("updated") or path.stat().st_mtime,
                 "parent_id": meta.get("parent_id"), "source": meta.get("source"),
+                "orchestrator_parent_id": meta.get("orchestrator_parent_id"),
+                "orchestrator_role": meta.get("orchestrator_role"),
+                "runs": list(meta.get("runs") or []),
                 "worktree": meta.get("worktree"),
                 "workspace": (meta.get("worktree") or {}).get("repo") or meta.get("cwd", "")}
 

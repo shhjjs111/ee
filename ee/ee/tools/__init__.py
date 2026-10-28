@@ -72,6 +72,11 @@ def build_tools(profile, config=None, agent: str | None = None) -> list[Tool]:
     if (data.get("skills") or {}).get("enabled", True):      # 技能（D5-5）
         from ee.tools.skill import SkillTool
         tools.append(SkillTool())
+    # 指挥会话（D6-1）：默认关，只有用户显式启用且不是 lean 才注入。
+    # 五个工具是固定 token 开销，还进冻结前缀，所以不能无条件给。
+    if (data.get("orchestrator") or {}).get("enabled") and (agent or agent_profile(config)) != "lean":
+        from ee.tools.orchestrate import ThreadsListTool, ThreadStatusTool, ThreadWaitTool
+        tools += [ThreadsListTool(), ThreadStatusTool(), ThreadWaitTool()]
     return tools
 
 
