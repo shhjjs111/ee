@@ -416,9 +416,22 @@ class Thread:
         return {"queued": False, "item_id": user["id"]}
 
     def interrupt(self) -> bool:
-        if self.session is None:
-            return False
-        return self.session.interrupt()
+        """用户点停止：停掉属于这个会话的一切工作，返回是否真的停到了东西。
+
+        **为什么不能只转给 session.interrupt()**：Goal 循环跑在 self.task（_consume）
+        里，时序是「判 → 跑 → 判」。用户可能正好停在**判**那一段（判据命令在子进程里
+        跑），此时模型会话空闲、session.interrupt() 取消不了任何东西，返回 False。
+        结果：界面提示“没停下来”，判据继续跑到超时，剩余轮次还会照常启动。
+
+        先试 session（能停模型回合就按原来的路子停），不行再取消外层 task；
+        两者都没有可停的东西才返回 False。
+        """
+        if self.session is not None and self.session.interrupt():
+            return True
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+            return True
+        return False
 
     def withdraw(self, item_id: str) -> dict:
         """撤回还没送入的排队消息，返回原文（界面放回输入框）。"""
