@@ -13,16 +13,41 @@ import path from "node:path";
 
 let app: ElectronApplication;
 let win: Page;
+let isolatedHome = "";
+let dirs: string[] = [];
 
 test.beforeAll(async () => {
-  app = await electron.launch({ args: ["."], cwd: path.resolve(__dirname, "..") });
+  // 必须隔离 EE_HOME：这个文件里的 remove 会往 desktop.json 写 hidden_workspaces，
+  // 不隔离的话每跑一次就隐藏掉用户一个真实项目（已经踩过）。
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ee-ws-home-"));
+  isolatedHome = home;
+  app = await electron.launch({
+    args: ["."],
+    cwd: path.resolve(__dirname, ".."),
+    env: { ...process.env, EE_HOME: home },
+  });
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
+
+  // 隔离环境是空的，自己造两个工作区，才能验证 list / remove
+  const os2 = await import("node:os");
+  dirs = [0, 1].map(() => fs.mkdtempSync(path.join(os2.tmpdir(), "ee-ws-proj-")));
+  for (const d of dirs) await rpc("workspace/open", { path: d });
+  await win.waitForTimeout(1000);
 });
 
 test.afterAll(async () => {
   await app?.close().catch(() => undefined);
+  const fs = await import("node:fs");
+  try {
+    if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });
 
 /** 通过页面里的真实 RPC 调用后端。 */

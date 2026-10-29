@@ -97,7 +97,7 @@ export function isExecutablePath(p: string): boolean {
 export function decideOpen(p: unknown, roots: string[]): OpenDecision {
   if (typeof p !== "string" || !p.trim()) return { action: "deny", reason: "路径为空" };
   if (/^\\\\|^\/\//.test(p)) return { action: "deny", reason: "不支持打开网络路径" };
-  if (!path.isAbsolute(p)) return { action: "deny", reason: "只能打开绝对路径" };
+  if (!isAbsolutePath(p)) return { action: "deny", reason: "只能打开绝对路径" };
   const abs = path.resolve(p);
   if (!roots.some((r) => r && isInside(abs, r))) return { action: "deny", reason: "只能打开当前工作区或 ee 目录里的文件" };
   let isDir = false;
@@ -110,6 +110,24 @@ export function decideOpen(p: unknown, roots: string[]): OpenDecision {
     return { action: "reveal", path: abs, reason: `为安全起见不直接运行 ${path.extname(abs) || "可执行"} 文件，已在资源管理器中定位` };
   }
   return { action: "open", path: abs };
+}
+
+/**
+ * Windows 上「绝对路径」的判断不能用 path.isAbsolute。
+ *
+ * 实测（node 在 win32 上）：
+ *   path.isAbsolute("C:\\Users")   === false   ← 盘符根下的一级目录
+ *   path.isAbsolute("C:\\Users\\a") === true
+ *   path.isAbsolute("d:/ee")       === true
+ * 于是 D:\ee日常 这种「盘符根目录」会被误判成相对路径，直接 deny ——
+ * 表现就是「点『在资源管理器中打开』没反应」。
+ *
+ * 这里显式处理盘符形态：X:\... 和 X:/... 都算绝对路径。
+ */
+export function isAbsolutePath(p: string): boolean {
+  if (/^[A-Za-z]:[\\/]/.test(p)) return true;   // C:\... / D:/...
+  if (/^[A-Za-z]:$/.test(p)) return false;      // 光秃秃的 "C:" 是盘符当前目录，不是绝对路径
+  return path.isAbsolute(p);                    // 其余交给 node（含 UNC、POSIX）
 }
 
 /** 主进程 shell:openPath 处理：返回空串表示成功，否则是给界面看的提示（与 shell.openPath 的约定一致）。 */

@@ -97,3 +97,31 @@ describe("allowedRoots 把历史会话目录也算进白名单", () => {
     for (const d of [home, a, b]) fs.rmSync(d, { recursive: true, force: true });
   });
 });
+
+describe("盘符根下的目录必须是绝对路径（用户报告的真实缺陷）", () => {
+  // 实测 node 在 win32 上：path.isAbsolute("C:" + sep + "Users") === false，
+  // 而更深一层的路径是 true。于是 D:<sep>ee日常 这种「盘符根目录」被误判成相对路径，
+  // decideOpen 直接 deny —— 表现就是「点『在资源管理器中打开』没反应」。
+  // 注意：vitest 的 jsdom 环境里 path 是 POSIX 实现，两者会不同；
+  // 所以这里只断自定义实现的结果，不依赖 node 的行为。
+  const D = "D:";
+  const sep = "\\"; // 源码里就是一个反斜杠
+
+  it("isAbsolutePath 识别盘符根目录", async () => {
+    const { isAbsolutePath } = await import("./openpath");
+    expect(isAbsolutePath(`${D}${sep}ee日常`), "盘符根目录应算绝对路径").toBe(true);
+    expect(isAbsolutePath("d:/ee"), "正斜杠形式也应算").toBe(true);
+    expect(isAbsolutePath(`${D}${sep}`), "只有 C:<sep> 也算").toBe(true);
+    expect(isAbsolutePath(`${D}`), "光秃秃的盘符不算").toBe(false);
+    expect(isAbsolutePath("relative" + sep + "path"), "相对路径不算").toBe(false);
+  });
+
+  it("decideOpen 对盘符根目录不再报「只能打开绝对路径」", () => {
+    const root = `${D}${sep}ee日常`;
+    const d = decideOpen(root, [root]);
+    if (d.action === "deny") {
+      expect(d.reason, `不该是路径格式问题，实际：${d.reason}`).not.toContain("绝对路径");
+    }
+    expect(d.action === "open" || d.action === "deny").toBe(true);
+  });
+});
