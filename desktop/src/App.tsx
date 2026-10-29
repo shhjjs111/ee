@@ -15,6 +15,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Button, Spinner } from "./components/ui";
 import { RpcClient, rpcLog } from "./lib/rpc";
 import { applyTheme, useApp } from "./lib/store";
+import { useLayout } from "./lib/layoutStore";
 
 let autoOff: (() => void) | null = null;
 let loopOff: (() => void) | null = null;
@@ -37,6 +38,13 @@ export default function App() {
   const theme = useApp((s) => s.theme);
   const conn = useApp((s) => s.conn);
   const rightOpen = useApp((s) => s.rightOpen);
+
+  // 工具面板开关只有一份真相（useApp.rightOpen）；layoutStore 只存宽度与展现方式。
+  // 不在这里同步的话，右侧面板会「打开了但宽度为 1px」——rightOpen=true 而
+  // layoutStore.inspectorOpen 仍是默认的 false，computeLayout 返回 inspector: 0。
+  useEffect(() => {
+    useLayout.getState().setInspectorOpen(rightOpen);
+  }, [rightOpen]);
 
   const start = async (restart = false) => {
     setBoot({ state: "loading" });

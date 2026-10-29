@@ -153,7 +153,7 @@ function Review() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3 text-[12.5px] text-muted">
+      <div className="flex h-10 shrink-0 items-center gap-1.5 overflow-hidden border-b border-line px-2.5 text-[12.5px] text-muted">
         <div className="flex shrink-0 rounded-lg bg-soft p-0.5">
           {(["changes", "timeline"] as const).map((v) => (
             <button
@@ -168,11 +168,11 @@ function Review() {
         </div>
         {view === "timeline" ? null : data?.is_repo ? (
           <>
-            <GitBranch size={13} />
-            <span className="truncate">{data.branch}</span>
+            <GitBranch size={13} className="shrink-0" />
+            <span className="min-w-0 truncate">{data.branch}</span>
             <span className="text-faint">·</span>
-            <span>{data.files.length} 个文件</span>
-            {data.files.length > 0 && <Stat add={data.additions ?? 0} del={data.deletions ?? 0} />}
+            <span className="shrink-0 whitespace-nowrap">{data.files.length} 个文件</span>
+            {data.files.length > 0 && <Stat add={data.additions ?? 0} del={data.deletions ?? 0} className="shrink-0 whitespace-nowrap" />}
           </>
         ) : snap ? (
           <>
@@ -180,8 +180,8 @@ function Review() {
               <span className="truncate">自对话开始 {formatWhen(data?.snapshot?.since)}</span>
             </Tip>
             <span className="text-faint">·</span>
-            <span className="shrink-0">{data!.files.length} 个文件</span>
-            {data!.files.length > 0 && <Stat add={data!.additions ?? 0} del={data!.deletions ?? 0} />}
+            <span className="shrink-0 whitespace-nowrap">{data!.files.length} 个文件</span>
+            {data!.files.length > 0 && <Stat add={data!.additions ?? 0} del={data!.deletions ?? 0} className="shrink-0 whitespace-nowrap" />}
           </>
         ) : (
           <span className="truncate">{data ? "不是 git 仓库" : ""}</span>
