@@ -347,11 +347,26 @@ class Session:
         return RZ.resolve(self.config.data, self.home, spec.alias)
 
     async def _charge(self, usage: dict | None, spec) -> float | None:
-        """记一次请求的用量：按这次实际用的模型的单价计价，计入会话统计和每日/每月账本。"""
+        """记一次请求的用量：按这次实际用的模型的单价计价，计入会话统计和每日/每月账本。
+
+        同时标记「已花金额是否可信」：有请求缺 usage、或模型没配单价时金额不可知，
+        当前累加值只是已知部分。预算检查必须知道这一点，否则会把未知当 0、
+        让用户设的上限形同虚设（见 budget.BudgetGuard.accounting_complete）。
+        """
         cost = self.stats.add(usage, spec.profile.price, spec.alias)
-        if cost:
+        if cost is None:
+            # 未知金额：不能当成免费。
+            for g in self._budget_guards():
+                g.accounting_complete = False
+        elif cost:
             await asyncio.to_thread(self.budget.record, cost, spec.profile.price.currency)
         return cost
+
+    def _budget_guards(self) -> list:
+        """需要同步「金额是否可信」的预算守卫（子代理与父会话共用同一个守卫）。"""
+        root = self.budget_root or self
+        g = getattr(root, "budget", None)
+        return [g] if g is not None else []
 
     def session_spent(self, currency: str) -> float:
         root = self.budget_root or self

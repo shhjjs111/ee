@@ -165,6 +165,10 @@ class BudgetGuard:
         self.allowed_turn: set[str] = set()                # 本回合继续的范围
         self.denied: set[str] = set()                      # 本回合用户选了停止的范围
         self.stop_reason: str | None = None
+        # 已花金额是否可信（False = 有请求花了钱但金额不可知：缺 usage 或缺单价）。
+        # 由调用方在记账时设置；默认 True 以保证既有行为不变。
+        self.accounting_complete: bool = True
+        self._incomplete_warned: set[tuple[str, str]] = set()
         self._lock: asyncio.Lock | None = None
 
     def reload(self, data: dict) -> None:
@@ -213,6 +217,7 @@ class BudgetGuard:
         cur = cfg["currency"]
         day, mon = await asyncio.to_thread(self.ledger.totals, cur)
         spent = {"session": session_spent(cur), "daily": day, "monthly": mon}
+        incomplete = not self.accounting_complete
         for scope in SCOPES:
             limit = cfg[scope]
             if limit <= 0:
@@ -220,6 +225,20 @@ class BudgetGuard:
             used = spent[scope]
             period = self._period(scope)
             text = f"{LABEL[scope]}花费 {cur}{used:.4f}，上限 {cur}{limit:g}"
+            if incomplete:
+                # 缺 usage / 未知单价时，已知金额小于真实花费。无人值守不能当 0 继续放行，
+                # 否则用户设的上限形同虚设；有人值守只提醒，不擅自停机。
+                if cfg.get("unattended"):
+                    self.stop_reason = (
+                        f"{LABEL[scope]}花费金额不可知（有请求缺用量或未配单价），"
+                        f"无法确认是否在 {cur}{limit:g} 的内限额内，无人值守运行已停止。"
+                    )
+                    return self.stop_reason
+                key = (scope, period)
+                if key not in self._incomplete_warned:
+                    self._incomplete_warned.add(key)
+                    notify(f"{LABEL[scope]}花费金额不完整（有请求缺用量或未配单价），"
+                           f"已花 {cur}{used:.4f} 只是已知部分，可能高于实际消费。")
             if used >= limit:
                 if scope in self.allowed or scope in self.allowed_turn:
                     continue
