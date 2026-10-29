@@ -5,7 +5,7 @@ import { CheckCircle2, GitCompare, Trophy, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import type { BestofCandidate, WorktreeInfo } from "../types";
-import { Button, Spinner } from "./ui";
+import { Button, Input, Spinner } from "./ui";
 
 interface PickResult {
   winner: string | null;
@@ -22,6 +22,8 @@ export function BestofDialog() {
   const [res, setRes] = useState<PickResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 判据命令：候选之间比的就是「谁的判据真的通过」。没有判据就只能看，不能选。
+  const [command, setCommand] = useState("");
 
   useEffect(() => {
     setWts(null);
@@ -51,8 +53,7 @@ export function BestofDialog() {
     setBusy(true);
     setErr(null);
     try {
-      // 候选来自 worktree；它们的 verdict 由后端核对（这里先不带，界面只做展示）
-      // 标题用分支名而不是目录名：用户认候选是看分支（ee/xxx），
+      // 候选来自 worktree；标题用分支名而不是目录名：用户认候选是看分支（ee/xxx），
       // 目录名常常是自动起的 a/b/c，看不出改了什么。
       const candidates = (wts ?? []).map((w) => ({
         id: w.name,
@@ -61,8 +62,18 @@ export function BestofDialog() {
         run_id: "",
         cost: 0,
       }));
-      const r = await rpc!.call("bestof/pick", { candidates }, 60000);
-      setRes(r as PickResult);
+      // 有判据就让后端为每个候选跑一次判据再选（bestof/verify）；
+      // 没判据就退回「只看不选」——胜者只由判据决定，没判据不能硬挑。
+      if (command.trim()) {
+        const r = await rpc!.call("bestof/verify", {
+          goal: { command: command.trim(), timeout: 300 },
+          candidates,
+        }, 600000);
+        setRes(r as PickResult);
+      } else {
+        const r = await rpc!.call("bestof/pick", { candidates }, 60000);
+        setRes(r as PickResult);
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -108,9 +119,22 @@ export function BestofDialog() {
 
           {enough && (
             <>
+              <div className="mb-2">
+                <Input
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  placeholder="判据命令，例如 pytest -q（留空则只看不选）"
+                  className="mono text-[12px]"
+                />
+                <div className="mt-1 text-[11px] leading-relaxed text-faint">
+                  每个候选都跑一次这条命令。要求退出码为 0 且确实收集到测试：
+                  零测试、超时都不算通过。只跑一次判据，不改候选代码。
+                </div>
+              </div>
               <div className="mb-2 flex items-center gap-2">
                 <Button size="sm" variant="primary" disabled={busy} onClick={compare}>
-                  {busy ? <Spinner size={12} /> : <GitCompare size={13} />} 比较 {wts!.length} 个候选
+                  {busy ? <Spinner size={12} /> : <GitCompare size={13} />}
+                  {command.trim() ? `验证 ${wts!.length} 个候选` : `比较 ${wts!.length} 个候选`}
                 </Button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-line">

@@ -126,6 +126,8 @@ class Backend:
         handoff_rpc.register(self.methods, self)        # handoff/manifest|verify（T10-e）
         from ee.server import bestof_rpc
         bestof_rpc.register(self.methods, self)         # bestof/pick（T10-d）
+        from ee.server import bestof_verify
+        bestof_verify.register(self.methods, self)      # bestof/verify（T10-d 判据编排）
         checkpoint_rpc.register(self.methods, self)    # checkpoint/list|diff|restore|gc、review/hunk（D5-7）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）

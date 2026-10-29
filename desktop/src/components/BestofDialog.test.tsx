@@ -138,3 +138,43 @@ describe("BestofDialog（候选比较）", () => {
     expect(ui.view()).toContain("至少两个");
   });
 });
+
+describe("BestofDialog（判据编排，bestof/verify）", () => {
+  it("填了判据就走 bestof/verify，而不是只看不选的 bestof/pick", async () => {
+    act(() => useApp.setState({ bestofDialog: "/repo" }));
+    const { client, calls } = fakeRpc((m) => (m === "worktree/list" ? wts : picked));
+    act(() => useApp.setState({ rpc: client }));
+    const ui = mount();
+    await flush();
+
+    const input = document.body.querySelector("input") as HTMLInputElement;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "pytest -q");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    act(() => ui.buttons().find((b) => (b.textContent ?? "").includes("验证"))!.click());
+    await flush();
+
+    const call = calls.find((c) => c.method === "bestof/verify");
+    expect(call).toBeTruthy();
+    expect((call!.params.goal as { command: string }).command).toBe("pytest -q");
+    expect(calls.some((c) => c.method === "bestof/pick")).toBe(false);
+  });
+
+  it("留空判据时退回 bestof/pick，不假装能选出胜者", async () => {
+    act(() => useApp.setState({ bestofDialog: "/repo" }));
+    const { client, calls } = fakeRpc((m) => (m === "worktree/list" ? wts : picked));
+    act(() => useApp.setState({ rpc: client }));
+    const ui = mount();
+    await flush();
+
+    act(() => ui.buttons().find((b) => (b.textContent ?? "").includes("比较"))!.click());
+    await flush();
+
+    expect(calls.some((c) => c.method === "bestof/pick")).toBe(true);
+    expect(calls.some((c) => c.method === "bestof/verify")).toBe(false);
+  });
+});
