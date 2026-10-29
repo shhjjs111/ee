@@ -382,6 +382,8 @@ def summarize_events(lines: list[str]) -> dict:
         "completion_tokens": int(usage.get("completion") or 0),
         "cache_hit_tokens": int(usage.get("hit") or 0),
         "cost": usage.get("cost"),
+        "costs": usage.get("costs") or {},
+        "cost_complete": usage.get("cost_complete"),
         "currency": usage.get("currency") or "¥",
         "duration_s": round((done.get("duration_ms") or 0) / 1000, 1),
         "profile": next((e.get("profile") for e in ev if e.get("type") == "session"), None),
@@ -456,7 +458,30 @@ def aggregate(results: list[dict]) -> dict:
     for prof, rs in by.items():
         prompt = sum(r.get("prompt_tokens", 0) for r in rs)
         hit = sum(r.get("cache_hit_tokens", 0) for r in rs)
-        costs = [r.get("cost") for r in rs]
+        # 费用按币种分桶，并单独数“有几条没费用”。
+        # 不能用 `all(c is not None)` 把关：**只要一条缺费用，整组金额就变 None**，
+        # 评测越不稳定越看不见钱（最需要看钱的时候恰好看不到）。
+        costs_by_cur: dict[str, list[float]] = {}
+        missing = 0
+        known = 0
+        for r in rs:
+            c = r.get("cost")
+            if c is None:
+                missing += 1
+                continue
+            known += 1
+            cur = r.get("currency") or "¥"
+            costs_by_cur.setdefault(cur, []).append(float(c))
+        costs = {cur: {"known_total": round(sum(vals), 10), "known_runs": len(vals),
+                       "avg": round(sum(vals) / len(vals), 10)}
+                 for cur, vals in costs_by_cur.items()}
+        # 兼容字段：只有一个币种有值且没有缺失时，才给单值 avg_cost。
+        single_avg = None
+        single_cur = None
+        if len(costs_by_cur) == 1 and missing == 0:
+            cur = next(iter(costs_by_cur))
+            single_avg = round(sum(costs_by_cur[cur]) / len(costs_by_cur[cur]), 10)
+            single_cur = cur
         out[prof] = {
             "runs": len(rs),
             "pass_rate": sum(1 for r in rs if r.get("passed")) / len(rs),
@@ -465,8 +490,11 @@ def aggregate(results: list[dict]) -> dict:
             "avg_prompt": prompt / len(rs),
             "avg_completion": _avg([r.get("completion_tokens") for r in rs]),
             "hit_rate": hit / prompt if prompt else None,
-            "avg_cost": _avg(costs) if all(c is not None for c in costs) else None,
-            "currency": next((r.get("currency") for r in rs if r.get("currency")), "¥"),
+            "avg_cost": single_avg,
+            "costs": costs,
+            "cost_known_runs": known,
+            "cost_missing_runs": missing,
+            "currency": single_cur or next((r.get("currency") for r in rs if r.get("currency")), "¥"),
             "avg_duration": _avg([r.get("duration_s") for r in rs]),
             # 工具耗时单独统计：avg_duration 是整回合墙钟，两者相减才是模型+启动开销
             "avg_tool_s": _avg([r.get("tool_s") for r in rs]),
