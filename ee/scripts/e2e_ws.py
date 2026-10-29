@@ -145,7 +145,7 @@ async def main(cmd, hole=False):
         async def reader():
             async for m in ws:
                 msg = json.loads(m)
-                log("<-", json.dumps(msg, ensure_ascii=False)[:400])
+                log("<-", str(msg.get("method") or f"resp:{msg.get('id')}"))
                 if "id" in msg and msg["id"] in pending:
                     pending.pop(msg["id"]).set_result(msg)
                 elif "method" in msg:
@@ -184,18 +184,38 @@ async def main(cmd, hole=False):
             t_turn = time.time()
             await rpc("turn/start", {"thread_id": tid, "text": "你好"})
             await rpc("settings/get", timeout=5)      # 回合进行中，其他 RPC 必须照常秒回
-            for _ in range(600):
-                if turn_finished(notes): break
+            deadline = time.time() + 60
+            answered: set[str] = set()
+            finished = False
+            while time.time() < deadline:
+                if turn_finished(notes):
+                    finished = True
+                    break
                 # 有待响应审批就回复一次。原先只等 approval 而不先判断回合是否已结束，
                 # 在全只读工具的场景（假模型 step 0 就是）里必然空等到超时。
+                #
+                # 用「标记已回复」而不是从 notes 里删除：原来边遍历边 remove，
+                # 一旦同一批里有两条审批就会抛 ValueError，异常被外层吞掉、
+                # 整个等待流程直接跳过——表现是"60s 内没有 turn/completed"，
+                # 而且看不出真实原因。已回复的 call_id 记在 answered 里，
+                # notes 保持只增不改，reader 与这里就不会互相破坏。
                 for it in pending_approvals(notes):
-                    for n in [x for x in notes if x.get("params", {}).get("item") is it]:
-                        notes.remove(n)
-                    await rpc("approval/respond", {"thread_id": tid, "call_id": it.get("call_id"),
+                    cid = it.get("call_id")
+                    if not cid or cid in answered:
+                        continue
+                    answered.add(cid)
+                    await rpc("approval/respond", {"thread_id": tid, "call_id": cid,
                                                    "choice": "once"})
                 await asyncio.sleep(0.1)
-            else:
-                log("!!! 60s 内没有 turn/completed"); ok = False
+            if not finished:
+                # 超时要把现场打出来：只报一句"没有 turn/completed"没法定位。
+                pend = pending_approvals(notes)
+                tools = [n["params"]["item"].get("name") for n in notes
+                         if n.get("method") == "item/started"
+                         and (n["params"].get("item") or {}).get("type") == "tool"]
+                log(f"!!! 60s 内没有 turn/completed；pending_approvals={[p.get('call_id') for p in pend]} "
+                    f"answered={sorted(answered)} 已执行工具={tools}")
+                ok = False
             done = [n for n in notes if n["method"] == "turn/completed"]
             errs = [n["params"]["item"]["message"] for n in notes
                     if n["method"] == "item/started" and n["params"]["item"].get("type") == "error"]
