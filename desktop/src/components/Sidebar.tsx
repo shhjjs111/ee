@@ -218,7 +218,16 @@ export function Sidebar() {
   return (
     <aside className="flex h-full w-full shrink-0 flex-col bg-sidebar">
       <div className="drag flex shrink-0 items-center gap-2 px-4" style={{ height: TITLEBAR_H, paddingLeft: "var(--traffic-w)" }}>
-        <div className="flex h-5 w-5 items-center justify-center rounded-md bg-fg text-[10px] font-bold text-bg">ee</div>
+        <svg viewBox="0 0 100 100" className="h-5 w-5 shrink-0" aria-hidden="true">
+          <g fill="none" stroke="currentColor" strokeWidth="7" strokeLinecap="round" className="text-fg">
+            <path d="M 57.26 39.12 A 20.31 20.31 0 1 1 44.20 61.73" />
+            <path d="M 63.06 50.85 A 20.31 20.31 0 1 1 36.94 50.85" />
+            <path d="M 55.80 61.73 A 20.31 20.31 0 1 1 42.74 39.12" />
+            <path d="M 42.74 60.88 A 20.31 20.31 0 1 1 55.80 38.27" />
+            <path d="M 36.94 49.15 A 20.31 20.31 0 1 1 63.06 49.15" />
+            <path d="M 44.20 38.27 A 20.31 20.31 0 1 1 57.26 60.88" />
+          </g>
+        </svg>
         <span className="text-[13px] font-semibold tracking-tight text-fg">ee</span>
       </div>
       <div className="space-y-0.5 px-2 pb-2">
@@ -312,7 +321,20 @@ export function Sidebar() {
                 <ChevronRight size={13} className={clsx("shrink-0 text-faint transition-transform", !isCollapsed && "rotate-90")} />
                 <Folder size={14} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate font-medium">{g.name}</span>
-                <span className="hidden items-center group-hover:flex" onClick={(e) => e.stopPropagation()}>
+                {/*
+                  这一层原来写的是 hidden group-hover:flex（display:none）。
+                  问题：Radix 的 DropdownMenu 需要用 Trigger 的布局盒算菜单坐标，
+                  而 display:none 的元素没有盒，锚点矩形是 (0,0) ——
+                  菜单会弹到窗口左上角（实测 x=0,y=6），用户鼠标根本够不到，
+                  表现就是「菜单里的项点了没反应 / 鼠标移过去就没了」。
+                  改成透明度 + pointer-events 隐藏：视觉上一样，但布局盒还在。
+                    普通态：opacity-0 + pointer-events-none（看不见也点不到）
+                    悬停/聚焦时：opacity-100 + pointer-events-auto
+                */}
+                <span
+                  className="pointer-events-none flex items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <Tip label="在此项目中新建对话">
                     <button
                       className="flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-active hover:text-fg"
@@ -331,7 +353,14 @@ export function Sidebar() {
                       // 「其他」分组没有对应目录（path 为空），这些操作对它无意义
                       g.path
                         ? [
-                            { label: "在资源管理器中打开", onSelect: () => openPath(g.path) },
+                            {
+                              label: "在资源管理器中打开",
+                              // openPath 是 async 的：Radix 在 onSelect 里同步关闭菜单，
+                              // 而菜单卸载时会把它的"激活/选中"状态一起销毁，
+                              // 异步回调里的后续步骤就再也跑不到（实测 openPath 从未被调用）。
+                              // 推迟到下一个宏任务，等菜单真正关掉、焦点回到页面后再执行。
+                              onSelect: () => setTimeout(() => void openPath(g.path), 0),
+                            },
                             { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
                             { label: "交接清单…", icon: <PackageOpen size={13} />, onSelect: () => s.set({ handoffDialog: g.path }) },
                             { label: "比较候选…", icon: <GitCompare size={13} />, onSelect: () => s.set({ bestofDialog: g.path }) },
