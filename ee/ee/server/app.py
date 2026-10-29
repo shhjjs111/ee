@@ -696,7 +696,11 @@ class Backend:
     # ------------------------------------------------------------ 工作区
     def _touch_workspace(self, path: str) -> None:
         d = self._desktop()
-        ws = [w for w in d.get("workspaces", []) if os.path.normcase(w["path"]) != os.path.normcase(path)]
+        # 重新打开 = 明确要它，撤掉之前的隐藏标记
+        target = os.path.normcase(os.path.abspath(path))
+        d["hidden_workspaces"] = [h for h in d.get("hidden_workspaces", [])
+                                  if os.path.normcase(os.path.abspath(h)) != target]
+        ws = [w for w in d.get("workspaces", []) if os.path.normcase(os.path.abspath(w["path"])) != target]
         ws.insert(0, {"path": path, "name": Path(path).name or path, "opened": time.time()})
         d["workspaces"] = ws[:50]
         self._save_desktop(d)
@@ -705,7 +709,47 @@ class Backend:
         return await asyncio.to_thread(self._workspace_list)
 
     def _workspace_list(self) -> dict:
-        ws = self._desktop().get("workspaces", [])
+        # 项目列表要把「历史会话里出现过的目录」一并算进来。
+        #
+        # 为什么：侧栏的项目分组是从 thread 的 cwd 推导的（Sidebar 的 groups），
+        # 而 desktop.json 里的 workspaces 只记"用户显式加过的"。两者不一致时会出现
+        # 「界面看得到、但移除不掉、也打不开」的幽灵项目——移除删的是 desktop.json
+        # （里面本来没有），openPath 的白名单也只读 desktop.json（于是被拒）。
+        # 这里把两端对齐：凡是能看见的目录，就出现在 workspace/list 里。
+        d = self._desktop()
+        seen: dict[str, dict] = {}
+        for w in d.get("workspaces", []):
+            seen[os.path.normcase(os.path.abspath(w["path"]))] = dict(w)
+
+        # 从容器的会话 + 磁盘上的历史会话收集 cwd
+        cwds: set[str] = set()
+        for t in self.threads.values():
+            try:
+                if t.meta.get("cwd"):
+                    cwds.add(str(t.cwd))
+            except Exception:  # noqa: BLE001
+                continue
+        for p in SessionStore.list_sessions(self.home)[:400]:
+            if not is_thread_id(p.stem):
+                continue
+            try:
+                c = (SessionStore.summary(p) or {}).get("cwd")
+                if c:
+                    cwds.add(str(c))
+            except Exception:  # noqa: BLE001
+                continue
+
+        for c in cwds:
+            key = os.path.normcase(os.path.abspath(c))
+            if key in seen:
+                continue
+            seen[key] = {"path": c, "name": Path(c).name or c, "opened": 0, "from_threads": True}
+
+        ws = list(seen.values())
+        # 用户点过「从列表移除」的目录不再出现（含从会话推导出来的那些）
+        hidden = {os.path.normcase(os.path.abspath(h)) for h in d.get("hidden_workspaces", []) if h}
+        if hidden:
+            ws = [w for w in ws if os.path.normcase(os.path.abspath(w["path"])) not in hidden]
         for w in ws:
             w["exists"] = Path(w["path"]).is_dir()
         return {"workspaces": ws}
@@ -724,8 +768,15 @@ class Backend:
     async def workspace_remove(self, path: str) -> dict:
         def run():
             d = self._desktop()
+            target = os.path.normcase(os.path.abspath(path))
             d["workspaces"] = [w for w in d.get("workspaces", [])
-                               if os.path.normcase(w["path"]) != os.path.normcase(path)]
+                               if os.path.normcase(os.path.abspath(w["path"])) != target]
+            # 从会话推导出来的项目不在 desktop.json 里，光删上面那步永远删不掉。
+            # 记一条 hidden：让它不再出现在 workspace/list，但不动历史会话本身。
+            hidden = [h for h in d.get("hidden_workspaces", [])
+                      if os.path.normcase(os.path.abspath(h)) != target]
+            hidden.append(path)
+            d["hidden_workspaces"] = hidden[-200:]
             self._save_desktop(d)
             return self._workspace_list()
         return await asyncio.to_thread(run)

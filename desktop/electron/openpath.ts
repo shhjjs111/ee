@@ -21,7 +21,13 @@ export function eeHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.EE_HOME ? path.resolve(env.EE_HOME) : path.join(os.homedir(), ".ee");
 }
 
-/** 允许打开的根目录：ee 目录 + desktop.json 里登记的工作区。 */
+/**
+ * 允许打开的根目录：ee 目录 + desktop.json 登记的工作区 + 历史会话里出现过的目录。
+ *
+ * 为什么要把会话 cwd 也算进来：侧栏显示的项目是从 thread 的 cwd 推导的，
+ * 不一定都登记在 desktop.json 里。只读 desktop.json 时，界面上看得见的项目
+ * 点「在资源管理器中打开」会被直接拒绝，用户看到的就是「点了没反应」。
+ */
 export function allowedRoots(home: string = eeHome()): string[] {
   const roots = [home];
   try {
@@ -32,6 +38,36 @@ export function allowedRoots(home: string = eeHome()): string[] {
   } catch {
     /* 没有 desktop.json：只有 ee 目录 */
   }
+
+  // 历史会话目录：~/.ee/sessions/*.jsonl，每行一个事件，首行含 cwd
+  try {
+    const dir = path.join(home, "sessions");
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).slice(-200);
+    const seen = new Set<string>();
+    for (const f of files) {
+      try {
+        // 只读开头一段：会话首行就带 cwd，没必要整文件读
+        const fd = fs.openSync(path.join(dir, f), "r");
+        const buf = Buffer.alloc(4096);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        fs.closeSync(fd);
+        const head = buf.subarray(0, n).toString("utf-8");
+        const m = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(head);
+        if (m) {
+          const cwd = JSON.parse(`"${m[1]}"`);
+          if (cwd && !seen.has(cwd)) {
+            seen.add(cwd);
+            roots.push(cwd);
+          }
+        }
+      } catch {
+        /* 单个会话读不出来不影响其他 */
+      }
+    }
+  } catch {
+    /* 没有 sessions 目录：跳过 */
+  }
+
   return roots;
 }
 
