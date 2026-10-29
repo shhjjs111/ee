@@ -7,6 +7,7 @@ import {
   CornerDownRight,
   ChevronRight,
   Clock,
+  Download,
   Folder,
   FolderPlus,
   MoreHorizontal,
@@ -24,6 +25,7 @@ import { useApp } from "../lib/store";
 import { useAutomations } from "../lib/automationStore";
 import type { ThreadSummary } from "../types";
 import { Button, Menu, Spinner, Tip } from "./ui";
+import { ExportDialog } from "./ExportDialog";
 import { WorktreeDialog } from "./WorktreeDialog";
 
 function norm(p: string) {
@@ -99,6 +101,7 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
           }
           items={[
             { label: "重命名", icon: <Pencil size={13} />, onSelect: () => { setTitle(t.title); setEditing(true); } },
+            { label: "导出…", icon: <Download size={13} />, onSelect: () => s.set({ exportDialog: t.id }) },
             {
               label: "删除对话",
               icon: <Trash2 size={13} />,
@@ -359,6 +362,7 @@ export function Sidebar() {
         </button>
       </div>
       <WorktreeDialog />
+      <ExportDialog />
     </aside>
   );
 }

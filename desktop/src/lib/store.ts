@@ -55,6 +55,7 @@ type State = {
   defaultStyle: string; // 设置里的默认回答风格
   draftWorktree: boolean; // 新对话在新 worktree 里开始（D5-1）
   worktreeDialog: string | null; // 打开 worktree 管理的项目路径
+  exportDialog: string | null; // 打开导出对话框的会话 id（T10-a）
   rightOpen: boolean;
   rightTab: RightTab;
   reviewNonce: number;
@@ -132,6 +133,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   defaultStyle: "default",
   draftWorktree: false,
   worktreeDialog: null,
+  exportDialog: null,
   rightOpen: localStorage.getItem("ee.right") !== "0",
   rightTab: "review",
   reviewNonce: 0,
