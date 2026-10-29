@@ -405,15 +405,20 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
         原来只发固定文案，模型看不到判据与失败原因，只能猜。
         """
         _turns["n"] += 1
-        payload = prompt
-        if args.goal and _turns["n"] > 1 and verdict is not None:
+        if args.goal:
             from ee.core.goal import GoalSpec as _GS
-            from ee.core.goal_feedback import build_feedback
+            from ee.core.goal_feedback import build_feedback, build_first_turn
             _spec = _GS(command=args.goal, cwd=th.meta["cwd"],
                         min_tests=max(1, int(args.goal_min_tests)),
                         timeout=float(args.goal_timeout))
-            payload = build_feedback(verdict, _spec, attempt=_turns["n"] - 1,
-                                     max_checks=int(args.goal_max_rounds))
+            if _turns["n"] == 1 or verdict is None:
+                # 第一轮就把判据附上：中途压缩不丢（见 build_first_turn）
+                payload = build_first_turn(prompt, _spec)
+            else:
+                payload = build_feedback(verdict, _spec, attempt=_turns["n"] - 1,
+                                         max_checks=int(args.goal_max_rounds))
+        else:
+            payload = prompt
         th.start_turn(payload, mode=args.mode)
         task = th.task
         assert task is not None

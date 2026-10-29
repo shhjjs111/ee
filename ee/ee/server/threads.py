@@ -546,7 +546,10 @@ class Thread:
             """
             round_no["n"] += 1
             if round_no["n"] == 1 or verdict is None:
-                payload = text
+                from ee.core.goal_feedback import build_first_turn
+                # 第一轮就把判据命令作为数据附在用户目标后：Goal 中途可能触发
+                # 自动压缩，判据只在局部变量的话会在压缩时永久丢失（见 goal_feedback.build_first_turn）
+                payload = build_first_turn(text, spec)
             else:
                 from ee.core.goal_feedback import build_feedback
                 payload = build_feedback(verdict, spec, attempt=round_no["n"] - 1,
