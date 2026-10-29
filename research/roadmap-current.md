@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-10-28。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-10-29。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -21,12 +21,52 @@
 | D6-1 Wave C / U8 | 桌面端左栏树形与子会话卡片、审批冒泡落盘 | 已完成并验证 | `desktop\src\components\ChildThreadCard.tsx`、`Sidebar.tsx`、`lib\store.ts`；`ChildThreadCard.test.tsx`、`SidebarChildIndent.test.tsx`、`lib\childApproval.test.ts` |
 | D6-1 Wave C / U9 | 假模型端到端脚本 + 编排闭环 | 已完成并验证 | `ee\scripts\e2e_ws.py`；`ee\tests\test_e2e_wait.py`；`server\app.py` 的 `thread/create_child\|children\|status\|wait` |
 | D6-2 / T9 | 版本化 LSP 诊断、可信启动与进程回收 | **已完成并验证（U1–U6 + 生产接线 + 真实服务器）** | `ee/core/lsp/{client,servers,manager,diagnostics,notify}.py`、`ee/tools/lsp.py`、`ee/core/session.py` 的 `_attach_lsp`、`ee/tests/test_lsp.py`（30 例）+ `test_lsp_integration.py`（5 例，含真实 pyright）；设置页开关。只支持 python / typescript，不自动安装服务器 |
-| T10-a 会话导出 | Markdown / JSON 导出（核心 + RPC + CLI） | **已完成并验证**（桌面端入口未做） | `ee\ee\core\export.py`、`server\app.py` 的 `thread/export`、`cli.py` 的 `export` 子命令；`ee\tests\test_export.py`（11 例）、`test_export_rpc.py`（10 例）、`test_export_cli.py`（8 例） |
-| T10-b / Goal 循环 | 条件驱动 + 多轮续跑 + 判据判定（零测试/超时不算成功） | **已完成并验证（U1–U3）** | `ee\ee\core\goal.py`、`cli.py`+`headless.py` 的 `--goal`；`test_goal.py`（12）、`test_goal_runner.py`（9）、`test_goal_cli.py`（6）、`test_goal_exec.py`（5）、`test_goal_acceptance.py`（2，真实 pytest 闭环） |
-| T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证（建议态）**；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5） |
-| T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证（评选层）**；worktree 创建与合并未接 | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）；`test_bestof.py`（14） |
-| T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证（清单层）**；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`；`test_handoff.py`（12） |
+| T10-a 会话导出 | Markdown / JSON 导出（核心 + RPC + CLI + 桌面端入口） | **已完成并验证**（全链路；Electron 保存对话框未验） | `ee\ee\core\export.py`、`server\app.py` 的 `thread/export`、`cli.py` 的 `export` 子命令、`desktop\src\components\ExportDialog.tsx`（会话行菜单「导出…」）；`ee\tests\test_export.py`（11 例）、`test_export_rpc.py`（10 例）、`test_export_cli.py`（8 例）、`desktop\src\components\ExportDialog.test.tsx`（4 例） |
+| T10-b / Goal 循环 | 条件驱动 + 多轮续跑 + 判据判定（零测试/超时不算成功） | **已完成并验证**（U1–U3 + 会话内 `turn/start` + 桌面端 `+` 菜单入口） | `ee\ee\core\goal.py`、`cli.py`+`headless.py` 的 `--goal`、`server\threads.py` 的 `start_turn(goal=)`／`_consume_goal`、`desktop\src\components\GoalMenu.tsx`；`test_goal.py`（12）、`test_goal_runner.py`（9）、`test_goal_cli.py`（6）、`test_goal_exec.py`（5）、`test_goal_acceptance.py`（2，真实 pytest 闭环）、`test_goal_turn.py`（12）、`GoalMenu.test.tsx`（7） |
+| T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证**（建议态 + 落库 + 审批卡片显示）；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`、`server\threads.py` 的 `_on_event` 落 `ApprovalItem`、`desktop\src\components\Items.tsx` 的建议区；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5）、`test_autoapprove_persist.py`（3）、`ApprovalSuggestion.test.tsx`（4） |
+| T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 桌面端展示）；**界面跑不出真实结论**：候选不带 verdict，判据编排未做 | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`BestofDialog.test.tsx`（5） |
+| T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | 后置 | 发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+
+## 执行记录（2026-10-29，T10 桌面端入口与 RPC）
+
+把 T10 的五项从「只有后端」推到「桌面端可达」，并补上界面缺的后端入口。提交：
+
+```
+684500a feat(ui): 交接清单与候选比较的界面入口，四个 T10 能力全部可达
+1c55d81 feat(rpc): 文件交接与 best-of-n 的 RPC，补上界面缺的后端入口
+9eb4010 feat(ui): Codex 式「目标」入口，两级菜单接进输入区
+031dd19 feat(goal): Goal 接进 turn/start，会话内可用
+31488cd feat(ui): T10-c 审批卡片显示建议，并补上后端缺失的落库
+441354f feat(ui): T10-a U3 会话导出入口，接到会话菜单
+```
+
+界面形态按用户要求做成 Codex 式：输入框 `+` → 分组菜单 → 每项带图标 / 标题 / 灰色描述；
+`Menu`（`desktop\src\components\ui.tsx`）扩展出 `sections` 与 `desc` 支持双行与分组。
+视觉全部沿用 `desktop\src\index.css` 的 CSS 变量，未引入第二套体系。
+
+本批顺带修掉的既有缺陷（「生产线从没通过电」，与 LSP 那次同一形态）：
+
+| 缺陷 | 锚点 | 后果 |
+|---|---|---|
+| 建议态没落进 `ApprovalItem` | `ee\ee\server\threads.py` 的 `_on_event` | 后端有建议、前端永远拿不到 |
+
+（`_consume` 的 goal 分支从一开始就在 `try` 内，`threads.py:444-449` 的注释写明了「提前 `return` 会跳过 `finally` / `_finish()`」。这是 031dd19 一并做对的，不是修出来的缺陷。）
+
+验证（本轮实测）：
+
+| 单元 | 命令 | 结果 |
+|---|---|---|
+| 后端 11 个 T10 测试文件 | `pytest test_export{,_rpc,_cli}.py test_goal_turn.py test_autoapprove{,_wiring,_persist}.py test_handoff{,_rpc}.py test_bestof{,_rpc}.py` | 97 passed（23.15s） |
+| 前端 5 个 T10 套件 | `vitest ExportDialog ApprovalSuggestion GoalMenu HandoffDialog BestofDialog` | 25 passed（5 files） |
+| 类型 | `tsc --noEmit -p tsconfig.json` | exit 0 |
+| CI | `684500a` `desktop-windows` | success |
+
+未执行 / 未验证：
+
+- **桌面端从未启动过**（`cd desktop && npm run dev` 没跑过）：间距、字号、弹出方向、动画、`+` 菜单的 `side="top"` 实际弹出位置全部未验。所有前端断言都停留在 jsdom 的 DOM 结构层。
+- **`GoalMenu` 键盘导航未测**：↑↓ 选择、Esc 关闭只有实现没有断言。
+- **best-of-n 端到端不可用**：见上节「判据编排未做」。
 
 ## 执行记录（2026-10-29，T10-c/d/e）
 
@@ -46,10 +86,11 @@
 - best-of-n 只评选（worktree 创建与合并留给调用方与用户确认）；
 - 交接只出清单与核对（复制/切换/删除是用户确认后的分步动作）。
 
-未做 / 保留边界：
-- 三项均**无桌面端界面**（本轮明确不做桌面端）。
+未做 / 保留边界（截至 `ef9ca1e`；后续界面/RPC 见下一节）：
+- ~~三项均**无桌面端界面**~~ → 已在 `684500a`/`9eb4010`/`1c55d81` 补齐入口，见「执行记录（2026-10-29，T10 桌面端入口与 RPC）」。
 - 自动审批的**自动放行版本**未做：方案要求另行安全审查，不擅自实现。
 - best-of-n 的 run_id/费用采集未接（`Candidate` 有字段，调用方负责填）。
+- best-of-n 的**判据编排未做**：界面把 worktree 列表当候选提交，不带 `Verdict`，所以一律判未验证、永远「不选」。要端到端可用需先定判据命令来源与时间预算。
 - 文件交接与 `worktree.create/remove` 的衔接未接（复用现有接口，不在本单元）。
 
 
