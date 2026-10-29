@@ -51,7 +51,6 @@ def test_repeat_read_gives_full_text_again_after_second_reference(tmp_path):
     assert "x = 1" in third.output, "引用第二次之后必须给全文，否则模型陷入死循环"
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 5/T17：truncate_to 不清 reads，历史已无正文却仍回「见上文」（ACC-43）")
 def test_no_ghost_reference_after_history_truncated(tmp_path):
     """历史被截断后（那段读结果已不在上下文里），再读同一区间必须给正文。"""
     ws = tmp_path / "ws"

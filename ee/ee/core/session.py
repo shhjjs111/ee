@@ -432,6 +432,21 @@ class Session:
         self._fresh_usage = False
         self.store = SessionStore(self.home, enabled=self.store.enabled)
 
+    def _invalidate_read_refs(self, why: str) -> None:
+        """历史被改写后，作废"已返回过引用"的记账，下次 read 给全文。
+
+        为什么需要集中一处：read 的「与上次读取相同，内容见上文」只有在
+        那段内容**当前仍在上下文里**时才成立。压缩/修剪会重建历史，回退与
+        编辑重发会截断历史——后者原来没清 reads，于是模型被指向一段已经不存在的
+        "上文"，既浪费一轮又可能据此改错代码。
+
+        只清 reads（引用计数），保留 files 条目本身：was_read 的语义是
+        "这个会话了解这个文件"，与"内容此刻是否可见"是两件事。
+        """
+        for rec in self.state.files.values():
+            rec.reads.clear()
+        log.debug("已作废读引用记账（%s），后续 read 将返回全文", why)
+
     def rewind_last_turn(self) -> str | None:
         """回退（backtrack）：删掉最后一个回合，返回那条用户消息原文供重新编辑。文件改动不回滚（用 /undo）。"""
         if self.running or not self.turn_starts:
@@ -441,6 +456,7 @@ class Session:
         text = content.split("\n\n<context-update")[0]
         self.history = self.history[:i]
         self.updates.reset()          # 被删的消息可能带着基线附录，下一条补发全量
+        self._invalidate_read_refs("rewind")
         self.store.append("rewind", {"to": i})
         return text
 
@@ -460,6 +476,7 @@ class Session:
         self.history = self.history[:i]
         self.turn_starts = [x for x in self.turn_starts if x < i]
         self.updates.reset()
+        self._invalidate_read_refs("truncate")
         self.queue.clear()
         self.notes.clear()
         self.guard = LoopGuard.from_config(self.config.data.get("loop_guard"))
@@ -1574,8 +1591,7 @@ class Session:
             self.store.message(m)
         self.store.append("compact", {"reason": reason, "tokens_before": before, "incremental": incremental})
         self.turn_starts = []          # 压缩前的回合无法再回退
-        for rec in self.state.files.values():
-            rec.reads.clear()          # 读过的内容已不在上下文里：下次 read 返回全文
+        self._invalidate_read_refs("compact")
         prefix = self.prefix or self.current_prefix()
         after = (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools)) +
                  C.estimate_messages(new))
