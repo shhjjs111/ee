@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
+import fs from "node:fs";
 import path from "node:path";
 import { Backend } from "./backend";
 import { allowedRoots, guardedOpenPath } from "./openpath";
@@ -28,6 +29,19 @@ const OVERLAY = {
   light: { color: "#00000000", symbolColor: "#3a3a3a", height: 44 },
 };
 
+/** 窗口/任务栏图标：开发态读 build/，打包后读 resourcesPath（与 tray.ts 一致）。 */
+function windowIconPath(): string | undefined {
+  const names = process.platform === "win32" ? ["icon.ico", "icon.png"] : ["icon.png"];
+  const dirs = app.isPackaged
+    ? [process.resourcesPath, path.join(process.resourcesPath, "build")]
+    : [path.join(path.resolve(__dirname, ".."), "build")];
+  for (const d of dirs) for (const n of names) {
+    const p = path.join(d, n);
+    if (fs.existsSync(p)) return p;
+  }
+  return undefined;
+}
+
 function createWindow() {
   const dark = nativeTheme.shouldUseDarkColors;
   win = new BrowserWindow({
@@ -37,6 +51,7 @@ function createWindow() {
     minHeight: 600,
     show: false,
     title: "ee",
+    icon: windowIconPath(),
     backgroundColor: dark ? "#171717" : "#ffffff",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     titleBarOverlay: process.platform === "darwin" ? undefined : dark ? OVERLAY.dark : OVERLAY.light,
