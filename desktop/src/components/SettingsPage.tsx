@@ -384,8 +384,11 @@ export function SettingsPage() {
   const providerNames = Object.keys(draft.providers);
 
   return (
-    <div className="flex min-w-0 flex-1 bg-bg">
-      <div className="flex w-[220px] shrink-0 flex-col border-r border-line px-2 pt-0">
+    // h-full + min-h-0：设置页现在是 AppShell 的直接子节点（不再嵌在旧的 flex 容器里），
+    // 少了这两个类，下面那个 overflow-y-auto 拿不到受限高度，内容超出时不会出现滚动条——
+    // 表现为「设置滚不动、下面几项看不全」。
+    <div className="flex h-full min-h-0 min-w-0 flex-1 bg-bg">
+      <div className="flex w-[220px] shrink-0 flex-col overflow-y-auto border-r border-line px-2 pt-0">
         <div className="drag flex items-center px-2" style={{ height: TITLEBAR_H }}>
           <button onClick={() => s.set({ view: "chat" })} className="no-drag flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[12.5px] text-muted hover:bg-hover hover:text-fg">
             <ArrowLeft size={14} /> 返回
@@ -406,9 +409,9 @@ export function SettingsPage() {
           </button>
         ))}
       </div>
-      <div className="relative flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="drag shrink-0" style={{ height: TITLEBAR_H, marginRight: "var(--overlay-w)" }} />
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[820px] px-8 pb-28 pt-2">
             {section === "general" && (
               <>

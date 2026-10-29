@@ -39,7 +39,9 @@ export function AppShell({
           {sidebar}
         </div>
       )}
-      <div className="flex min-w-0 flex-1 flex-col">{main}</div>
+      {/* min-h-0 不能省：flex 子项默认 min-height:auto，内容一长会把容器撑开，
+          里面的 overflow-y-auto 就永远不滚动（设置页滚不动就是这个原因）。 */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{main}</div>
       {inspector !== null &&
         (overlay ? (
           // 覆盖式：贴着右侧但不越过窗口按钮区（右上 44px 那条留给系统）
