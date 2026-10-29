@@ -122,6 +122,10 @@ class Backend:
         shell_rpc.register(self.methods, self)         # shell/list|read|kill（后台命令，D4-6）
         rules_rpc.register(self.methods, self)         # permissions/list|remove（永久允许规则，D4-8）
         worktree_rpc.register(self.methods, self)      # worktree/list|create|diff|merge|remove（D5-1）
+        from ee.server import handoff_rpc
+        handoff_rpc.register(self.methods, self)        # handoff/manifest|verify（T10-e）
+        from ee.server import bestof_rpc
+        bestof_rpc.register(self.methods, self)         # bestof/pick（T10-d）
         checkpoint_rpc.register(self.methods, self)    # checkpoint/list|diff|restore|gc、review/hunk（D5-7）
         skills_rpc.register(self.methods, self.home)   # skills/list|read|dir（技能，D5-5）
         hooks_rpc.register(self.methods, self)         # hooks/list|test（D5-4）
