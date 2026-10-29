@@ -4,3 +4,7 @@ dist-electron/
 release/
 resources/backend/
 *.log
+
+# Playwright 产物（失败截图/trace，不进仓库）
+test-results/
+playwright-report/

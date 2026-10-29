@@ -16,7 +16,8 @@
     "backend:build": "node scripts/build-backend.mjs",
     "dist:win": "npm run build && electron-builder --win nsis --publish never",
     "dist:dir": "npm run build && electron-builder --dir --publish never",
-    "dist:win:full": "npm run build && node scripts/build-backend.mjs && electron-builder --win nsis --publish never"
+    "dist:win:full": "npm run build && node scripts/build-backend.mjs && electron-builder --win nsis --publish never",
+    "test:ui": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.3.1",
