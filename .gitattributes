@@ -1,0 +1,53 @@
+# 统一行尾（2026-10-29）
+#
+# 为什么需要这个文件：
+#   本机 git 配置是 core.autocrlf=input —— 提交时把 CRLF 归一化成 LF 存进仓库，
+#   检出时却按 LF 落地。于是工作区文件可以是 CRLF，而索引里是 LF，两者长期不一致。
+#
+#   这会让「按文件内容算哈希」的工具在两次读取之间得到不同结果：
+#   交付门禁（deliver_task）会在预览和提交两个时点各算一次
+#   （HEAD + git ls-files 摘要 + 逐文件内容哈希），其中一个实现对 ≤2MB 的文件
+#   先做 EOL 归一化，另一个不做 —— 只要工作区文件是 CRLF，两次结果就可能不同，
+#   表现为持续报 "Selected file content changed after the preview was captured"。
+#   本仓库实测：desktop 下曾有 22 个 CRLF 文件，导致交付连续失败 7 次以上。
+#
+# 做法：
+#   让 git 明确管理行尾，而不是依赖每个人的 core.autocrlf 设置。
+#   文本文件一律 LF；Windows 专用的 .bat/.cmd/.ps1 保留 CRLF（部分工具对它们敏感）。
+#   二进制文件不做转换。
+
+* text=auto eol=lf
+
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.mts   text eol=lf
+*.js    text eol=lf
+*.cjs   text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.py    text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Windows 脚本仍用 CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制：不转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.exe   binary
+*.dll   binary
+*.node  binary
+*.woff  binary
+*.woff2 binary
+*.pyc   binary
