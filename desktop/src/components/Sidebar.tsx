@@ -47,6 +47,8 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
         active ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg",
       )}
       onClick={() => !editing && s.openThread(t.id)}
+      data-testid="thread-row"
+      data-title={t.title}
     >
       {editing ? (
         <input
@@ -121,6 +123,10 @@ export function Sidebar() {
   const s = useApp();
   const autoUnread = useAutomations((x) => x.unread);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // 每个项目默认显示 50 条，点"再显示"每次多 50（改版前是硬截断到 50，多出的静默消失）。
+  const [showMore, setShowMore] = useState<Record<string, number>>({});
+  const PAGE = 50;
+  const shown = (key: string) => PAGE + (showMore[key] ?? 0);
   const [searching, setSearching] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   // Ctrl/⌘+K：打开并聚焦对话搜索（侧栏按钮上提示的快捷键）；终端里不抢
@@ -320,7 +326,7 @@ export function Sidebar() {
               </div>
               {!isCollapsed && (
                 <div className="space-y-px">
-                  {g.threads.slice(0, 50).map((t) => (
+                  {g.threads.slice(0, shown(k)).map((t) => (
                     <div key={t.id}>
                       <ThreadRow t={t} active={t.id === s.activeThreadId && s.view === "chat"} />
                       {/* 子会话额外给一张卡片（D6-1 U8）：状态点看不清「跑完了」还是「超预算/中断」，
@@ -340,6 +346,18 @@ export function Sidebar() {
                     </div>
                   ))}
                   {g.threads.length === 0 && <div className="py-1 pl-7 text-[12px] text-faint">暂无对话</div>}
+                  {/* 改版前固定 slice(0, 50)：第 51 个对话直接消失，界面上没有任何交代。
+                      现在先给 50 条 + 明确的"显示更多"，每次多放 50；搜索时不限。 */}
+                  {!q && g.threads.length > shown(k) && (
+                    <button
+                      onClick={() => setShowMore((m) => ({ ...m, [k]: shown(k) + PAGE }))}
+                      className="no-drag mt-0.5 flex h-7 w-full items-center gap-1.5 rounded-lg pl-7 pr-2 text-left text-[12px] text-faint transition-colors hover:bg-hover hover:text-muted"
+                      data-testid="threads-more"
+                    >
+                      再显示 {Math.min(PAGE, g.threads.length - shown(k))} 个
+                      <span className="text-faint/70">（还有 {g.threads.length - shown(k)} 个）</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>

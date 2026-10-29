@@ -2,7 +2,7 @@ import { reportError } from "../lib/errors";
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
 import { ContextRing } from "./ContextPanel";
-import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
+import { GitBranch, ArrowUp, AtSign, Cpu, File, ListChecks, Shield, ShieldCheck, ShieldOff, SlidersHorizontal, Square, X } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import {
@@ -29,7 +29,7 @@ import { LoopTray } from "./LoopTray";
 import { LOOP_HELP, loopListText, loopToAutomation, parseLoopArgs, type SessionLoop } from "../lib/loop";
 import { useLoops } from "../lib/loopStore";
 import { useAutomations } from "../lib/automationStore";
-import { Select, Spinner, Tip } from "./ui";
+import { Select, Spinner, Tip, Menu } from "./ui";
 
 const MODES = [
   { value: "read-only", label: "只读", hint: "只能读文件和运行只读命令", icon: <Shield size={14} /> },
@@ -642,30 +642,41 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             icon={MODES.find((m) => m.value === mode)?.icon}
             title="权限模式"
           />
-          <Select
-            value={effort}
-            options={effortOptionsFor(support).map((o) => ({
-              ...o,
-              disabled: !effortSupported(o.value, support),
-              hint: effortSupported(o.value, support) ? o.hint : "当前模型不支持",
-            }))}
-            onChange={(v) => s.setOptions({ effort: v })}
-            icon={<Brain size={13} />}
-            renderLabel={(o) => (o && o.value ? o.label : "推理")}
-            title={support.effort || support.off ? "推理强度（本会话，按模型记住；/effort）" : "当前模型不支持调节推理强度"}
-            className={clsx(!support.effort && !support.off && "opacity-50")}
-          />
-          <Select
-            value={style}
-            options={(styles.length ? styles : [{ id: "default", label: "默认", description: "" } as StyleInfo]).map((x) => ({
-              value: x.id,
-              label: x.label,
-              hint: x.description || (x.id === "default" ? "常规回答" : undefined),
-            }))}
-            onChange={(v) => s.setOptions({ style: v })}
-            icon={<GraduationCap size={13} />}
-            renderLabel={(o) => (o && o.value !== "default" ? o.label : "风格")}
-            title="回答风格（本会话；/style）"
+          {/* 推理强度与回答风格收进「更多」：两者都是低频、非每次发送都要看的参数。
+              权限模式、模型与发送留在原位——那是每次都要确认的。
+              控件本身还是原来的 Select，动作与 RPC 参数一字未改。 */}
+          <Menu
+            width="min-w-[180px]"
+            trigger={
+              <button
+                className="no-drag flex h-7 items-center gap-1 rounded-lg px-2 text-[12.5px] text-muted transition-colors hover:bg-hover hover:text-fg"
+                title="更多参数：推理强度、回答风格"
+                data-testid="composer-more"
+              >
+                <SlidersHorizontal size={14} />
+                <span className="hidden sm:inline">更多</span>
+              </button>
+            }
+            sections={[
+              {
+                group: "推理强度",
+                items: effortOptionsFor(support).map((o) => ({
+                  label: o.label,
+                  hint: o.value === effort ? "当前" : undefined,
+                  disabled: !effortSupported(o.value, support),
+                  onSelect: () => void s.setOptions({ effort: o.value }),
+                })),
+              },
+              {
+                group: "回答风格",
+                items: (styles.length ? styles : [{ id: "default", label: "默认", description: "" } as StyleInfo]).map((x) => ({
+                  label: x.label,
+                  desc: x.description || (x.id === "default" ? "常规回答" : undefined),
+                  hint: x.id === style ? "当前" : undefined,
+                  onSelect: () => void s.setOptions({ style: x.id }),
+                })),
+              },
+            ]}
           />
           {!s.activeThreadId && (
             <Tip label={s.draftWorktree ? "将在新的 git worktree（独立目录 + ee/ 分支）里开始，不动主目录；完成后在左栏项目菜单「Worktree」里合并或删除" : "在新的 git worktree 里开始（独立目录和分支，适合并行做多件事）"}>
