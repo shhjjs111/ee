@@ -42,8 +42,16 @@ export function killProcessTree(pid: number, sync = false): void {
   }
 }
 
-function devPython(): string {
+function devPython(appRoot?: string): string {
   if (process.env.EE_PYTHON) return process.env.EE_PYTHON;
+  // 仓库里自带 .venv 时优先用它：系统 python 常常是 Anaconda / 精简版，缺 openai
+  // 之类的依赖，后端一启动就 ModuleNotFoundError，而界面只显示「后端启动失败」。
+  // （开发模式首次跑起来最容易踩的就是这个。）
+  if (appRoot) {
+    const venv = process.platform === "win32" ? [".venv", "Scripts", "python.exe"] : [".venv", "bin", "python"];
+    const exe = path.resolve(appRoot, "..", ...venv);
+    if (fs.existsSync(exe)) return exe;
+  }
   return process.platform === "win32" ? "python" : "python3";
 }
 
@@ -59,7 +67,7 @@ export function backendCommand(opts: BackendOptions): { cmd: string; args: strin
   const eeRoot = path.resolve(opts.appRoot, "..", "ee");
   const sep = process.platform === "win32" ? ";" : ":";
   const pp = [eeRoot, process.env.PYTHONPATH].filter(Boolean).join(sep);
-  return { cmd: devPython(), args: ["-m", "ee", ...base], cwd: eeRoot, env: { PYTHONPATH: pp } };
+  return { cmd: devPython(opts.appRoot), args: ["-m", "ee", ...base], cwd: eeRoot, env: { PYTHONPATH: pp } };
 }
 
 export class Backend {

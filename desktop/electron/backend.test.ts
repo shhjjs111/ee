@@ -128,3 +128,42 @@ describe("Backend.stopAndWait（退出应用）", () => {
     expect(await waitFor(() => !alive(r.pid), 2000)).toBe(true);
   });
 });
+
+describe("devPython（开发模式选哪个解释器）", () => {
+  // 交接坑 12 的真实形态：系统 python 是 Anaconda，缺 openai，后端一启动就
+  // ModuleNotFoundError；界面看到的却是「后端启动失败」。
+  // 每个用例独立基目录，避免 .venv 在用例之间互相污染。
+  it("仓库里有 .venv 时优先用它，而不是系统 python", () => {
+    const base = fs.mkdtempSync(path.join(tmp, "venv-yes-"));
+    const repo = path.join(base, "repo");
+    const venv = path.join(base, ".venv", process.platform === "win32" ? "Scripts" : "bin");
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(venv, { recursive: true });
+    const exe = path.join(venv, process.platform === "win32" ? "python.exe" : "python");
+    fs.writeFileSync(exe, "");
+    const c = backendCommand({ ...opts(), appRoot: repo });
+    expect(c.cmd).toBe(exe);
+  });
+
+  it("没有 .venv 时退回系统 python，不让开发模式直接不可用", () => {
+    const base = fs.mkdtempSync(path.join(tmp, "venv-no-"));
+    const repo = path.join(base, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    const c = backendCommand({ ...opts(), appRoot: repo });
+    expect(c.cmd).toBe(process.platform === "win32" ? "python" : "python3");
+  });
+
+  it("EE_PYTHON 显式指定时最高优先，压过 .venv 探测", () => {
+    const base = fs.mkdtempSync(path.join(tmp, "venv-env-"));
+    const repo = path.join(base, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    const prev = process.env.EE_PYTHON;
+    process.env.EE_PYTHON = path.join(base, "custom-python");
+    try {
+      expect(backendCommand({ ...opts(), appRoot: repo }).cmd).toBe(process.env.EE_PYTHON);
+    } finally {
+      if (prev === undefined) delete process.env.EE_PYTHON;
+      else process.env.EE_PYTHON = prev;
+    }
+  });
+});
