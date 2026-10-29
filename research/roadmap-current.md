@@ -23,9 +23,36 @@
 | D6-2 / T9 | 版本化 LSP 诊断、可信启动与进程回收 | **已完成并验证（U1–U6 + 生产接线 + 真实服务器）** | `ee/core/lsp/{client,servers,manager,diagnostics,notify}.py`、`ee/tools/lsp.py`、`ee/core/session.py` 的 `_attach_lsp`、`ee/tests/test_lsp.py`（30 例）+ `test_lsp_integration.py`（5 例，含真实 pyright）；设置页开关。只支持 python / typescript，不自动安装服务器 |
 | T10-a 会话导出 | Markdown / JSON 导出（核心 + RPC + CLI） | **已完成并验证**（桌面端入口未做） | `ee\ee\core\export.py`、`server\app.py` 的 `thread/export`、`cli.py` 的 `export` 子命令；`ee\tests\test_export.py`（11 例）、`test_export_rpc.py`（10 例）、`test_export_cli.py`（8 例） |
 | T10-b / Goal 循环 | 条件驱动 + 多轮续跑 + 判据判定（零测试/超时不算成功） | **已完成并验证（U1–U3）** | `ee\ee\core\goal.py`、`cli.py`+`headless.py` 的 `--goal`；`test_goal.py`（12）、`test_goal_runner.py`（9）、`test_goal_cli.py`（6）、`test_goal_exec.py`（5）、`test_goal_acceptance.py`（2，真实 pytest 闭环） |
-| 后置 | best-of-n、文件交接、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+| T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证（建议态）**；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5） |
+| T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证（评选层）**；worktree 创建与合并未接 | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）；`test_bestof.py`（14） |
+| T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证（清单层）**；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`；`test_handoff.py`（12） |
+| 后置 | 发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
-## 执行记录（2026-10-29，T10-a 导出 / T10-b Goal 循环 / e2e 死锁）
+## 执行记录（2026-10-29，T10-c/d/e）
+
+| 单元 | 验证（真实执行） | 结果 |
+|---|---|---|
+| T10-c 建议态纯函数 | `pytest test_autoapprove.py` | 10 passed（先 RED 10 failed） |
+| T10-c 接线 | `pytest test_autoapprove_wiring.py` | 5 passed（先 RED 5 failed） |
+| T10-c 权限回归 | `test_permissions` + `test_rules_ask_ignore` + `test_session_lifecycle` + `test_loop` | 89 passed |
+| T10-d 评选 | `pytest test_bestof.py` | 14 passed（先 RED 14 failed） |
+| T10-d 真实衔接 | 两 worktree 各一候选，真实 pytest 判据：A 失败→未验证、B 通过→已验证，pick 选 B | 通过 |
+| T10-e 清单与核对 | `pytest test_handoff.py` | 12 passed（先 RED 12 failed） |
+| T10-e 真实端到端 | 本仓库 236 条清单 → 复制 → 逐字节核对 0 问题；故意篡改后精确报「哈希不一致」 | 通过 |
+| CI | `7f1dccf` / `ca78136` / `a11697f` | verify 全绿 |
+
+三项的共同取舍：**都只做不可逆动作之前的那一半**。
+- 建议态不碰决策（没有能力把 ask 变 allow）；
+- best-of-n 只评选（worktree 创建与合并留给调用方与用户确认）；
+- 交接只出清单与核对（复制/切换/删除是用户确认后的分步动作）。
+
+未做 / 保留边界：
+- 三项均**无桌面端界面**（本轮明确不做桌面端）。
+- 自动审批的**自动放行版本**未做：方案要求另行安全审查，不擅自实现。
+- best-of-n 的 run_id/费用采集未接（`Candidate` 有字段，调用方负责填）。
+- 文件交接与 `worktree.create/remove` 的衔接未接（复用现有接口，不在本单元）。
+
+
 
 | 单元 | 验证（真实执行） | 结果 |
 |---|---|---|
