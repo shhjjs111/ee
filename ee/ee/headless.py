@@ -46,6 +46,27 @@ EXIT_BUDGET = 5
 EXIT_CODES = {"completed": EXIT_OK, "error": EXIT_ERROR, "max_steps": EXIT_MAX_STEPS, "loop": EXIT_LOOP,
               "interrupted": EXIT_INTERRUPTED, "budget": EXIT_BUDGET}
 
+# goal 的停止原因 → 退出码。刻意不新增码值：exhausted 与 max_steps 同义
+# （都是"预算耗尽但没说做完了"），met 与 completed 同义。未知原因退 1，
+# 绝不允许落到 0——退出码是脚本判断成败的唯一依据。
+_GOAL_EXIT = {"met": EXIT_OK, "exhausted": EXIT_MAX_STEPS, "budget": EXIT_BUDGET,
+              "interrupted": EXIT_INTERRUPTED, "error": EXIT_ERROR}
+
+
+def goal_exit_code(stop_reason: str) -> int:
+    return _GOAL_EXIT.get(stop_reason, EXIT_ERROR)
+
+
+def _positive_int(text: str) -> int:
+    """argparse 类型：只接受正整数。0 轮没有意义，要明确拒绝而不是静默不跑。"""
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"需要正整数：{text!r}") from None
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"必须 >= 1：{v}")
+    return v
+
 # --json 时的事件类型（每行一个对象，都有 "type"）：
 EVENT_TYPES = (
     "session",          # {id, cwd, model, mode, resumed, persist, profile}  第一行
@@ -107,6 +128,18 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--json", action="store_true", help="stdout 输出 JSONL 事件流")
     p.add_argument("--stream", action="store_true", help="--json 时额外输出 assistant_delta 流式片段")
     p.add_argument("-o", "--output-last-message", metavar="文件", help="把最终回答写进这个文件（UTF-8）")
+    # Goal 循环（T10-b）：跑到判据成立为止。判据由用户给，模型不能改。
+    p.add_argument("--goal", metavar="命令",
+                   help="完成判据：反复跑 agent 回合直到这条命令判定通过。"
+                        "判定要求退出码 0 且真的收集到测试（>= --goal-min-tests 个）；"
+                        "零测试、超时、未跑完都不算通过。")
+    p.add_argument("--goal-max-rounds", type=_positive_int, default=3, metavar="N",
+                   help="最多判定几次（默认 3）。判完最后一次就停，不再跑无用回合。")
+    p.add_argument("--goal-timeout", type=float, default=300.0, metavar="秒",
+                   help="单次判据命令的超时（默认 300）")
+    p.add_argument("--goal-min-tests", type=int, default=1, metavar="N",
+                   help="判据至少要收集到多少个测试才算通过（默认 1）。"
+                        "这是防「命令退出 0 但一条测试都没跑」的假成功。")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--resume", metavar="会话id", help="续接这个会话（与桌面端同一套会话）")
     g.add_argument("--last", action="store_true", help="续接工作目录下最近的一个会话")
@@ -362,13 +395,41 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
     hits = {"n": 0}
     restore = _install_sigint(loop, th, hits)
     reason, t0 = "error", time.monotonic()
-    try:
+
+    async def _one_turn() -> str:
+        """跑一个回合，返回停止原因。goal 模式下会被反复调用。"""
         th.start_turn(prompt, mode=args.mode)
         task = th.task
         assert task is not None
         await task
         last = next((it for it in reversed(th.items) if it.get("type") == "turn_end"), None)
-        reason = (last or {}).get("reason") or "error"
+        return (last or {}).get("reason") or "error"
+
+    goal_result = None
+    try:
+        if args.goal:
+            from ee.core.goal import GoalSpec, run_goal
+
+            spec = GoalSpec(command=args.goal, cwd=th.meta["cwd"],
+                            min_tests=max(1, int(args.goal_min_tests)),
+                            timeout=float(args.goal_timeout))
+
+            async def _judge_emit(v) -> None:
+                printer.event("goal_check", met=v.met, reason=v.reason, exit=v.exit,
+                              tests=v.tests)
+                printer.progress(("[判据] 通过：" if v.met else "[判据] 未通过：") + v.reason)
+
+            # 预算判据用真实的字段：BudgetGuard.stop_reason 在超限时被 record() 设成非 None
+            # （core/budget.py:182 初始化、:184 record 里赋值）。别臆造 exceeded()。
+            budget_fn = (lambda: bool(getattr(th.session.budget, "stop_reason", None))) \
+                if th.session is not None else None
+
+            goal_result = await run_goal(
+                spec, turn_runner=_one_turn, max_rounds=int(args.goal_max_rounds),
+                budget_exhausted=budget_fn, emit=_judge_emit)
+            reason = goal_result.stop_reason
+        else:
+            reason = await _one_turn()
     finally:
         restore()
         try:
@@ -381,14 +442,26 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
         except Exception:  # noqa: BLE001
             pass
     text = th.final_text or _last_text(th)
-    code = EXIT_CODES.get(reason, EXIT_ERROR)
+    # goal 模式下 reason 是 goal 的停止原因（met/exhausted/…），走 goal 的映射；
+    # 否则沿用回合自己的退出码表。
+    code = goal_exit_code(reason) if goal_result is not None else EXIT_CODES.get(reason, EXIT_ERROR)
     extra = {}
     stop_reason = getattr(s.budget, "stop_reason", None) if reason == "budget" else None
     if stop_reason:
         extra["stop_reason"] = stop_reason
+    if goal_result is not None:
+        extra["goal"] = {"stop_reason": goal_result.stop_reason,
+                         "rounds": len(goal_result.rounds)}
     printer.event("turn_done", reason=reason, text=text, session_id=th.id,
                   duration_ms=int((time.monotonic() - t0) * 1000), usage=th.usage, exit_code=code, **extra)
-    if reason != "completed":
+    if goal_result is not None:
+        # goal 模式把完整报告打出来：哪一轮、为什么没成、最后一次判据看到什么。
+        # 只报一句 "exhausted" 等于让人重跑一遍才知道发生了什么。
+        printer.progress(f"[goal] {goal_result.stop_reason}（退出码 {code}）")
+        if not goal_result.met:
+            for ln in goal_result.report().splitlines():
+                printer.progress("  " + ln)
+    elif reason != "completed":
         label = {"error": "出错", "max_steps": "到达步数上限", "loop": "检测到重复操作，已停止",
                  "interrupted": "已中断", "budget": "达到花费上限，已停止"}.get(reason, reason)
         printer.progress(f"[结束] {label}（退出码 {code}）" + (f"：{stop_reason}" if stop_reason else ""))

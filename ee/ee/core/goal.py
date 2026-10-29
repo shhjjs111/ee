@@ -213,7 +213,10 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
         result.rounds.append(v)
         if emit is not None:
             try:
-                emit(v)
+                r = emit(v)
+                # emit 允许是协程：忘了 await 会让事件静默丢失（踩过）
+                if asyncio.iscoroutine(r):
+                    await r
             except Exception:  # noqa: BLE001  观感回调出错不影响判定
                 pass
         if v.met:
