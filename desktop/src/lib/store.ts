@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { approvalNotice, turnCompletedNotice } from "./notify";
 import type { BgProc, ChildApprovalNote, ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
+import { pushReturned, takeReturned, type ReturnedInbox, type ReturnedInput } from "./drafts";
 import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
@@ -68,6 +69,13 @@ type State = {
   search: string;
   settingsSection: SettingsSection | null;
   returnedDraft: { threadId: string; texts: string[]; nonce: number } | null; // 中断 / 撤回退回的排队消息，放回输入框
+  /** 按会话存的退回消息收件箱（T11）。returnedDraft 是从它派生出来给输入框消费的那一份，
+   *  跨会话不再互相覆盖：A 会话没消费完，B 会话再退回也不会冲掉它。 */
+  returnedInbox: ReturnedInbox;
+  /** 每个会话的「停止请求」状态（T12）。与真实的运行状态分开：
+   *  点了停止 → requesting；后端确认收到 → acknowledged；返回 false/出错 → failed。
+   *  只有真实的 turn/completed 才能把运行状态置为 idle，不能用请求态冒充。 */
+  interruptRequests: Record<string, { state: "requesting" | "acknowledged" | "failed"; at: number; runId?: string }>;
   composerDraft: { text: string; nonce: number } | null; // 让输入框预填（分叉后） // 打开设置页时要跳到的分区（斜杠命令用），读取后清空
   toast: { text: string; kind: "info" | "error" } | null;
   dialog: { kind: "review"; instructions?: string } | { kind: "commit" } | null; // /review、/commit 弹窗
@@ -156,6 +164,8 @@ export const useApp = create<State & Actions>((set, get) => ({
   settingsSection: null,
   composerDraft: null,
   returnedDraft: null,
+  returnedInbox: {},
+  interruptRequests: {},
   toast: null,
   dialog: null,
 
@@ -279,7 +289,15 @@ export const useApp = create<State & Actions>((set, get) => ({
       const t = r.thread as ThreadDetail;
       // 迟到的响应（用户已经切到别的对话）只缓存详情，不改当前项目
       const still = get().activeThreadId === id;
-      set((s) => ({ details: { ...s.details, [id]: t }, ...(still ? { activeWorkspace: t.cwd } : {}) }));
+      // 切回一个「正在运行」的会话时，从后端 runs 恢复真实起点（T13）。
+      // 原来只由前端本地写入，切回来时没有值，Conversation 用 Date.now() 兜底，
+      // 于是流式期间每次重渲都从 0 秒重新计时，看起来"跑了很久却一直显示 0 秒"。
+      const startedMs = latestRunStartedMs(t);
+      set((s) => ({
+        details: { ...s.details, [id]: t },
+        ...(still ? { activeWorkspace: t.cwd } : {}),
+        ...(startedMs ? { turnStartedAt: { ...s.turnStartedAt, [id]: startedMs } } : {}),
+      }));
       if (still) localStorage.setItem("ee.workspace", t.cwd);
       rpc.call("shell/list", { thread_id: id })
         .then((r) => set((s) => ({ bgProcs: { ...s.bgProcs, [id]: r.procs as BgProc[] } })))
@@ -426,12 +444,12 @@ export const useApp = create<State & Actions>((set, get) => ({
       get().showToast(msg, "error");
       if (id && queuing) {
         // 排队失败：回合还在跑，不动状态，把文字放回输入框
-        set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+        enqueueReturned(id, [{ id: `send_fail_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, text }]);
         return false;
       }
       // 输入框已经清空了：没带图片的消息把文字退回输入框，免得用户重打（带图片的由输入框自己恢复）
       if (!attachments?.length && text.trim()) {
-        if (id) set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+        if (id) enqueueReturned(id, [{ id: `send_fail_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, text }]);
         else set({ composerDraft: { text, nonce: Date.now() } });
       }
       if (id) {
@@ -631,7 +649,7 @@ export const useApp = create<State & Actions>((set, get) => ({
     if (!id) return;
     try {
       const r = await get().rpc!.call("turn/withdraw", { thread_id: id, item_id: itemId });
-      set({ returnedDraft: { threadId: id, texts: [r.text ?? ""], nonce: Date.now() } });
+      enqueueReturned(id, [{ id: `withdraw_${itemId}`, text: r.text ?? "" }]);
     } catch (e) {
       get().showToast((e as Error).message, "error");
     }
@@ -640,9 +658,25 @@ export const useApp = create<State & Actions>((set, get) => ({
   async interrupt() {
     const id = get().activeThreadId;
     if (!id) return;
-    await get()
-      .rpc!.call("turn/interrupt", { thread_id: id })
-      .catch((e: Error) => get().showToast(`停止失败：${e.message}`, "error"));
+    const prev = get().interruptRequests[id];
+    // 已经在请求中就不再重复发：用户连按 Esc 不该打出一串 RPC
+    if (prev?.state === "requesting") return;
+    const mark = (state: "requesting" | "acknowledged" | "failed") =>
+      useApp.setState((s) => ({ interruptRequests: { ...s.interruptRequests, [id]: { state, at: Date.now() } } }));
+    mark("requesting");
+    try {
+      const r = await get().rpc!.call("turn/interrupt", { thread_id: id });
+      // 后端明确说"没停下来"时不能静默：如实告诉用户，并回到可再次尝试的状态
+      if (r && (r as { interrupted?: boolean }).interrupted === false) {
+        mark("failed");
+        get().showToast("没能确认停止：这次回合可能已经结束，或后端没有可中断的任务", "error");
+        return;
+      }
+      mark("acknowledged");
+    } catch (e) {
+      mark("failed");
+      get().showToast(`停止失败：${(e as Error).message}`, "error");
+    }
   },
 
   async answer(callId, answer) {
@@ -668,6 +702,60 @@ export const useApp = create<State & Actions>((set, get) => ({
   },
 }));
 
+/** 从线程的 runs 里取「当前这个还在跑的回合」的起始时刻（毫秒）。
+ *
+ * 后端 runs 里是 epoch **秒**（Python time.time()），前端要毫秒——
+ * 直接减 Date.now() 会差三个数量级，所以这里显式换算。
+ * 找不到正在运行的 run 就返回 undefined：宁可显示"不显示秒数"，
+ * 也不要用 Date.now() 造一个每次都变的假起点。
+ */
+export function latestRunStartedMs(t: ThreadDetail | undefined | null): number | undefined {
+  const runs = t?.runs;
+  if (!runs?.length) return undefined;
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const r = runs[i];
+    if (r?.status === "running" && typeof r.started === "number" && r.started > 0) {
+      return Math.round(r.started * 1000);
+    }
+  }
+  return undefined;
+}
+
+/** 把退回消息放进该会话的收件箱，并同步派生出输入框可消费的那一份。
+ *
+ * 关键点：`returnedDraft` 只代表**当前会话**待消费的那批；其他会话的退回内容
+ * 留在 `returnedInbox` 里，等用户切过去再消费——原来它们会被直接覆盖丢弃。
+ */
+function enqueueReturned(id: string, items: ReturnedInput[]) {
+  useApp.setState((s) => {
+    const inbox = pushReturned(s.returnedInbox, id, items);
+    if (inbox === s.returnedInbox) return {};      // 全是重复投递
+    const active = s.activeThreadId;
+    // 只有退回给当前会话时，才更新输入框那一份；否则只存进收件箱，不打断当前输入
+    if (active !== id) return { returnedInbox: inbox };
+    const pending = inbox[id] ?? [];
+    return {
+      returnedInbox: inbox,
+      returnedDraft: { threadId: id, texts: pending.map((x) => x.text), nonce: Date.now() },
+    };
+  });
+}
+
+/** 输入框消费完一批后调用：从收件箱里真正删掉，避免下次重复插入。 */
+export function consumeReturned(id: string, ids?: string[]) {
+  useApp.setState((s) => {
+    const { inbox, taken } = takeReturned(s.returnedInbox, id, ids);
+    if (!taken.length) return {};
+    const rest = inbox[id] ?? [];
+    return {
+      returnedInbox: inbox,
+      returnedDraft: rest.length
+        ? { threadId: id, texts: rest.map((x) => x.text), nonce: Date.now() }
+        : null,
+    };
+  });
+}
+
 /** 会话删除后统一清理：列表、详情、后台命令、计时缓存都不留幽灵数据。 */
 function forgetThread(id: string) {
   useApp.setState((s) => {
@@ -677,10 +765,13 @@ function forgetThread(id: string) {
     delete bgProcs[id];
     const turnStartedAt = { ...s.turnStartedAt };
     delete turnStartedAt[id];
+    const returnedInbox = { ...s.returnedInbox };
+    delete returnedInbox[id];
     return {
       details,
       bgProcs,
       turnStartedAt,
+      returnedInbox,
       threads: s.threads.filter((x) => x.id !== id),
       activeThreadId: s.activeThreadId === id ? null : s.activeThreadId,
     };
@@ -760,11 +851,10 @@ export function onNotification(method: string, p: any) {
     return;
   }
   if (method === "turn/queue_returned") {
-    const texts = ((p.items ?? []) as { text: string }[]).map((x) => x.text);
-    if (texts.length) {
-      const prev = st.returnedDraft && st.returnedDraft.threadId === p.thread_id ? st.returnedDraft.texts : [];
-      useApp.setState({ returnedDraft: { threadId: p.thread_id, texts: [...prev, ...texts], nonce: Date.now() } });
-    }
+    // 带 id 就按 id 去重（同毫秒两条也不会互相覆盖）；没有 id 的回退到序号占位
+    const items = ((p.items ?? []) as { id?: string; text: string }[])
+      .map((x, i) => ({ id: x.id || `qr_${p.thread_id}_${Date.now()}_${i}`, text: x.text }));
+    if (items.length) enqueueReturned(p.thread_id, items);
   }
   if (method === "turn/started") {
     useApp.setState((s) => ({ turnStartedAt: { ...s.turnStartedAt, [p.thread_id]: s.turnStartedAt[p.thread_id] ?? Date.now() } }));
@@ -776,7 +866,10 @@ export function onNotification(method: string, p: any) {
     useApp.setState((s) => {
       const rest = { ...s.turnStartedAt };
       delete rest[p.thread_id];
-      return { turnStartedAt: rest, reviewNonce: s.reviewNonce + 1 };
+      // 真实终态到了：停止请求态随之清掉（不再显示"正在停止"）
+      const ir = { ...s.interruptRequests };
+      delete ir[p.thread_id];
+      return { turnStartedAt: rest, interruptRequests: ir, reviewNonce: s.reviewNonce + 1 };
     });
   }
   if (method === "item/updated" && p.item?.type === "tool" && p.item?.details?.kind === "edit") {

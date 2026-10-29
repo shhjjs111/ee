@@ -20,7 +20,7 @@ import {
   type SlashItem,
 } from "../lib/slash";
 import type { StyleInfo } from "../types";
-import { useApp } from "../lib/store";
+import { consumeReturned, useApp } from "../lib/store";
 import { GoalMenu } from "./GoalMenu";
 import { SlashMenu } from "./SlashMenu";
 import { mergeDraft, queueKindForKey, splitQueued, type QueueKind } from "../lib/queue";
@@ -104,7 +104,9 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   useEffect(() => {
     const r = s.returnedDraft;
     if (!r || r.threadId !== s.activeThreadId) return;
-    s.set({ returnedDraft: null });
+    const id = r.threadId;
+    // 先从收件箱里真正删掉再合并：只清 returnedDraft 的话，切回来还会再插一遍
+    consumeReturned(id);
     setText((cur) => mergeDraft(r.texts, cur));
     requestAnimationFrame(() => ta.current?.focus());
   }, [s.returnedDraft?.nonce, s.activeThreadId]);
