@@ -114,6 +114,7 @@ class GoalResult:
 # pytest 的几种常见形态。顺序重要：先认「实际跑过」的计数，再退回 collected。
 _PASSED = re.compile(r"(\d+)\s+passed", re.I)
 _FAILED = re.compile(r"(\d+)\s+failed", re.I)
+_SKIPPED = re.compile(r"(\d+)\s+skipped", re.I)
 _COLLECTED = re.compile(r"collected\s+(\d+)\s+items?", re.I)
 _RAN = re.compile(r"(\d+)\s+(?:tests?|用例)\s*(?:passed|通过)", re.I)
 
@@ -145,7 +146,12 @@ def parse_tests(output: str) -> int:
         return int(f.group(1))
     c = _COLLECTED.search(output)
     if c:
-        return int(c.group(1))
+        # collected 含 skipped。全 skipped 时「收集到 3 个」不等于「跑了 3 个」：
+        # 扣掉 skip 数，一个都没真跑就返回 0——宁可多跑几轮，不可假成功。
+        total = int(c.group(1))
+        s = _SKIPPED.search(output)
+        skipped = int(s.group(1)) if s else 0
+        return max(0, total - skipped)
     r = _RAN.search(output)
     if r:
         return int(r.group(1))
