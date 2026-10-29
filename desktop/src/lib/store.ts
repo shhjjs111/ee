@@ -89,6 +89,7 @@ type Actions = {
   deleteThread(id: string): Promise<boolean>;
   /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
+  sendGoal(text: string, command: string, maxRounds: number): Promise<boolean>;
   /** 没有当前对话时按草稿（项目、模型、模式、worktree）新建一个，返回会话 id；没选项目返回 null。 */
   ensureThread(): Promise<string | null>;
   withdrawQueued(itemId: string): Promise<void>;
@@ -343,6 +344,44 @@ export const useApp = create<State & Actions>((set, get) => ({
       threads: [t, ...st.threads.filter((x) => x.id !== t.id)],
     }));
     return t.id;
+  },
+
+  /** 带 Goal 的发送（T10-b）：跑到判据通过或轮次用完。
+   *
+   * 与 send 分开而不是加参数：Goal 是"这一回合怎么跑"的语义差别，
+   * 混进 send 会让普通路径多一堆 goal 分支。共用 ensureThread/状态设置，
+   * 只是 rpc 调用多带 goal 字段。
+   */
+  async sendGoal(text, command, maxRounds) {
+    const s = get();
+    const rpc = s.rpc!;
+    let id = s.activeThreadId;
+    const model = s.draftModel || undefined;
+    const mode = s.draftMode;
+    try {
+      if (!id) {
+        id = await get().ensureThread();
+        if (!id) return false;
+      }
+      set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: Date.now() } }));
+      setStatus(id, "running");
+      setStatusText(id, "正在开始目标循环…");
+      await rpc.call("turn/start", {
+        thread_id: id,
+        text,
+        model,
+        mode,
+        goal: { command, max_rounds: maxRounds },
+      });
+      return true;
+    } catch (e) {
+      const msg = (e as Error).message;
+      get().showToast(msg, "error");
+      if (id) set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+      else set({ composerDraft: { text, nonce: Date.now() } });
+      if (id) setStatus(id, "idle");
+      return false;
+    }
   },
 
   async send(text, attachments, queue) {

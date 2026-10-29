@@ -118,28 +118,87 @@ export function Select({
   );
 }
 
-export function Menu({ trigger, items }: { trigger: React.ReactElement; items: { label: string; onSelect: () => void; danger?: boolean; icon?: React.ReactNode }[] }) {
+export type MenuItem = {
+  label: string;
+  onSelect: () => void;
+  danger?: boolean;
+  icon?: React.ReactNode;
+  /** 第二行灰色说明文字。给了就渲染成两行（Codex 那种「标题 + 描述」）。 */
+  desc?: string;
+  /** 右侧快捷键提示。 */
+  hint?: string;
+  disabled?: boolean;
+};
+
+/** 分组标题（Codex 的「添加」「插件」那种小标题）。 */
+export type MenuGroup = { group: string; items: MenuItem[] };
+
+/**
+ * 下拉菜单。两种用法：
+ * - `items`: 平铺（老用法，保持不变）
+ * - `sections`: 带分组标题（Codex 式）。有 desc 的项渲染成两行。
+ */
+export function Menu({
+  trigger,
+  items,
+  sections,
+  align = "end",
+  side = "bottom",
+  width,
+}: {
+  trigger: React.ReactElement;
+  items?: MenuItem[];
+  sections?: MenuGroup[];
+  align?: "start" | "center" | "end";
+  side?: "top" | "right" | "bottom" | "left";
+  width?: string;
+}) {
+  const groups: MenuGroup[] = sections ?? [{ group: "", items: items ?? [] }];
   return (
     <DM.Root>
       <DM.Trigger asChild>{trigger}</DM.Trigger>
       <DM.Portal>
         <DM.Content
-          align="end"
-          sideOffset={4}
-          className="z-50 min-w-[160px] rounded-xl border border-line bg-elev p-1 shadow-[var(--shadow)] fadein"
+          align={align}
+          side={side}
+          sideOffset={6}
+          className={clsx(
+            "z-50 rounded-xl border border-line bg-elev p-1 shadow-[var(--shadow)] fadein",
+            width ?? "min-w-[160px]",
+          )}
         >
-          {items.map((it) => (
-            <DM.Item
-              key={it.label}
-              onSelect={it.onSelect}
-              className={clsx(
-                "flex cursor-default items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] outline-none data-[highlighted]:bg-hover",
-                it.danger ? "text-danger" : "text-fg",
+          {groups.map((g, gi) => (
+            <DM.Group key={g.group || `g${gi}`}>
+              {g.group && (
+                <DM.Label className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-faint">
+                  {g.group}
+                </DM.Label>
               )}
-            >
-              {it.icon}
-              {it.label}
-            </DM.Item>
+              {g.items.map((it) => (
+                <DM.Item
+                  key={it.label}
+                  disabled={it.disabled}
+                  onSelect={it.onSelect}
+                  className={clsx(
+                    "flex cursor-default items-start gap-2.5 rounded-lg px-2.5 text-[13px] outline-none",
+                    "data-[disabled]:opacity-40 data-[highlighted]:bg-hover",
+                    it.desc ? "py-1.5" : "items-center py-1.5",
+                    it.danger ? "text-danger" : "text-fg",
+                  )}
+                >
+                  {it.icon && (
+                    <span className={clsx("shrink-0 text-muted", it.desc && "mt-0.5")}>{it.icon}</span>
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{it.label}</span>
+                    {it.desc && (
+                      <span className="mt-0.5 block text-[11.5px] leading-snug text-faint">{it.desc}</span>
+                    )}
+                  </span>
+                  {it.hint && <span className="mono shrink-0 text-[11px] text-faint">{it.hint}</span>}
+                </DM.Item>
+              ))}
+            </DM.Group>
           ))}
         </DM.Content>
       </DM.Portal>

@@ -2,7 +2,7 @@ import { reportError } from "../lib/errors";
 import clsx from "clsx";
 import { BgCommands } from "./BgCommands";
 import { ContextRing } from "./ContextPanel";
-import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ImagePlus, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
+import { GitBranch, ArrowUp, AtSign, Brain, Cpu, File, GraduationCap, ListChecks, Shield, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import {
@@ -21,6 +21,7 @@ import {
 } from "../lib/slash";
 import type { StyleInfo } from "../types";
 import { useApp } from "../lib/store";
+import { GoalMenu } from "./GoalMenu";
 import { SlashMenu } from "./SlashMenu";
 import { mergeDraft, queueKindForKey, splitQueued, type QueueKind } from "../lib/queue";
 import { QueueSendButton, QueueTray } from "./QueueTray";
@@ -598,14 +599,21 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
               <AtSign size={15} />
             </button>
           </Tip>
-          <Tip label="添加图片（也可以粘贴或拖进来）">
-            <button
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg"
-              onClick={() => fileInput.current?.click()}
-            >
-              <ImagePlus size={15} />
-            </button>
-          </Tip>
+          {/* Codex 式的 `+` 菜单：文件/图片 + 目标，两项同在一组。
+              图片仍走原来的 fileInput，只是入口收进了菜单里。 */}
+          <GoalMenu
+            onPickFiles={() => fileInput.current?.click()}
+            onSubmit={(req) => {
+              const t = text.trim();
+              if (!t) {
+                s.showToast("先写一句要做什么，再设定目标", "error");
+                return;
+              }
+              setText("");
+              void s.sendGoal(t, req.command, req.maxRounds);
+            }}
+            disabled={running || attBusy}
+          />
           <input
             ref={fileInput}
             type="file"
