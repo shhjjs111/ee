@@ -24,7 +24,7 @@
 | T10-a 会话导出 | Markdown / JSON 导出（核心 + RPC + CLI + 桌面端入口） | **已完成并验证**（全链路；Electron 保存对话框未验） | `ee\ee\core\export.py`、`server\app.py` 的 `thread/export`、`cli.py` 的 `export` 子命令、`desktop\src\components\ExportDialog.tsx`（会话行菜单「导出…」）；`ee\tests\test_export.py`（11 例）、`test_export_rpc.py`（10 例）、`test_export_cli.py`（8 例）、`desktop\src\components\ExportDialog.test.tsx`（4 例） |
 | T10-b / Goal 循环 | 条件驱动 + 多轮续跑 + 判据判定（零测试/超时不算成功） | **已完成并验证**（U1–U3 + 会话内 `turn/start` + 桌面端 `+` 菜单入口） | `ee\ee\core\goal.py`、`cli.py`+`headless.py` 的 `--goal`、`server\threads.py` 的 `start_turn(goal=)`／`_consume_goal`、`desktop\src\components\GoalMenu.tsx`；`test_goal.py`（12）、`test_goal_runner.py`（9）、`test_goal_cli.py`（6）、`test_goal_exec.py`（5）、`test_goal_acceptance.py`（2，真实 pytest 闭环）、`test_goal_turn.py`（12）、`GoalMenu.test.tsx`（7） |
 | T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证**（建议态 + 落库 + 审批卡片显示）；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`、`server\threads.py` 的 `_on_event` 落 `ApprovalItem`、`desktop\src\components\Items.tsx` 的建议区；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5）、`test_autoapprove_persist.py`（3）、`ApprovalSuggestion.test.tsx`（4） |
-| T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 桌面端展示）；**界面跑不出真实结论**：候选不带 verdict，判据编排未做 | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`BestofDialog.test.tsx`（5） |
+| T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 判据编排 + 桌面端） | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`server\bestof_verify.py` 的 `bestof/verify`（每候选单轮判据）、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`test_bestof_verify.py`（5）、`BestofDialog.test.tsx`（7） |
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | 后置 | 发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
@@ -66,7 +66,42 @@
 
 - **桌面端从未启动过**（`cd desktop && npm run dev` 没跑过）：间距、字号、弹出方向、动画、`+` 菜单的 `side="top"` 实际弹出位置全部未验。所有前端断言都停留在 jsdom 的 DOM 结构层。
 - **`GoalMenu` 键盘导航未测**：↑↓ 选择、Esc 关闭只有实现没有断言。
-- **best-of-n 端到端不可用**：见上节「判据编排未做」。
+- ~~best-of-n 端到端不可用~~ → 已在 `5e33775` 补上 `bestof/verify`（见上节「判据编排」）。**仍未在真实桌面端点过**：判据输入框与「验证 N 个候选」按钮只有 jsdom 断言。
+
+### best-of-n 判据编排（`5e33775`）
+
+交接文档里唯一的实质卡点：界面把 worktree 列表当候选提交给 `bestof/pick`，
+但**不带 verdict**，后端一律判未验证、结果永远「没有候选通过验证，不选」。
+
+取舍：**每候选只跑一轮 `goal.judge`，不跑 `run_goal` 的续跑循环**。
+候选代码已经写完了，再让 agent 改它就把「观测」变成了「修改」——证据不再属于同一个候选。
+代价是 N 个候选 = N 次判据，按 `goal.timeout`（默认 300s）封顶，界面预算 600s。
+
+| 不变量 | 实现 | 测试 |
+|---|---|---|
+| 只观测不修复 | 只调 `judge`，不进 `run_goal` | `test_verify_picks_the_green_worktree` |
+| 路径限定 | 只接受 `worktree.list_for()` 登记过的目录 | `test_verify_refuses_unregistered_path` |
+| 判据校验不复制 | 复用 `threads._norm_goal`（命令非空、轮次上限、超时正数） | `test_verify_rejects_empty_command` |
+| 自述不算证据 | `self_reported_ok` 只记录不参与判定 | `test_verify_ignores_self_reported_pass` |
+| 全红不硬挑 | `bestof.pick` 返回 `None` | `test_verify_none_when_all_red` |
+
+验证（本轮实测）：
+
+| 单元 | 命令 | 结果 |
+|---|---|---|
+| 判据编排 | `pytest test_bestof_verify.py` | 5 passed（真实 pytest 判据，无 mock 中间层） |
+| RED 确认 | 把实现改回「不跑判据、verdict 留空」 | 1 failed（`assert False is True`，"没有判据结果" —— 正是原始缺陷的症状） |
+| bestof 回归 | `test_bestof.py` + `test_bestof_rpc.py` + `test_bestof_verify.py` | 23 passed |
+| 前端 | `vitest BestofDialog.test.tsx` | 7 passed（2 个新增：填判据走 verify、留空退回 pick） |
+| 前端 RED 确认 | 把 `if (command.trim())` 改成恒假 | 1 failed（断言 `bestof/verify` 被调用） |
+| 类型 | `tsc --noEmit -p tsconfig.json` | exit 0 |
+| RPC 合约 | `pytest test_rpc_contract.py` | 1 passed（1.02s） |
+
+未验证 / 保留边界：
+
+- **桌面端点不了**：判据输入框与「验证 N 个候选」按钮只有 jsdom 断言，未在真实 Electron 窗口里点过。
+- **`test_rpc_contract.py` 只跑了 1 个用例、1.02s**——交接文档说它会扫描整个 `desktop\src`、约 3 分钟。这里 1 秒跑完说明本次没有触发那一步扫描，**不能当作前端 RPC 名一致性已验证**。
+- 每个候选串行还是并行：实现里用 `asyncio.gather` 并行跑，但 `ee\tools\shell.run_command` 是否在同一事件循环里争用未实测。
 
 ## 执行记录（2026-10-29，T10-c/d/e）
 
@@ -90,7 +125,7 @@
 - ~~三项均**无桌面端界面**~~ → 已在 `684500a`/`9eb4010`/`1c55d81` 补齐入口，见「执行记录（2026-10-29，T10 桌面端入口与 RPC）」。
 - 自动审批的**自动放行版本**未做：方案要求另行安全审查，不擅自实现。
 - best-of-n 的 run_id/费用采集未接（`Candidate` 有字段，调用方负责填）。
-- best-of-n 的**判据编排未做**：界面把 worktree 列表当候选提交，不带 `Verdict`，所以一律判未验证、永远「不选」。要端到端可用需先定判据命令来源与时间预算。
+- ~~best-of-n 的判据编排未做~~ → 已在 `5e33775` 补上 `bestof/verify`：每候选**单轮** `goal.judge`（不跑续跑循环，只观测不改代码），路径限定在 ee 登记的 worktree 内，判据校验复用 `threads._norm_goal`。代价：N 个候选 = N 次判据，并按 `goal.timeout`（默认 300s）封顶；界面把 `bestof/verify` 的超时预算设为 600s。
 - 文件交接与 `worktree.create/remove` 的衔接未接（复用现有接口，不在本单元）。
 
 
