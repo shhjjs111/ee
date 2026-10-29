@@ -123,9 +123,14 @@ class Status(Event):
 
 @dataclass
 class Notice(Event):
-    """提示类消息（缓存漂移警告、降级提示等）。"""
+    """提示类消息（缓存漂移警告、降级提示等）。
+
+    metrics：可选的机器可读计时/计数（见 core/metrics.py）。只在需要落数据的
+    场合带上，普通提示保持为空——界面照旧只读 text/level，不认识也不受影响。
+    """
     text: str
     level: str = "info"     # info | warn
+    metrics: dict = field(default_factory=dict)
 
 
 @dataclass

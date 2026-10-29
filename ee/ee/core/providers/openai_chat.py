@@ -194,14 +194,17 @@ class ChatClient:
             sent_reasoning = self.has_reasoning_params(params)
             emitted = False
             t0 = time.monotonic()
+            from ee.core.metrics import RequestTiming
+            timing = RequestTiming(t0)
             log.info("模型请求开始：%s（%s）messages=%d tools=%d 第 %d 次", self.spec.alias, self.where(), len(messages),
                      len(tools or []), attempt + 1)
             yield ("status", f"正在连接模型 {self.spec.alias}（{self.where()}）…" if attempt == 0 else
                    f"正在重试连接模型 {self.spec.alias}（第 {attempt} 次）…")
             try:
-                async for ev in self._stream_once(params, tools):
+                async for ev in self._stream_once(params, tools, timing=timing):
                     if ev[0] in ("text", "reasoning") and not emitted:
                         emitted = True
+                        timing.mark_token()
                         yield ("status", "")
                     if ev[0] == "done":
                         if not emitted:
@@ -215,8 +218,12 @@ class ChatClient:
                                 st["no_reasoning_effort"] = True
                             self.state.save()
                             yield ("notice", f"模型 {self.spec.alias} 不接受推理强度参数，已去掉并记住（以后不再发送）")
-                        log.info("模型请求结束：%s 用时 %.1fs finish=%s 文本 %d 字 工具调用 %d 个 usage=%s", self.spec.alias,
-                                 time.monotonic() - t0, c.finish_reason, len(c.content), len(c.tool_calls), c.usage)
+                        ms = timing.as_dict()
+                        log.info("模型请求结束：%s 用时 %.1fs finish=%s 文本 %d 字 工具调用 %d 个 usage=%s "
+                                 "首包=%sms 首字=%sms", self.spec.alias,
+                                 time.monotonic() - t0, c.finish_reason, len(c.content), len(c.tool_calls), c.usage,
+                                 ms.get("first_byte_ms"), ms.get("first_token_ms"))
+                        yield ("notice", _timing_notice(self.spec.alias, ms))
                     yield ev
                 return
             except asyncio.CancelledError:
@@ -264,9 +271,11 @@ class ChatClient:
                 log.error("模型请求最终失败（%s）：%s", kind, msg)
                 raise ModelError(msg, status, kind) from e
 
-    async def _stream_once(self, params: dict, tools: list[dict] | None):
+    async def _stream_once(self, params: dict, tools: list[dict] | None, timing=None):
         known = [t["function"]["name"] for t in (tools or [])]
         stream = await self.client.chat.completions.create(**params)
+        if timing is not None:
+            timing.mark_byte()          # 连上了、拿到响应对象：首包
         yield ("status", "已连接，等待模型输出…")
         comp = Completion()
         calls: list[dict] = []
@@ -274,6 +283,8 @@ class ChatClient:
         splitter = T.ThinkSplitter()  # 所有家族都识别 <think>，MiniMax 等靠它
         try:
             async for chunk in stream:
+                if timing is not None:
+                    timing.mark_byte()  # 收到第一个流式分片
                 u = T._get(chunk, "usage")
                 choices = T._get(chunk, "choices") or []
                 if u is None and choices:
@@ -387,6 +398,22 @@ def _accumulate(calls: list[dict], tc: Any, active: dict | None = None) -> None:
     elif name and slot["function"]["name"] != name and not slot["function"]["name"].endswith(name):
         slot["function"]["name"] += name
     slot["function"]["arguments"] += args
+
+
+def _timing_notice(alias: str, ms: dict):
+    """把一次请求的分段计时包成带 metrics 的 Notice（界面按普通提示显示，
+    数据侧可解析；不用 0 冒充未测到的项）。"""
+    from ee.core.events import Notice
+
+    parts = []
+    if ms.get("first_byte_ms") is not None:
+        parts.append(f"首包 {ms['first_byte_ms']}ms")
+    if ms.get("first_token_ms") is not None:
+        parts.append(f"首字 {ms['first_token_ms']}ms")
+    if ms.get("total_ms") is not None:
+        parts.append(f"总计 {ms['total_ms']}ms")
+    return Notice(f"模型 {alias} 本次请求：" + "，".join(parts) if parts else f"模型 {alias} 本次请求完成",
+                  "info", metrics=dict(ms))
 
 
 def _complete(s: str) -> bool:

@@ -1180,7 +1180,8 @@ class Session:
                 elif kind == "reasoning":
                     reasoning.append(val); emit(ReasoningDelta(val))
                 elif kind == "notice":
-                    emit(Notice(val, "warn"))
+                    # 兼容两种形态：纯文本（告警）与已构造好的 Notice（带 metrics 的计时数据）。
+                    emit(val if isinstance(val, Notice) else Notice(val, "warn"))
                 elif kind == "status":
                     emit(Status(val))
                 elif kind == "done":
@@ -1544,7 +1545,7 @@ class Session:
             if kind == "text":
                 text.append(val)
             elif kind == "notice":
-                emit(Notice(val, "warn"))
+                emit(val if isinstance(val, Notice) else Notice(val, "warn"))
             elif kind == "done":
                 comp = val
         content = (comp.content if comp is not None else "".join(text)).strip()
