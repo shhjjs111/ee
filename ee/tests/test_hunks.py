@@ -13,8 +13,12 @@ def git_patch(tmp_path, old: bytes, new: bytes, context: int = 3) -> str:
     a, b = tmp_path / "a.txt", tmp_path / "b.txt"
     a.write_bytes(old)
     b.write_bytes(new)
-    r = subprocess.run(["git", "-c", "core.autocrlf=false", "diff", "--no-index", "--no-color", f"-U{context}",
-                        str(a), str(b)], capture_output=True)
+    # 关键：必须把 cwd 设成临时目录，不能在仓库根里跑这条 diff。
+    # 仓库根有 .gitattributes（`* text=auto eol=lf`），git 会据此把补丁里的
+    # CR 规范化掉——那样测的就不是"CRLF 是否保留"了。这两个文件只是喂给
+    # git diff 的输入，不在任何工作树里，cwd 也应与仓库无关。
+    r = subprocess.run(["git", "-c", "core.autocrlf=false", "diff", "--no-index", "--no-color",
+                        f"-U{context}", str(a), str(b)], capture_output=True, cwd=str(tmp_path))
     assert r.returncode in (0, 1), r.stderr
     return H.decode(r.stdout)
 
