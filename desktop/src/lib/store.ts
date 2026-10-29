@@ -56,6 +56,8 @@ type State = {
   draftWorktree: boolean; // 新对话在新 worktree 里开始（D5-1）
   worktreeDialog: string | null; // 打开 worktree 管理的项目路径
   exportDialog: string | null; // 打开导出对话框的会话 id（T10-a）
+  handoffDialog: string | null; // 打开交接清单的仓库路径（T10-e）
+  bestofDialog: string | null; // 打开候选比较的仓库路径（T10-d）
   rightOpen: boolean;
   rightTab: RightTab;
   reviewNonce: number;
@@ -135,6 +137,8 @@ export const useApp = create<State & Actions>((set, get) => ({
   draftWorktree: false,
   worktreeDialog: null,
   exportDialog: null,
+  handoffDialog: null,
+  bestofDialog: null,
   rightOpen: localStorage.getItem("ee.right") !== "0",
   rightTab: "review",
   reviewNonce: 0,

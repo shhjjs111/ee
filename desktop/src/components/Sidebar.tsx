@@ -9,8 +9,10 @@ import {
   Clock,
   Download,
   Folder,
+  GitCompare,
   FolderPlus,
   MoreHorizontal,
+  PackageOpen,
   Pencil,
   Search,
   Settings as SettingsIcon,
@@ -26,6 +28,8 @@ import { useAutomations } from "../lib/automationStore";
 import type { ThreadSummary } from "../types";
 import { Button, Menu, Spinner, Tip } from "./ui";
 import { ExportDialog } from "./ExportDialog";
+import { BestofDialog } from "./BestofDialog";
+import { HandoffDialog } from "./HandoffDialog";
 import { WorktreeDialog } from "./WorktreeDialog";
 
 function norm(p: string) {
@@ -311,6 +315,8 @@ export function Sidebar() {
                     items={[
                       { label: "在资源管理器中打开", onSelect: () => openPath(g.path) },
                       { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
+                      { label: "交接清单…", icon: <PackageOpen size={13} />, onSelect: () => s.set({ handoffDialog: g.path }) },
+                      { label: "比较候选…", icon: <GitCompare size={13} />, onSelect: () => s.set({ bestofDialog: g.path }) },
                       { label: "从列表移除", danger: true, onSelect: () => void s.removeWorkspace(g.path) },
                     ]}
                   />
@@ -363,6 +369,8 @@ export function Sidebar() {
       </div>
       <WorktreeDialog />
       <ExportDialog />
+      <HandoffDialog />
+      <BestofDialog />
     </aside>
   );
 }

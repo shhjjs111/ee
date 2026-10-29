@@ -573,3 +573,41 @@ export type ContextBreakdown = {
   model: string;
   estimated: boolean;
 };
+
+/** 文件交接清单条目（T10-e，后端 core/handoff.py 的 Entry.as_dict）。 */
+export type HandoffEntry = {
+  path: string;
+  category: "staged" | "unstaged" | "untracked" | "ignored" | "tracked" | string;
+  kind: "file" | "dir" | "symlink" | string;
+  size: number;
+  sha256: string;
+  binary: boolean;
+  selected: boolean;
+};
+
+/** 迁移清单（RPC handoff/manifest）。 */
+export type HandoffManifest = {
+  root: string;
+  ignored_policy: "skip" | "include" | string;
+  entries: HandoffEntry[];
+  summary: {
+    total: number;
+    selected: number;
+    bytes: number;
+    binary: number;
+    by_category: Record<string, number>;
+  };
+};
+
+/** best-of-n 的候选（RPC bestof/pick）。 */
+export type BestofCandidate = {
+  id: string;
+  title: string;
+  worktree: string;
+  run_id: string;
+  cost: number;
+  verified: boolean;
+  met: boolean;
+  self_reported_ok: boolean;
+  reason: string;
+};
