@@ -46,6 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("doctor", help="自检某个模型的兼容性（会真实调用 API）")
     d.add_argument("model_name", nargs="?", help="模型名，默认用默认模型")
     d.add_argument("-C", "--cd", help="按这个目录加载项目级配置")
+    e = sub.add_parser("export", help="把一个会话导出成 Markdown / JSON",
+                       description="导出会话：不给 -o 时打印到 stdout，给了才写文件。"
+                                   "默认拒绝覆盖已存在的文件（用 --force 明确覆盖）。")
+    e.add_argument("thread_id", nargs="?", help="会话 id（用 --list 查看现有会话）")
+    e.add_argument("--format", default="markdown", choices=("markdown", "json"),
+                   help="导出格式，默认 markdown")
+    e.add_argument("-o", "--output", help="写入这个文件（必须能给绝对路径或相对当前目录的路径）")
+    e.add_argument("--force", action="store_true", help="目标文件已存在时覆盖")
+    e.add_argument("--list", action="store_true", help="列出现有会话 id 与标题后就退出")
     return p
 
 
@@ -83,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_exec(args)
     if args.cmd == "selftest":
         return _selftest(secrets_check=args.secrets)
+    if args.cmd == "export":
+        return _cmd_export(args)
     if args.cmd == "doctor":
         from ee.config import load_config
         from ee.doctor import run_doctor
@@ -91,6 +102,76 @@ def main(argv: list[str] | None = None) -> int:
     parser.print_help()
     print("\nee 现在只有桌面端：请打开 ee 桌面应用。开发时用 `cd desktop && npm run dev`。", file=sys.stderr)
     return 2
+
+
+def _cmd_export(args) -> int:
+    """`ee export`：把会话导出到 stdout 或文件。
+
+    这是导出能力**唯一**当前可用的生产入口（桌面端入口尚未做）。因此这里
+    自己承担全部边界检查，不依赖上层：会话不存在要报错而不是导出空文件，
+    不指定输出就绝不写盘，已存在不加 --force 就拒绝。
+    """
+    from ee.config import ee_home
+    from ee.core.export import FORMATS, export
+    from ee.core.store import SessionStore
+
+    home = ee_home()
+    sessions = home / "sessions"
+
+    if args.list:
+        rows = []
+        for p in SessionStore.list_sessions(home):
+            try:
+                s = SessionStore.summary(p)
+            except Exception:  # noqa: BLE001  单个坏文件不该让整条命令失败
+                continue
+            rows.append((p.stem, s.get("title") or "新对话"))
+        for tid, title in rows:
+            print(f"{tid}  {title}")
+        return 0
+
+    if args.format not in FORMATS:
+        print(f"未知导出格式：{args.format}（可选：{', '.join(FORMATS)}）", file=sys.stderr)
+        return 2
+
+    if not args.thread_id:
+        print("缺少会话 id（用 `ee export --list` 看有哪些）", file=sys.stderr)
+        return 2
+
+    path = sessions / f"{args.thread_id}.jsonl"
+    if not path.is_file():
+        print(f"会话不存在：{args.thread_id}", file=sys.stderr)
+        return 1
+
+    try:
+        content = export(SessionStore.load(path), args.format)
+    except Exception as e:  # noqa: BLE001  会话文件损坏时给可读错误，不是 traceback
+        print(f"读取会话失败：{e}", file=sys.stderr)
+        return 1
+
+    if not args.output:
+        # 不指定输出就不写盘：脚本里 `ee export ID > x.md` 更符合直觉
+        print(content, end="" if content.endswith("\n") else "\n")
+        return 0
+
+    target = Path(args.output).expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    if target.is_dir():
+        print(f"输出路径是目录：{target}", file=sys.stderr)
+        return 2
+    if target.exists() and not args.force:
+        print(f"目标文件已存在：{target}（加 --force 覆盖）", file=sys.stderr)
+        return 1
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        from ee.server.app import _atomic_write
+        _atomic_write(target, content)
+    except OSError as e:
+        print(f"写入失败：{e}", file=sys.stderr)
+        return 1
+    print(f"已导出 {len(content)} 字符到 {target}", file=sys.stderr)
+    return 0
 
 
 def _migrate_secrets() -> None:
