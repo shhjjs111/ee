@@ -1,7 +1,7 @@
 import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
 import { splitQueued } from "../lib/queue";
 import { useApp } from "../lib/store";
@@ -228,17 +228,32 @@ export function Conversation() {
         }}
         className="relative flex-1 overflow-y-auto"
       >
-        <div className="mx-auto max-w-[780px] space-y-3 px-6 pb-6 pt-6">
+        {/* 间距分两档：用户发问是"回合起点"，前面留更大空白；其余条目紧凑跟随。
+            改版前统一 space-y-3，一问一答挤成一块，读不出回合边界。 */}
+        <div className="mx-auto max-w-[780px] px-6 pb-6 pt-6">
           {blocks.map((b) =>
             b.kind === "explore" ? (
-              <ExploreGroup key={b.id} items={b.items} />
+              <div key={b.id} className="mt-3 first:mt-0">
+                <ExploreGroup items={b.items} />
+              </div>
             ) : b.kind === "agents" ? (
-              <SubagentGroup key={b.id} items={b.items} />
+              <div key={b.id} className="mt-3 first:mt-0">
+                <SubagentGroup items={b.items} />
+              </div>
             ) : (
-              <Fragment key={b.item.id}>{renderItem(b.item, approvals)}</Fragment>
+              <div
+                key={b.item.id}
+                className={b.item.type === "user" ? "mt-7 first:mt-0" : "mt-3 first:mt-0"}
+              >
+                {renderItem(b.item, approvals)}
+              </div>
             ),
           )}
-          {running && <Working since={since ?? Date.now()} waiting={d.status === "waiting_approval"} text={d.status_text} />}
+          {running && (
+            <div className="mt-3">
+              <Working since={since ?? Date.now()} waiting={d.status === "waiting_approval"} text={d.status_text} />
+            </div>
+          )}
         </div>
       </div>
       {!stick && (
