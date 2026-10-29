@@ -181,19 +181,31 @@ export function Sidebar() {
   }, [q, s.rpc]);
 
   const groups = useMemo(() => {
+    // 项目组只来自 workspace/list（后端已把历史会话的目录合并进来），
+    // 不再在这里"从会话 cwd 现造项目"。
+    //
+    // 之前两边各造一份：后端读 desktop.json，侧栏从 thread.cwd 推导。
+    // 结果界面上看得见的项目不在 workspace/list 里 —— 点「从列表移除」删的是
+    // 后端列表（本来就没有），点「在资源管理器中打开」白名单里也没有它，
+    // 两个操作都像"点了没反应"。
     const map = new Map<string, { path: string; name: string; threads: ThreadSummary[] }>();
     for (const w of s.workspaces) map.set(norm(w.path), { path: w.path, name: w.name, threads: [] });
+
+    // 会话找不到对应项目时（目录已删、或后端还没合并到）归到「其他」，
+    // 不能静默丢弃 —— 丢的是用户的会话入口。
+    const orphan: ThreadSummary[] = [];
     for (const t of s.threads) {
       if (q && !t.title.toLowerCase().includes(q) && !(t.id in hits)) continue;
       // 自动化产生的对话在「自动化」收件箱里看，不挤占项目列表（正在看的除外，D4-10）
       if (!q && (t as { source?: string }).source === "automation" && t.id !== s.activeThreadId) continue;
       const home = t.workspace || t.cwd || ""; // worktree 里的对话归到主仓库（D5-1）
       const k = norm(home);
-      if (!map.has(k)) {
-        const name = (home || "其他").replace(/\\/g, "/").split("/").filter(Boolean).pop() || home;
-        map.set(k, { path: home, name, threads: [] });
-      }
-      map.get(k)!.threads.push(t);
+      const g = map.get(k);
+      if (g) g.threads.push(t);
+      else orphan.push(t);
+    }
+    if (orphan.length) {
+      map.set("\u0000orphan", { path: "", name: "其他", threads: orphan });
     }
     return [...map.values()].filter((g) => !q || g.threads.length);
   }, [s.workspaces, s.threads, q, hits, s.activeThreadId]);
@@ -315,13 +327,18 @@ export function Sidebar() {
                         <MoreHorizontal size={14} />
                       </button>
                     }
-                    items={[
-                      { label: "在资源管理器中打开", onSelect: () => openPath(g.path) },
-                      { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
-                      { label: "交接清单…", icon: <PackageOpen size={13} />, onSelect: () => s.set({ handoffDialog: g.path }) },
-                      { label: "比较候选…", icon: <GitCompare size={13} />, onSelect: () => s.set({ bestofDialog: g.path }) },
-                      { label: "从列表移除", danger: true, onSelect: () => void s.removeWorkspace(g.path) },
-                    ]}
+                    items={
+                      // 「其他」分组没有对应目录（path 为空），这些操作对它无意义
+                      g.path
+                        ? [
+                            { label: "在资源管理器中打开", onSelect: () => openPath(g.path) },
+                            { label: "Worktree…", onSelect: () => s.set({ worktreeDialog: g.path }) },
+                            { label: "交接清单…", icon: <PackageOpen size={13} />, onSelect: () => s.set({ handoffDialog: g.path }) },
+                            { label: "比较候选…", icon: <GitCompare size={13} />, onSelect: () => s.set({ bestofDialog: g.path }) },
+                            { label: "从列表移除", danger: true, onSelect: () => void s.removeWorkspace(g.path) },
+                          ]
+                        : []
+                    }
                   />
                 </span>
               </div>

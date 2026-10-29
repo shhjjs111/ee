@@ -767,12 +767,14 @@ class Backend:
 
     async def workspace_remove(self, path: str) -> dict:
         def run():
+            # 「从列表移除」= 记进 hidden：不再出现在 workspace/list。
+            # 为什么要 hidden 而不是直接删：项目列表现在把历史会话目录也合并进来了，
+            # 光删 desktop.json 里的条目，下次 list 又会从会话里把它捞回来，
+            # 用户看到的就是"点了移除没反应"。
             d = self._desktop()
             target = os.path.normcase(os.path.abspath(path))
             d["workspaces"] = [w for w in d.get("workspaces", [])
                                if os.path.normcase(os.path.abspath(w["path"])) != target]
-            # 从会话推导出来的项目不在 desktop.json 里，光删上面那步永远删不掉。
-            # 记一条 hidden：让它不再出现在 workspace/list，但不动历史会话本身。
             hidden = [h for h in d.get("hidden_workspaces", [])
                       if os.path.normcase(os.path.abspath(h)) != target]
             hidden.append(path)
