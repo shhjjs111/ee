@@ -12,6 +12,7 @@ import { HooksSettings } from "./HooksSettings";
 import { McpSettings } from "./McpSettings";
 import { SystemPromptSettings } from "./SystemPromptSettings";
 import { Button, Field, Input, Select, Spinner, Tip, Toggle } from "./ui";
+import { TITLEBAR_H } from "./shell/Titlebar";
 
 const SECTIONS = ["general", "models", "answer", "tools", "mcp", "hooks", "prompt", "about"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -385,7 +386,7 @@ export function SettingsPage() {
   return (
     <div className="flex min-w-0 flex-1 bg-bg">
       <div className="flex w-[220px] shrink-0 flex-col border-r border-line px-2 pt-0">
-        <div className="drag flex h-11 items-center px-2">
+        <div className="drag flex items-center px-2" style={{ height: TITLEBAR_H }}>
           <button onClick={() => s.set({ view: "chat" })} className="no-drag flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[12.5px] text-muted hover:bg-hover hover:text-fg">
             <ArrowLeft size={14} /> 返回
           </button>
@@ -406,7 +407,7 @@ export function SettingsPage() {
         ))}
       </div>
       <div className="relative flex min-w-0 flex-1 flex-col">
-        <div className="drag h-11 shrink-0" style={{ marginRight: "var(--overlay-w)" }} />
+        <div className="drag shrink-0" style={{ height: TITLEBAR_H, marginRight: "var(--overlay-w)" }} />
         <div className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[820px] px-8 pb-28 pt-2">
             {section === "general" && (

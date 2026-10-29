@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
 import { splitQueued } from "../lib/queue";
 import { useApp } from "../lib/store";
+import { TITLEBAR_H } from "./shell/Titlebar";
 import type { Item } from "../types";
 import { SubagentGroup } from "./AgentItems";
 import { Composer } from "./Composer";
@@ -70,8 +71,8 @@ function Header() {
   const cwd = d?.cwd ?? s.activeWorkspace;
   return (
     <div
-      className="drag flex h-11 shrink-0 items-center gap-2 border-b border-line pl-5"
-      style={{ paddingRight: s.rightOpen ? 12 : "calc(var(--overlay-w) + 12px)" }}
+      className="drag flex shrink-0 items-center gap-2 border-b border-line pl-5"
+      style={{ height: TITLEBAR_H, paddingRight: s.rightOpen ? 12 : "calc(var(--overlay-w) + 12px)" }}
     >
       <div className="min-w-0 truncate text-[13.5px] font-medium text-fg">{d ? d.title : "新对话"}</div>
       {cwd && (

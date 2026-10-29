@@ -27,6 +27,7 @@ import { useApp } from "../lib/store";
 import { useAutomations } from "../lib/automationStore";
 import type { ThreadSummary } from "../types";
 import { Button, Menu, Spinner, Tip } from "./ui";
+import { TITLEBAR_H } from "./shell/Titlebar";
 
 function norm(p: string) {
   return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -204,7 +205,7 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-full w-full shrink-0 flex-col bg-sidebar">
-      <div className="drag flex h-11 shrink-0 items-center gap-2 px-4" style={{ paddingLeft: "var(--traffic-w)" }}>
+      <div className="drag flex shrink-0 items-center gap-2 px-4" style={{ height: TITLEBAR_H, paddingLeft: "var(--traffic-w)" }}>
         <div className="flex h-5 w-5 items-center justify-center rounded-md bg-fg text-[10px] font-bold text-bg">ee</div>
         <span className="text-[13px] font-semibold tracking-tight text-fg">ee</span>
       </div>
