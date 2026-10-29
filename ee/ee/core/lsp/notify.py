@@ -27,6 +27,7 @@ class Notifier:
         self.store = store if store is not None else D.DiagStore()
         self._clients: dict[str, object] = {}     # uri -> client
         self._paths: dict[str, str] = {}          # path -> uri
+        self.default_client = None                # 会话内只有一个语言时的兜底服务器
         self.last_error: str | None = None
 
     # ------------------------------------------------------------ 绑定
@@ -43,10 +44,16 @@ class Notifier:
 
     def client_for(self, path: str | None = None, uri: str | None = None):
         if uri is not None:
-            return self._clients.get(uri)
+            got = self._clients.get(uri)
+            if got is not None:
+                return got
         if path is not None:
-            return self._clients.get(self._paths.get(_norm(path), ""))
-        return None
+            got = self._clients.get(self._paths.get(_norm(path), ""))
+            if got is not None:
+                return got
+        # 会话内只有一个语言服务器时按默认服务器走：uri 由调用方按同一函数
+        # （tools.lsp.uri_for）生成，这里不必再维护一张 uri 表。
+        return self.default_client
 
     # ------------------------------------------------------------ 通知
     async def opened(self, path: str, uri: str, text: str, language: str = "python") -> None:

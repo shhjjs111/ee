@@ -20,10 +20,43 @@
 | D6-1 Wave B / U7 | 重启把遗留 running 标为 interrupted、父删不级联删 worktree、重启不重放回合 | 已完成并验证 | `ee\ee\core\store.py` 的 `_close_stale_runs`、`server\app.py` 的 `_detach_children`；`ee\tests\test_orchestrator_flow.py` |
 | D6-1 Wave C / U8 | 桌面端左栏树形与子会话卡片、审批冒泡落盘 | 已完成并验证 | `desktop\src\components\ChildThreadCard.tsx`、`Sidebar.tsx`、`lib\store.ts`；`ChildThreadCard.test.tsx`、`SidebarChildIndent.test.tsx`、`lib\childApproval.test.ts` |
 | D6-1 Wave C / U9 | 假模型端到端脚本 + 编排闭环 | 已完成并验证 | `ee\scripts\e2e_ws.py`；`ee\tests\test_e2e_wait.py`；`server\app.py` 的 `thread/create_child\|children\|status\|wait` |
-| D6-2 / T9 | 版本化 LSP 诊断、可信启动与进程回收 | **已完成并验证（U1–U6）** | `ee/core/lsp/{client,servers,manager,diagnostics,notify}.py`、`ee/tools/lsp.py`、`ee/tests/test_lsp.py`（30 例）、`tests/fake_lsp_server.py`；设置页开关。只支持 python / typescript，不自动安装服务器 |
+| D6-2 / T9 | 版本化 LSP 诊断、可信启动与进程回收 | **已完成并验证（U1–U6 + 生产接线 + 真实服务器）** | `ee/core/lsp/{client,servers,manager,diagnostics,notify}.py`、`ee/tools/lsp.py`、`ee/core/session.py` 的 `_attach_lsp`、`ee/tests/test_lsp.py`（30 例）+ `test_lsp_integration.py`（5 例，含真实 pyright）；设置页开关。只支持 python / typescript，不自动安装服务器 |
 | 后置 | best-of-n、文件交接、Goal、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
-## 已有能力，不重复建设
+## 执行记录（2026-10-29，D6-2 补齐生产接线与真实服务器验收）
+
+发现方式：按计划原文去补「真实 pyright 集成用例」，探针一跑就暴露了生产线从没通过电——
+假服务器用例 30 例全绿，但它们手工注入 `LspTool(manager=..., store=...)`，绕过了接线。
+
+| 缺陷（实测，非推断） | 锚点 | 修法 |
+|---|---|---|
+| `lsp_manager`/`lsp_store`/`lsp_notifier` 全仓无赋值点，只在 `__init__` 置 None | `ee\ee\core\session.py:160-162` | 新增 `_attach_lsp`，照 `_attach_mcp` 的惰性一次接线 |
+| `_notify_lsp` 首行 `if self.lsp_notifier is None: return`，写后通知永不执行 | `ee\ee\core\session.py:1254` | 同上；`_attach_lsp` 在回合开始处调用 |
+| 工具表里 `LspTool()` 无参构造，`_store_from_ctx` 取到 None，永远报「没有启用」 | `ee\ee\tools\__init__.py:89`、`ee\ee\tools\lsp.py:92` | `_attach_lsp` 把 manager/store/root 补给已注册的工具 |
+| 全仓无人注册 `publishDiagnostics` 回调，`DiagStore.on_publish` 无生产调用点 | grep `on_notification\|on_publish` 只命中定义 | `_attach_lsp` 里 `client.on_notification[...] = store.on_publish` |
+| pyright 把盘符小写化（回 `file:///e%3A/`，我们发 `E%3A`），按字符串做键导致诊断整条丢弃 | 探针实测：`uri_match=False`、`on_publish -> False` | `diagnostics.norm_uri()`，DiagStore 读写路径统一归一（只归一 scheme 与 Windows 盘符，POSIX 大小写保持敏感） |
+
+验证（真实执行）：
+
+| 单元 | 命令 | 结果 |
+|---|---|---|
+| 真实服务器端到端 | 探针：中文目录 + 中文文件名，真实 pyright | `status=fresh n=2`，工具输出 `1:10 错误 Type "Literal['hello']"...` / `2:5 错误 "undefined_name" is not defined` |
+| RED 确认 | 回滚 `on_publish` 的 `norm_uri` 调用后跑 `test_publish_with_lowercase_drive_still_accepted` | 1 failed（`assert False is True`，红灯落在被测层） |
+| LSP 单元 | `pytest ee/tests/test_lsp.py` | 30 passed |
+| LSP 接线 + 集成 | `pytest ee/tests/test_lsp_integration.py` | 5 passed（含真实 pyright 1 例，不跳过） |
+| D6-2 停点回归 | `pytest test_lsp.py test_lsp_integration.py test_details.py test_redo_security_config.py test_rpc_contract.py` | 63 passed |
+| 会话链路回归 | `pytest test_loop.py test_server.py test_session_lifecycle.py` | 33 passed |
+| 前端 | `npm run test -- AgentSettings.test.tsx` | 3 passed |
+
+未验证 / 保留边界：
+
+- **typescript 语言服务器未验**：本机没有 `typescript-language-server`，只有 python 路径跑过真实服务器。
+- **进程退出/崩溃恢复未用真实服务器验**：`test_crash_restarts_on_next_acquire` 仍是 Fake client。
+- **编辑器里的实际观感未验**：桌面端没启动过，工具输出的可见性只验到字符串层面。
+- 集成用例用 `npx --package pyright` 启动，首次拉包约 60 秒；已给它 120 秒预算。机器上直接有 `pyright-langserver` 时走 PATH，不经过 npx。
+- 会话内只起一种语言的服务器（按根目录特征文件判定），多语言项目需要后续扩。
+
+
 
 - 核心会话、流式工具循环、审批、队列、压缩/缓存、模型档案：`ee\ee\core\session.py`、`providers\`；测试 `ee\tests\test_loop.py`、`test_queue.py`、`test_prefix_cache.py`。
 - 桌面三栏、本地 RPC、设置、终端、文件预览：`desktop\src\`、`desktop\electron\`、`ee\ee\server\`；前端 Vitest 与 `ee\tests\test_rpc_contract.py`。

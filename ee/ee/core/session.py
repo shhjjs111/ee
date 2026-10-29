@@ -160,6 +160,10 @@ class Session:
         self.lsp_store = None
         self.lsp_notifier = None
         self.lsp_manager = None
+        self._lsp_done = False
+        self._lsp_handle = None
+        self._lsp_root = ""
+        self._lsp_language = "python"
         self._skills_cat = None
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
@@ -661,6 +665,76 @@ class Session:
         self.tools = [t for t in self.tools if not t.name.startswith("mcp__")] + list(self.mcp_tools)
         self.tool_map = {t.name: t for t in self.tools}
 
+    # ------------------------------------------------------------ LSP 接线（D6-2 / T9 U5）
+    async def _attach_lsp(self, emit) -> None:
+        """首次回合把 LSP 管理器 / 诊断缓存 / 变更通知接到会话上（只做一次）。
+
+        为什么必须有这一步：`LspTool` 在工具表里是**无参构造**的，它的 manager 和
+        store 都为空；`_store_from_ctx` 从 `session.lsp_store` 取，而 `_notify_lsp`
+        又要 `session.lsp_notifier`。这三者原先只在 `__init__` 里被置成 None，
+        全仓没有赋值点——工具永远报「没有启用」，写后通知永远在第一行 return。
+        **假服务器测试测不到这一层**，因为它们手工 `LspTool(manager=..., store=store)`。
+
+        失败一律只出提示，不影响回合：诊断是辅助信息，缺了它编辑仍要能正常干活。
+        """
+        if self._lsp_done or self.prefix is not None:
+            return
+        self._lsp_done = True
+        data = self.config.data
+        if not (data.get("lsp") or {}).get("enabled"):
+            return
+
+        from ee.core.lsp import diagnostics as D
+        from ee.core.lsp import manager as M
+        from ee.core.lsp import notify as N
+        from ee.core.lsp import servers as S
+
+        # 用户配置与项目配置合并：项目只能关闭/收紧，不能指定可执行文件。
+        user = ((data.get("lsp") or {}).get("servers") or {})
+        project = {}
+        try:
+            project = _read_project_lsp(self.cwd)
+        except Exception as e:  # noqa: BLE001  配置文件坏了不该拦住会话
+            emit(Notice(f"读取项目 LSP 配置失败（忽略）：{e}", "warn"))
+        cfg = S.merge_config(user, project)
+        if cfg.get("enabled") is False:
+            return
+
+        language = _lsp_language_for_root(self.cwd)
+        spec = S.resolve(language, cfg)
+        if not spec.available:
+            # 未安装：明确说清楚，并且**不尝试安装**。此时不接 manager，
+            # 工具会如实报 unavailable——那正是「没取到诊断」的正确表述。
+            emit(Notice(f"LSP：{spec.reason}", "info"))
+
+        mgr = M.LspManager()
+        store = D.DiagStore()
+        notifier = N.Notifier(store)
+
+        if spec.available:
+            try:
+                handle = await mgr.acquire(str(self.cwd), language, spec.identity, spec=spec)
+                client = handle.entry.client
+                # 这一行是整条链的接口：没有它就永远收不到诊断。
+                client.on_notification["textDocument/publishDiagnostics"] = (
+                    lambda params: store.on_publish(params))
+                self._lsp_handle = handle
+                self._lsp_root = str(self.cwd)
+                self._lsp_language = language
+                notifier.attach("", client)      # 占位，真正的 uri 在首次通知时绑
+            except Exception as e:  # noqa: BLE001
+                emit(Notice(f"LSP 启动失败（忽略，编辑不受影响）：{e}", "warn"))
+
+        self.lsp_manager = mgr
+        self.lsp_store = store
+        self.lsp_notifier = notifier
+        # 工具表里的 LspTool 是无参构造的，把真实能力补给它。
+        for t in self.tools:
+            if t.name == "lsp":
+                t.manager = mgr
+                t.store = store
+                t.root = str(self.cwd)
+
     async def _attach_mcp(self, emit) -> None:
         """首次冻结前缀前连接 MCP 服务器（只做一次）；失败只出提示，不影响回合。"""
         if self._mcp_done or self.prefix is not None or not self.mcp_enabled:
@@ -963,6 +1037,7 @@ class Session:
             log.info("回合开始：会话 %s 第 %d 回合 模型 %s cwd=%s", self.store.id, self.turns, self.spec.alias, self.cwd)
             await self._ensure_instructions_async()
             await self._attach_mcp(emit)
+            await self._attach_lsp(emit)
             await self._maybe_auto_compact(emit)
             if await hooks.on_turn_start(self, text, emit):   # D5-4 Hooks：SessionStart / UserPromptSubmit 拦截
                 emit(TurnDone("blocked", ""))
@@ -1540,3 +1615,38 @@ _LANG_BY_SUFFIX = {
 
 def _language_of(path: Path) -> str:
     return _LANG_BY_SUFFIX.get(path.suffix.lower(), "plaintext")
+
+
+# LSP 只支持 python / typescript（方案明确「不扩泛语言框架」）。
+# 用根目录里最可能的入口文件判断要不要起服务器：起一个用不上的进程
+# 比不起更糟——它会一直占着内存，还让设置页显示「已连接」。
+_ROOT_MARKERS = (
+    ("python", ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")),
+    ("typescript", ("tsconfig.json", "package.json")),
+)
+
+
+def _lsp_language_for_root(root: Path) -> str:
+    """按根目录的特征文件猜一种语言；都没有时按 python。"""
+    for lang, names in _ROOT_MARKERS:
+        if any((root / n).exists() for n in names):
+            return lang
+    return "python"
+
+
+def _read_project_lsp(root: Path) -> dict:
+    """读项目级 LSP 配置（`.ee/lsp.toml`）。
+
+    项目配置**只能关闭或收紧**——`merge_config` 负责丢弃 `command`。
+    文件不存在、解析失败都返回空字典，不影响会话。
+    """
+    p = root / ".ee" / "lsp.toml"
+    if not p.is_file():
+        return {}
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover  3.11+
+        return {}
+    with p.open("rb") as f:
+        data = tomllib.load(f)
+    return data if isinstance(data, dict) else {}

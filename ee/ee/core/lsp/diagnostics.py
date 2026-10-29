@@ -33,6 +33,32 @@ NOT_OPEN = "not_open"        # 没打开过（未发起请求）
 TRUSTED = (FRESH,)
 
 
+def norm_uri(uri: str) -> str:
+    """把 URI 归一成可比较的键。
+
+    **为什么必须归一**：真实的 pyright 会把 Windows 盘符小写化——我们发
+    `file:///E%3A/...`，它回报 `file:///e%3A/...`。`DiagStore` 用 uri 做字典键，
+    不归一的话 `_docs.get(uri)` 命不中，诊断会被当成「未知文档」整条丢弃，
+    现象是明明装了服务器却永远 `not_open`。假服务器回的原样 uri，所以测不出来。
+
+    只归一不改变语义的部分：scheme 与 Windows 盘符（`X%3A` / `x%3A`）大小写。
+    路径其余部分保持原样——POSIX 下大小写是有意义的。
+    """
+    if not uri:
+        return uri
+    head, sep, rest = uri.partition("://")
+    head = head.lower()
+    if not sep:
+        return head
+    # 盘符前面还有前导斜杠：`file:///E%3A/...` 的 rest 是 `/E%3A/...`。
+    slash = "/" if rest.startswith("/") else ""
+    body = rest[len(slash):]
+    # 盘符编码有两种写法：`E%3A`（大写十六进制）与 `e%3a`。都归一成小写盘符 + `%3A`。
+    if len(body) >= 4 and body[0].isalpha() and body[1:4].lower() == "%3a":
+        body = body[0].lower() + "%3A" + body[4:]
+    return head + sep + slash + body
+
+
 def fingerprint(text: str) -> str:
     """内容指纹。用 blake2b 截断，够区分版本内的内容变化，代价可忽略。"""
     return hashlib.blake2b(text.encode("utf-8", "replace"), digest_size=8).hexdigest()
@@ -95,6 +121,8 @@ class DiagStore:
 
     # ------------------------------------------------------------ 文档
     def open(self, doc: Doc) -> Doc:
+        # 键统一用 norm_uri：服务器回报的 uri 盘符大小写可能与发送时不同。
+        doc.uri = norm_uri(doc.uri)
         self._docs[doc.uri] = doc
         # 打开时把历史结果作废：新文档的版本从 1 重新开始
         self._results.pop(doc.uri, None)
@@ -105,6 +133,7 @@ class DiagStore:
 
         关键在最后一步：内容变了但服务器还没推新诊断，这时旧诊断不能继续当 fresh。
         """
+        uri = norm_uri(uri)
         doc = self._docs.get(uri)
         if doc is None:
             doc = Doc(uri=uri, text=text)
@@ -121,11 +150,12 @@ class DiagStore:
         return doc
 
     def close(self, uri: str) -> None:
+        uri = norm_uri(uri)
         self._docs.pop(uri, None)
         self._results[uri] = Result(uri=uri, status=CLOSED, diagnostics=[])
 
     def doc(self, uri: str) -> Doc | None:
-        return self._docs.get(uri)
+        return self._docs.get(norm_uri(uri))
 
     def uris(self) -> list[str]:
         return list(self._docs)
@@ -137,7 +167,7 @@ class DiagStore:
         `fingerprint` 为 None 时按「服务器回的是它收到的那个版本」处理，
         仍要校验 version 不能比当前文档新也不要更旧。
         """
-        uri = params.get("uri") or ""
+        uri = norm_uri(params.get("uri") or "")
         doc = self._docs.get(uri)
         if doc is None:
             return False
@@ -166,10 +196,11 @@ class DiagStore:
 
     def set_status(self, uri: str, status: str, reason: str = "") -> None:
         """把某个 uri 标成 timeout / unavailable / error，并清空诊断。"""
+        uri = norm_uri(uri)
         self._results[uri] = Result(uri=uri, status=status, diagnostics=[], reason=reason)
 
     def get(self, uri: str, default_status: str = NOT_OPEN) -> Result:
-        res = self._results.get(uri)
+        res = self._results.get(norm_uri(uri))
         if res is not None:
             return res
         return Result(uri=uri, status=default_status)
