@@ -602,7 +602,7 @@ class Backend:
 
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
                          attachments: list | None = None, effort: str | None = None, style: str | None = None,
-                         queue: str | None = None) -> dict:
+                         queue: str | None = None, goal: dict | None = None) -> dict:
         if text is not None and not isinstance(text, str):
             raise RpcError("参数错误：text 必须是字符串", -32602)
         if not (text or "").strip() and not attachments:
@@ -621,7 +621,7 @@ class Backend:
                 images, meta = await asyncio.to_thread(save_all, self.home, thread_id, list(attachments))
             log.info("turn/start 会话 %s：%d 字，%d 张图片", thread_id, len(text), len(images))
             return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images, attachments=meta,
-                                effort=effort, style=style, queue=queue)
+                                effort=effort, style=style, queue=queue, goal=goal)
         except ValueError as e:
             raise RpcError(str(e))
 

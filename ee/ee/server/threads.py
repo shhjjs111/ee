@@ -67,6 +67,40 @@ def clean_title(t: str) -> str:
     return t[:40]
 
 
+MAX_GOAL_ROUNDS = 20      # 界面上限：防一次传个巨大值把机器跑满
+
+
+def _norm_goal(goal: dict) -> dict:
+    """校验并规范化 Goal 判据。
+
+    判据只从 start_turn 这条入口来，模型无法写入——那会让"测试通过"变成
+    "不用测"。这里做三件事：命令不能为空、轮次必须是正整数且有上限、
+    超时可选但给了必须是正数。
+    """
+    if not isinstance(goal, dict):
+        raise ValueError("goal 必须是对象")
+    cmd = str(goal.get("command") or "").strip()
+    if not cmd:
+        raise ValueError("goal.command 不能为空：没有判据的循环没有意义")
+    raw = goal.get("max_rounds", 3)
+    try:
+        rounds = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"goal.max_rounds 必须是整数：{raw!r}") from None
+    if rounds < 1:
+        raise ValueError(f"goal.max_rounds 必须 >= 1：{rounds}")
+    rounds = min(rounds, MAX_GOAL_ROUNDS)
+    out = {"command": cmd[:2000], "max_rounds": rounds}
+    if goal.get("timeout") is not None:
+        try:
+            t = float(goal["timeout"])
+        except (TypeError, ValueError):
+            raise ValueError("goal.timeout 必须是数字") from None
+        if t > 0:
+            out["timeout"] = min(t, 3600.0)
+    return out
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
@@ -288,12 +322,17 @@ class Thread:
     def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
                    images: list[str] | None = None, attachments: list[dict] | None = None,
                    display: str | None = None, readonly: bool = False, kind: str | None = None,
-                   effort=None, style: str | None = None, queue: str | None = None) -> dict:
+                   effort=None, style: str | None = None, queue: str | None = None,
+                   goal: dict | None = None) -> dict:
         """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。
         display：界面上显示的用户消息（模型收到的仍是 text，例如 /review 拼好的长提示）；
         readonly：这一回合临时只读，回合结束恢复原模式（/review）；kind：用户条目的类型标记（review）。
-        queue：运行中发送时排进哪条队列：steer 插话（默认）/ follow 完成后追加；空闲时忽略。"""
+        queue：运行中发送时排进哪条队列：steer 插话（默认）/ follow 完成后追加；空闲时忽略。
+        goal：`{command, max_rounds}`。给了就走 Goal 循环（跑到判据通过或轮次用完）。
+        判据只从这条入口来，模型无法自己改——那会让"测试通过"变成"不用测"。"""
         s = self.ensure_session()
+        if goal is not None:
+            goal = _norm_goal(goal)
         if images and self.running:
             raise ValueError("ee 正在工作，等这一回合结束再发图片")
         if (readonly or display) and self.running:
@@ -309,6 +348,10 @@ class Thread:
         user_item = {"type": "user", "text": display or text}
         if kind:
             user_item["kind"] = kind
+        if goal:
+            # 记在用户条目上：界面据此显示"这一回合在追什么目标"，
+            # 也让"判据从哪来"可追溯（只可能来自这里，不是模型写的）。
+            user_item["goal"] = dict(goal)
         if attachments:
             user_item["attachments"] = attachments
         if self.running:
@@ -329,7 +372,7 @@ class Thread:
             s.set_mode("read-only")
         s._turn_role = "review" if kind == "review" else None      # 审查回合按 roles.review 取模型（D5-9）
         self.notify("thread/updated", {"thread": self.summary()})
-        self.task = asyncio.create_task(self._consume(text, images))
+        self.task = asyncio.create_task(self._consume(text, images, goal=goal))
         self.notify("thread/updated", {"thread": self.summary()})
         return {"queued": False, "item_id": user["id"]}
 
@@ -389,7 +432,8 @@ class Thread:
         self.notify("thread/updated", {"thread": self.summary()})
         return {"ok": True}
 
-    async def _consume(self, text: str, images: list[str] | None = None) -> None:
+    async def _consume(self, text: str, images: list[str] | None = None,
+                       goal: dict | None = None) -> None:
         s = self.session
         assert s is not None
         self.turn_started_at = time.monotonic()
@@ -397,12 +441,19 @@ class Thread:
         self.plan_item = None
         reason = "error"
         try:
-            async for ev in s.run_turn(text, images):
-                if isinstance(ev, TurnDone):
-                    reason = ev.reason
-                    if ev.tree_after:
-                        self._mark_tree_after(ev.tree_after)
-                self._on_event(ev)
+            if goal:
+                # Goal 模式：反复跑回合直到判据通过或轮次用完。
+                # 回合本身仍走 s.run_turn（不新建 agent 循环），只是调用方变成循环。
+                # 必须在这个 try 里：提前 return 会跳过下面的 finally，
+                # _finish() 不执行 → 会话永远卡在 running。
+                reason = await self._consume_goal(text, images, goal)
+            else:
+                async for ev in s.run_turn(text, images):
+                    if isinstance(ev, TurnDone):
+                        reason = ev.reason
+                        if ev.tree_after:
+                            self._mark_tree_after(ev.tree_after)
+                    self._on_event(ev)
         except Exception as e:  # noqa: BLE001
             log.error("回合异常（会话 %s）", self.id, exc_info=True)
             self._add({"type": "error", "message": f"内部错误：{type(e).__name__}: {e}"})
@@ -418,6 +469,48 @@ class Thread:
                 log.error("回合收尾异常（会话 %s）", self.id, exc_info=True)
                 self.notify("turn/completed", {"thread_id": self.id, "reason": "error", "duration_ms": 0,
                                                "usage": self.usage, "context_left": self.context_left})
+
+    async def _consume_goal(self, text: str, images: list[str] | None, goal: dict) -> str:
+        """跑 Goal 循环，返回停止原因（met / exhausted / budget / interrupted / error）。
+
+        回合执行仍是 s.run_turn：这里只负责"再跑一轮"和"判定"，不是第二个 agent 循环。
+        每轮判定结果通过 goal_check 通知推给界面，用户能看到进度而不是干等。
+        """
+        from ee.core.goal import GoalSpec, run_goal
+
+        s = self.session
+        assert s is not None
+        spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
+                        min_tests=int(goal.get("min_tests") or 1),
+                        timeout=float(goal.get("timeout") or 300.0))
+        round_no = {"n": 0}
+
+        async def _one_turn() -> None:
+            round_no["n"] += 1
+            async for ev in s.run_turn(text if round_no["n"] == 1 else "继续，直到判据通过", images):
+                self._on_event(ev)
+
+        def _emit(verdict) -> None:
+            self.notify("goal_check", {
+                "thread_id": self.id,
+                "round": round_no["n"] + 1,
+                "met": bool(verdict.met),
+                "reason": verdict.reason,
+                "exit": verdict.exit,
+                "tests": verdict.tests,
+            })
+
+        result = await run_goal(spec, turn_runner=_one_turn,
+                                max_rounds=int(goal.get("max_rounds") or 3),
+                                budget_exhausted=lambda: bool(getattr(s.budget, "stop_reason", None)),
+                                emit=_emit)
+        self.notify("goal_done", {
+            "thread_id": self.id,
+            "stop_reason": result.stop_reason,
+            "rounds": len(result.rounds),
+            "report": result.report(),
+        })
+        return result.stop_reason
 
     def _new_run(self, text: str, initiator: str = "user") -> dict:
         """记一次派发。终态由 _finish 写入，不能靠 status=idle 推断成功。
