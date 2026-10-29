@@ -583,7 +583,10 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
               addFiles(files);
             }
           }}
-          className="block max-h-[260px] w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[14px] leading-[1.6] text-fg outline-none placeholder:text-faint"
+          // overflow-y-auto + 自适应高度：行高 1.6 与 scrollHeight 取整差 1-2px 时，
+          // 浏览器会判定"内容溢出"并常显一条竖直滚动条（实测 offsetWidth 718 / clientWidth 708）。
+          // 单行不需要滚动，交给 max-h 兜住多行情况即可。
+          className="block max-h-[260px] w-full resize-none overflow-y-hidden bg-transparent px-4 pb-1 pt-3.5 text-[14px] leading-[1.6] text-fg outline-none placeholder:text-faint"
         />
         <div className="flex items-center gap-1 px-2 pb-2 pt-1">
           <Tip label="引用文件（@）">
