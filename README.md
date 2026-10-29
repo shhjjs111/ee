@@ -4,7 +4,7 @@ ee 的个人 AI 编程 Agent 桌面端（Windows 优先）。只走 OpenAI Chat 
 
 ## 目录
 - `ee/`：Python 内核和本地服务 `ee serve`（工具循环、多模型适配、权限审批、会话存储、git）
-- `desktop/`：Electron + React 桌面界面（三栏布局：项目/对话、对话区、改动审阅；设置页）
+- `desktop/`：Electron + React 桌面界面（对话优先：项目/会话栏 + 对话区，改动/文件/终端按需在右侧展开；设置页）
 - `research/`：设计文档和对 Codex、Claude Code、OpenCode、天枢的研究笔记
 - `agent/`：最早的单文件原型（已不用）
 
@@ -19,6 +19,21 @@ npm run dev
 没有 uv 时：`python -m venv .venv` 然后 `./.venv/Scripts/python.exe -m pip install -e "ee[test]"`。
 需要 Python 3.11+ 和 Node 20+。指定 python：`$env:EE_PYTHON="C:\path\python.exe"`。
 API key：在设置页填写（保存在 Windows 凭据管理器，`config.toml` 里不留明文；旧版明文会在启动时自动迁移），或设环境变量 `DEEPSEEK_API_KEY`。
+
+### 桌面端界面验证
+```powershell
+cd desktop
+npm test                 # 组件与逻辑单测（vitest + jsdom）
+npm run typecheck        # 渲染层 + 主进程类型检查
+npm run build            # 必须先构建：Electron 加载 dist/，不重建就看不到源码改动
+npm run test:ui          # 真实 Electron 窗口的渲染基线（Playwright）
+```
+`test:ui` 测的是用户能看见的几何结果：首屏是否对话优先、输入框有没有常显滚动条、
+工具面板打开后是否真有宽度、960×600 下中区是否还可用、深色令牌是否生效。
+判定用真实尺寸测量而非截图相似度——本机没有基线图维护流程，尺寸断言更稳，失败时也更能指出问题。
+失败截图与 trace 落在 `test-results/`（已 gitignore）。
+
+界面布局的取舍与设计边界见 `.rivet/plans/ee-codex-桌面工作台-ui-改版完整计划.md`（本地工作记录，不入库）。
 
 **务必用 `.venv`，不要用 PATH 里的 `python`**：`openai` 与 `tree_sitter` 是延迟导入，装错解释器时多数测试仍通过，只在触及真客户端、Windows 沙箱、仓库地图时失败——看起来是代码问题，其实是环境。实测同一批文件：PATH 的 Anaconda python 下 17 failed，项目 `.venv` 下 0 failed。全量测试：`./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q`（当前基线 1578 passed / 15 skipped / 0 failed，约 17 分钟）。
 
