@@ -21,9 +21,41 @@
 | D6-1 Wave C / U8 | 桌面端左栏树形与子会话卡片、审批冒泡落盘 | 已完成并验证 | `desktop\src\components\ChildThreadCard.tsx`、`Sidebar.tsx`、`lib\store.ts`；`ChildThreadCard.test.tsx`、`SidebarChildIndent.test.tsx`、`lib\childApproval.test.ts` |
 | D6-1 Wave C / U9 | 假模型端到端脚本 + 编排闭环 | 已完成并验证 | `ee\scripts\e2e_ws.py`；`ee\tests\test_e2e_wait.py`；`server\app.py` 的 `thread/create_child\|children\|status\|wait` |
 | D6-2 / T9 | 版本化 LSP 诊断、可信启动与进程回收 | **已完成并验证（U1–U6 + 生产接线 + 真实服务器）** | `ee/core/lsp/{client,servers,manager,diagnostics,notify}.py`、`ee/tools/lsp.py`、`ee/core/session.py` 的 `_attach_lsp`、`ee/tests/test_lsp.py`（30 例）+ `test_lsp_integration.py`（5 例，含真实 pyright）；设置页开关。只支持 python / typescript，不自动安装服务器 |
-| 后置 | best-of-n、文件交接、Goal、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+| T10-a 会话导出 | Markdown / JSON 导出（核心 + RPC + CLI） | **已完成并验证**（桌面端入口未做） | `ee\ee\core\export.py`、`server\app.py` 的 `thread/export`、`cli.py` 的 `export` 子命令；`ee\tests\test_export.py`（11 例）、`test_export_rpc.py`（10 例）、`test_export_cli.py`（8 例） |
+| T10-b / Goal 循环 | 条件驱动 + 多轮续跑 + 判据判定（零测试/超时不算成功） | **已完成并验证（U1–U3）** | `ee\ee\core\goal.py`、`cli.py`+`headless.py` 的 `--goal`；`test_goal.py`（12）、`test_goal_runner.py`（9）、`test_goal_cli.py`（6）、`test_goal_exec.py`（5）、`test_goal_acceptance.py`（2，真实 pytest 闭环） |
+| 后置 | best-of-n、文件交接、自动审批、发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
-## 执行记录（2026-10-29，D6-2 补齐生产接线与真实服务器验收）
+## 执行记录（2026-10-29，T10-a 导出 / T10-b Goal 循环 / e2e 死锁）
+
+| 单元 | 验证（真实执行） | 结果 |
+|---|---|---|
+| T10-a 导出核心 | `pytest test_export.py` | 11 passed |
+| T10-a 导出 RPC | `pytest test_export_rpc.py` | 10 passed |
+| T10-a 导出 CLI | `pytest test_export_cli.py` | 8 passed |
+| T10-a 真实会话导出 | 5 个真实会话，items 数无损、工具参数 3/3 结构化、Markdown 零缺失 | 通过 |
+| T10-b U1 判据 | `pytest test_goal.py` | 12 passed |
+| T10-b U2 续跑 | `pytest test_goal_runner.py` | 9 passed |
+| T10-b U3 CLI | `pytest test_goal_cli.py` + `test_goal_exec.py` | 11 passed |
+| T10-b 闭环验收 | `pytest test_goal_acceptance.py`：真实 pytest 判红 → agent read+edit 修复 → 判绿 → 退出 0 报 met | 2 passed |
+| goal 全量回归 | 六个测试文件（含 test_exec） | 46 passed |
+| e2e 修复前 | `python scripts/e2e_ws.py` | 68s 失败（60s 内没有 turn/completed） |
+| e2e 修复后 | 同上 | rc=0，19.36s 通过；`--blackhole` 18.26s 通过 |
+| CI | `9f138fa` / `520d29d` / `48a8172` / `4328907` / `cbc5328` | verify 全绿 |
+
+e2e 卡住的根因（非后端）：`e2e_ws.py` 的 `reader()` 把每条通知 `json.dumps` 后截 400 字符同步 print，
+`item/delta` 密集时堵住事件循环 → reader 停止消费 ws → 后端 `ws.send` 背压 → 后续通知（含 approval）
+全排在队列里出不来。顺带修掉两处隐蔽缺陷：审批响应边遍历 `notes` 边 `remove`（同批两条审批会抛
+`ValueError` 被外层吞掉）、超时诊断只报一句「没有 turn/completed」。
+
+未验证 / 保留边界：
+
+- 导出与 Goal 的**桌面端入口**未做（导出只有 CLI，Goal 只有 `ee exec --goal`）。用户明确要求先不做桌面端。
+- Goal 判据的测试计数解析只保证 pytest；vitest / go test 解析不到会按 0 处理（保守方向：
+  表现为跑满轮次后 exhausted，不会假成功）。
+- `ee export` 的 Electron 保存对话框路径未验（本机未启动过桌面端）。
+- 附件不参与导出：实测 items 里没有 image/attachment 字段（`threads.py:289` 接收但未落 items）。
+
+
 
 发现方式：按计划原文去补「真实 pyright 集成用例」，探针一跑就暴露了生产线从没通过电——
 假服务器用例 30 例全绿，但它们手工注入 `LspTool(manager=..., store=...)`，绕过了接线。
