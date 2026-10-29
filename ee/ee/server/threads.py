@@ -101,6 +101,45 @@ def _norm_goal(goal: dict) -> dict:
     return out
 
 
+def spent_before_from_usage(u: dict | None) -> dict[str, float]:
+    """从 turn_end 的 usage 快照恢复「重启前这个会话已花多少」，按币种。
+
+    **为什么不能只看 u["cost"]**：v2 口径下混币会话的 `cost` 是 None（见
+    core/usage.py），只读它会把整个已花金额丢掉，重启后会话预算从 0 重新算——
+    用户以为还剩很多额度，实际早就超了。
+
+    兼容三种形态：v2 的 `costs` 分币种桶、v1 的单值 `cost`+`currency`、以及空。
+    未知金额（币种存在但 complete=false）**不恢复成 0 元**：有已知部分就恢复已知部分，
+    完全不已知就不恢复，宁可少算也不假设没花钱。
+    """
+    out: dict[str, float] = {}
+    if not isinstance(u, dict):
+        return out
+    costs = u.get("costs")
+    if isinstance(costs, dict) and costs:
+        for cur, bucket in costs.items():
+            if not isinstance(bucket, dict):
+                continue
+            try:
+                amount = float(bucket.get("known_amount") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                out[str(cur)] = amount
+        if out:
+            return out
+    # v1 兼容：单值 cost + currency
+    cost = u.get("cost")
+    if cost is not None:
+        try:
+            amount = float(cost)
+        except (TypeError, ValueError):
+            return out
+        if amount > 0:
+            out[str(u.get("currency") or "¥")] = amount
+    return out
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
@@ -191,9 +230,9 @@ class Thread:
             except ValueError:
                 pass
         last = next((it for it in reversed(self.items) if it.get("type") == "turn_end"), None)
-        u = (last or {}).get("usage") or {}
-        if u.get("cost"):
-            s.spent_before = {str(u.get("currency") or "¥"): float(u["cost"])}
+        restored = spent_before_from_usage((last or {}).get("usage"))
+        if restored:
+            s.spent_before = restored
         s.bg.on_change = lambda info: self.notify("shell/updated", {"thread_id": self.id, "proc": info})
         self.session = s
         for n in s.notices:
