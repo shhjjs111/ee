@@ -632,6 +632,9 @@ class Thread:
             it = self._add({"type": "approval", "call_id": ev.call_id, "tool": ev.tool, "title": ev.title,
                             "detail": _clip(ev.detail or "", 20000), "prefix": ev.prefix, "status": "pending",
                             "rule": rule_from_decision(ev.tool, ev.prefix) or "",
+                            # 自动审批建议（T10-c）：事件上算了就一定要落到条目里，
+                            # 否则前端永远拿不到——和 LSP 那次"字段存在但没人赋值"同类。
+                            **({"suggestion": dict(ev.suggestion)} if getattr(ev, "suggestion", None) else {}),
                             **({"source": dict(ev.source)} if ev.source else {})})
             if ev.future is not None:
                 self.approvals[ev.call_id] = (ev.future, it)

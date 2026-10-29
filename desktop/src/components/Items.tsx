@@ -597,6 +597,24 @@ export function ApprovalCard({ item }: { item: ApprovalItem }) {
             className="mt-3 h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-[13px] outline-none focus:border-accent"
           />
         )}
+        {/* 自动审批建议（T10-c）：只展示，不提供放行入口。
+            决策权始终在下面的按钮上——建议说「可以放行」也不等于放行。 */}
+        {item.suggestion && (item.suggestion.eligible || item.suggestion.blocked_by) && (
+          <div
+            className="mt-3 rounded-lg border border-line bg-soft/60 px-3 py-2 text-[12px] leading-relaxed"
+            data-testid="approval-suggestion"
+          >
+            {item.suggestion.eligible ? (
+              <span className="text-muted">
+                <span className="text-fg">建议：</span>
+                {item.suggestion.summary}
+                {item.suggestion.hits > 1 ? `（已出现 ${item.suggestion.hits} 次）` : ""}
+              </span>
+            ) : (
+              <span className="text-faint">不能自动放行：{item.suggestion.blocked_by}</span>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 border-t border-line bg-soft/60 px-4 py-2.5">
         <Button variant="primary" size="sm" onClick={() => respond(item.call_id, "once")}>

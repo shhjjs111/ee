@@ -59,6 +59,19 @@ export type ApprovalItem = ItemBase & {
   reason?: string;
   rule?: string; // 选「本项目以后都允许」时写入的永久规则（D4-8）；空 = 不能永久允许
   source?: ApprovalSource; // 子代理发出的审批：来自哪个子代理（D5-2）
+  // 自动审批的建议态（T10-c）：只描述「如果将来放行，会放行什么」。
+  // 它不是决策——界面只展示，不提供放行入口。缺省表示没有建议（老数据）。
+  suggestion?: ApprovalSuggestion;
+};
+/** 自动审批建议（后端 core/autoapprove.py 的 Suggestion.as_dict）。 */
+export type ApprovalSuggestion = {
+  eligible: boolean;
+  rule: string;
+  blocked_by: string;
+  summary: string;
+  hits: number;
+  reason: string;
+  action: string;
 };
 /** 审批来源：并行子代理时界面据此标明是哪个子代理要的（D5-2）。 */
 export type ApprovalSource = { call_id: string; agent: string; description: string };
