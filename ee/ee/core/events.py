@@ -80,6 +80,9 @@ class ApprovalRequest(Event):
     future: asyncio.Future | None = None
     force: bool = False     # 危险操作的强制询问（全自动模式下也问；ee exec --approve auto 也不自动批）
     source: dict = field(default_factory=dict)   # 来自子代理时：{call_id, agent, description}（D5-2，界面标明来源）
+    # 自动审批的建议态（T10-c）：只描述「如果将来放行，会放行什么」。
+    # 它不是决策，界面必须显式渲染；缺省空 dict 表示没有建议。
+    suggestion: dict = field(default_factory=dict)
 
 
 @dataclass

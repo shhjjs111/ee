@@ -1412,7 +1412,12 @@ class Session:
                 title, detail = f"使用工具 {tool.name}", json.dumps(args, ensure_ascii=False)[:2000]
             hooks.notify(self, "permission_prompt", title, emit)   # D5-4 Hooks：Notification（不等待）
             fut = asyncio.get_running_loop().create_future()
-            emit(ApprovalRequest(cid, tool.name, title, detail, d.prefix, fut, force=d.force))
+            ev = ApprovalRequest(cid, tool.name, title, detail, d.prefix, fut, force=d.force)
+            # 自动审批建议态（T10-c）：只往事件上挂一段说明，**不改 d.action**。
+            # 这一层永远不能放行；放行要用户自己打开开关，且受 deny/force/只读约束。
+            _attach_suggestion(ev, decision=d, tool=tool.name, args=args,
+                               mode=self.policy.mode, config=self.config.data)
+            emit(ev)
             return await fut
 
     # ------------------------------------------------------------ 侧路请求（不碰主会话）
@@ -1611,6 +1616,33 @@ _LANG_BY_SUFFIX = {
     ".js": "javascript", ".jsx": "javascriptreact",
     ".json": "json",
 }
+
+
+def _attach_suggestion(ev, *, decision=None, tool: str = "", args: dict | None = None,
+                       mode: str = "default", config: dict | None = None):
+    """把自动审批的**建议**挂到 ApprovalRequest 上（T10-c）。
+
+    三条纪律：
+    - 只写 `ev.suggestion`，**不改任何决策**；审批照常等用户。
+    - 算建议出错只记日志，返回原事件——建议是辅助信息，不能把审批搞崩。
+    - 未开启时不产生合格建议（默认关闭）。
+
+    `decision` 缺省时从事件自身字段重建：这样单测可以直接构造事件调用。
+    """
+    try:
+        from ee.core.autoapprove import suggest
+
+        if decision is None:
+            from ee.core.permissions import Decision
+
+            decision = Decision("ask", "", getattr(ev, "prefix", "") or "",
+                                getattr(ev, "force", False))
+        s = suggest(decision, tool=tool or getattr(ev, "tool", ""), args=args or {},
+                    mode=mode, config=config)
+        ev.suggestion = s.as_dict()
+    except Exception as e:  # noqa: BLE001  建议失败不影响审批
+        log.info("自动审批建议计算失败（忽略）：%s", e)
+    return ev
 
 
 def _language_of(path: Path) -> str:
