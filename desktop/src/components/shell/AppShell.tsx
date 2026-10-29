@@ -14,7 +14,8 @@ export function AppShell({
   main,
   inspector,
 }: {
-  sidebar: React.ReactNode;
+  /** 传 null 表示这一页不要侧栏（如设置页自带导航，不该再叠一层项目树）。 */
+  sidebar: React.ReactNode | null;
   main: React.ReactNode;
   inspector: React.ReactNode | null;
 }) {
@@ -29,10 +30,11 @@ export function AppShell({
   }, [setWindowWidth]);
 
   const overlay = inspector !== null && layout.inspectorMode === "overlay";
+  const showSidebar = sidebar !== null && layout.sidebar > 0;
 
   return (
     <div className="relative flex h-full overflow-hidden" data-testid="app-shell" data-inspector-mode={layout.inspectorMode}>
-      {layout.sidebar > 0 && (
+      {showSidebar && (
         <div className="flex shrink-0 flex-col border-r border-line" style={{ width: layout.sidebar }} data-testid="shell-sidebar">
           {sidebar}
         </div>

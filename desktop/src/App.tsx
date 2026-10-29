@@ -172,7 +172,8 @@ export default function App() {
         </div>
       )}
       <AppShell
-        sidebar={<Sidebar />}
+        // 设置页自带一条导航，不能再叠一层项目树（改版前是双侧栏并排）。
+        sidebar={view === "settings" ? null : <Sidebar />}
         main={
           <>
             {view === "settings" ? <SettingsPage /> : view === "automations" ? <AutomationsPage /> : <Conversation />}
