@@ -396,9 +396,25 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
     restore = _install_sigint(loop, th, hits)
     reason, t0 = "error", time.monotonic()
 
-    async def _one_turn() -> str:
-        """跑一个回合，返回停止原因。goal 模式下会被反复调用。"""
-        th.start_turn(prompt, mode=args.mode)
+    _turns = {"n": 0}
+
+    async def _one_turn(verdict=None) -> str:
+        """跑一个回合，返回停止原因。goal 模式下会被反复调用。
+
+        第一回合发用户原话；之后把「判据命令 + 上一轮失败输出」交给模型。
+        原来只发固定文案，模型看不到判据与失败原因，只能猜。
+        """
+        _turns["n"] += 1
+        payload = prompt
+        if args.goal and _turns["n"] > 1 and verdict is not None:
+            from ee.core.goal import GoalSpec as _GS
+            from ee.core.goal_feedback import build_feedback
+            _spec = _GS(command=args.goal, cwd=th.meta["cwd"],
+                        min_tests=max(1, int(args.goal_min_tests)),
+                        timeout=float(args.goal_timeout))
+            payload = build_feedback(verdict, _spec, attempt=_turns["n"] - 1,
+                                     max_checks=int(args.goal_max_rounds))
+        th.start_turn(payload, mode=args.mode)
         task = th.task
         assert task is not None
         await task

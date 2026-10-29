@@ -485,9 +485,21 @@ class Thread:
                         timeout=float(goal.get("timeout") or 300.0))
         round_no = {"n": 0}
 
-        async def _one_turn() -> None:
+        async def _one_turn(verdict=None) -> None:
+            """跑一个修复回合。
+
+            第一回合发用户原话；之后发「判据命令 + 上一轮失败输出」的完整反馈。
+            原来只发固定文案「继续，直到判据通过」——模型既不知道判据是什么、
+            也看不到失败原因，只能猜，多跑几轮只是多花钱。
+            """
             round_no["n"] += 1
-            async for ev in s.run_turn(text if round_no["n"] == 1 else "继续，直到判据通过", images):
+            if round_no["n"] == 1 or verdict is None:
+                payload = text
+            else:
+                from ee.core.goal_feedback import build_feedback
+                payload = build_feedback(verdict, spec, attempt=round_no["n"] - 1,
+                                         max_checks=int(goal.get("max_rounds") or 3))
+            async for ev in s.run_turn(payload, images):
                 self._on_event(ev)
 
         def _emit(verdict) -> None:

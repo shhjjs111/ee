@@ -61,7 +61,6 @@ def _run_goal_with(monkeypatch, failure_output: str, command: str, max_rounds: i
     return th.session.inputs
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 2/T07：连判据命令都没进模型输入，续跑只发固定文案（ACC-10）")
 def test_goal_command_reaches_model_input(monkeypatch):
     """判据命令必须出现在模型的输入里，否则它不知道"通过"由什么决定。"""
     inputs = _run_goal_with(monkeypatch, "1 failed", "pytest -q tests/test_dates.py")
@@ -69,7 +68,6 @@ def test_goal_command_reaches_model_input(monkeypatch):
     assert "tests/test_dates.py" in joined, f"判据命令没进模型输入：{inputs}"
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 2/T07：续跑只发固定文案，看不到失败输出（ACC-10）")
 def test_goal_failure_output_reaches_model_input(monkeypatch):
     """失败输出必须进模型输入，否则模型无法定向修复。"""
     marker = "AssertionError: expected 2024-03-01 but got 2024-02-29"

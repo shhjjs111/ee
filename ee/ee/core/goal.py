@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from dataclasses import dataclass, field
 
@@ -192,6 +193,25 @@ async def judge(spec: GoalSpec, *, runner=None) -> Verdict:
 DEFAULT_MAX_ROUNDS = 3
 
 
+async def _call_runner(runner, verdict):
+    """调用注入的 turn_runner，兼容接受 0 个或 1 个参数的签名。
+
+    Goal 的 runner 由调用方提供（headless、server/threads、以及测试替身）。
+    新契约会传上一个 Verdict，让调用方够得着判据与失败输出；旧的无参 runner
+    也必须继续能跑，否则任何一处漏改就会把整个循环打挂。
+    """
+    try:
+        sig = inspect.signature(runner)
+    except (TypeError, ValueError):        # 内置/C 实现拿不到签名：当作无参调用
+        return await runner()
+    params = [p for p in sig.parameters.values()
+              if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values())
+    if params or has_varargs:
+        return await runner(verdict)
+    return await runner()
+
+
 async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: int = DEFAULT_MAX_ROUNDS,
                    budget_exhausted=None, emit=None) -> GoalResult:
     """跑到判据成立为止，或到上限为止。
@@ -233,7 +253,13 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
             return result
 
         try:
-            await turn_runner()
+            # 把上一轮的判定交给 runner：调用方据此把判据与失败输出送进模型输入。
+            #
+            # 用签名探测而不是 TypeError 回退：旧式 `async def turn()` 的注入方仍然可用，
+            # 但**不能靠捕获 TypeError 再重试**——那样 KeyboardInterrupt/CancelledError
+            # 在重试时抛出会绕过外层 except（同一 try 的 except 块内异常不回流），
+            # 中断信号会直接穿透整个循环。
+            await _call_runner(turn_runner, v)
         except KeyboardInterrupt:
             result.stop_reason = INTERRUPTED
             result.detail = "用户中断"
