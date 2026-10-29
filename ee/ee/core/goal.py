@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 
@@ -184,3 +185,66 @@ async def judge(spec: GoalSpec, *, runner=None) -> Verdict:
     return Verdict(exit=code, tests=parse_tests(output or ""),
                    timed_out=bool(timed_out), output=output or "",
                    min_tests=spec.min_tests)
+
+
+# ---------------------------------------------------------------- 续跑控制器（U2）
+
+DEFAULT_MAX_ROUNDS = 3
+
+
+async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: int = DEFAULT_MAX_ROUNDS,
+                   budget_exhausted=None, emit=None) -> GoalResult:
+    """跑到判据成立为止，或到上限为止。
+
+    参数都是注入的，**这里不自己造 agent 回合**：
+    - `turn_runner`：跑一个 agent 回合的协程函数，由调用方给（headless 传它自己的）。
+    - `judge_fn`：判定函数，默认 `judge`（测试可替换，避免真跑子进程）。
+    - `budget_exhausted`：可选的无参函数，返回 True 表示预算用完。
+
+    顺序是「先判后跑」：条件本来就成立时一个回合都不跑，避免为了"确认一下"
+    去改本来就对的代码。
+    """
+    jf = judge_fn or judge
+    result = GoalResult(stop_reason=ERROR)
+    rounds = max(1, int(max_rounds))
+
+    for i in range(rounds):
+        v = await jf(spec)
+        result.rounds.append(v)
+        if emit is not None:
+            try:
+                emit(v)
+            except Exception:  # noqa: BLE001  观感回调出错不影响判定
+                pass
+        if v.met:
+            result.stop_reason = MET
+            result.detail = f"第 {i + 1} 次判定即成立"
+            return result
+
+        # 还没达标：这一轮要不要再跑回合？
+        if i == rounds - 1:
+            break                       # 最后一轮判完就停，不再跑无用的回合
+        if budget_exhausted is not None and budget_exhausted():
+            result.stop_reason = BUDGET
+            result.detail = "花费上限已到，停止续跑"
+            return result
+
+        try:
+            await turn_runner()
+        except KeyboardInterrupt:
+            result.stop_reason = INTERRUPTED
+            result.detail = "用户中断"
+            return result
+        except asyncio.CancelledError:
+            result.stop_reason = INTERRUPTED
+            result.detail = "任务被取消"
+            return result
+        except Exception as e:  # noqa: BLE001  回合失败要报出来，不抛给调用方
+            result.stop_reason = ERROR
+            result.detail = f"回合执行失败：{type(e).__name__}: {e}"
+            return result
+
+    result.stop_reason = EXHAUSTED
+    result.detail = f"跑满 {rounds} 轮仍未成立"
+    return result
+
