@@ -27,14 +27,15 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 export const Button = React.forwardRef<HTMLButtonElement, BtnProps>(function Button(
-  { variant = "ghost", size = "md", className, ...rest },
+  { variant = "ghost", size = "md", className, type = "button", ...rest },
   ref,
 ) {
   return (
     <button
       ref={ref}
+      type={type}
       className={clsx(
-        "no-drag inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
+        "ee-focus no-drag inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-lg font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
         size === "md" && "h-8 px-3 text-[13px]",
         size === "sm" && "h-7 px-2.5 text-[12.5px]",
         size === "icon" && "h-8 w-8",
@@ -231,7 +232,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
       ref={ref}
       spellCheck={false}
       className={clsx(
-        "h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-[13px] text-fg outline-none transition-colors placeholder:text-faint focus:border-accent",
+        "ee-focus h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-[13px] text-fg outline-none transition-colors placeholder:text-faint focus:border-accent",
         className,
       )}
       {...rest}

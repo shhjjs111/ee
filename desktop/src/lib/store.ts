@@ -5,6 +5,7 @@ import { applyItemNotification } from "./reduce";
 import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
 import { RpcClient, type ConnState } from "./rpc";
+import { migratePrefs } from "./layout";
 
 
 /** 快照恢复只完成一部分（有文件被占用）：如实提示已恢复几个、哪些没恢复。 */
@@ -139,7 +140,13 @@ export const useApp = create<State & Actions>((set, get) => ({
   exportDialog: null,
   handoffDialog: null,
   bestofDialog: null,
-  rightOpen: localStorage.getItem("ee.right") !== "0",
+  // 工具面板默认收起（改版：对话优先）；老用户明确存过 ee.right=1 的仍然展开。
+  // 开关状态仍由这个 store 持有，layoutStore 只负责宽度与展现方式，避免两处各存一份开关。
+  rightOpen: migratePrefs({
+    layout: localStorage.getItem("ee.layout"),
+    right: localStorage.getItem("ee.right"),
+    rightWidth: localStorage.getItem("ee.rightWidth"),
+  }).inspectorOpen,
   rightTab: "review",
   reviewNonce: 0,
   filePath: null,
@@ -159,6 +166,8 @@ export const useApp = create<State & Actions>((set, get) => ({
     const cwd = (st.activeThreadId ? st.details[st.activeThreadId]?.cwd : null) ?? st.activeWorkspace ?? "";
     const rel = toRelative(path, cwd);
     localStorage.setItem("ee.right", "1");
+    // 工具面板开关只有一份真相（这个 store）；layoutStore 存宽度，同步过去避免两套开关打架
+    void import("./layoutStore").then((m) => m.useLayout.getState().setInspectorOpen(true));
     set((s) => ({ rightOpen: true, rightTab: "files", view: "chat", filePath: rel, lastFilePath: rel, fileNonce: s.fileNonce + 1 }));
   },
 

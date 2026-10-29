@@ -5,7 +5,8 @@ import { AlertTriangle, RotateCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Conversation } from "./components/Conversation";
 import { RightPanel } from "./components/RightPanel";
-import { Dialogs } from "./components/ReviewDialogs";
+import { AppShell } from "./components/shell/AppShell";
+import { GlobalDialogs } from "./components/shell/GlobalDialogs";
 import { SettingsPage } from "./components/SettingsPage";
 import { AutomationsPage } from "./components/AutomationsPage";
 import { useLoops } from "./lib/loopStore";
@@ -35,6 +36,7 @@ export default function App() {
   const toast = useApp((s) => s.toast);
   const theme = useApp((s) => s.theme);
   const conn = useApp((s) => s.conn);
+  const rightOpen = useApp((s) => s.rightOpen);
 
   const start = async (restart = false) => {
     setBoot({ state: "loading" });
@@ -169,12 +171,16 @@ export default function App() {
           与内核的连接断开，正在重连…
         </div>
       )}
-      <div className="flex h-full overflow-hidden">
-        <Sidebar />
-        {view === "settings" ? <SettingsPage /> : view === "automations" ? <AutomationsPage /> : <Conversation />}
-        <RightPanel />
-      </div>
-      <Dialogs />
+      <AppShell
+        sidebar={<Sidebar />}
+        main={
+          <>
+            {view === "settings" ? <SettingsPage /> : view === "automations" ? <AutomationsPage /> : <Conversation />}
+          </>
+        }
+        inspector={view === "chat" && rightOpen ? <RightPanel /> : null}
+      />
+      <GlobalDialogs />
       {toast && (
         <div
           className={clsx(

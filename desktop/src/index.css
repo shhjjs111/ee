@@ -321,3 +321,26 @@ pre.shiki {
 .file-code .line:hover {
   background: var(--bg-hover);
 }
+
+/* ------------------------------------------------------------------ 焦点可访问性
+   改版前没有统一焦点样式：Tab 到按钮/输入框只有浏览器默认描边，深色背景下几乎不可见。
+   所有可交互控件挂 .ee-focus，由这里统一定义。
+
+   用 :focus-visible 而不是 :focus：鼠标点击不显示焦点环，键盘导航才显示。 */
+.ee-focus:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* 减少动效偏好：前庭敏感用户不该被淡入/闪烁困住。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -3,6 +3,8 @@ import { Check, ChevronRight, FileCode2, FileDiff, GitBranch, GitCommitHorizonta
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatWhen, pendingCount } from "../lib/hunks";
 import { useApp, type RightTab } from "../lib/store";
+import { CONTENT_MIN, INSPECTOR_DEFAULT, INSPECTOR_MAX, INSPECTOR_MIN } from "../lib/layout";
+import { useLayout } from "../lib/layoutStore";
 import type { DiffFile, GitReview, HunkInfo } from "../types";
 import { DiffView, HunkDiff, Stat, type HunkAction } from "./DiffView";
 import { FilesPanel } from "./FilesPanel";
@@ -250,15 +252,14 @@ const TABS: { id: RightTab; label: string; icon: React.ReactNode }[] = [
   { id: "files", label: "文件", icon: <FileCode2 size={14} /> },
 ];
 
-const MIN_W = 320;
-const MAX_W = 820;
+const MIN_W = INSPECTOR_MIN;
+const MAX_W = INSPECTOR_MAX;
 
 export function RightPanel() {
   const s = useApp();
-  const [width, setWidth] = useState(() => {
-    const w = Number(localStorage.getItem("ee.rightWidth"));
-    return w >= MIN_W && w <= MAX_W ? w : 400;
-  });
+  // 宽度由 layoutStore 统一持有（外层 AppShell 决定实际占位/覆盖），这里只负责拖动改偏好。
+  const width = useLayout((st) => st.prefs.inspector);
+  const setInspectorWidth = useLayout((st) => st.setInspectorWidth);
   const [termMounted, setTermMounted] = useState(false);
   const drag = useRef<{ x: number; w: number } | null>(null);
   useEffect(() => {
@@ -272,28 +273,25 @@ export function RightPanel() {
   };
   const onMove = (e: React.PointerEvent) => {
     if (!drag.current) return;
-    const max = Math.min(MAX_W, window.innerWidth - 560);
-    setWidth(Math.round(Math.max(MIN_W, Math.min(max, drag.current.w + drag.current.x - e.clientX))));
+    const max = Math.min(MAX_W, window.innerWidth - CONTENT_MIN);
+    setInspectorWidth(Math.round(Math.max(MIN_W, Math.min(max, drag.current.w + drag.current.x - e.clientX))));
   };
   const onUp = () => {
     if (!drag.current) return;
     drag.current = null;
-    localStorage.setItem("ee.rightWidth", String(width));
   };
 
   return (
-    <aside className="relative flex shrink-0 flex-col border-l border-line bg-bg" style={{ width }}>
+    <aside className="relative flex h-full w-full shrink-0 flex-col bg-bg">
       <div
         className="no-drag absolute -left-[3px] top-0 z-20 h-full w-[6px] cursor-col-resize transition-colors hover:bg-accent/30"
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
-        onDoubleClick={() => {
-          setWidth(400);
-          localStorage.setItem("ee.rightWidth", "400");
-        }}
+        onDoubleClick={() => setInspectorWidth(INSPECTOR_DEFAULT)}
       />
-      <div className="drag flex h-11 shrink-0 items-center gap-1 border-b border-line pl-2" style={{ paddingRight: "calc(var(--overlay-w) + 8px)" }}>
+      {/* 顶部标签条不再是标题栏的一部分：工具面板在自己的栏内，右侧安全区由外层标题栏负责 */}
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-2 pr-2">
         {TABS.map((t) => (
           <button
             key={t.id}
