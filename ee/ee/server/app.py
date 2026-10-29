@@ -42,7 +42,7 @@ SLOW_RPC = 5.0     # 秒：超过就记一条日志
 # 这些方法的 thread_id 是可选参数；显式传 None 表示“没有当前会话”。其余方法必须给合法 id。
 OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
 # 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环（对应方法本身仍是同步函数，测试可直接调用）。
-BLOCKING_RPCS = {"thread/delete"}
+BLOCKING_RPCS = {"thread/delete", "thread/export"}
 
 
 def _thread_id_optional(fn) -> bool:
@@ -82,6 +82,7 @@ class Backend:
             "app/info": self.app_info,
             "thread/list": self.thread_list,
             "thread/search": self.thread_search,
+            "thread/export": self.thread_export,
             "thread/start": self.thread_start,
             "thread/get": self.thread_get,
             "thread/rename": self.thread_rename,
@@ -340,6 +341,49 @@ class Backend:
         except ValueError as e:
             raise RpcError(f"配置错误：{e}")
         return {"thread": t.detail()}
+
+    # ------------------------------------------------------------ 导出（T10-a U2）
+    async def thread_export(self, thread_id: str, format: str = "markdown",
+                            path: str | None = None, overwrite: bool = False) -> dict:
+        """把一个会话导出成 Markdown / JSON。
+
+        `path` 缺省时**不落盘**，只返回内容（前端可预览/复制）——导入导出这类动作
+        不该在用户没指定位置时偷偷往磁盘写东西。给了 path 才写。
+        """
+        return await asyncio.to_thread(self._thread_export, thread_id, format, path, overwrite)
+
+    def _thread_export(self, thread_id: str, fmt: str, path: str | None,
+                       overwrite: bool) -> dict:
+        from ee.core.export import FORMATS, export
+
+        self._check_thread_id(thread_id)
+        if fmt not in FORMATS:
+            raise RpcError(f"参数错误：未知导出格式 {fmt!r}（可选：{', '.join(FORMATS)}）", -32602)
+
+        sess = self.home / "sessions" / f"{thread_id}.jsonl"
+        if not sess.is_file():
+            raise RpcError(f"会话不存在：{thread_id}", 404)
+
+        # 直接从文件读：导出是只读动作，不该为此把会话加载进内存线程池，
+        # 也不该让一个正在运行的回合影响导出内容的一致性。
+        from ee.core.store import SessionStore
+        content = export(SessionStore.load(sess), fmt)
+
+        out_path = None
+        if path:
+            target = Path(path)
+            if not target.is_absolute():
+                raise RpcError("参数错误：导出路径必须是绝对路径", -32602)
+            if target.is_dir():
+                raise RpcError("参数错误：导出路径是目录，不是文件", -32602)
+            if target.exists() and not overwrite:
+                # 不静默覆盖：用户的东西不能被一次导出抹掉
+                raise RpcError(f"目标文件已存在：{target}", -32602)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(target, content)
+            out_path = str(target)
+
+        return {"format": fmt, "content": content, "path": out_path}
 
     async def thread_rename(self, thread_id: str, title: str) -> dict:
         t = await self._athread(thread_id)
@@ -784,6 +828,29 @@ class Backend:
 # ---------------------------------------------------------------- WebSocket 传输
 
 EXIT_GRACE = 10.0   # 秒：桌面端没了以后，正常清理最多等这么久，超时就强制结束子进程并退出
+
+
+def _atomic_write(target: Path, text: str) -> None:
+    """原子写：先写同目录临时文件再 rename。
+
+    直接 open(w) 中途失败会留下半截文件——导出场景下用户看到的是一个
+    「能打开但内容缺了」的会话记录，比没有文件更糟。同名临时文件 + os.replace
+    在 Windows 上也是原子的（同卷）。
+    """
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".export-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def take_serve_token(token: str | None = None) -> str | None:
