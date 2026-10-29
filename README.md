@@ -37,6 +37,11 @@ npm run test:ui          # 真实 Electron 窗口的渲染基线（Playwright）
 
 **务必用 `.venv`，不要用 PATH 里的 `python`**：`openai` 与 `tree_sitter` 是延迟导入，装错解释器时多数测试仍通过，只在触及真客户端、Windows 沙箱、仓库地图时失败——看起来是代码问题，其实是环境。实测同一批文件：PATH 的 Anaconda python 下 17 failed，项目 `.venv` 下 0 failed。全量测试：`./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q`（当前基线 1578 passed / 15 skipped / 0 failed，约 17 分钟）。
 
+### 行尾约定
+仓库用 `.gitattributes` 统一行尾（文本 LF、`.bat/.cmd/.ps1` 保留 CRLF），
+不依赖个人 `core.autocrlf` 设置。曾经因为没有这个文件，工作区是 CRLF、索引是 LF，
+导致按内容算哈希的工具（如交付门禁）在两次读取间得到不同结果。
+
 ## 当前路线（2026-10-28）
 
 当前实施入口：[research\roadmap-current.md](research/roadmap-current.md)。先执行 Wave 0–2：文档与 CI 基线、worktree/MCP/预算稳定化、会话生命周期；达到停点后再进入 D6 指挥会话和 LSP。旧研究文档不再作为当前待办。
