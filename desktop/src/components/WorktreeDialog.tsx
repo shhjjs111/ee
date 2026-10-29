@@ -1,11 +1,11 @@
 // git worktree 管理（D5-1）：列出项目的 ee worktree，新建、在其中开对话、合并回主目录、删除。
-import * as Dialog from "@radix-ui/react-dialog";
-import { GitBranch, GitMerge, Plus, SquarePen, Trash2, X } from "lucide-react";
+import { GitBranch, GitMerge, Plus, SquarePen, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { relTime } from "../lib/reduce";
 import { useApp } from "../lib/store";
 import type { WorktreeInfo } from "../types";
 import { Button, Input, Spinner, Tip } from "./ui";
+import { DialogFrame } from "./ui/DialogFrame";
 
 export function WorktreeDialog() {
   const path = useApp((s) => s.worktreeDialog);
@@ -62,22 +62,7 @@ export function WorktreeDialog() {
   };
 
   return (
-    <Dialog.Root open onOpenChange={(o) => !o && close()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/30 fadein" />
-        <Dialog.Content
-          aria-describedby={undefined}
-          className="fixed left-1/2 top-[10%] z-50 flex max-h-[78vh] w-[640px] max-w-[94vw] -translate-x-1/2 flex-col rounded-2xl border border-line bg-elev p-4 shadow-[var(--shadow)] fadein"
-        >
-          <div className="mb-1 flex items-center gap-2">
-            <GitBranch size={15} className="text-muted" />
-            <Dialog.Title className="flex-1 text-[14px] font-semibold text-fg">Worktree</Dialog.Title>
-            <Dialog.Close asChild>
-              <Button size="icon-sm" aria-label="关闭">
-                <X size={14} />
-              </Button>
-            </Dialog.Close>
-          </div>
+    <DialogFrame title="Worktree" icon={<GitBranch size={15} />} onClose={close} width="lg">
           <div className="mb-3 text-[12px] leading-relaxed text-muted">
             每个 worktree 是独立的目录和 <span className="mono">ee/</span> 分支，ee 在里面改代码不影响主目录，适合同时做几件事。仓库根目录的
             <span className="mono"> .worktreeinclude </span>（.gitignore 语法）里列出的被忽略文件（如 .env）会在新建时复制过去。删除前有未提交的改动会先自动提交到它的分支上。
@@ -194,8 +179,6 @@ export function WorktreeDialog() {
               </div>
             </>
           )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    </DialogFrame>
   );
 }

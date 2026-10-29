@@ -1,11 +1,11 @@
 // best-of-n 候选比较（T10-d 界面侧）：把「谁通过了验证」摆出来让人自己看。
 // 纪律：胜者只由判据决定，模型自述不算；没有候选通过时说「没选」，不硬挑。
-import * as Dialog from "@radix-ui/react-dialog";
-import { CheckCircle2, GitCompare, Trophy, X } from "lucide-react";
+import { CheckCircle2, GitCompare, Trophy } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import type { BestofCandidate, WorktreeInfo } from "../types";
 import { Button, Input, Spinner } from "./ui";
+import { DialogFrame } from "./ui/DialogFrame";
 
 interface PickResult {
   winner: string | null;
@@ -82,22 +82,7 @@ export function BestofDialog() {
   };
 
   return (
-    <Dialog.Root open onOpenChange={(o) => !o && close()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/30 fadein" />
-        <Dialog.Content
-          aria-describedby={undefined}
-          className="fixed left-1/2 top-[12%] z-50 flex max-h-[74vh] w-[620px] max-w-[94vw] -translate-x-1/2 flex-col rounded-2xl border border-line bg-elev p-4 shadow-[var(--shadow)] fadein"
-        >
-          <div className="mb-1 flex items-center gap-2">
-            <GitCompare size={15} className="text-muted" />
-            <Dialog.Title className="flex-1 text-[14px] font-semibold text-fg">比较候选</Dialog.Title>
-            <Dialog.Close asChild>
-              <Button size="icon-sm" aria-label="关闭">
-                <X size={14} />
-              </Button>
-            </Dialog.Close>
-          </div>
+    <DialogFrame title="比较候选" icon={<GitCompare size={15} />} onClose={close} width="md">
           <div className="mb-3 text-[12px] leading-relaxed text-muted">
             每个 worktree 是一个候选。胜者<span className="text-fg">只由判据决定</span>
             ——模型说「改好了」不算证据；没有候选通过验证时不会硬挑一个。
@@ -189,8 +174,6 @@ export function BestofDialog() {
               )}
             </>
           )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    </DialogFrame>
   );
 }

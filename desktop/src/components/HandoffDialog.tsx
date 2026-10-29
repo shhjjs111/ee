@@ -1,11 +1,11 @@
 // 文件交接清单（T10-e 界面侧）：搬东西之前先看清要搬什么。
 // 只做「看清」——复制/切换/删除是不可逆动作，留给用户确认后另行执行。
-import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, CheckCircle2, FileWarning, PackageOpen, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileWarning, PackageOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import type { HandoffEntry, HandoffManifest } from "../types";
-import { Button, Spinner } from "./ui";
+import { Spinner } from "./ui";
+import { DialogFrame } from "./ui/DialogFrame";
 
 const CAT_LABEL: Record<string, string> = {
   staged: "已暂存",
@@ -50,22 +50,7 @@ export function HandoffDialog() {
   const close = () => s.set({ handoffDialog: null });
 
   return (
-    <Dialog.Root open onOpenChange={(o) => !o && close()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/30 fadein" />
-        <Dialog.Content
-          aria-describedby={undefined}
-          className="fixed left-1/2 top-[10%] z-50 flex max-h-[78vh] w-[640px] max-w-[94vw] -translate-x-1/2 flex-col rounded-2xl border border-line bg-elev p-4 shadow-[var(--shadow)] fadein"
-        >
-          <div className="mb-1 flex items-center gap-2">
-            <PackageOpen size={15} className="text-muted" />
-            <Dialog.Title className="flex-1 text-[14px] font-semibold text-fg">迁移清单</Dialog.Title>
-            <Dialog.Close asChild>
-              <Button size="icon-sm" aria-label="关闭">
-                <X size={14} />
-              </Button>
-            </Dialog.Close>
-          </div>
+    <DialogFrame title="迁移清单" icon={<PackageOpen size={15} />} onClose={close} width="md">
           <div className="mb-3 text-[12px] leading-relaxed text-muted">
             把文件搬到别处之前，先看清要搬什么。每条都带内容哈希，
             复制后可以逐字节核对；被忽略的文件也会列出来（默认不搬，但你能看见）。
@@ -133,8 +118,6 @@ export function HandoffDialog() {
               <AlertTriangle size={13} /> 没有拿到清单
             </div>
           )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    </DialogFrame>
   );
 }
