@@ -28,7 +28,6 @@ def _one_request(cost_per_million: float, currency: str) -> dict:
             "cost": cost_per_million}
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 1/T03：混币被相加成单值（acceptance-matrix ACC-01）")
 def test_mixed_currency_totals_must_not_collapse_into_one_currency():
     """CNY 1 + USD 1 不能合并成一个数字（当前实现合并成 2，币种取最后一条）。"""
     st = UsageStats()
@@ -42,7 +41,6 @@ def test_mixed_currency_totals_must_not_collapse_into_one_currency():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 1/T03：totals 没有分币种桶（ACC-01）")
 def test_mixed_currency_keeps_per_currency_buckets():
     """混币时必须能分别读出每个币种的金额，而不是只留一个。"""
     st = UsageStats()
@@ -56,7 +54,6 @@ def test_mixed_currency_keeps_per_currency_buckets():
     assert float(costs["USD"]["known_amount"]) == pytest.approx(1.0)
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 1/T03：缺 usage 仍报完整总额（ACC-02）")
 def test_missing_usage_must_mark_total_incomplete():
     """有一条请求没返回 usage 时，总额不能被当成完整已知金额（当前会照常给一个确定值）。"""
     st = UsageStats()
@@ -80,7 +77,6 @@ def test_unknown_price_must_not_look_free():
     assert totals.get("cost") is None, f"未知单价被算成金额：{totals.get('cost')}"
 
 
-@pytest.mark.xfail(strict=True, reason="待 Wave 1/T03：缺 hit_coverage 口径（ACC-01 命中率误导）")
 def test_hit_rate_reports_coverage():
     """命中率必须有覆盖率，否则"50% 命中"在只有一半请求报命中字段时会误导。"""
     st = UsageStats()

@@ -183,10 +183,18 @@ class UsageStats:
     compacted_tokens: int = 0      # 压缩累计省下的 token（估计：压缩前 − 压缩后）
 
     def add(self, usage: dict | None, price, model: str = "") -> float | None:
-        """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。"""
+        """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。
+
+        缺 usage 时也要落一条记录（cost=None）：否则这次请求会从账里彻底消失，
+        用户看到的总额就成了「看起来完整、其实漏了若干次」的假精确。
+        """
         if not usage:
             self.requests += 1
             self.usage_missing += 1
+            self.records.append({"prompt": 0, "completion": 0, "hit": None, "reasoning": None,
+                                 "cost": None, "currency": getattr(price, "currency", "¥") if price is not None else "¥",
+                                 "model": model, "usage_missing": True})
+            self.cost_known = False
             return None
         cost = price.cost(usage["prompt"], usage["completion"], usage.get("hit")) if price is not None else None
         self.add_record({"prompt": usage["prompt"], "completion": usage["completion"], "hit": usage.get("hit"),
@@ -243,9 +251,17 @@ class UsageStats:
         return min(1.0, (self.last_prompt + self.last_completion) / window)
 
     def totals(self) -> dict:
-        out = {"requests": self.requests, "prompt": self.prompt, "completion": self.completion,
-               "hit": self.hit, "hit_rate": self.hit_rate, "cost": self.cost if self.cost_known else None,
-               "currency": self.currency, "usage_missing": self.usage_missing}
+        """对外口径：v2 字段（分币种、完整性、命中覆盖率）+ 兼容的单值 cost/currency。
+
+        单值 `cost` 只在「唯一币种且金额完整」时给出；混币或缺用量一律 None。
+        消费方如果只读 `cost`，会自然退化成「不知道总额」而不是「错的总览」。
+        """
+        from ee.core import usage as U
+
+        roll = U.UsageRollup(self.records)
+        out = roll.totals_v2(requests=self.requests, prompt=self.prompt, completion=self.completion,
+                             hit=self.hit, hit_known_prompt=self.hit_known_prompt,
+                             usage_missing=self.usage_missing)
         if self.reasoning_known:
             out["reasoning"] = self.reasoning
         if self.pruned_tokens:
