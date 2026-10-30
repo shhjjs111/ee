@@ -91,7 +91,12 @@ class ReadTool(Tool):
         if path.is_file() and path.stat().st_size > STREAM_BYTES:
             return await self._read_large(path, offset, limit, ctx)
         tf = await asyncio.to_thread(read_text, path)
-        rec = ctx.state.mark_read(path)
+        # 内容身份（T17）：用解码后的正文算哈希，作为"文件是否真的变了"的判据。
+        # 用 tf.text 而不是磁盘原始字节：引用语义是"模型看到的正文没变"，
+        # CRLF/BOM 差异对模型不可见，不该触发假失效（ACC-40）。
+        from ee.core.evidence import content_identity
+        identity, _ = content_identity(tf.text.encode("utf-8"))
+        rec = ctx.state.mark_read(path, identity)
         key = (offset, limit)
         all_lines = tf.text.split("\n")
         if tf.text.endswith("\n"):

@@ -51,9 +51,9 @@
 
 | ID | 验收面 | 操作 | 期望观察 | 证据类型 | 状态 |
 |---|---|---|---|---|---|
-| ACC-40 | 未变内容可复用 | 内容未变、mtime 变 | 命中缓存 | 单测 | 未开始 |
-| ACC-41 | 内容变必失效 | 内容变、mtime/size 还原 | 未命中 | 单测 | 未开始 |
-| ACC-42 | 权限收紧优先 | 只读/`.eeignore`/沙箱 | 即使有缓存也拒绝 | 安全回归 | 未开始 |
+| ACC-40 | 未变内容可复用 | 内容未变、mtime 变 | 命中缓存 | `test_evidence_wiring.py::test_touch_does_not_invalidate_read_ref`（真实 ReadTool） | **GREEN**（判据接线：内容身份取代 mtime+size） |
+| ACC-41 | 内容变必失效 | 内容变、mtime/size 还原 | 未命中 | `test_evidence_wiring.py::test_content_change_with_restored_mtime_size_must_invalidate` | **GREEN**（同上） |
+| ACC-42 | 权限收紧优先 | 只读/`.eeignore`/沙箱 | 即使有缓存也拒绝 | 安全回归 | 未开始（`may_use_cache` 纯函数已测，但当前缓存是会话内存态记账、不存内容，无跨权限复用路径；端到端安全断言未写） |
 | ACC-43 | 无幽灵引用 | 回退/压缩/截断后读同区间 | 返回正文，不返回"见上文" | `test_read_visibility.py`（3 passed） | **GREEN**（提交 d928421） |
 | ACC-44 | 压缩后记得约束 | 判据命令在第一轮就进历史，中途压缩不丢 | `test_continuity.py`（3 passed） | **GREEN**（提交 d2a6d86） |
 | ACC-45 | 节省可解释 | 打开上下文面板 | 三类节省分开，未知不显示 0 | 快照测试 | 未开始 |
@@ -72,8 +72,8 @@
 
 | 状态 | 数量 |
 |---|---|
-| GREEN | 18 |
-| 未开始 | 20 |
+| GREEN | 20 |
+| 未开始 | 18 |
 
 已交付的 11 项均有测试与提交证据。后端全量回归：**1822 passed / 16 skipped / 0 failed**
 （2026-10-29，耗时 1064 秒）。

@@ -41,6 +41,7 @@ class ToolResult:
 class FileRecord:
     mtime_ns: int
     size: int
+    identity: str | None = None   # 内容身份（内容哈希）；None = 未计算，退回 mtime+size 判变化
     reads: dict = field(default_factory=dict)  # (offset,limit) -> 已返回 ref 次数
 
 
@@ -52,13 +53,33 @@ class ToolState:
     todos: list[dict] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
 
-    def mark_read(self, path: Path) -> FileRecord:
+    def mark_read(self, path: Path, identity: str | None = None) -> FileRecord:
+        """登记一次读取。identity 是内容身份（哈希），用于判"文件是否真的变了"。
+
+        判据优先级：内容身份 > mtime+size。
+        - 提供了 identity：身份一致即视为同一内容（touch / 原子替换不改身份，不丢记账）；
+          身份变了才新建记录（内容变了、mtime/size 还原也骗不过）。
+        - 未提供 identity（老调用点）：退回 mtime+size 判变化，保持原行为。
+        """
         st = path.stat()
         key = str(path)
         rec = self.files.get(key)
-        if rec is None or rec.mtime_ns != st.st_mtime_ns or rec.size != st.st_size:
-            rec = FileRecord(st.st_mtime_ns, st.st_size)
+        if rec is None:
+            rec = FileRecord(st.st_mtime_ns, st.st_size, identity)
             self.files[key] = rec
+            return rec
+        if identity is not None:
+            # 内容身份优先：身份一致 → 同一内容（即使 mtime/size 变了）；不一致 → 新建
+            if rec.identity == identity:
+                return rec
+            rec = FileRecord(st.st_mtime_ns, st.st_size, identity)
+            self.files[key] = rec
+            return rec
+        # 无 identity：退回 mtime+size
+        if rec.mtime_ns == st.st_mtime_ns and rec.size == st.st_size:
+            return rec
+        rec = FileRecord(st.st_mtime_ns, st.st_size, None)
+        self.files[key] = rec
         return rec
 
     def was_read(self, path: Path) -> bool:
