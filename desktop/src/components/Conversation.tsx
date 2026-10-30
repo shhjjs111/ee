@@ -214,7 +214,7 @@ export function Conversation() {
 
   if (!d) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col bg-bg">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
         <Header />
         <EmptyState />
       </div>
@@ -222,7 +222,12 @@ export function Conversation() {
   }
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-bg">
+    // min-h-0 是防御性约束（与 AppShell 同款）：flex 子项默认 min-height:auto，
+    // 理论上长内容可以把这层撑爆、把滚动区和侧栏顶出视口。2026-10-30 真机出现过
+    // 一次该形态的坏布局（容器被撑到 5046px），但复现验证未能确证本层缺 min-h-0
+    // 是根因（回滚后用真实数据遍历全部会话均正常）。保留约束作为纵深防御，
+    // 真正根因待坏状态再次出现时用现场 DevTools 数据定位。
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
       <Header />
       <div
         ref={scroller}

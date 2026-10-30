@@ -10,6 +10,13 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 let win: BrowserWindow | null = null;
 let trayCtl: ReturnType<typeof setupTray> | null = null;
 
+// 测试隔离（必须在 app ready 前调用）：Playwright e2e 起第二个实例时，
+// 默认 userData 下的 disk cache 会被正在运行的 ee 锁住（"拒绝访问"），导致
+// electron.launch 直接失败。设 EE_TEST_USER_DATA 后实例用独立目录，互不干扰。
+if (process.env.EE_TEST_USER_DATA) {
+  app.setPath("userData", process.env.EE_TEST_USER_DATA);
+}
+
 const backend = new Backend({
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
