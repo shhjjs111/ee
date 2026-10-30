@@ -199,3 +199,60 @@ def test_project_layer_cannot_enable_policy(tmp_path):
         {"context_policy": {"enabled": True, "threshold": 0.1}}, user_cfg)
     assert "context_policy" not in clean, "项目层不应能设置 context_policy"
     assert "context_policy" in dropped, "被丢弃的字段要记下来供设置页提示"
+
+
+# ---------------------------------------------------------------- 回归：前缀未冻结 ≠ 不稳定
+
+def test_fresh_session_without_prefix_still_advises(tmp_path):
+    """刚开会话（prefix 未冻结）是正常初始态，不能因此永远 hold。
+
+    真 bug（已修）：observe() 原来用 `prefix is not None` 判稳定，导致所有未冻结
+    的会话（绝大多数）永远返回 hold，影子记录收集不到任何有效样本。
+    """
+    import tempfile
+    from pathlib import Path
+
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.core import context_policy as P
+
+    ws = Path(tempfile.mkdtemp())
+    cfg = load_config(ws)
+    cfg.data["context_policy"] = {"enabled": True}
+    s = Session(cfg, cwd=ws, persist=False)
+    s.profile.context_window = 131072          # 128K 模型
+    assert s.prefix is None, "前提：新会话还没冻结前缀"
+    s.stats.last_prompt = 100_000              # 已用 76%，超过修剪阈值 60%
+    s.stats.last_completion = 1_000
+    d = P.observe(s)
+    assert d is not None
+    assert d.used_ratio > 0.6, f"应按真实占用算，实际 {d.used_ratio}"
+    assert d.suggest != P.SUGGEST_HOLD, (
+        f"前缀未冻结是正常初始态，不该永远 hold。实际 {d.suggest}：{d.reason}"
+    )
+
+
+def test_prefix_switch_is_detected_as_unstable(tmp_path):
+    """真的换前缀（sha 变了）才算不稳定：此时改写历史代价高，应保守。"""
+    import tempfile
+    from pathlib import Path
+
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.core import context_policy as P
+
+    ws = Path(tempfile.mkdtemp())
+    cfg = load_config(ws)
+    cfg.data["context_policy"] = {"enabled": True}
+    s = Session(cfg, cwd=ws, persist=False)
+    s.profile.context_window = 131072
+    s.stats.last_prompt = 100_000
+    s.stats.last_completion = 1_000
+    # 先有真实前缀 A（首次冻结是正常态，不算切换）
+    s.prefix = type("PF", (), {"sha256": "shaA", "system": {}, "tools": []})()
+    assert P.observe(s).prefix_stable is True
+    # 换成不同前缀 B —— 这才是「前缀不稳定」
+    s.prefix = type("PF", (), {"sha256": "shaB", "system": {}, "tools": []})()
+    d = P.observe(s)
+    assert d.suggest == P.SUGGEST_HOLD
+    assert not d.prefix_stable

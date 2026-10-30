@@ -145,10 +145,17 @@ def observe(session, emit=None) -> Decision | None:
         return None
     stats = session.stats
     prefix = getattr(session, "prefix", None)
+    # 前缀「未冻结」（刚开会话）不等于「不稳定」——前者是正常初始态，后者才意味着
+    # 改写历史代价高。把两者混为一谈会让影子在多数会话里永远 hold，记录毫无价值。
+    cur_sha = getattr(prefix, "sha256", None)
+    prev_sha = getattr(session, "_policy_prefix_sha", None)
+    switched = prev_sha is not None and cur_sha is not None and prev_sha != cur_sha
+    if cur_sha is not None:                  # 只有真实存在的前缀才留作下次比对基线
+        session._policy_prefix_sha = cur_sha
     u = Usage(
         window=int(getattr(getattr(session, "profile", None), "context_window", 0) or 0),
-        used=int(stats.last_prompt + stats.last_completion),
-        prefix_stable=prefix is not None,
+        used=int(session.context_tokens()),      # 与自动压缩同口径（含粗估兜底），不是上次请求的原始值
+        prefix_stable=not switched,
         pruned=int(getattr(stats, "pruned_tokens", 0) or 0),
         compacted=int(getattr(stats, "compacted_tokens", 0) or 0),
         enabled=True,

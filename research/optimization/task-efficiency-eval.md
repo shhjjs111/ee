@@ -133,3 +133,44 @@ pytest 调用：疑似全量 0 次，有范围 69 次
 **未做（等配对评测）**：真的开启策略。计划要求"只有配对评测证明成功任务总成本下降且完成率
 不降后才在可撤销设置中开启"——这需要真金白银跑 A/B，属于下一阶段。
 
+
+### 实测：策略在各模型窗口下的触发情况（修正口径后）
+
+先用**累计** token 当上下文占用得出"273% 超窗"是错的（`eval_profiles` 的 `avg_prompt` 是整次运行
+所有请求的累计，不是单次上下文）。正确口径是 `context_tokens()`（最后一次请求的
+`last_prompt + last_completion`，与自动压缩同口径）：
+
+| 指标 | full | lean |
+|---|---|---|
+| 累计输入 token | 358,811 | 205,844 |
+| 平均步数 | 19 | 16 |
+| **平均每步上下文** | ≈18,885 | ≈12,865 |
+| **末步上下文（≈2×平均，线性增长）** | **≈37,770** | **≈25,730** |
+
+对照各模型窗口（修剪阈值 60%）：
+
+| 模型 | 窗口 | 60% 阈值 | full 末步占比 | 是否触发 |
+|---|---|---|---|---|
+| default / qwen / doubao / glm | 131,072 | ≈78,600 | 28.8% | 否 |
+| claude | 200,000 | 120,000 | 18.9% | 否 |
+| kimi | 262,144 | 157,286 | 14.4% | 否 |
+| deepseek-flash | 1,000,000 | 600,000 | 3.8% | 否 |
+
+**结论：20 次真实任务里，上下文峰值约 37.8K，任何模型窗口下都远不到 60% 修剪阈值。**
+所以 T20 的影子策略在这个任务集上**记录的全是 hold**；跑配对 A/B 会得到"两组无差异"，
+不值得花评测费。策略真正有意义的是**超长会话**（几百轮）或**极小窗口模型**，不是单任务。
+
+### 顺带修掉的两个真缺陷（本轮实测暴露）
+
+| 缺陷 | 现象 | 修法 |
+|---|---|---|
+| 前缀未冻结被当成"不稳定" | 刚开会话 `prefix is None` → 永远 hold，影子记录全是噪声 | 只有 `shaA → shaB` 的**真实切换**才算不稳定 |
+| 取错用量字段 | 用 `last_prompt + last_completion` 而非 `context_tokens()`，缺少粗估兜底 | 改用 `session.context_tokens()`，与自动压缩同口径 |
+
+两条都有回归测试：`test_fresh_session_without_prefix_still_advises`、
+`test_prefix_switch_is_detected_as_unstable`。
+
+验证：`test_context_policy.py` **17 passed**；连带
+`test_prune + test_compaction + test_compaction_incremental + test_prefix_cache + test_redo_security_config`
+= **68 passed**（零回归）。
+
