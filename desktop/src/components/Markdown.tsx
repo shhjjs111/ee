@@ -68,8 +68,14 @@ const components = {
 };
 
 export const Markdown = memo(function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+  // 流式期间（T22）：纯文本渲染，跳过 ReactMarkdown 的全文同步解析。
+  // 流式输出每个 delta 都变 text，长回复下每帧重解析会卡输入；终态（streaming=false）
+  // 或老调用（不传 streaming）才一次性走 markdown。纯文本保留换行与字面量，不丢字。
+  if (streaming) {
+    return <div className="md text-[14px] text-fg stream-caret-last whitespace-pre-wrap break-words">{text}</div>;
+  }
   return (
-    <div className={"md text-[14px] text-fg" + (streaming ? " stream-caret-last" : "")}>
+    <div className={"md text-[14px] text-fg"}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>

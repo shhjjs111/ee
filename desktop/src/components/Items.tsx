@@ -257,7 +257,7 @@ export function AssistantMessage({ item }: { item: AssistantItem }) {
       )}
       {body && (
         <div className={clsx(item.streaming && "stream-caret-wrap")}>
-          <Markdown text={body} />
+          <Markdown text={body} streaming={item.streaming} />
         </div>
       )}
       {review && !item.streaming && <ReviewCard result={review} />}
