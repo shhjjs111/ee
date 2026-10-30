@@ -1,21 +1,19 @@
 # 接手说明（给接手的 AI / 另一个账号）
 
-## 当前接手入口（2026-10-28）
+> **本文档是历史归档**，正文（「历史记录归档」之后）只用于追溯「当初为什么这么定」，
+> **不是当前开工指令**。开工请先读：
+> - `research\roadmap-current.md` —— 唯一当前路线入口，阶段与状态都在这里；
+> - `AGENTS.md` —— 开发环境、测试怎么跑、代码约定。
+>
+> 正文中「当前进行中」「下一步」「未提交」等字样是记录当时的快照，已过时，
+> 不能据此提交、推送或重做功能。正文里的历史测试/CI 数字未在本批复验。
 
-以 `research\roadmap-current.md` 为当前路线。稳定化 Wave 0–2（T1–T6）与 D6-1 指挥会话的 Wave A/B（U1–U7）均已完成并提交；D6-1 的 Wave C（U8 桌面端接管、U9 端到端）与 D6-2（LSP）尚未开始。不要接回 `.rivet\scratch\d6-1-wip\`——那是被放弃的草稿，正式实现已在 `ee\ee\server\orchestrator.py`。
+## 开发环境（一句话）
 
-本批 T1：已整理现行/历史文档边界并修复下方已知损坏片段；纯文档改动，未运行测试。后续提交与验证分别记录到当前路线，不复用历史测试数报绿。
-
-**开发环境（重要，会直接造成假红）**：一律用仓库根的 `.venv`，不要用 PATH 里的 `python`。本机两个解释器并存，PATH 上是 `D:\Anaconda3\python.exe`（3.14），它缺 `openai` 与 `tree_sitter`，而这两个依赖是延迟导入的——大部分测试照常通过，只在触及真客户端、Windows 沙箱、仓库地图时才失败，表现为「代码坏了」的假象。实测对照：同一批文件在 Anaconda 下 17 failed，在 `.venv` 下 0 failed。
-
-```powershell
-./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q      # 全量
-```
-
+一律用仓库根的 `.venv`（`./.venv/Scripts/python.exe`），不要用 PATH 里的 Anaconda `python`
+（缺 openai/tree_sitter，会造成假失败）。测试跑子集、命令、约定详见 `AGENTS.md`。
 
 ## 历史记录归档（以下不再是开工指令）
-
-下文的“当前进行中”“接手第一步”“未提交”“下一步”均为记录当时的状态，不能据此提交、推送或重做功能。历史测试/CI 数字未在本批复验。旧的 key 明文、必须 Git 才能审阅等限制已被后续实现替代。
 
 历史最后更新：2026-10-28（Asia/Shanghai，**审查报告 7 个问题全部修复并推送 main** `ebf9c80`；全量 pytest **1480 passed / 15 skipped / 0 failed**（15m44s）；**Windows CI run #66 绿**；下一步 D6）
 
