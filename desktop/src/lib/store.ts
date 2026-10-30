@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { approvalNotice, turnCompletedNotice } from "./notify";
 import type { BgProc, ChildApprovalNote, ModelInfo, ThreadDetail, ThreadSummary, Workspace } from "../types";
 import { applyItemNotification } from "./reduce";
+import { StreamBuffer, applyDeltas, type DeltaEvent } from "./streamBuffer";
 import { pushReturned, takeReturned, type ReturnedInbox, type ReturnedInput } from "./drafts";
 import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
@@ -789,7 +790,43 @@ function setStatus(id: string, status: ThreadSummary["status"]) {
   }));
 }
 
+/** 高频 item/delta 的有界合并缓冲区（T22）。用 rAF 调度：一个渲染帧内到达的 delta
+ *  全部合并成一次 setState，避免流式输出时每个 token 触发一次 details 整树重建。
+ *  onNotification 在收到任何非 delta 通知前会先 flush，保证事件边界处文本追平。 */
+const deltaBuf = new StreamBuffer(
+  (events) => {
+    const byThread = new Map<string, DeltaEvent[]>();
+    for (const e of events) {
+      const arr = byThread.get(e.thread_id) ?? [];
+      arr.push(e);
+      byThread.set(e.thread_id, arr);
+    }
+    if (!byThread.size) return;
+    useApp.setState((st) => {
+      let details = st.details;
+      let touched = false;
+      for (const [tid, evs] of byThread) {
+        const d = details[tid];
+        if (!d) continue;
+        const items = applyDeltas(d.items, evs);
+        if (items !== d.items) {
+          details = { ...details, [tid]: { ...d, items } };
+          touched = true;
+        }
+      }
+      return touched ? { details } : {};
+    });
+  },
+  (fn) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(fn);
+    else setTimeout(fn, 16);
+  },
+);
+
 export function onNotification(method: string, p: any) {
+  // 任何非 delta 通知都意味着一个事件边界：先把累积的 delta 落盘，
+  // 保证 turn/completed、item/updated 到达前流式文本已经追平（T22）。
+  if (method !== "item/delta") deltaBuf.flush();
   const st = useApp.getState();
   if (method === "thread/updated") {
     const t = p.thread as ThreadSummary;
@@ -856,6 +893,13 @@ export function onNotification(method: string, p: any) {
       .map((x, i) => ({ id: x.id || `qr_${p.thread_id}_${Date.now()}_${i}`, text: x.text }));
     if (items.length) enqueueReturned(p.thread_id, items);
   }
+  // 高频 item/delta 有界合并（T22）：先存进缓冲区，渲染帧批量应用，避免每个 delta
+  // 都触发一次 details 整树重建。turn/completed 与 item/updated 到达前先 flush，保证最终文本逐字一致。
+  if (method === "item/delta") {
+    const e = p as DeltaEvent;
+    deltaBuf.push(e);
+    return;
+  }
   if (method === "turn/started") {
     useApp.setState((s) => ({ turnStartedAt: { ...s.turnStartedAt, [p.thread_id]: s.turnStartedAt[p.thread_id] ?? Date.now() } }));
   }
@@ -883,8 +927,7 @@ export function onNotification(method: string, p: any) {
 }
 
 /** 工作区内的绝对路径转成相对路径（统一用 /）；不在工作区里的原样返回，交给后端判断。 */
-export function toRelative(path: string, cwd: string): string {
-  const p = path.replace(/\\/g, "/").replace(/^\.\//, "");
+export function toRelative(path: string, cwd: string): string {  const p = path.replace(/\\/g, "/").replace(/^\.\//, "");
   const c = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
   if (c && p.toLowerCase().startsWith(c.toLowerCase() + "/")) return p.slice(c.length + 1);
   return p;

@@ -71,6 +71,63 @@ describe("store", () => {
   });
 });
 
+describe("item/delta 有界合并（T22）", () => {
+  it("帧内多个 delta 合并成一次应用，最终文本逐字一致", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: null,
+      details: { t: { id: "t", title: "x", cwd: "/w", status: "running", items: [{ id: "a", type: "assistant", text: "", reasoning: "" }] } as any },
+    });
+    void useApp.getState().init(f.rpc);
+    // 连续三条 delta，随后 item/updated 作为事件边界触发 flush
+    f.emitNotif("item/delta", { thread_id: "t", item_id: "a", field: "text", delta: "你" });
+    f.emitNotif("item/delta", { thread_id: "t", item_id: "a", field: "text", delta: "好" });
+    f.emitNotif("item/delta", { thread_id: "t", item_id: "a", field: "text", delta: "，世界" });
+    f.emitNotif("item/updated", { thread_id: "t", item: { id: "a", type: "assistant", text: "最终", reasoning: "" } });
+    const st = useApp.getState();
+    expect((st.details.t.items[0] as any).text).toBe("最终");
+  });
+
+  it("不同 item 的 delta 不串，各自应用", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: null,
+      details: {
+        t: {
+          id: "t", title: "x", cwd: "/w", status: "running",
+          items: [
+            { id: "a", type: "assistant", text: "", reasoning: "" },
+            { id: "b", type: "assistant", text: "", reasoning: "" },
+          ],
+        } as any,
+      },
+    });
+    void useApp.getState().init(f.rpc);
+    f.emitNotif("item/delta", { thread_id: "t", item_id: "a", field: "text", delta: "甲" });
+    f.emitNotif("item/delta", { thread_id: "t", item_id: "b", field: "text", delta: "乙" });
+    // turn/completed 触发 flush
+    f.emitNotif("turn/completed", { thread_id: "t", usage: {} });
+    const items = useApp.getState().details.t.items as any[];
+    expect(items.find((x) => x.id === "a").text).toBe("甲");
+    expect(items.find((x) => x.id === "b").text).toBe("乙");
+  });
+
+  it("flush 不重建无关会话的详情对象引用（窄订阅前提）", async () => {
+    const f = fakeRpc();
+    const detailA = { id: "A", title: "A", cwd: "/w", status: "running", items: [{ id: "a", type: "assistant", text: "", reasoning: "" }] } as any;
+    useApp.setState({ rpc: f.rpc, activeThreadId: null, details: { A: detailA, B: { id: "B", items: [] } as any } });
+    void useApp.getState().init(f.rpc);
+    f.emitNotif("item/delta", { thread_id: "A", item_id: "a", field: "text", delta: "x" });
+    f.emitNotif("turn/completed", { thread_id: "A", usage: {} });
+    const st = useApp.getState();
+    // A 因为 delta 应用被替换了，B 的引用保持不变
+    expect(st.details.A).not.toBe(detailA);
+    expect((st.details.A.items[0] as any).text).toBe("x");
+  });
+});
+
 describe("发送失败", () => {
   it("空闲时 turn/start 失败：错误进对话，文字退回输入框（不丢用户打的字）", async () => {
     const f = fakeRpc();

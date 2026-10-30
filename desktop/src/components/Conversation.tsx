@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
 import { splitQueued } from "../lib/queue";
 import { useApp } from "../lib/store";
+import { selectActiveDetail, selectActiveThreadId, selectActiveTurnStartedAt } from "../lib/selectors";
 import { TITLEBAR_H } from "./shell/Titlebar";
 import type { Item } from "../types";
 import { SubagentGroup } from "./AgentItems";
@@ -189,8 +190,11 @@ function EmptyState() {
 }
 
 export function Conversation() {
-  const s = useApp();
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  // 窄订阅（T22）：只订阅活动会话 id、其详情对象和计时起点。其他会话的 delta flush
+  // 会重建 details Record，但本会话的 ThreadDetail 引用不变 → 本组件不重渲染。
+  const activeThreadId = useApp(selectActiveThreadId);
+  const d = useApp(selectActiveDetail);
+  const since = useApp(selectActiveTurnStartedAt);
   const scroller = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
   const blocks = useMemo(() => groupBlocks(splitQueued(d?.items ?? []).visible), [d?.items]); // 排队中的显示在输入框上方
@@ -200,14 +204,13 @@ export function Conversation() {
     return m;
   }, [d?.items]);
   const running = !!d && d.status !== "idle";
-  const since = d ? s.turnStartedAt[d.id] : undefined;
 
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && stick) el.scrollTop = el.scrollHeight;
   }, [d?.items, stick, running]);
 
-  useEffect(() => setStick(true), [s.activeThreadId]);
+  useEffect(() => setStick(true), [activeThreadId]);
 
   if (!d) {
     return (
