@@ -1,0 +1,10 @@
+{"group": "baseline", "run": 1, "met": true, "rounds": 2, "cost": 0.01047176, "requests": 6, "hit_rate": 0.943509734571778, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 2, "met": true, "rounds": 2, "cost": 0.01022156, "requests": 6, "hit_rate": 0.9504445998601259, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 3, "met": true, "rounds": 2, "cost": 0.01148908, "requests": 6, "hit_rate": 0.947786682898786, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 4, "met": true, "rounds": 2, "cost": 0.00756028, "requests": 5, "hit_rate": 0.9536239124099746, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 5, "met": true, "rounds": 2, "cost": 0.00914556, "requests": 6, "hit_rate": 0.9539392318748537, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 6, "met": true, "rounds": 2, "cost": 0.00919908, "requests": 6, "hit_rate": 0.958974885376035, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 7, "met": true, "rounds": 2, "cost": 0.00930644, "requests": 6, "hit_rate": 0.9505821734475375, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 8, "met": true, "rounds": 2, "cost": 0.00860652, "requests": 5, "hit_rate": 0.9518389151427984, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 9, "met": true, "rounds": 2, "cost": 0.00944292, "requests": 6, "hit_rate": 0.9484816685249557, "timeout": false, "exit_code": 0}
+{"group": "baseline", "run": 10, "met": true, "rounds": 2, "cost": 0.01353668, "requests": 7, "hit_rate": 0.9532702658620127, "timeout": false, "exit_code": 0}
