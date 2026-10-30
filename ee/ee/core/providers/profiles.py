@@ -21,13 +21,16 @@ class Price:
     def known(self) -> bool:
         return self.input is not None and self.output is not None
 
-    def cost(self, prompt: int, completion: int, hit: int | None) -> float | None:
+    def cost(self, prompt: int, completion: int, hit: int | None, discount: float = 1.0) -> float | None:
+        """按用量计价。discount 是错峰折扣系数（0<d<=1），只作用于输入+输出；
+        缓存读取价（cache_read）不打折——它已经是错峰前价格的 1/50，再打折会失准。"""
         if not self.known:
             return None
         hit = hit or 0
         miss = max(0, prompt - hit)
         cr = self.cache_read if self.cache_read is not None else self.input
-        return (miss * self.input + hit * cr + completion * self.output) / 1_000_000
+        d = min(1.0, max(0.0, discount))
+        return (miss * self.input * d + hit * cr + completion * self.output * d) / 1_000_000
 
 
 @dataclass

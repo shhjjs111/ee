@@ -73,6 +73,9 @@ DEFAULTS: dict = {
     "style": {"default": "default"},
     # 花费上限（D5-9）：0 = 不限；action = warn（仅提醒）| pause（暂停并询问）；currency 跟单价币种
     "budget": {"session": 0, "daily": 0, "monthly": 0, "action": "warn", "warn_ratio": 0.8, "currency": "¥"},
+    # 错峰折扣（费用估算）：profile 里写的是峰时价；offpeak_hours="0-8" 且 offpeak_discount=0.5
+    # 表示每天 0-8 点按半价估算（只打折输入+输出，缓存读取价不打折）。
+    "pricing": {"offpeak_discount": 1.0, "offpeak_hours": ""},
     # 指挥会话（D6-1）：一个会话派发多个真正的子会话。默认关（多五个工具是固定 token 开销）；
     # 项目层只能关、只能调小。max_children 是同时运行数，max_total_children 是子会话总数。
     "orchestrator": {"enabled": False, "max_children": 4, "max_total_children": 16},

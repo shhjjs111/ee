@@ -38,6 +38,7 @@ from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage,
 from ee.core.permissions import MODE_LABEL, Decision, PermissionPolicy
 from ee.core.providers import transforms as T
 from ee.core.providers.openai_chat import ChatClient, Completion
+from ee.core.providers.pricing import discount_for as _discount_for
 from ee.core.store import SessionStore
 from ee.tools import AGENT_PROFILES, ToolContext, ToolError, ToolResult, ToolState, agent_profile, build_tools
 from ee.tools.shellenv import ShellNotFound, resolve_shell
@@ -346,6 +347,11 @@ class Session:
             return self.effort
         return RZ.resolve(self.config.data, self.home, spec.alias)
 
+    def _current_discount(self) -> float:
+        """当前时刻的错峰折扣；见 pricing.discount_for。"""
+        from datetime import datetime
+        return _discount_for(self.config.data.get("pricing") or {}, datetime.now())
+
     async def _charge(self, usage: dict | None, spec) -> float | None:
         """记一次请求的用量：按这次实际用的模型的单价计价，计入会话统计和每日/每月账本。
 
@@ -353,7 +359,7 @@ class Session:
         当前累加值只是已知部分。预算检查必须知道这一点，否则会把未知当 0、
         让用户设的上限形同虚设（见 budget.BudgetGuard.accounting_complete）。
         """
-        cost = self.stats.add(usage, spec.profile.price, spec.alias)
+        cost = self.stats.add(usage, spec.profile.price, spec.alias, discount=self._current_discount(), turn=self.turns)
         if cost is None:
             # 未知金额：不能当成免费。
             for g in self._budget_guards():

@@ -25,7 +25,7 @@ class _Stub(UsageStats):
 
 def _price(inp: float, currency: str = "CNY"):
     class P:
-        def cost(self, prompt: int, completion: int, hit=None):
+        def cost(self, prompt: int, completion: int, hit=None, discount: float = 1.0):
             return (prompt * inp + completion * inp * 2) / 1_000_000
 
         def __repr__(self):

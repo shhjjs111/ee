@@ -182,8 +182,10 @@ class UsageStats:
     prunes: int = 0
     compacted_tokens: int = 0      # 压缩累计省下的 token（估计：压缩前 − 压缩后）
 
-    def add(self, usage: dict | None, price, model: str = "") -> float | None:
+    def add(self, usage: dict | None, price, model: str = "", discount: float = 1.0, turn: int | None = None) -> float | None:
         """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。
+        discount 是错峰折扣（0<d<=1），只作用于输入+输出，缓存读取价不打折。
+        turn 是第几回合（缓存未命中归因用：首回合必然冷启动）。
 
         缺 usage 时也要落一条记录（cost=None）：否则这次请求会从账里彻底消失，
         用户看到的总额就成了「看起来完整、其实漏了若干次」的假精确。
@@ -193,13 +195,14 @@ class UsageStats:
             self.usage_missing += 1
             self.records.append({"prompt": 0, "completion": 0, "hit": None, "reasoning": None,
                                  "cost": None, "currency": getattr(price, "currency", "¥") if price is not None else "¥",
-                                 "model": model, "usage_missing": True})
+                                 "model": model, "usage_missing": True, "turn": turn})
             self.cost_known = False
             return None
-        cost = price.cost(usage["prompt"], usage["completion"], usage.get("hit")) if price is not None else None
+        cost = price.cost(usage["prompt"], usage["completion"], usage.get("hit"), discount) if price is not None else None
         self.add_record({"prompt": usage["prompt"], "completion": usage["completion"], "hit": usage.get("hit"),
                          "reasoning": usage.get("reasoning"), "cost": cost,
-                         "currency": getattr(price, "currency", "¥") if price is not None else "¥", "model": model})
+                         "currency": getattr(price, "currency", "¥") if price is not None else "¥", "model": model,
+                         "turn": turn})
         return cost
 
     def add_record(self, r: dict) -> None:
