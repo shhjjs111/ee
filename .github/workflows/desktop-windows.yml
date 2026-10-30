@@ -27,7 +27,12 @@ permissions:
 
 concurrency:
   group: desktop-windows-${{ github.ref }}
-  cancel-in-progress: true
+  # PR 分支：新推送取消上一轮（迭代快，旧结果没意义）。
+  # main：**不取消**——Backend tests 要跑约 8 分钟，整轮 15-20 分钟；
+  # 若连推两次就把上一轮掐掉，CI 永远跑不完，永远拿不到真结果
+  # （实测 #117–#122 全是被取消，只有等够时间不推送的 #124 才绿）。
+  # main 上宁可排队等一轮真结果，也不要一串「已取消」。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PYTHONUTF8: "1"
