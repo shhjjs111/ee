@@ -71,6 +71,75 @@ describe("store", () => {
   });
 });
 
+describe("断线重连不串状态（ACC-25）", () => {
+  /**
+   * 缺陷（已复现）：重连后 store 会用 `thread/get` 的快照**整体替换** details[id]。
+   * 断线期间后端仍在跑，重连那一刻新条目的通知会先到（走增量合并），
+   * 而 thread/get 是往返请求——它带回的是**发请求那一刻**的旧快照。
+   * 两者一撞，慢返回的快照把刚到的新条目冲掉，用户看到消息凭空消失。
+   *
+   * 后端 thread_get 不带版本号（app.py:343 直接返回 t.detail()），
+   * 所以只能在客户端判断：这份快照是否比本地已有的更新。
+   */
+  it("重连后慢返回的 thread/get 不冲掉期间已到达的新条目", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "t1",
+      activeWorkspace: "/w",
+      details: { t1: detail("t1", "/w") },
+      conn: "open",
+    } as any);
+
+    void useApp.getState().init(f.rpc);
+    f.emitState("open");     // 首连：只置 wasOpen，不拉详情
+    f.emitState("closed");   // 断线
+    f.emitState("open");     // 重连 → 发 thread/get（往返，未返回）
+
+    const get = f.calls.find((c) => c.method === "thread/get")!;
+    expect(get, "重连应重新拉当前会话以补上断线期间错过的条目").toBeTruthy();
+
+    // 重连的同时，新条目的通知先到了（增量合并进 details）
+    f.emitNotif("item/started", {
+      thread_id: "t1",
+      item: { id: "new", type: "assistant", text: "断线期间新增的" },
+    });
+
+    // thread/get 这才返回，且带回的是通知之前的旧快照
+    get.resolve({ thread: detail("t1", "/w") });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const ids = (useApp.getState().details.t1!.items as any[]).map((x) => x.id);
+    expect(ids, `新条目被慢返回的快照冲掉了：${JSON.stringify(ids)}`).toContain("new");
+  });
+
+  it("快照比本地新时仍要整体采用（防冲掉不能矫枉过正丢历史）", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "t1",
+      activeWorkspace: "/w",
+      details: { t1: detail("t1", "/w") },
+      conn: "open",
+    } as any);
+
+    void useApp.getState().init(f.rpc);
+    f.emitState("open");
+    f.emitState("closed");
+    f.emitState("open");
+
+    const get = f.calls.find((c) => c.method === "thread/get")!;
+    // 没有任何通知插进来：服务端快照就是权威
+    get.resolve({ thread: { ...detail("t1", "/w"), items: [{ id: "srv", type: "assistant", text: "服务端补齐的" }] } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const ids = (useApp.getState().details.t1!.items as any[]).map((x) => x.id);
+    expect(ids).toEqual(["srv"]);
+  });
+});
+
 describe("item/delta 有界合并（T22）", () => {
   it("帧内多个 delta 合并成一次应用，最终文本逐字一致", async () => {
     const f = fakeRpc();

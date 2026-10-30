@@ -209,8 +209,26 @@ export const useApp = create<State & Actions>((set, get) => ({
         // 断线重连后：重新拉当前会话，补上断线期间错过的条目
         const id = get().activeThreadId;
         if (wasOpen && id) {
+          // ACC-25：thread/get 是往返请求，带回的是**发请求那一刻**的快照。
+          // 断线期间后端可能已在跑，重连那一刻新条目的通知会先到（增量合并进 details）；
+          // 若此处无条件用快照整体替换，慢返回的旧快照会把刚到的新条目冲掉，
+          // 用户看到消息凭空消失。后端 thread_get 不带版本号（app.py:343），
+          // 只能在这里记住「发请求时本地有哪些条目」，回来时把期间新到的补回去。
+          const sentIds = new Set(
+            (get().details[id]?.items ?? []).map((x: { id: string }) => x.id),
+          );
           rpc.call("thread/get", { thread_id: id })
-            .then((r) => useApp.setState((st) => ({ details: { ...st.details, [id]: r.thread } })))
+            .then((r) => useApp.setState((st) => {
+              const fresh = r.thread as ThreadDetail;
+              const cur = st.details[id];
+              // 只保留「快照里没有、且发请求时本地也没有」的条目——
+              // 那是快照生成之后才到达的新内容，不能被旧快照抹掉。
+              const keep = (cur?.items ?? []).filter(
+                (x: { id: string }) => !sentIds.has(x.id) && !fresh.items.some((f) => f.id === x.id),
+              );
+              const merged = keep.length ? { ...fresh, items: [...fresh.items, ...keep] } : fresh;
+              return { details: { ...st.details, [id]: merged } };
+            }))
             .catch((e: Error) => get().showToast(`重连后刷新当前对话失败：${e.message}`, "error"));
         }
         wasOpen = true;

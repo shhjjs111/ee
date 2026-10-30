@@ -36,7 +36,7 @@
 | ACC-22 | 停止返回 false 可见 | RPC 返回 `{interrupted:false}` | 有明确提示，不假装已停 | `interaction.test.ts`（3 passed） | **GREEN**（提交 60b706b） |
 | ACC-23 | 切回计时正确 | 切回运行中会话 | 显示真实累计时长，不每次归零 | `interaction.test.ts` T13 四条 | **GREEN**（提交 60b706b） |
 | ACC-24 | 发送失败保文字 | 发送失败 | 文字退回输入框，不丢 | `desktop/src/components/Composer.test.tsx`（3 passed）+ `store.test.ts` | **GREEN**：组件层真渲染 Composer（jsdom），3 例证明文字真进 textarea、与既有草稿合并不覆盖、别的会话的不串入；2 种篡改均变红 |
-| ACC-25 | 断线重连不串状态 | 断线期间切换会话后重连 | 不覆盖已确认的新条目 | 单测 | 未开始 |
+| ACC-25 | 断线重连不串状态 | 断线期间切换会话后重连 | 不覆盖已确认的新条目 | `store.test.ts`（ACC-25 两例） | **GREEN**：缺陷先复现（`thread/get` 慢返回整体替换 details，冲掉期间 `item/started` 的新条目），修复为记住发请求时的条目 id、回来只补「期间新到且快照没有」的；回滚修复测试即变红 |
 
 ## 4. 可观测与评测
 
@@ -72,8 +72,8 @@
 
 | 状态 | 数量 |
 |---|---|
-| GREEN | 29 |
-| 未开始 | 9 |
+| GREEN | 30 |
+| 未开始 | 8 |
 
 已交付的 11 项均有测试与提交证据。后端全量回归：**1822 passed / 16 skipped / 0 failed**
 （2026-10-29，耗时 1064 秒）。
