@@ -31,18 +31,16 @@ Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 We
 - 前端：`cd desktop && npx vitest run <文件>`；类型检查 `npm run typecheck`。
 - 行尾：仓库用 LF（`.gitattributes` 统一），新增文件不要留 CRLF。
 
-## 验证（CI 已改为手动）
+## 验证（CI 已恢复自动）
 
-**GitHub Actions 不随 push 自动跑**：账号没有可用的 Actions 额度（budget 上限 $0，
-job 会在启动阶段就被挡下，0 step、无 runner、3 秒即红）。日常验证一律在本地：
+仓库已公开（2026-10-30），公开仓库的 GitHub Actions 永久免费，`push`/`pull_request` 自动触发。
+本地仍可手动验证（无网络/想快速跑时）：
 
 ```bash
 ./scripts/verify.sh           # 全量：后端全量 pytest + 前端 vitest + typecheck
 ./scripts/verify.sh --quick   # 快速：只跑改动相关的后端测试 + 前端全量 + typecheck
 ```
 
-退出码非 0 表示有检查失败，可直接当提交前门禁。
-`desktop-windows.yml` 保留手动入口（`workflow_dispatch`），有额度时再手动跑一轮完整验证。
 `ee/tests/test_ci_offline_gate.py` 会守着这件事：**自动触发或本地等价入口，二者必须有其一**。
 
 ## 代码约定
