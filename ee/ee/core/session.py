@@ -1504,6 +1504,13 @@ class Session:
 
     async def _maybe_auto_compact(self, emit) -> None:
         from ee.core import prune as _prune
+        # Wave 6 / T20：影子观察——只记录「本可以怎么做」，不执行任何改写。
+        # 开关默认关（context_policy.settings），关闭时 observe() 返回 None、零副作用。
+        try:
+            from ee.core import context_policy as _policy
+            _policy.observe(self)
+        except Exception:  # noqa: BLE001  影子记录失败绝不能影响真实回合
+            pass
         await _prune.maybe_prune(self, emit)      # D5-10：先成批修剪旧工具输出（阈值低于压缩）
         if self.needs_compaction() and any(m.get("_kind") != "agents" for m in self.history):
             await self._compact(emit, "auto")

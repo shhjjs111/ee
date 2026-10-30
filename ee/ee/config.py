@@ -164,7 +164,7 @@ def normalize_roles(data: dict) -> dict:
 #   - 放宽权限（更宽松的 mode、加 allow 规则、删掉用户的 ask/deny）。
 # hooks 不在这里合并：项目 hooks 由 ee/core/hooks.py 直接读文件，走“设置 → Hooks 里允许”的信任机制。
 
-PROJECT_DROP_TOP = ("providers", "hooks")
+PROJECT_DROP_TOP = ("providers", "hooks", "context_policy")
 _MODE_RANK = {"read-only": 0, "plan": 0, "default": 1, "auto": 2}
 _KEYISH = re.compile(r"(api_key|api_key_env|base_url|_url|headers|proxy)$")
 

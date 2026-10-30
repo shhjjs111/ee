@@ -104,3 +104,32 @@ pytest 调用：疑似全量 0 次，有范围 69 次
 ## 成本
 
 本轮全部评测约 800 万 tokens（含多次复测），DeepSeek flash 单价下总计约 2-3 元。
+
+---
+
+## Wave 6 / T20：成本驱动的上下文策略（影子模式，2026-10-30）
+
+新增 `ee/ee/core/context_policy.py`，**只观察记录，不执行任何改写**——这是计划原文的硬约束：
+改写早期历史会让后续请求按"未命中缓存"计费，本仓库实测命中率 92–96%，
+省 token 反而可能涨钱。所以先记录"本可以怎么做"，等配对评测证明收益再谈开启。
+
+| 不变量 | 实现 | 测试 |
+|---|---|---|
+| 影子不执行 | `Decision.applied` 恒为 False | `test_shadow_never_applies_even_when_enabled_flag_true` |
+| 缺失数据保守 | window/used 缺失 → `hold` | `test_shadow_is_conservative_when_data_missing` |
+| 前缀不稳保守 | 未冻结前缀 → `hold`（改写代价高） | `test_shadow_holds_when_prefix_unstable` |
+| 失败多保守 | failures≥3 或 retries≥8 → `hold` | `test_shadow_holds_when_failures_high` |
+| **默认关闭** | `settings()` 默认 `enabled=False` | `test_policy_disabled_by_default` |
+| **关闭零副作用** | 关闭时连日志都不写 | `test_observe_writes_nothing_when_disabled` |
+| **绝不改历史** | 即便建议 compact 也不动 history | `test_observe_never_rewrites_history` |
+| **项目层不能开启** | 加入 `PROJECT_DROP_TOP` | `test_project_layer_cannot_enable_policy` |
+| 记录可回放 | `as_record()` 纯字典，JSON 可序列化 | `test_record_is_plain_dict_for_replay` |
+
+验证（真实执行）：`test_context_policy.py` **15 passed**；接入 session 后
+`test_prune + test_compaction + test_compaction_incremental + test_prefix_cache` = **45 passed**
+（零回归）；config 链路 `test_redo_security_config + test_config_scope + test_config_shell`
+= **43 passed / 1 skipped**。
+
+**未做（等配对评测）**：真的开启策略。计划要求"只有配对评测证明成功任务总成本下降且完成率
+不降后才在可撤销设置中开启"——这需要真金白银跑 A/B，属于下一阶段。
+
