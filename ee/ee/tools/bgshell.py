@@ -35,7 +35,10 @@ def _status_line(p) -> str:
         return f"[{p.id} 运行中 · 已运行 {p.info()['duration']}s]"
     if p.status == "killed":
         return f"[{p.id} 已被结束]"
-    return f"[{p.id} 已退出 · exit {p.exit_code}]"
+    # 已退出的命令不要再轮询：实测模型会无视纯状态行，反复 shell_output 空转
+    # （eval-full 任务 05：测试 7.5s 就过了，模型空等 782s 直到超时）。显式引导它继续干活。
+    return (f"[{p.id} 已退出 · exit {p.exit_code}。命令已结束，不要再等待或轮询，"
+            f"直接基于上面的输出继续下一步]")
 
 
 def _format(p, text: str, notes: dict) -> str:

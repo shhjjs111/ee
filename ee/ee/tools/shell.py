@@ -156,7 +156,7 @@ async def _kill(proc) -> None:
         pass
 
 
-BG_DESC = "后台运行，立即返回 id；之后用 shell_output 看输出、shell_write 输入、shell_kill 结束"
+BG_DESC = "后台运行，返回 id；用 shell_output 看输出。只给常驻命令（dev server）；测试等一次性命令前台跑"
 BG_DESC_LEAN = "后台运行，立即返回 pid 和日志路径（用 read 看日志）"
 
 
