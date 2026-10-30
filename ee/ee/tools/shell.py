@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import subprocess
 import time
@@ -212,6 +213,9 @@ class ShellTool(Tool):
             raise ToolError(out.strip())
         dur = time.monotonic() - t0
         body, truncated = truncate_output_info(out.rstrip("\n"), ctx.output_dir, "shell")
+        hint = full_pytest_hint(command)
+        if hint:
+            body = (body or "") + "\n" + hint
         tail = f"\n[超时：{timeout}s 后已终止]" if timed_out else ""
         footer = f"\n[exit {code if code is not None else '?'} · {dur:.1f}s]" + _sb_note(sb)
         ok = (code == 0) and not timed_out
@@ -221,8 +225,41 @@ class ShellTool(Tool):
 
 
 
-BG_YIELD = 3.0      # 后台启动后先等这么久收集开头输出（很快结束的命令直接拿到结果）
+def _is_pytest_invocation(command: str) -> bool:
+    """命令是不是在跑 pytest（含 `python -m pytest`）。"""
+    return bool(re.search(r"(?:^|[\s;&|(])(?:python[\d.]*\s+-m\s+pytest|pytest|py\.test)\b", command))
 
+
+# 这些参数说明「范围已缩小」或「根本没在执行」
+_SCOPING_FLAGS = ("-k", "--deselect", "--ignore", "--lf", "--last-failed", "--co", "--collect-only",
+                  "--sw", "--stepwise")
+
+
+def full_pytest_hint(command: str) -> str | None:
+    """检测「无范围的全量 pytest」，返回给模型的即时提示；不是全量则返回 None。
+
+    背景：本仓库全量约 1064 秒，而单次 shell 有超时上限——跑全量注定超时，
+    再转后台轮询又是一轮浪费。与其让模型等到超时后知后觉，不如在结果里
+    立刻告诉它「这是全量，改跑子集」。
+    """
+    if not _is_pytest_invocation(command):
+        return None
+    if any(flag in command for flag in _SCOPING_FLAGS):
+        return None
+    # 去掉 pytest 本身与常见无害参数，看还剩不剩「路径/节点选择器」
+    body = re.sub(r"^\s*(?:python[\d.]*\s+-m\s+)?(?:pytest|py\.test)\b", "", command)
+    body = re.split(r"[|;&]", body)[0]                 # 只看管道/串联前的部分
+    body = re.sub(r"\d*>&?\d*|\d*>|\d*<|\d*<<?&?\d*", " ", body)   # 剥掉重定向（2>&1、>/dev/null 等）
+    for tok in body.split():
+        if tok.startswith("-") or tok in ("python", "py", "/dev/null", "NUL", "nul"):
+            continue
+        # 还剩位置参数（测试文件/目录/::节点）说明是有范围的
+        return None
+    return ("[提示：这是全量 pytest（本仓库 135 个测试文件，约 17 分钟），单次 shell 有超时上限，"
+            "很可能跑不完。改用相关子集：pytest <测试文件> 或 -k <关键字>]")
+
+
+BG_YIELD = 3.0      # 后台启动后先等这么久收集开头输出（很快结束的命令直接拿到结果）
 
 async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) -> ToolResult:
     sess = ctx.extra.get("session")
