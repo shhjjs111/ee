@@ -11,7 +11,7 @@
 | ACC-01 | 混币不合并 | 同一会话先后产生 CNY 与 USD 计费 | 两币种分别列出，不出现把 USD 累加到 CNY 的单一总额 | `test_usage_accounting.py`（5 passed） | **GREEN**（提交 607ec92） |
 | ACC-02 | 缺用量不假完整 | 一次请求无 usage | 总额显示"已知部分 + 未知条数"，不写成确定金额 | `test_usage_accounting.py` | **GREEN**（提交 607ec92） |
 | ACC-03 | 重启不翻倍 | 花费后重启两次 | 会话/每日金额稳定 | `test_usage_restore.py`（5 passed） | **GREEN**（提交 0e94068） |
-| ACC-04 | 子代理只入账一次 | 子代理产生费用 | 父会话视图含该费用，日/月账只加一次 | 单测 | 未开始 |
+| ACC-04 | 子代理只入账一次 | 子代理产生费用 | 父会话视图含该费用，日/月账只加一次 | `test_subagent_usage.py`（6 passed，含真实 BudgetGuard 日账验证） | **GREEN** |
 | ACC-05 | 未知单价可见 | 模型未配价格 | 显示"价格未知"，不显示 0 | `test_usage_accounting.py` | **GREEN**（原本已正确） |
 | ACC-06 | 预算不假装硬限 | 缺 usage + 无人值守 + 设上限 | 停止继续发起付费请求并说明原因 | `test_budget_incomplete.py`（4 passed） | **GREEN**（提交 d7feea2） |
 
@@ -72,8 +72,8 @@
 
 | 状态 | 数量 |
 |---|---|
-| GREEN | 21 |
-| 未开始 | 17 |
+| GREEN | 22 |
+| 未开始 | 16 |
 
 已交付的 11 项均有测试与提交证据。后端全量回归：**1822 passed / 16 skipped / 0 failed**
 （2026-10-29，耗时 1064 秒）。
