@@ -44,8 +44,8 @@
 |---|---|---|---|---|---|
 | ACC-30 | 延迟可分解 | 一次失败回合 | 能读出连接/首字/工具/审批/渲染各段 | `test_request_timing.py` | **GREEN**（后端三段；渲染段属 Wave 7） |
 | ACC-31 | 费用可归因 | 评测结果 | 成功任务总费用、返工占比、缺失条数 | `test_eval_cost_rollup.py`（4 passed） | **GREEN**（提交 45fa9c7） |
-| ACC-32 | 离线门槛可跑 | CI 或本地 | 无需 key 即可判定不退化 | CI 日志 | 未开始 |
-| ACC-33 | 付费评测隔离 | 普通 PR | 不触发真实付费调用 | CI 配置 | 未开始 |
+| ACC-32 | 离线门槛可跑 | CI 或本地 | 无需 key 即可判定不退化 | `test_ci_offline_gate.py`（4 passed）+ CI #124/#125/#126 | **GREEN**：CI 无任何模型凭据下 12 步全绿；守卫断言「不注入 key / 必须真跑 pytest+npm test+typecheck / 挂在 main push 且覆盖 ee+desktop」，9 种篡改均变红 |
+| ACC-33 | 付费评测隔离 | 普通 PR | 不触发真实付费调用 | `test_ci_offline_gate.py::test_ci_does_not_run_paid_eval_scripts` + `test_eval_profiles.py:102` | **GREEN**：CI 未引用 `eval_profiles`/`eval_gate`；脚本本身 `--key-env` 缺 key 即 `return 2`（已有断言），双向隔离 |
 
 ## 5. 证据缓存与连续性
 
@@ -72,8 +72,8 @@
 
 | 状态 | 数量 |
 |---|---|
-| GREEN | 26 |
-| 未开始 | 12 |
+| GREEN | 28 |
+| 未开始 | 10 |
 
 已交付的 11 项均有测试与提交证据。后端全量回归：**1822 passed / 16 skipped / 0 failed**
 （2026-10-29，耗时 1064 秒）。
