@@ -11,6 +11,9 @@ REF_MIN_BYTES = 2048
 STREAM_BYTES = 8 * 1024 * 1024     # 超过这么大的文本文件逐行扫描，只留要显示的行，不整体读入内存
 LINE_READ_CAP = 64 * 1024          # 逐行扫描时每行最多读入的字节，超出部分跳过
 
+# read 工具能按「视觉内容」读取的图片扩展名（方案 A：as_image=true 登记到下一轮 image 上下文）
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
 
 def _scan_window(path, offset: int, limit: int) -> tuple[list[str], int]:
     """逐行扫描大文件：返回 (第 offset 行起最多 limit 行, 总行数)。超长行只读前 LINE_READ_CAP 字节。"""
@@ -66,6 +69,7 @@ class ReadTool(Tool):
             "limit": {"type": "integer", "description": "最多读多少行，默认 2000"},
             "pages": {"type": "string", "description": "PDF/PPTX 页码，如 \"2-5\""},
             "sheet": {"type": "string", "description": "Excel 工作表名或序号"},
+            "as_image": {"type": "boolean", "description": "读取图片文件（png/jpg/webp 等）的视觉内容；true 时图片在下一轮发送给模型"},
         },
         "required": ["path"],
     }
@@ -85,6 +89,21 @@ class ReadTool(Tool):
                               meta={"kind": "list", "path": rel(path, ctx.cwd), "files": lines[:200], "total": len(items)})
         offset = max(1, int(args.get("offset") or 1))
         limit = max(1, int(args.get("limit") or DEFAULT_LIMIT))
+        # 图片：默认提示用 as_image=true 读视觉内容；显式传参则登记进待看队列，
+        # 下一轮作为 image_url 块注入 user 消息（tool 结果是字符串，无法本轮带图）。
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+            if args.get("as_image") is True:
+                ctx.state.pending_images.append(str(path))
+                return ToolResult(
+                    f"[图片已登记] {path} 将在下一轮作为图片内容发送给模型。"
+                    "（当前这一轮模型只能看到这段文字，下一轮才能真正看到图片。）",
+                    summary=f"Read image {rel(path, ctx.cwd)}",
+                    meta={"kind": "read", "image": True, "path": rel(path, ctx.cwd)})
+            return ToolResult(
+                f"[图片文件] {path} 是图片，直接按文本读会得到二进制乱码。"
+                "如果你需要模型看到这张图（如截图、设计稿、验收图），请用 read(path=..., as_image=true) 读取。",
+                summary=f"Read {rel(path, ctx.cwd)}",
+                meta={"kind": "read", "image": True, "path": rel(path, ctx.cwd)})
         from ee.core.docread import OLD_FORMATS, doc_kind
         if doc_kind(path) or path.suffix.lower() in OLD_FORMATS:
             return await self._read_doc(path, args, offset, limit, ctx)

@@ -919,6 +919,12 @@ class Session:
             body = "\n\n".join(self.notes) + "\n\n" + text
             self.notes = []
         msg = {"role": "user", "content": body + "\n\n" + appendix}
+        # read(as_image=true) 登记的图片（方案 A）：本轮工具产出，下一轮注入视觉上下文。
+        pending = getattr(self.state, "pending_images", None) or []
+        if pending:
+            merged = list(images or []) + [p for p in pending if p not in (images or [])]
+            self.state.pending_images = []
+            images = merged or None
         if images:
             msg["_images"] = list(images)
         self._append(msg)

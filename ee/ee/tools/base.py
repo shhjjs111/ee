@@ -52,6 +52,9 @@ class ToolState:
     snapshots: list[dict[str, bytes | None]] = field(default_factory=lambda: [{}])  # 每回合一层
     todos: list[dict] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
+    # read(as_image=true) 登记的图片绝对路径：下一轮作为 image_url 块注入 user 消息。
+    # 只存路径不存字节；发送时由 session._add_user 消费并清空。
+    pending_images: list[str] = field(default_factory=list)
 
     def mark_read(self, path: Path, identity: str | None = None) -> FileRecord:
         """登记一次读取。identity 是内容身份（哈希），用于判"文件是否真的变了"。
