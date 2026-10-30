@@ -2,6 +2,8 @@
 
 ee 的个人 AI 编程 Agent 桌面端（Windows 优先）。只走 OpenAI Chat Completions 协议，默认 DeepSeek，Qwen、Kimi、GLM、MiniMax、豆包、中转站 GPT 等都能接。
 
+> **许可**：本仓库保留所有权利（All Rights Reserved）。源码公开仅供查看，未经许可不得复制、修改、分发或商用。详见 `LICENSE`。
+
 ## 目录
 - `ee/`：Python 内核和本地服务 `ee serve`（工具循环、多模型适配、权限审批、会话存储、git）
 - `desktop/`：Electron + React 桌面界面（对话优先：项目/会话栏 + 对话区，改动/文件/终端按需在右侧展开；设置页）
