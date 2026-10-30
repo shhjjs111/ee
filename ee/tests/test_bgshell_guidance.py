@@ -42,15 +42,24 @@ def test_finished_process_output_tells_model_to_stop_waiting(tmp_path):
 
 
 def test_running_process_does_not_add_stop_guidance(tmp_path):
-    """还在运行时不加「停止等待」引导（模型此时确实应该等或稍后再查）。"""
+    """还在运行时不加「停止等待」引导（模型此时确实应该等或稍后再查）。
+
+    必须显式指定 shell 并按它的语法拼命令：CI 上 auto 探测可能选中 PowerShell，
+    而 POSIX 的引号写法在 PowerShell 下语义不同，子进程会直接 exit 1
+    （本地 Git Bash 通过、CI 挂——已踩过）。
+    """
+    from ee.tools.shellenv import resolve_shell
+
+    sh = resolve_shell("auto")
     (tmp_path / "loop.py").write_text("import time\nwhile True:\n    time.sleep(0.2)\n", encoding="utf-8")
+    exe = sys.executable
+    cmd = (f"& '{exe}' -u loop.py" if sh.syntax == "powershell" else f'"{exe}" -u loop.py')
 
     async def go():
         sess = type("S", (), {"bg": BgManager(tmp_path)})()
         ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
-                          extra={"session": sess})
-        start = await ShellTool().run(
-            {"command": f'"{sys.executable}" loop.py', "background": True}, ctx)
+                          shell=sh, extra={"session": sess})
+        start = await ShellTool().run({"command": cmd, "background": True}, ctx)
         bg_id = start.details["bg_id"]
         out = await ShellOutputTool().run({"id": bg_id}, ctx)
         await sess.bg.kill(sess.bg.get(bg_id))
