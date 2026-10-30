@@ -182,6 +182,9 @@ class ShellTool(Tool):
             props.pop("description", None)          # 界面不用它，精简模式省掉
             props["background"] = {"type": "boolean", "description": BG_DESC_LEAN}
             self.parameters = {**self.parameters, "properties": props}
+            # lean 没有 grep/glob，无法「定位相关测试文件」，这条规则对 lean 无效，
+            # 且 lean 预算已满（1200 上限）。只在 full 保留。
+            self.rules = [r for r in self.rules if "跑测试" not in r]
 
     def summary(self, args: dict) -> str:
         return f"Ran {args.get('command', '')}"
