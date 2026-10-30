@@ -160,30 +160,57 @@ def _trigger(text: str, name: str) -> list[str] | None:
 
 
 def test_ci_gate_covers_main_and_ee_sources():
-    """门槛必须挂在 main 的 push 上，且覆盖 ee/ 与 desktop/ 的改动。
+    """门槛必须覆盖主干与最贵的改动——**自动触发**或**本地等价入口**二者必须有其一。
 
-    两个真实的失效方式：
-    - 只配 `pull_request`：本仓库是直推 main，主干就彻底没有门槛；
-    - paths 收窄到不含 `ee/**`：改了后端却不触发测试，门槛对最贵的部分失明。
+    背景（2026-10-30 变更）：账号没有可用的 Actions 额度（budget 上限为 $0），
+    自动触发被移除，改为只 `workflow_dispatch:` 手动跑。这不是「不要门槛了」，
+    而是把门槛从云端搬到本地：`scripts/verify.sh` 跑同样的三类检查。
+
+    所以本测试允许两种形态，但**不允许两者皆无**：
+    - 有 push 触发 → 必须覆盖 main + ee/** + desktop/**；
+    - 没有 push 触发（只手动）→ 必须有 scripts/verify.sh，且真跑那三类检查。
+    否则「有没有退化」就彻底没有判据，这是真正的退化。
     """
     text = (WORKFLOW_DIR / "desktop-windows.yml").read_text(encoding="utf-8")
 
     push = _trigger(text, "push")
-    assert push is not None, "CI 没有配置 push 触发：直推 main 时没有任何门槛"
-    push_text = "\n".join(push)
-    assert "main" in push_text, f"push 触发未包含 main：\n{push_text}"
-    for path in ("ee/**", "desktop/**"):
-        assert path in push_text, (
-            f"push 的 paths 未包含 {path}：改这部分代码不会触发 CI，门槛对最贵的改动失明。\n"
-            f"当前：\n{push_text}"
-        )
-
-    # PR 触发是可选的，但如果配了就同样不能对 ee/desktop 失明
-    pr = _trigger(text, "pull_request")
-    if pr is not None and any(p.strip().startswith("paths:") for p in pr):
-        pr_text = "\n".join(pr)
+    if push is not None:
+        push_text = "\n".join(push)
+        assert "main" in push_text, f"push 触发未包含 main：\n{push_text}"
         for path in ("ee/**", "desktop/**"):
-            assert path in pr_text, (
-                f"pull_request 的 paths 未包含 {path}：改这部分代码的 PR 不会触发 CI。\n"
-                f"当前：\n{pr_text}"
+            assert path in push_text, (
+                f"push 的 paths 未包含 {path}：改这部分代码不会触发 CI，门槛对最贵的改动失明。\n"
+                f"当前：\n{push_text}"
             )
+        # PR 触发是可选的，但如果配了就同样不能对 ee/desktop 失明
+        pr = _trigger(text, "pull_request")
+        if pr is not None and any(p.strip().startswith("paths:") for p in pr):
+            pr_text = "\n".join(pr)
+            for path in ("ee/**", "desktop/**"):
+                assert path in pr_text, (
+                    f"pull_request 的 paths 未包含 {path}：改这部分代码的 PR 不会触发 CI。\n"
+                    f"当前：\n{pr_text}"
+                )
+        return
+
+    # 没有 push：必须保留手动入口，且本地要有等价的门槛脚本
+    assert _trigger(text, "workflow_dispatch") is not None, (
+        "既没有 push 触发、也没有 workflow_dispatch：CI 彻底不可用，"
+        "连手动跑一次都做不到。"
+    )
+
+    local = REPO_ROOT / "scripts" / "verify.sh"
+    assert local.is_file(), (
+        "自动 CI 已关掉，但没有本地等价入口 scripts/verify.sh：\n"
+        "「有没有退化」就没有任何判据了。要么恢复 push 触发，要么补上本地脚本。"
+    )
+    body = local.read_text(encoding="utf-8")
+    missing = [f"{why}（{needle}）" for needle, why in (
+        ("-m pytest", "后端测试"),
+        ("npm test", "前端单测"),
+        ("npm run typecheck", "类型检查"),
+    ) if needle not in body]
+    assert not missing, (
+        "scripts/verify.sh 没跑齐 CI 的关键检查：" + "、".join(missing)
+        + "。本地入口与 CI 步骤不一致时，本地绿不能替代 CI 绿。"
+    )
