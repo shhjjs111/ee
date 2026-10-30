@@ -612,5 +612,10 @@ export type BestofCandidate = {
   verified: boolean;
   met: boolean;
   self_reported_ok: boolean;
+  /** 验证后代码变过（T10-d / ACC-16）：证据过期，不能再声称已验证。 */
+  stale?: boolean;
+  /** 跑判据时的代码状态指纹；带回来给 bestof/recheck 比对。 */
+  verified_state?: string | null;
+  current_state?: string | null;
   reason: string;
 };

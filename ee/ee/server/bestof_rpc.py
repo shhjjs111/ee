@@ -49,6 +49,9 @@ def register(methods: dict, backend) -> None:
                 cost=float(c.get("cost") or 0.0),
                 verdict=_verdict(c.get("verdict")),
                 self_reported_ok=bool(c.get("self_reported_ok")),
+                # 跨请求比对要用：前端把 verify 时拿到的指纹原样带回来（ACC-16）
+                verified_state=(str(c["verified_state"]) if c.get("verified_state") else None),
+                current_state=(str(c["current_state"]) if c.get("current_state") else None),
             ))
         return out
 
@@ -67,3 +70,32 @@ def register(methods: dict, backend) -> None:
         }
 
     methods["bestof/pick"] = pick
+
+    def _fingerprint(path: str) -> str:
+        from ee.core import worktree as W
+        try:
+            head = W._git(["rev-parse", "HEAD"], path, timeout=15, check=False).strip()
+            dirty = W._git(["status", "--porcelain"], path, timeout=15, check=False).strip()
+            return B.state_fingerprint(head, dirty)
+        except Exception:  # noqa: BLE001  读不到就返回空，recheck 会当作「未比对」
+            return ""
+
+    async def recheck(candidates: list) -> dict:
+        """重新读各候选的当前代码状态，标出验证后改过的（stale）。
+
+        为什么要单独一个 RPC：verify 时的 Verdict 只对当时的代码成立。用户可能
+        过一会儿才回来看候选——那时必须重新比对，否则会把过期证据当已验证。
+        """
+        cands = await asyncio.to_thread(_build, candidates)
+        states = await asyncio.gather(*[asyncio.to_thread(_fingerprint, c.worktree) for c in cands])
+        B.recheck(cands, {c.id: st for c, st in zip(cands, states)})
+        winner = await asyncio.to_thread(B.pick, cands)
+        wid = winner.id if winner is not None else None
+        return {
+            "winner": wid,
+            "candidates": [c.as_dict() for c in cands],
+            "report": B.report(cands, wid),
+            "stale": [c.id for c in cands if c.stale],
+        }
+
+    methods["bestof/recheck"] = recheck

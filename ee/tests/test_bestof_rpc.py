@@ -61,3 +61,44 @@ def test_pick_single_candidate(tmp_path):
     v = {"exit": 0, "tests": 2, "timed_out": False, "output": "", "min_tests": 1}
     res = _call(b, "bestof/pick", candidates=[{"id": "x", "worktree": "/wt/x", "verdict": v}])
     assert res["winner"] == "x"
+
+
+# ---------------------------------------------------------------- bestof/recheck（ACC-16 跨请求）
+
+def test_recheck_marks_stale_when_worktree_changed(tmp_path):
+    """验证后代码变了：recheck 返回 stale 列表，候选不再算已验证。"""
+    import subprocess
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+
+    def _git(*a):
+        return subprocess.run(["git", *a], cwd=wt, capture_output=True, text=True)
+
+    _git("init")
+    _git("config", "user.email", "t@t")
+    _git("config", "user.name", "t")
+    (wt / "a.txt").write_text("x\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-m", "init")
+
+    from ee.core import worktree as W
+    from ee.core import bestof as B
+    head = W._git(["rev-parse", "HEAD"], str(wt), timeout=15, check=False).strip()
+    verified = B.state_fingerprint(head, "")
+
+    b = Backend(home=tmp_path, persist=False)
+    v_ok = {"exit": 0, "tests": 3, "timed_out": False, "output": "3 passed", "min_tests": 1}
+    base = [{"id": "a", "worktree": str(wt), "verdict": v_ok, "verified_state": verified}]
+
+    # 状态没变 → 不算 stale
+    res = _call(b, "bestof/recheck", candidates=base)
+    assert res["stale"] == [], res
+    assert res["candidates"][0]["verified"] is True
+
+    # 改了工作区 → stale
+    (wt / "a.txt").write_text("y\n", encoding="utf-8")
+    res2 = _call(b, "bestof/recheck", candidates=base)
+    assert res2["stale"] == ["a"], f"代码变了应报 stale：{res2}"
+    assert res2["candidates"][0]["verified"] is False
+    assert res2["winner"] is None, "stale 的候选不能被选中"

@@ -71,7 +71,22 @@ class Candidate:
         return {"id": self.id, "title": self.title, "worktree": self.worktree,
                 "run_id": self.run_id, "cost": self.cost, "verified": self.verified,
                 "met": self.met, "self_reported_ok": self.self_reported_ok,
-                "stale": self.stale, "reason": self.reason}
+                "stale": self.stale, "reason": self.reason,
+                # 跨请求比对要用：调用方拿 verified_state 存起来，下次连同 current_state 传回来
+                "verified_state": self.verified_state, "current_state": self.current_state}
+
+
+def recheck(candidates: list[Candidate], states: dict[str, str]) -> list[Candidate]:
+    """用当前状态重新核对各候选：改过的标 stale，读不到的不下结论。
+
+    `states` 是 {候选 id: 当前状态指纹}。空串表示读不到（目录没了/git 挂了）——
+    这种情况**不判 stale**：读不到不等于变了，不能凭空降级一个可能仍然有效的结论。
+    本函数只改 `current_state`，不动 verdict；`verified`/`stale` 是派生属性。
+    """
+    for c in candidates:
+        st = (states or {}).get(c.id) or ""
+        c.current_state = st or None
+    return candidates
 
 
 def state_fingerprint(head: str | None, dirty: str | None) -> str:

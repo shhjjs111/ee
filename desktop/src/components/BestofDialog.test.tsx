@@ -177,4 +177,41 @@ describe("BestofDialog（判据编排，bestof/verify）", () => {
     expect(calls.some((c) => c.method === "bestof/pick")).toBe(true);
     expect(calls.some((c) => c.method === "bestof/verify")).toBe(false);
   });
+
+  it("stale 候选显示「证据已过期」，且可以重新核对（ACC-16）", async () => {
+    const staleRes = {
+      winner: "b",
+      candidates: [
+        { id: "a", title: "候选 a", worktree: "/wt/a", run_id: "", cost: 0, verified: true, met: true,
+          self_reported_ok: false, stale: true, verified_state: "s1", current_state: "s2",
+          reason: "ok（验证后代码已变，证据过期）" },
+        { id: "b", title: "候选 b", worktree: "/wt/b", run_id: "", cost: 0, verified: true, met: true,
+          self_reported_ok: false, stale: false, verified_state: "s1", current_state: "s1", reason: "ok" },
+      ],
+      report: "x",
+    };
+    act(() => useApp.setState({ bestofDialog: "/repo" }));
+    const { client, calls } = fakeRpc((m) => (m === "worktree/list" ? wts : staleRes));
+    act(() => useApp.setState({ rpc: client }));
+    const ui = mount();
+    await flush();
+
+    const input = document.body.querySelector("input") as HTMLInputElement;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "pytest -q");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    act(() => ui.buttons().find((b) => (b.textContent ?? "").includes("验证"))!.click());
+    await flush();
+
+    expect(ui.view()).toContain("证据已过期");
+
+    const re = ui.buttons().find((b) => (b.textContent ?? "").includes("重新核对"));
+    expect(re).toBeTruthy();
+    act(() => re!.click());
+    await flush();
+    expect(calls.some((c) => c.method === "bestof/recheck")).toBe(true);
+  });
 });

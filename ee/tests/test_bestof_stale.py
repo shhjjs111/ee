@@ -103,3 +103,49 @@ def test_verify_binds_state_fingerprint(ee_home, workspace):
     (workspace / "a.txt").write_text("y\n", encoding="utf-8")
     dirty2 = _git("status", "--porcelain").stdout.strip()
     assert B.state_fingerprint(head, dirty2) != fp, "工作区变了指纹必须变"
+
+
+# ---------------------------------------------------------------- 跨请求：recheck 真正通电
+
+def test_verify_response_carries_state_so_stale_is_decidable():
+    """verify 的返回必须带 verified_state，否则调用方无从在后来的请求里比对。
+
+    上一轮的缺陷：Candidate 加了 verified_state/current_state/stale，但
+    verify 只写 verified_state、current_state 全仓零赋值 —— stale 永远是 False，
+    ACC-16 的验收面在真实路径上根本不成立。
+    """
+    from ee.core.bestof import Candidate
+
+    c = Candidate(id="a", worktree="/w/a",
+                  verdict=type("V", (), {"met": True, "reason": "ok"})(),
+                  verified_state="shaA")
+    d = c.as_dict()
+    assert "verified_state" in d, "序列化要带 verified_state，否则前端无法事后比对"
+    assert d["verified_state"] == "shaA"
+
+
+def test_recheck_marks_changed_candidates_stale():
+    """重新比对：拿当前状态和验证时状态比，不一致就是 stale。"""
+    from ee.core.bestof import recheck
+
+    cands = [
+        Candidate(id="a", worktree="/w/a", verdict=type("V", (), {"met": True, "reason": "ok"})(),
+                  verified_state="shaA"),
+        Candidate(id="b", worktree="/w/b", verdict=type("V", (), {"met": True, "reason": "ok"})(),
+                  verified_state="shaB"),
+    ]
+    out = recheck(cands, {"a": "shaA", "b": "shaCHANGED"})
+    assert out[0].stale is False and out[0].verified is True
+    assert out[1].stale is True and out[1].verified is False
+    assert out[1].current_state == "shaCHANGED"
+
+
+def test_recheck_leaves_unreadable_candidate_unjudged():
+    """读不到状态的候选（目录没了/git 挂了）：不判 stale，也不能因此凭空升级。"""
+    from ee.core.bestof import recheck
+
+    c = Candidate(id="a", worktree="/w/gone",
+                  verdict=type("V", (), {"met": True, "reason": "ok"})(), verified_state="shaA")
+    out = recheck([c], {"a": ""})
+    assert out[0].stale is False, "读不到不等于变了"
+    assert out[0].verified is True, "没有新证据时保持原结论，不凭空降级"

@@ -49,6 +49,21 @@ export function BestofDialog() {
   const close = () => s.set({ bestofDialog: null });
   const enough = (wts?.length ?? 0) >= 2;
 
+  /** 重新核对：读各候选当前代码状态，验证后改过的标成「证据已过期」（ACC-16）。 */
+  const recheck = async () => {
+    if (!res || !rpc) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await rpc.call("bestof/recheck", { candidates: res.candidates }, 120000);
+      setRes(r as PickResult);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const compare = async () => {
     setBusy(true);
     setErr(null);
@@ -147,7 +162,12 @@ export function BestofDialog() {
                         <span className="block truncate text-fg">
                           {c.title || c.id}
                           {win && <span className="ml-1.5 text-[11px] text-accent">胜者</span>}
-                          {!c.verified && (
+                          {c.stale && (
+                            <span className="ml-1.5 text-[11px] text-warn" title="验证之后代码又改过，之前的判据结果证明的是旧代码">
+                              证据已过期
+                            </span>
+                          )}
+                          {!c.verified && !c.stale && (
                             <span className="ml-1.5 text-[11px] text-faint">
                               未验证{c.self_reported_ok ? "（仅自述通过）" : ""}
                             </span>
@@ -165,6 +185,16 @@ export function BestofDialog() {
               {res && !res.winner && (
                 <div className="mt-2 rounded-lg bg-soft px-3 py-2 text-[12px] text-muted">
                   没有候选通过验证，不选。模型自述不算证据。
+                </div>
+              )}
+              {res && res.candidates?.length > 0 && (
+                <div className="mt-2 flex items-center gap-2">
+                  <Button variant="outline" size="sm" disabled={busy} onClick={() => void recheck()}>
+                    重新核对
+                  </Button>
+                  <span className="text-[11.5px] text-faint">
+                    重新读各候选的代码状态：验证后改过的会标成「证据已过期」
+                  </span>
                 </div>
               )}
               {res?.winner && (
