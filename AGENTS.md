@@ -27,6 +27,7 @@ Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 We
 ## 环境
 
 - **必须用仓库根的 `.venv`**（`./.venv/Scripts/python.exe`）。PATH 上的 `python` 是 Anaconda，缺 `openai`/`tree_sitter`，会产生大量假失败。
+- **测试不需要 `pip install -e`**：`ee/tests/conftest.py` 已经把仓库根加进 `sys.path`，直接跑 `pytest -c ee/pyproject.toml` 即可。pytest / openai / tree-sitter 等依赖 `.venv` 里已有；`pip install -e "ee[test]"` 会联网、很慢（实测撞过单次 shell 超时），而且不装也能测。
 - 前端：`cd desktop && npx vitest run <文件>`；类型检查 `npm run typecheck`。
 - 行尾：仓库用 LF（`.gitattributes` 统一），新增文件不要留 CRLF。
 

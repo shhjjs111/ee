@@ -41,6 +41,23 @@ def test_project_agents_md_exists_and_guides_tests():
     )
 
 
+def test_agents_md_says_no_pip_install_needed():
+    """实测缺陷：模型会主动跑 `pip install -e "ee[test]"`，联网且撞 180s 超时。
+
+    真因是信息缺失——conftest.py 已设 sys.path，装 ee 完全多余。
+    AGENTS.md 必须明说「不需要装」，否则模型会自己猜着装一次。
+    """
+    body = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "pip install" in body, (
+        "AGENTS.md 应明确提到 pip install（说明它不需要跑），否则模型会主动装依赖"
+    )
+    # 必须说清「不需要」+ 给出理由（conftest 设了 sys.path），只提名字没用
+    assert "不需要" in body or "不用" in body, "AGENTS.md 应明说 pip install 不需要"
+    assert "sys.path" in body or "conftest" in body, (
+        "AGENTS.md 应说明为什么不需要装（conftest 已设 sys.path）"
+    )
+
+
 # ---------------------------------------------------------------- C2：工具兜底
 
 def test_full_pytest_hint_detects_bare_pytest():
