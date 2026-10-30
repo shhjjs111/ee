@@ -80,9 +80,21 @@ def register(methods: dict, backend) -> None:
         async def _one(c: B.Candidate) -> Verdict:
             return await judge(GoalSpec(cwd=c.worktree, **spec_kwargs))
 
+        def _fingerprint(path: str) -> str:
+            """候选目录的代码状态：HEAD 提交 + 工作区改动摘要。取不到就返回空串（不判 stale）。"""
+            try:
+                head = W._git(["rev-parse", "HEAD"], path, timeout=15, check=False).strip()
+                dirty = W._git(["status", "--porcelain"], path, timeout=15, check=False).strip()
+                return B.state_fingerprint(head, dirty)
+            except Exception:  # noqa: BLE001  git 不可用不该让验证失败
+                return ""
+
+        # 跑判据前先记下代码状态：之后代码若变了，这份 Verdict 就是过期证据（ACC-16）
+        before = await asyncio.gather(*[asyncio.to_thread(_fingerprint, c.worktree) for c in cands])
         verdicts = await asyncio.gather(*[_one(c) for c in cands])
-        for c, v in zip(cands, verdicts):
+        for c, v, st in zip(cands, verdicts, before):
             c.verdict = v
+            c.verified_state = st or None
 
         winner = await asyncio.to_thread(B.pick, cands)
         wid = winner.id if winner is not None else None

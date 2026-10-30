@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Candidate:
-    """一个候选。`verdict` 是唯一能证明它「已验证」的东西。"""
+    """一个候选。`verdict` 是唯一能证明它「已验证」的东西。
+
+    但 Verdict 只对**跑判据那一刻的代码**成立。`verified_state` 记下当时的
+    代码状态指纹，`current_state` 是调用方随后读到的状态；两者不一致即 `stale`
+    ——证据过期，不能再声称已验证（ACC-16）。
+    """
     id: str
     title: str = ""
     worktree: str = ""                 # 各自独立的 worktree 路径
@@ -30,6 +35,15 @@ class Candidate:
     cost: float = 0.0
     verdict: object | None = None      # core.goal.Verdict
     self_reported_ok: bool = False     # 模型自己说通过 —— 不参与判定，只记录
+    verified_state: str | None = None  # 跑判据时的代码状态指纹
+    current_state: str | None = None   # 现在的代码状态指纹（调用方给；None = 未比对）
+
+    @property
+    def stale(self) -> bool:
+        """验证之后代码是否变过。未绑定状态（老数据）不算 stale，保持旧行为。"""
+        if self.verified_state is None or self.current_state is None:
+            return False
+        return self.verified_state != self.current_state
 
     @property
     def met(self) -> bool:
@@ -37,8 +51,10 @@ class Candidate:
 
     @property
     def verified(self) -> bool:
-        """只有判据通过才算已验证。自述通过（self_reported_ok）不构成证据。"""
+        """只有判据通过、且代码没变过才算已验证。自述通过不构成证据。"""
         if self.verdict is None:
+            return False
+        if self.stale:                 # 证据过期：证明的是旧代码
             return False
         return bool(getattr(self.verdict, "met", False))
 
@@ -46,13 +62,25 @@ class Candidate:
     def reason(self) -> str:
         if self.verdict is None:
             return "没有判据结果（模型自述不算证据）" if self.self_reported_ok else "没有判据结果"
-        return str(getattr(self.verdict, "reason", "") or "")
+        base = str(getattr(self.verdict, "reason", "") or "")
+        if self.stale:
+            return f"{base}（验证后代码已变，证据过期）" if base else "验证后代码已变，证据过期"
+        return base
 
     def as_dict(self) -> dict:
         return {"id": self.id, "title": self.title, "worktree": self.worktree,
                 "run_id": self.run_id, "cost": self.cost, "verified": self.verified,
                 "met": self.met, "self_reported_ok": self.self_reported_ok,
-                "reason": self.reason}
+                "stale": self.stale, "reason": self.reason}
+
+
+def state_fingerprint(head: str | None, dirty: str | None) -> str:
+    """候选代码状态的指纹：HEAD 提交 + 工作区改动摘要。
+
+    判据是对**这份代码**跑的；两者任一变化，证据就过期了。
+    调用方负责取 head/dirty（本模块不碰磁盘，保持纯判断）。
+    """
+    return f"{head or '-'}:{dirty or '-'}"
 
 
 def validate(candidates: list[Candidate]) -> list[str]:

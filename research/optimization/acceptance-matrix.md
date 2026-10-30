@@ -20,12 +20,12 @@
 | ID | 验收面 | 操作 | 期望观察 | 证据类型 | 状态 |
 |---|---|---|---|---|---|
 | ACC-10 | 判据进模型输入 | 桌面端带判据发起 Goal | 下一轮模型输入含判据命令与失败详情 | `test_goal_feedback.py`（4 passed） | **GREEN**（提交 87883a0） |
-| ACC-11 | 失败证据驱动修复 | 真实临时仓库，判据先红 | 修复后转绿，不需要人工重复描述错误 | 真实临时仓库运行 | 未开始 |
+| ACC-11 | 失败证据驱动修复 | 真实临时仓库，判据先红 | 修复后转绿，不需要人工重复描述错误 | `test_goal_acceptance.py`（真跑 pytest，断言 calc.py 真被改对 + 模型真被调用） | **GREEN** |
 | ACC-12 | 不假绿（零测试） | 判据只 collected / 全 skipped | 判为未通过 | `test_test_results.py`（10 passed） | **GREEN**（提交 39ec155） |
-| ACC-13 | 轮次语义不变 | max_rounds=3 | 3 次判定、最多 2 个修复回合 | 单测 | 未开始 |
-| ACC-14 | 首轮通过不跑模型 | 判据本来就成立 | 0 次模型调用 | 单测 | 未开始 |
+| ACC-13 | 轮次语义不变 | max_rounds=3 | 3 次判定、最多 2 个修复回合 | `test_goal_feedback.py::test_goal_rounds_semantics_unchanged`（断言恰好 2 回合） | **GREEN** |
+| ACC-14 | 首轮通过不跑模型 | 判据本来就成立 | 0 次模型调用 | `test_goal_runner.py::test_met_first_check_runs_no_turn`（断言 0 次 turn） | **GREEN** |
 | ACC-15 | 停止真能停 | 模型/工具/判据三阶段各停一次 | 请求中→真实中断，判据进程不残留 | `test_goal_interrupt.py`、`test_goal_cancel.py` | **GREEN**（判据阶段；桌面反馈属 Wave 3） |
-| ACC-16 | 候选证据绑定版本 | 候选验证后改动候选 | 显示 stale，不再声称已验证 | 单测 | 未开始 |
+| ACC-16 | 候选证据绑定版本 | 候选验证后改动候选 | 显示 stale，不再声称已验证 | `test_bestof_stale.py`（7 passed，含状态指纹端到端） | **GREEN**（本轮实现 `verified_state`/`current_state`/`stale`） |
 
 ## 3. 交互可靠性
 
@@ -72,8 +72,8 @@
 
 | 状态 | 数量 |
 |---|---|
-| GREEN | 22 |
-| 未开始 | 16 |
+| GREEN | 26 |
+| 未开始 | 12 |
 
 已交付的 11 项均有测试与提交证据。后端全量回归：**1822 passed / 16 skipped / 0 failed**
 （2026-10-29，耗时 1064 秒）。
