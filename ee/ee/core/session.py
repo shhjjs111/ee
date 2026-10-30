@@ -347,10 +347,10 @@ class Session:
             return self.effort
         return RZ.resolve(self.config.data, self.home, spec.alias)
 
-    def _current_discount(self) -> float:
-        """当前时刻的错峰折扣；见 pricing.discount_for。"""
+    def _current_discount(self, family: str | None = None) -> float:
+        """当前时刻的错峰折扣；见 pricing.discount_for。family 决定用哪个厂商的官方峰谷规则。"""
         from datetime import datetime
-        return _discount_for(self.config.data.get("pricing") or {}, datetime.now())
+        return _discount_for(self.config.data.get("pricing") or {}, datetime.now(), family=family)
 
     async def _charge(self, usage: dict | None, spec) -> float | None:
         """记一次请求的用量：按这次实际用的模型的单价计价，计入会话统计和每日/每月账本。
@@ -359,7 +359,7 @@ class Session:
         当前累加值只是已知部分。预算检查必须知道这一点，否则会把未知当 0、
         让用户设的上限形同虚设（见 budget.BudgetGuard.accounting_complete）。
         """
-        cost = self.stats.add(usage, spec.profile.price, spec.alias, discount=self._current_discount(), turn=self.turns)
+        cost = self.stats.add(usage, spec.profile.price, spec.alias, discount=self._current_discount(spec.profile.family), turn=self.turns)
         if cost is None:
             # 未知金额：不能当成免费。
             for g in self._budget_guards():
