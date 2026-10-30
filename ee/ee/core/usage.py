@@ -102,7 +102,9 @@ class UsageRollup:
 
         hit_rate = (hit / hit_known_prompt) if hit_known_prompt > 0 else None
         # 覆盖率：报过命中字段的请求，占总输入 token 的多少。
-        hit_coverage = (hit_known_prompt / prompt) if prompt > 0 else None
+        # 没有任何请求报命中字段（hit_known_prompt==0）时是「未知」（None），
+        # 不是 0——0 会被前端解读成「已知零命中」，掩盖「服务端没给字段」。
+        hit_coverage = (hit_known_prompt / prompt) if hit_known_prompt > 0 else None
 
         return {
             "schema_version": SCHEMA_VERSION,

@@ -99,6 +99,7 @@ export type Usage = {
   completion?: number;
   hit?: number;
   hit_rate?: number | null;
+  hit_coverage?: number | null;
   cost?: number | null;
   currency?: string;
   reasoning?: number; // 推理 token（服务端给了才有，D5-9）
@@ -567,6 +568,8 @@ export type ContextBreakdown = {
   images: number;
   messages: number;
   savings: { pruned: number; prunes: number; pruned_outputs: number; compacted: number };
+  /** 缓存命中（T19）：hit_rate/hit_coverage 未知时是 null（不是 0）。 */
+  cache: { hit: number; hit_rate: number | null; hit_coverage: number | null };
   compactions: number;
   frozen: boolean;
   thresholds: { compact: number | null; prune: number | null };

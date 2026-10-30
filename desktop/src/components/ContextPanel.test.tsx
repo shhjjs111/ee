@@ -26,7 +26,9 @@ const data: ContextBreakdown = {
   ],
   tools: [{ name: "shell", tokens: 900 }, { name: "read", tokens: 300 }],
   total: 12000, window: 1_000_000, used: 12500, actual: true, images: 0, messages: 5,
-  savings: { pruned: 4000, prunes: 1, pruned_outputs: 2, compacted: 0 }, compactions: 0, frozen: true,
+  savings: { pruned: 4000, prunes: 1, pruned_outputs: 2, compacted: 0 },
+  cache: { hit: 500, hit_rate: 0.5, hit_coverage: 0.8 },
+  compactions: 0, frozen: true,
   thresholds: { compact: 0.8, prune: 0.6 }, model: "m", estimated: true,
 };
 
@@ -41,6 +43,7 @@ describe("ContextBreakdownView", () => {
     expect(hist.textContent).toContain("7.8k");
     expect(hist.textContent).toContain("65%");
     expect(el.textContent).toContain("修剪旧工具输出省 ~4.0k");
+    expect(el.textContent).toContain("服务端缓存命中 50% · 覆盖 80% 输入");
     expect(el.textContent).toContain("80% 时自动压缩");
     expect(el.textContent).not.toContain("shell");
     const more = [...el.querySelectorAll("button")].find((b) => b.textContent === "2 个")!;

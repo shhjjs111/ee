@@ -796,7 +796,11 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
                 ? "达到花费上限，已停止"
                 : "完成";
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
-  if (u.hit_rate !== undefined && u.hit_rate !== null) bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%`);
+  if (u.hit_rate !== undefined && u.hit_rate !== null) {
+    // T19：命中率带覆盖率，未知（hit_coverage=null）不显示 0
+    const cov = u.hit_coverage != null ? ` · 覆盖 ${Math.round(u.hit_coverage * 100)}%` : "";
+    bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%${cov}`);
+  }
   if (u.reasoning) bits.push(`推理 ${u.reasoning.toLocaleString()} tokens`);
   if (u.pruned) bits.push(`修剪省 ~${u.pruned.toLocaleString()} tokens`);
   if (u.cost !== undefined && u.cost !== null) bits.push(`累计 ${u.currency ?? ""}${u.cost.toFixed(4)}`);

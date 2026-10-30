@@ -104,6 +104,18 @@ def for_session(s) -> dict:
                 used=actual_used or None, actual=actual_used > 0, stats=s.stats)
     d["compactions"] = int(getattr(s, "compactions", 0) or 0)
     d["frozen"] = s.prefix is not None
+    # T19：缓存命中要带覆盖率。hit_rate 的分母只含"返回了 hit 字段的请求"，
+    # 会漏掉没报 hit 的请求；hit_coverage 摊到全部输入 token，两者都要给，
+    # 且未知时是 None（前端据此区分「没有命中」和「不知道」）。
+    try:
+        totals = s.stats.totals()
+    except Exception:  # noqa: BLE001  统计异常不影响查看上下文构成
+        totals = {}
+    d["cache"] = {
+        "hit": int(totals.get("hit", 0) or 0),
+        "hit_rate": totals.get("hit_rate"),
+        "hit_coverage": totals.get("hit_coverage"),
+    }
     cfg = s.config.data.get("compact", {}) or {}
     from ee.core import prune as P
     pcfg = P.settings(s.config.data)

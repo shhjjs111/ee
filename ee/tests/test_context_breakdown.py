@@ -80,6 +80,29 @@ def test_session_breakdown_is_read_only(ee_home, workspace):
     assert it["system"]["tokens"] == C.estimate_tokens(s.prefix.system["content"])
 
 
+def test_session_breakdown_exposes_cache_hit_and_coverage(ee_home, workspace):
+    """T19：缓存命中要带覆盖率，供前端「三类节省」分开展示。
+
+    hit_rate（命中率）的分母只含"返回了命中字段的请求"，会漏掉没有 hit 字段的请求；
+    hit_coverage（覆盖率）把这个口径摊到全部输入 token，否则命中率会误导。
+    两者都必须从 breakdown 返回，且无命中时是 None 而不是 0（0 会被当成"已知没有命中"）。
+    """
+    (workspace / "a.txt").write_text("内容\n" * 300, encoding="utf-8")
+    s, fake = make_session(workspace, [])
+    # hit=None：模拟服务端没给命中字段（未知），而非报 hit=0（已知零命中）
+    fake.script += [tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls", prompt=4000, hit=None),
+                    text_chunks("好") + finish("stop", prompt=4100, completion=20, hit=None)]
+    run(collect(s, "读一下"))
+    d = B.for_session(s)
+    assert "cache" in d, "breakdown 必须返回 cache 字段（hit / hit_rate / hit_coverage）"
+    cache = d["cache"]
+    # 服务端没给 hit 字段 → hit_rate/coverage 都应是 None（未知），不是 0
+    assert cache["hit"] == 0 and cache["hit_rate"] is None and cache["hit_coverage"] is None
+    # 会话还没开始时（无 stats 记录）也必须是这个形状，不能 KeyError
+    d0 = B.for_session(s)
+    assert "cache" in d0 and d0["cache"]["hit_rate"] is None
+
+
 def test_rpc_context_breakdown(ee_home, workspace):
     from test_server import make_backend, wait_for
 

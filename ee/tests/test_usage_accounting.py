@@ -87,3 +87,17 @@ def test_hit_rate_reports_coverage():
     # 现状只给 hit_rate，没有 hit_coverage；命中率 0.5 是"有命中字段的那一半"的口径。
     assert "hit_coverage" in totals, "缺少 hit_coverage：用户无法判断命中率代表多少请求"
     assert totals["hit_coverage"] == pytest.approx(0.5)
+
+
+def test_hit_coverage_unknown_when_no_request_reports_hit():
+    """T19：没有任何请求报 hit 字段时，覆盖率是「未知」（None），不是 0。
+
+    0 会被前端解读成「已知零命中」，掩盖「服务端根本没给命中字段」这个事实。
+    这是「未知不显示 0」在数据源层的根因。
+    """
+    st = UsageStats()
+    st.add({"prompt": 1000, "completion": 10, "hit": None}, _price(1.0, "CNY"), "model-a")
+    st.add({"prompt": 1000, "completion": 10, "hit": None}, _price(1.0, "CNY"), "model-a")
+    totals = st.totals()
+    assert totals["hit_rate"] is None, "没有任何请求报命中字段，命中率应为未知"
+    assert totals["hit_coverage"] is None, "覆盖率也应为未知，而不是 0"

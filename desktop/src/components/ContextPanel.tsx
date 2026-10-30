@@ -1,7 +1,7 @@
 // 上下文圆环 + 点开后的「上下文构成」面板（A12，RPC thread/context_breakdown）。
 import * as DM from "@radix-ui/react-dropdown-menu";
 import { useState } from "react";
-import { fmtTokens, savingsLine, thresholdLine, usageLine } from "../lib/context";
+import { cacheLine, fmtTokens, savingsLine, thresholdLine, usageLine } from "../lib/context";
 import { useApp } from "../lib/store";
 import type { ContextBreakdown } from "../types";
 import { Button, Spinner } from "./ui";
@@ -10,6 +10,7 @@ export function ContextBreakdownView({ data, onCompact, canCompact }: { data: Co
   const [showTools, setShowTools] = useState(false);
   const max = Math.max(1, ...data.items.map((x) => x.tokens));
   const saved = savingsLine(data);
+  const cache = cacheLine(data);
   const th = thresholdLine(data);
   return (
     <div className="w-[320px] space-y-2.5 p-1 text-[12.5px]">
@@ -49,6 +50,7 @@ export function ContextBreakdownView({ data, onCompact, canCompact }: { data: Co
           </div>
         ))}
       </div>
+      {cache && <div className="text-muted">{cache}</div>}
       {saved && <div className="text-muted">{saved}</div>}
       <div className="text-[11.5px] leading-relaxed text-faint">
         各项为按字符估算{data.actual ? "，顶部占用取模型返回的实际用量" : ""}。{th ? `${th}。` : ""}

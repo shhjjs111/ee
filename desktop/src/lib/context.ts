@@ -30,3 +30,12 @@ export function thresholdLine(d: ContextBreakdown): string | null {
   if (t.compact != null) parts.push(`${Math.round(t.compact * 100)}% 时自动压缩`);
   return parts.length ? parts.join("，") : null;
 }
+
+/** 服务端缓存命中（T19）：命中率 + 覆盖率。未知（hit_rate 为 null）时不显示，绝不编造成 0。 */
+export function cacheLine(d: ContextBreakdown): string | null {
+  const c = d.cache;
+  if (!c || c.hit_rate == null) return null;
+  const rate = `${Math.round(c.hit_rate * 100)}%`;
+  if (c.hit_coverage == null) return `服务端缓存命中 ${rate}`;
+  return `服务端缓存命中 ${rate} · 覆盖 ${Math.round(c.hit_coverage * 100)}% 输入`;
+}

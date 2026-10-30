@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ContextBreakdown } from "../types";
-import { fmtTokens, savingsLine, thresholdLine, usageLine } from "./context";
+import { cacheLine, fmtTokens, savingsLine, thresholdLine, usageLine } from "./context";
 
 const bd = (over: Partial<ContextBreakdown> = {}): ContextBreakdown => ({
   items: [], tools: [], total: 0, window: 1_000_000, used: 12_300, actual: true, images: 0, messages: 0,
-  savings: { pruned: 0, prunes: 0, pruned_outputs: 0, compacted: 0 }, compactions: 0, frozen: true,
+  savings: { pruned: 0, prunes: 0, pruned_outputs: 0, compacted: 0 },
+  cache: { hit: 0, hit_rate: null, hit_coverage: null },
+  compactions: 0, frozen: true,
   thresholds: { compact: 0.8, prune: 0.6 }, model: "m", estimated: true, ...over,
 });
 
@@ -26,5 +28,18 @@ describe("context", () => {
     );
     expect(thresholdLine(bd())).toBe("60% 时修剪旧工具输出，80% 时自动压缩");
     expect(thresholdLine(bd({ thresholds: { compact: null, prune: null } }))).toBeNull();
+  });
+
+  it("缓存命中带覆盖率，未知不显示 0", () => {
+    // 有命中字段：显示命中率 + 覆盖率
+    expect(cacheLine(bd({ cache: { hit: 500, hit_rate: 0.5, hit_coverage: 0.8 } }))).toBe(
+      "服务端缓存命中 50% · 覆盖 80% 输入",
+    );
+    // 无命中字段：未知，不显示 0
+    expect(cacheLine(bd({ cache: { hit: 0, hit_rate: null, hit_coverage: null } }))).toBeNull();
+    // 覆盖率缺失但命中率有（老数据）：只显示命中率，不编造覆盖率
+    expect(cacheLine(bd({ cache: { hit: 100, hit_rate: 0.3, hit_coverage: null } }))).toBe(
+      "服务端缓存命中 30%",
+    );
   });
 });
