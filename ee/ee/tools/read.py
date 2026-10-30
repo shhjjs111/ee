@@ -69,7 +69,7 @@ class ReadTool(Tool):
             "limit": {"type": "integer", "description": "最多读多少行，默认 2000"},
             "pages": {"type": "string", "description": "PDF/PPTX 页码，如 \"2-5\""},
             "sheet": {"type": "string", "description": "Excel 工作表名或序号"},
-            "as_image": {"type": "boolean", "description": "读取图片文件（png/jpg/webp 等）的视觉内容；true 时图片在下一轮发送给模型"},
+            "as_image": {"type": "boolean", "description": "读图片的视觉内容（下一轮可见）"},
         },
         "required": ["path"],
     }

@@ -15,7 +15,7 @@ import pytest
 from conftest import make_session
 
 APPROX_CHARS_PER_TOKEN = 2.2
-LEAN_LIMIT = 1200        # 近似 token
+LEAN_LIMIT = 1250        # 近似 token（2026-10-30 read 加 as_image 参数 +26，预算随之放宽；仍是防 schema 膨胀的守卫）
 FULL_LIMIT = 4500        # 近似 token（实测约 4,398；真实 tokenizer 约 3,822）
 
 
