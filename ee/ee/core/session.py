@@ -1211,6 +1211,12 @@ class Session:
                     msg["reasoning"] = "".join(reasoning)
                 self._append(msg)
             raise
+        except BaseException:
+            # 普通异常也要把「界面上已经显示的那段」落库：否则用户看得见、历史里没有，
+            # 重发后模型像失忆。同时这次请求必须入账（缺 usage 记一条 usage_missing），
+            # 否则总额看起来完整、其实漏了若干次。
+            await self._keep_partial(text, reasoning, spec, emit)
+            raise
         if comp is None:
             comp = Completion(content="".join(text), reasoning="".join(reasoning))
         msg: dict = {"role": "assistant", "content": comp.content or ""}
@@ -1231,6 +1237,24 @@ class Session:
         if comp.recovered:
             emit(Notice(f"模型把 {len(comp.tool_calls)} 个工具调用写进了正文，已自动解析执行。"))
         return comp
+
+    async def _keep_partial(self, text: list[str], reasoning: list[str], spec, emit) -> None:
+        """流中途失败时：把已显示的内容落库，并把这次请求记进账（usage 记为缺失）。
+
+        只做「保住已经发生的部分」，不改错误处理本身——异常照原样往上抛。
+        内容为空时不落库（避免把一条空 assistant 塞进历史，那会让下一条请求 400）。
+        """
+        content = "".join(text)
+        reason = "".join(reasoning)
+        if content or reason:
+            msg = {"role": "assistant", "content": content, "_partial": True}
+            if reason:
+                msg["reasoning"] = reason
+            self._append(msg)
+        try:
+            await self._charge(None, spec)          # 缺 usage：记一条 usage_missing
+        except Exception:  # noqa: BLE001
+            log.warning("流中途失败后记账失败（忽略）：会话 %s", self.store.id)
 
     async def _run_tools(self, calls: list[dict], emit) -> str | None:
         """执行一步的工具调用。返回防死循环要追加给模型的提醒（没有则 None）；需要停回合时设置 guard.halt。"""

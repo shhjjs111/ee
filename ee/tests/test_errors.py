@@ -338,3 +338,43 @@ def test_stream_without_finish_reason_is_an_error(ee_home, workspace):
 
     status, val = asyncio.run(go())
     assert status == "error", f"半截流被当成成功：finish_reason={getattr(val, 'finish_reason', '?')}"
+
+
+def test_partial_answer_is_kept_and_counted_on_midstream_failure(ee_home, workspace):
+    """流到一半失败：界面上已经显示的那段回答必须入历史，这次请求也要入账。
+
+    _sample 只有 CancelledError 分支会把已收到的 text 落库；普通异常直接抛，
+    后面的落库代码整段跳过。后果：界面有半段回答、历史里没有（用户重发后
+    模型像失忆），这次请求的 usage 也不记，总额看起来完整、其实漏了。
+    """
+    class Boom(Exception):
+        pass
+
+    class PartialThenBoom:
+        def __aiter__(self):
+            async def gen():
+                yield {"choices": [{"index": 0, "delta": {"content": "已经显示的部分"},
+                                    "finish_reason": None}]}
+                raise Boom("连接在流中途断了")
+            return gen()
+
+        async def close(self):
+            pass
+
+    class C:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kw):
+                    return PartialThenBoom()
+
+    s, fake = make_session(workspace, [text_chunks("不会用到") + finish("stop")])
+    # 换成中途断流的 client
+    s._client_override = C()
+    s._client = None
+    ev = asyncio.run(collect(s, "你好"))
+    assert [e for e in ev if isinstance(e, TurnDone)][-1].reason == "error"
+    assistants = [m for m in s.history if m["role"] == "assistant"]
+    assert assistants, f"半段回答没入历史，history={s.history}"
+    assert "已经显示的部分" in assistants[-1]["content"]
+    assert s.stats.usage_missing >= 1, "这次请求没入账（缺 usage 也要记一条）"
