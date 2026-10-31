@@ -74,11 +74,9 @@ def test_bgproc_gbk_output(workspace, tmp_path, cp936):
 
     async def main():
         p = await mgr.start(_py(sh, code), sh, workspace, S.child_env())
-        for _ in range(100):
-            if not p.running:
-                break
-            await asyncio.sleep(0.05)
-        await asyncio.sleep(0.1)
+        # 等进程**真正结束**（输出读齐、状态置 exited），不要固定轮询次数后睡一下：
+        # 机器一忙，python -c 这层 shell 包装启动就可能超过等待窗口，读到空输出。
+        assert await mgr.wait_exit(p, timeout=60), "后台命令没有在超时内结束"
         text, _ = mgr.read_new(p)
         await mgr.close()
         return text
@@ -134,3 +132,26 @@ def test_read_text_size_cap(workspace, monkeypatch):
     p.write_text("x" * 5000)
     with pytest.raises(ToolError, match="太大"):
         fileops.read_text(p)
+
+
+def test_bgproc_wait_exit_tolerates_slow_start(workspace, tmp_path):
+    """wait_exit 要能等住慢启动的进程，不能像固定轮询那样提前放弃。
+
+    背景：test_bgproc_gbk_output 以前是「轮询 100 次 p.running，每次睡 0.05 秒，
+    再睡 0.1 秒」= 最多等 5 秒。全量并发负载下一旦 shell 包装层启动超过 5 秒，
+    循环走完进程还没退出，read_new 就读到空串——表现为偶发失败。
+    """
+    sh = resolve_shell("auto")
+    mgr = BgManager(tmp_path / "logs")
+    code = "import sys,time; time.sleep(2.5); sys.stdout.write('late-output'); sys.stdout.flush()"
+
+    async def main():
+        p = await mgr.start(_py(sh, code), sh, workspace, S.child_env())
+        ok = await mgr.wait_exit(p, timeout=60)
+        text, _ = mgr.read_new(p)
+        await mgr.close()
+        return ok, text
+
+    ok, text = run(main())
+    assert ok, "wait_exit 提前放弃了"
+    assert "late-output" in text, f"没读到慢启动进程的输出：{text!r}"

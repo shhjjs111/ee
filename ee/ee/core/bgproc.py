@@ -209,6 +209,36 @@ class BgManager:
     def list(self) -> list[dict]:
         return [p.info() for p in self.procs.values()]
 
+    async def wait_exit(self, p: BgProc, timeout: float = 60.0) -> bool:
+        """等这个后台命令真正结束（_pump_output 收完最后一块输出并把状态置为 exited）。
+
+        为什么要这个东西：只轮询 `p.running` 有竞态——`status` 是 _pump_output 末尾
+        才改的，而它前面还要把 stdout 读干净。上层看到的「已经不在 running」和
+        「输出已经读齐」不是同一时刻。固定睡一会儿更是赌运气：机器一忙，
+        python -c 这层 shell 包装启动就可能超过等待窗口，于是读到空输出
+        （全量测试里 test_bgproc_gbk_output 偶发失败就是这么来的）。
+
+        返回是否在超时前结束。
+        """
+        if not p.running:
+            return True
+        ev = p._changed
+        if ev is None:
+            return not p.running
+        deadline = time.monotonic() + max(0.0, timeout)
+        while p.running:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            ev.clear()
+            if not p.running:      # clear 之后、wait 之前刚好结束：别错过
+                break
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=left)
+            except asyncio.TimeoutError:
+                return False
+        return True
+
     async def wait_output(self, p: BgProc, wait_s: float, pattern: re.Pattern | None = None) -> None:
         """最多等 wait_s 秒：有新输出（有 pattern 时要新输出里匹配）或进程结束就返回。"""
         deadline = time.monotonic() + max(0.0, wait_s)
