@@ -232,7 +232,10 @@ class ChatClient:
             except Exception as e:  # noqa: BLE001
                 status = getattr(e, "status_code", None)
                 text = _err_text(e)
-                kind = "other" if isinstance(e, ModelError) else net.classify(e, text)
+                # ModelError 是我们自己抛的：它已经带了分类（如 truncated），
+                # 不要再覆盖成 "other"，否则永远不会走重试。
+                kind = (getattr(e, "kind", "") or "other") if isinstance(e, ModelError) \
+                    else net.classify(e, text)
                 log.warning("模型请求失败：%s 用时 %.1fs status=%s %s", self.spec.alias, time.monotonic() - t0, status,
                             text[:500], exc_info=True)
                 if status == 400 and degrade_budget > 0 and kind not in ("overflow", "quota"):
@@ -273,6 +276,7 @@ class ChatClient:
 
     async def _stream_once(self, params: dict, tools: list[dict] | None, timing=None):
         known = [t["function"]["name"] for t in (tools or [])]
+        self._saw_finish_field = False      # 每次请求重置，避免上一次的痕迹影响判断
         stream = await self.client.chat.completions.create(**params)
         if timing is not None:
             timing.mark_byte()          # 连上了、拿到响应对象：首包
@@ -298,6 +302,8 @@ class ChatClient:
                 ch = choices[0]
                 delta = T._get(ch, "delta")
                 fr = T._get(ch, "finish_reason")
+                if "finish_reason" in ch:
+                    self._saw_finish_field = True     # 这个端点会发这个字段
                 if fr:
                     comp.finish_reason = fr
                 if delta is None:
@@ -343,13 +349,18 @@ class ChatClient:
                 comp.tool_calls, comp.content, comp.recovered = rec, rest, True
         if comp.tool_calls and comp.finish_reason in (None, "stop"):
             comp.finish_reason = "tool_calls"
-        # 半截流：一个 finish_reason 都没收到，却已经有内容。
-        # 服务端中途断开 / 代理截断 / 中间设备切断时，HTTP 层是「正常结束」的
-        # （迭代结束、不抛异常），所以这一层不拦就没人拦了：半截回答会入历史、
-        # 不重试、不报错，用户以为那就是完整答案。抛可重试错误交给上层。
+        # 半截流检测：收到了正文却一个 finish_reason 都没拿到。
+        #
+        # 判据要能区分两种情况，否则会从「静默截断」翻转成「该端点完全不可用」：
+        #   (a) 大多数端点每条 chunk 都带 finish_reason 字段（值可能是 null）。
+        #       这种端点若一次都没给非 null 值，说明流确实被截断了 → 抛错。
+        #   (b) 少数兼容端点压根不发这个字段。这种端点收不到结束标记是常态，
+        #       不能判成截断，只提示一句，让回答正常落地。
+        # _stream_once 用 self._saw_finish_field 记录「有没有见过这个字段」。
         if comp.finish_reason is None and (comp.content or comp.tool_calls or comp.reasoning):
-            raise ModelError("模型输出不完整（流被中断，没有收到结束标记），已重试仍失败。",
-                             kind="truncated")
+            if getattr(self, "_saw_finish_field", False):
+                raise ModelError("模型输出不完整（流被中断，没有收到结束标记）。", kind="truncated")
+            log.info("模型 %s 没有发送 finish_reason 字段（兼容端点），按完整回答处理", self.spec.alias)
         yield ("done", comp)
 
 

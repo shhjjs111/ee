@@ -100,8 +100,9 @@ def _chain(e: BaseException) -> list[BaseException]:
 
 # ------------------------------------------------------------------ 错误分类
 # rate_limit 限流 / server 服务端出错或过载 / timeout 超时 / network 网络 —— 可以自动重试；
+# truncated 流被截断（服务端断开或中途设备切断）—— 重发一次通常就好，也可以重试；
 # quota 余额或额度不足 / auth 鉴权 / overflow 上下文超长 / bad_request 参数 / not_found / other —— 重试没用。
-RETRYABLE = frozenset({"rate_limit", "server", "timeout", "network"})
+RETRYABLE = frozenset({"rate_limit", "server", "timeout", "network", "truncated"})
 MAX_RETRY_AFTER = 60.0        # 服务端要求等更久就不自动等了，直接告诉用户
 _OVERFLOW = re.compile(
     r"context[_ ]length|maximum context|context window|context_window|too many tokens|prompt is too long|"

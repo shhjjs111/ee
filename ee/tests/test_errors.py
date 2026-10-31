@@ -378,3 +378,49 @@ def test_partial_answer_is_kept_and_counted_on_midstream_failure(ee_home, worksp
     assert assistants, f"半段回答没入历史，history={s.history}"
     assert "已经显示的部分" in assistants[-1]["content"]
     assert s.stats.usage_missing >= 1, "这次请求没入账（缺 usage 也要记一条）"
+
+
+def test_endpoint_without_finish_reason_field_is_not_an_error(ee_home, workspace):
+    """完全不发 finish_reason 字段的兼容端点，不能判成截断。
+
+    有些 OpenAI 兼容端点压根不带 finish_reason。原来的判据只看
+    「finish_reason is None 且有内容」，会把这类端点的每一次正常回答都当成
+    截断抛错——从「静默截断」翻转成「该模型完全不可用」（独立审查发现）。
+    """
+    from ee.config import load_config
+    from ee.core.providers.openai_chat import ChatClient, ModelError
+
+    cfg = load_config(workspace)
+    spec = cfg.resolve_model("deepseek-flash")
+
+    class FakeStream:
+        def __aiter__(self):
+            async def gen():
+                # 注意：choices[0] 里根本没有 finish_reason 这个键
+                yield {"choices": [{"index": 0, "delta": {"content": "完整回答"}}]}
+            return gen()
+
+        async def close(self):
+            pass
+
+    class C:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kw):
+                    return FakeStream()
+
+    async def go():
+        c = ChatClient(spec, client=C())
+        done = None
+        try:
+            async for kind, val in c._stream_once({}, None):
+                if kind == "done":
+                    done = val
+        except ModelError as e:
+            return "error", e
+        return "done", done
+
+    status, val = asyncio.run(go())
+    assert status == "done", f"兼容端点被误判成截断：{val}"
+    assert val.content == "完整回答"
