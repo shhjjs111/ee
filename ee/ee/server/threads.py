@@ -108,13 +108,31 @@ def spent_before_from_usage(u: dict | None) -> dict[str, float]:
     core/usage.py），只读它会把整个已花金额丢掉，重启后会话预算从 0 重新算——
     用户以为还剩很多额度，实际早就超了。
 
-    兼容三种形态：v2 的 `costs` 分币种桶、v1 的单值 `cost`+`currency`、以及空。
+    **为什么优先读 `spent_total`**：`turn_end.usage` 由 `Session.stats` 生成，而
+    `stats` 每次重启都是新的 `UsageStats`，从 0 重新累加。只读最后一条快照，等于
+    只恢复最后一个进程的花费——重启三次就丢掉前两段（实测 20261030-235538 丢 93.2%）。
+    `spent_total` 在写入侧就把「重启前已花 + 本进程花费」相加，是跨重启的累计事实。
+
+    兼容三种形态：`spent_total` 累计口径、v2 的 `costs` 分币种桶、v1 的单值
+    `cost`+`currency`。后两者只在老会话（无 `spent_total`）时用到，恢复的是最后
+    一段——比丢光好，但仍是少算，无法凭空补齐。
     未知金额（币种存在但 complete=false）**不恢复成 0 元**：有已知部分就恢复已知部分，
     完全不已知就不恢复，宁可少算也不假设没花钱。
     """
     out: dict[str, float] = {}
     if not isinstance(u, dict):
         return out
+    total = u.get("spent_total")
+    if isinstance(total, dict) and total:
+        for cur, amount in total.items():
+            try:
+                value = float(amount)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                out[str(cur)] = value
+        if out:
+            return out
     costs = u.get("costs")
     if isinstance(costs, dict) and costs:
         for cur, bucket in costs.items():
@@ -137,6 +155,25 @@ def spent_before_from_usage(u: dict | None) -> dict[str, float]:
             return out
         if amount > 0:
             out[str(u.get("currency") or "¥")] = amount
+    return out
+
+
+def usage_snapshot(usage: dict | None, spent_before: dict | None) -> dict:
+    """给 turn_end 的 usage 快照补一个跨重启累计字段 `spent_total`。
+
+    **为什么写入侧做**：`usage` 来自 `Session.stats`，每个进程从 0 累加；重启次数
+    越多，最后一条快照离真实总额越远。恢复侧只能看到最后一条快照，无从还原被覆盖
+    的旧段——除非快照自身携带累计事实。这里在写入时就把「本进程之前的进程已花」
+    （`spent_before`）加上去，于是任一条快照都是「会话至今花了多少」。
+    """
+    out = dict(usage or {})
+    before = {str(k): float(v) for k, v in (spent_before or {}).items() if v}
+    current = spent_before_from_usage(out)
+    total: dict[str, float] = dict(before)
+    for cur, amount in current.items():
+        total[cur] = total.get(cur, 0.0) + amount
+    if total:
+        out["spent_total"] = total
     return out
 
 
@@ -308,6 +345,15 @@ class Thread:
         """本会话加载的 AGENTS.md（绝对路径）。"""
         s = self.session
         return list(getattr(s, "instruction_sources", None) or []) if s is not None else []
+
+    def _usage_snapshot(self) -> dict:
+        """落盘用的 usage 快照：带上跨重启累计花费（见 threads.usage_snapshot）。
+
+        对外通知（`thread/usage`、`thread/completed`）仍用 `self.usage` 原样，
+        前端读取的字段形状不变——累计值只用于恢复，不参与展示。
+        """
+        s = self.session
+        return usage_snapshot(self.usage, getattr(s, "spent_before", None) if s is not None else None)
 
     def save_meta(self) -> None:
         self.meta["updated"] = time.time()
@@ -642,7 +688,7 @@ class Thread:
                 fut.cancel()
         self.approvals.clear()
         dur = int((time.monotonic() - self.turn_started_at) * 1000)
-        self._add({"type": "turn_end", "reason": reason, "duration_ms": dur, "usage": dict(self.usage)})
+        self._add({"type": "turn_end", "reason": reason, "duration_ms": dur, "usage": self._usage_snapshot()})
         self.save_meta()
         self.notify("turn/completed", {"thread_id": self.id, "reason": reason, "duration_ms": dur,
                                        "usage": self.usage, "context_left": self.context_left,
