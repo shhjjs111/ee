@@ -10,7 +10,7 @@ import subprocess
 import time
 
 import pytest
-from conftest import FakeError, finish, text_chunks, tool_chunks
+from conftest import FakeError, finish, make_session, text_chunks, tool_chunks
 
 from ee.core import parallel
 from ee.core.events import (ApprovalDecision, ApprovalRequest, Notice, SubagentEnd, SubagentStart, SubagentUpdate,
@@ -530,3 +530,21 @@ def test_subagent_parallel_settings(ee_home):
         run(b.call("settings/set", {"settings": {"subagent": {"max_parallel": 0}}}))
     assert subagent_config({"subagent": {"max_parallel": 99}})["max_parallel"] == 8
     assert subagent_config({"subagent": {"max_parallel": "x"}})["max_parallel"] == 3
+
+
+def test_subagent_semaphore_survives_across_steps(ee_home, workspace):
+    """并发上限必须跨步生效，不能每一步重建。
+
+    _subagent_sem 在 _run_tools 里每步 new 一次，于是「最多 N 个并发子代理」
+    只在单步内成立：第 1 步派 3 个跑着没结束，第 2 步又派 3 个 → 实际 6 个
+    同时跑，max_parallel 形同虚设（报告 P2-51）。这也是「调大 max_parallel」
+    之前必须先修的地基。
+    """
+    from ee.core import subagent as S
+
+    s, _ = make_session(workspace, [])
+    # 第一次取（模拟第 1 步）
+    sem1 = S.subagent_semaphore(s, {"max_parallel": 3})
+    # 第二次取（模拟第 2 步）必须是同一个对象，否则名额不共享
+    sem2 = S.subagent_semaphore(s, {"max_parallel": 3})
+    assert sem1 is sem2, "并发信号量被重建了，跨步上限失效"

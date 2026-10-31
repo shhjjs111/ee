@@ -44,9 +44,14 @@ MAX_PARALLEL_LIMIT = 8
 MAX_TOOL_ROWS = 200          # 界面记录里最多保留多少条工具行
 
 BUILTIN: dict[str, AgentDef] = {
+    # 写型通用子代理给 60 步：改代码要「读 → 改 → 跑测试 → 看失败 → 再改」，
+    # 30 步常常正好卡在收尾前（用完步数只能交一份不完整的报告，主代理还得重派
+    # 一次，成本比给足步数更高）。上限仍受 [subagent].max_steps_limit 约束。
     "general": AgentDef(name="general", description="通用子代理：能读能改（权限同主会话），适合独立的多步子任务",
-                        prompt=""),
+                        max_steps=60, prompt=""),
     "explore": AgentDef(name="explore", description="只读探索：搜索、阅读代码和网页，回答问题，不改任何文件",
+                        # 只读探索不需要写型的步数预算：读几处就能给结论，30 步够用。
+                        max_steps=30,
                         tools=["read", "grep", "glob", "todo", "web_search", "web_fetch", "skill", "repo_map"],
                         prompt="你是只读的探索子代理：只搜索和阅读（代码、文档、网页），不修改任何文件。"
                                "尽量并行地读和搜，给出有依据的结论，并列出关键文件路径和行号。"),
@@ -271,6 +276,23 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n].rstrip() + "…"
 
 
+def subagent_semaphore(parent, sc: dict) -> asyncio.Semaphore:
+    """会话级的子代理并发闸门——**跨步共享**。
+
+    原来在 _run_tools 里每步 new 一个，于是「最多 max_parallel 个并发」只在
+    单步内成立：第 1 步派了 3 个还没结束，第 2 步又派 3 个，实际 6 个同时跑。
+    闸门必须挂在 Session 上，只建一次；max_parallel 变了才重建。
+    """
+    want = max(1, int(sc.get("max_parallel") or 1))
+    cur = getattr(parent, "_subagent_sem", None)
+    if cur is not None and getattr(parent, "_subagent_sem_limit", None) == want:
+        return cur
+    sem = asyncio.Semaphore(want)
+    parent._subagent_sem = sem
+    parent._subagent_sem_limit = want
+    return sem
+
+
 async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, bool, dict]:
     """在 parent（Session）之下运行一个子代理。返回 (给主代理的输出, 是否成功, 界面记录)。"""
     from ee.core.session import Session
@@ -302,8 +324,10 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
         fork_hist = fork_history(parent.history, call_id)
 
     limit = max(1, int(sc.get("max_steps_limit") or 100))
-    steps = args.get("max_steps") or (adef.max_steps if kind not in BUILTIN and adef.max_steps else None) \
-        or sc.get("max_steps") or 30
+    # 优先级：调用时显式指定 > 这个 agent 自己定义 > 全局 [subagent].max_steps > 30。
+    # 内置 agent 也要读 adef.max_steps——否则「general 给 60 步」这类按类型区分不生效
+    # （原来的 kind not in BUILTIN 条件让内置 agent 永远拿全局默认值 30）。
+    steps = args.get("max_steps") or adef.max_steps or sc.get("max_steps") or 30
     steps = max(1, min(limit, int(steps)))
 
     read_only = is_read_only(parent, args, adef)
@@ -323,7 +347,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     cfg.data = data
     source = {"call_id": call_id, "agent": kind, "description": desc}
 
-    sem = getattr(parent, "_subagent_sem", None) or asyncio.Semaphore(sc["max_parallel"])
+    sem = subagent_semaphore(parent, sc)
     queued = sem.locked()
     if queued:                # 名额满了：先在界面上显示“排队中”
         emit(SubagentStart(call_id, kind, desc, model, mode_label, steps, status="queued"))

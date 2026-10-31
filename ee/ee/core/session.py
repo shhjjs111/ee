@@ -1386,7 +1386,9 @@ class Session:
             if iso == "worktree":
                 kinds[i] = parallel.FREE
         sc = _sub.subagent_config(self.config.data)
-        self._subagent_sem = asyncio.Semaphore(max(1, int(sc.get("max_parallel") or 1)))
+        # 并发闸门挂在会话上跨步共享（见 subagent.subagent_semaphore）：
+        # 每步 new 一个会让「最多 N 个并发」只在单步内成立。
+        _sub.subagent_semaphore(self, sc)
         gate = parallel.RWGate()
 
         async def one(p, kind):

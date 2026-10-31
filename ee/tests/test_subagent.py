@@ -179,3 +179,23 @@ def test_explore_has_no_shell(ee_home, workspace):
     child_tools = {t["function"]["name"] for t in fake.calls[1]["tools"]}
     assert "shell" not in child_tools, f"explore 不该有 shell：{sorted(child_tools)}"
     assert {"read", "grep", "glob"} <= child_tools
+
+
+def test_general_subagent_gets_more_steps_than_explore(ee_home, workspace):
+    """写型 general 的步伐预算要大于只读 explore。
+
+    改代码是「读 → 改 → 跑测试 → 看失败 → 再改」的循环，30 步常常卡在收尾前；
+    步数用完只能交不完整报告，主代理得重派一次——比给足步数更贵。
+    explore 只读，不需要那么多预算。
+    """
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "p1", "task", {"description": "改", "prompt": "做点事"}) + finish("tool_calls"),
+        tool_chunks(0, "k1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        text_chunks("done") + finish("stop"),
+        text_chunks("收尾") + finish("stop"),
+    ])
+    ev = run(collect(s, "派个活"))
+    assert done(ev).reason == "completed"
+    card = [e for e in ev if isinstance(e, SubagentStart)][0]
+    assert card.max_steps >= 60, f"general 的步数预算太小：{card.max_steps}"
