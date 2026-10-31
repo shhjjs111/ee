@@ -120,3 +120,65 @@ describe("发送失败保文字（ACC-24）", () => {
     expect(textarea(el).value).toBe("");
   });
 });
+
+describe("子会话卡在审批时，父界面要看得见（P1-8）", () => {
+  it("当前对话的子会话等审批时，输入区上方出现横幅并带子会话名与工具", () => {
+    act(() =>
+      useApp.setState({
+        ...baseState,
+        pendingChildApprovals: {
+          t1: {
+            parent_id: "t1",
+            thread_id: "c1",
+            kind: "approval",
+            child_title: "子任务甲",
+            call_id: "call_1",
+            tool: "shell",
+            summary: "rm -rf build",
+          },
+        },
+      } as never),
+    );
+    const el = render(<Composer />);
+    const text = el.textContent ?? "";
+    expect(text).toContain("子任务甲");
+    expect(text).toContain("shell");
+  });
+
+  it("提示条要能直接批准/拒绝，不走侧栏", async () => {
+    const calls: [string, unknown][] = [];
+    act(() =>
+      useApp.setState({
+        ...baseState,
+        rpc: {
+          call: async (m: string, p: unknown) => {
+            calls.push([m, p]);
+            return {};
+          },
+        },
+        pendingChildApprovals: {
+          t1: {
+            parent_id: "t1",
+            thread_id: "c1",
+            kind: "approval",
+            child_title: "子任务甲",
+            call_id: "call_1",
+            tool: "shell",
+            summary: "rm -rf build",
+          },
+        },
+      } as never),
+    );
+    const el = render(<Composer />);
+    const btn = Array.from(el.querySelectorAll("button")).find((b) =>
+      (b.textContent ?? "").includes("批准"),
+    );
+    expect(btn, "横幅里没有批准按钮").toBeTruthy();
+    await act(async () => {
+      btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(calls.some(([m]) => m === "approval/respond")).toBe(true);
+    // 点了之后提示必须消失，否则用户会反复点同一条
+    expect(useApp.getState().pendingChildApprovals["t1"]).toBeFalsy();
+  });
+});

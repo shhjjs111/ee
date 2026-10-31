@@ -89,6 +89,8 @@ type Actions = {
   refreshLists(): Promise<void>;
   /** 补拉子会话真实状态（changed_count / terminal_reason），卡片要用。 */
   refreshChildStatus(): Promise<void>;
+  /** 清掉某个父会话下的子会话审批提示（批准/拒绝/子会话已恢复时）。 */
+  clearChildApproval(parentId: string): void;
   /** 拉项目/对话/模型列表，失败时 toast（连接、重连后用）。 */
   refreshListsSafe(): Promise<void>;
   refreshModels(): Promise<void>;
@@ -274,6 +276,15 @@ export const useApp = create<State & Actions>((set, get) => ({
    *  git status），拿不到就永远是空的——卡片上的「N 处改动」得靠这一步补。
    *  逐个子会话查：一个坏了不影响其他（thread/status 对坏的 worktree 返回 0）。
    */
+  clearChildApproval(parentId: string) {
+    useApp.setState((st) => {
+      if (!(parentId in st.pendingChildApprovals)) return st;
+      const next = { ...st.pendingChildApprovals };
+      delete next[parentId];
+      return { pendingChildApprovals: next };
+    });
+  },
+
   async refreshChildStatus() {
     const rpc = get().rpc;
     if (!rpc) return;

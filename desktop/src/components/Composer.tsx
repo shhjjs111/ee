@@ -499,6 +499,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
 
   return (
     <div className="relative">
+      <ChildApprovalBanner />
       {showSlash && slashList && <SlashMenu items={slashList} sel={slashSel} onPick={pickSlash} onHover={setSlashSel} />}
       {mention && files.length > 0 && (
         <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-line bg-elev p-1 shadow-[var(--shadow)] fadein">
@@ -729,6 +730,59 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             </Tip>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 子会话卡在审批/提问上时，在父会话输入区上方提示。
+ *
+ * 为什么必须有这层：store 早就把 `thread/child_approval` 写进
+ * `pendingChildApprovals`，但没有任何组件读它（报告 P1-8）。结果是子会话
+ * 在父界面完全不可见，只能靠侧栏一行灰字猜，注释承诺的「不能静默卡到超时」
+ * 没兑现——无人值守时它会一直卡着。
+ *
+ * 直接调 approval/respond，不走侧栏：用户看到横幅就在当前焦点里处理掉。
+ */
+function ChildApprovalBanner() {
+  const note = useApp((s) => (s.activeThreadId ? s.pendingChildApprovals[s.activeThreadId] : undefined));
+  const rpc = useApp((s) => s.rpc);
+  const clear = useApp((s) => s.clearChildApproval);
+
+  if (!note) return null;
+  const isQuestion = note.kind === "question";
+  const respond = (decision: "once" | "deny") => {
+    void rpc?.call("approval/respond", { thread_id: note.thread_id, call_id: note.call_id, decision })
+      .catch(() => undefined);
+    clear(note.parent_id);
+  };
+  return (
+    <div className="mb-2 flex items-start gap-2 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-[12.5px]">
+      <Shield size={14} className="mt-0.5 shrink-0 text-warn" />
+      <div className="min-w-0 flex-1">
+        <div className="text-fg">
+          子会话「{note.child_title}」正在等你{isQuestion ? "回答" : "批准"}：{note.tool}
+        </div>
+        {note.summary && (
+          <div className="mt-0.5 truncate text-muted" title={note.summary}>{note.summary}</div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button
+          onClick={() => respond("once")}
+          className="rounded-md border border-line px-2 py-1 text-[12px] text-fg hover:bg-hover"
+        >
+          {isQuestion ? "去回答" : "批准一次"}
+        </button>
+        {!isQuestion && (
+          <button
+            onClick={() => respond("deny")}
+            className="rounded-md border border-line px-2 py-1 text-[12px] text-muted hover:bg-hover"
+          >
+            拒绝
+          </button>
+        )}
       </div>
     </div>
   );
