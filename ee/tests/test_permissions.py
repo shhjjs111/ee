@@ -127,3 +127,20 @@ def test_readonly_whitelist_bypass_clustered_flags(tmp_path):
     # 不带值选项的正常簇仍然可用（别把 -la / -n5 一起打死）
     for c in ["ls -la", "sort -n data", "git log --oneline -5", "git status"]:
         assert p.check("shell", {"command": c}).action == "allow", c
+
+
+def test_eeignore_also_blocks_shell_reads(tmp_path):
+    """.eeignore 排除的文件，shell 也必须挡住。
+
+    拒绝消息里写着「也不要用 shell 绕过」，但 _eeignored 只覆盖
+    read/write/edit/apply_patch，shell 完全不管：`cat .env` / `rg secret`
+    免问就直接读到被排除的内容（报告 P2-24）。
+    """
+    from ee.core.permissions import PermissionPolicy
+    (tmp_path / ".eeignore").write_text(".env\n", encoding="utf-8")
+    p = PermissionPolicy(mode="default", workspace=tmp_path)
+    for c in ["cat .env", "rg secret .env", "type .env", "Get-Content .env"]:
+        d = p.check("shell", {"command": c})
+        assert d.action != "allow", f".eeignore 被 shell 绕过了：{c} → {d.action}"
+    # 无关命令不受影响
+    assert p.check("shell", {"command": "ls"}).action == "allow"

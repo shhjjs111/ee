@@ -1360,6 +1360,36 @@ def _match_rule(rule: str, tool: str, subject: str) -> bool:
 
 # ------------------------------------------------------------------ 判定
 
+def _shell_path_args(command: str) -> list[str]:
+    """从 shell 命令里挑出「看起来是路径」的参数，供 .eeignore 检查。
+
+    只做保守的文本筛选，不做通配展开：把每段命令按空白切开，跳过命令名与选项，
+    剩下的非选项词都当候选路径。带通配符的（*.env）也原样交给 ignored()——
+    EeIgnore 内部对字面名比对，命中就拦；展开与否由它决定。
+    """
+    out: list[str] = []
+    try:
+        segs = split_command(command)
+    except Exception:  # noqa: BLE001  拆分器不该让权限判断崩掉
+        segs = [command]
+    for seg in segs:
+        parts = seg.replace("=", " ").split()
+        for i, tok in enumerate(parts):
+            t = tok.strip("\"'")
+            if not t or t.startswith("-"):
+                continue
+            if t in ("|", "&&", "||", ";", ">", ">>"):
+                continue
+            if i == 0:
+                # 第一个词是命令名：`cat` / `rg` 本身不是路径。
+                # 但裸写的相对路径（`cat .env` 的 .env 在 i=1）不受影响；
+                # 只有命令名位置带分隔符时（./script.sh）才当路径。
+                if os.sep not in t and "/" not in t:
+                    continue
+            out.append(t)
+    return out
+
+
 @dataclass
 class PermissionPolicy:
     mode: str = "default"
@@ -1384,8 +1414,13 @@ class PermissionPolicy:
             self.session_tools.add(f"{tool}:{d.prefix}")
 
     def _eeignored(self, tool: str, args: dict) -> str | None:
-        """.eeignore 命中的路径（D4-8）；read/write/edit/apply_patch 碰到一律拒绝。"""
-        if tool not in ("read", "write", "edit", "apply_patch"):
+        """.eeignore 命中的路径（D4-8）；read/write/edit/apply_patch/shell 碰到一律拒绝。
+
+        shell 也要查：拒绝消息里写着「也不要用 shell 绕过」，如果只挡 file 工具，
+        这句承诺就是假的——`cat .env`、`rg secret` 免问直接读到被排除的内容。
+        shell 这条只做「参数里出现的路径」扫描（不做通配展开），宁可拦住可疑写法。
+        """
+        if tool not in ("read", "write", "edit", "apply_patch", "shell"):
             return None
         try:
             from ee.core.eeignore import for_dir
@@ -1394,7 +1429,13 @@ class PermissionPolicy:
             return None
         if ig.empty:
             return None
-        for p in (self._paths(tool, args) if tool != "read" else [str(args.get("path") or "")]):
+        if tool == "shell":
+            candidates = _shell_path_args(str(args.get("command") or ""))
+        elif tool == "read":
+            candidates = [str(args.get("path") or "")]
+        else:
+            candidates = self._paths(tool, args)
+        for p in candidates:
             if not p:
                 continue
             ap = Path(p.strip().strip('"').strip("'")).expanduser()
