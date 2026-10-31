@@ -231,3 +231,31 @@ def test_approval_without_answer_times_out(ee_home, workspace, monkeypatch):
     assert reasons, "没有 TurnDone"
     # 关键：回合必须结束（不挂死），且锁已释放
     assert not s._history_lock.locked(), "回合结束后 _history_lock 仍被持有"
+
+
+def test_aclose_releases_lsp_manager(ee_home, workspace):
+    """会话关闭时必须释放 LSP 管理器，否则每个会话泄漏一个语言服务器进程。
+
+    session 里 new LspManager() + acquire()，但 release/shutdown 全仓无调用
+    （报告 P1-11）。会话删除 / 服务退出后子进程一直挂着。
+    """
+    from conftest import FakeClient, finish, make_session, text_chunks
+
+    calls = []
+
+    class FakeMgr:
+        async def release(self, handle):
+            calls.append(("release", handle))
+
+        async def shutdown(self):
+            calls.append(("shutdown", None))
+
+    s, _ = make_session(workspace, [text_chunks("好") + finish("stop")])
+    s.lsp_manager = FakeMgr()
+    s._lsp_handle = object()
+    asyncio.run(s.aclose())
+    kinds = [c[0] for c in calls]
+    assert "release" in kinds and "shutdown" in kinds, f"LSP 没被释放：{kinds}"
+    # 重复调用安全
+    asyncio.run(s.aclose())
+    assert len(calls) == 2, f"重复 aclose 又调了一次：{calls}"

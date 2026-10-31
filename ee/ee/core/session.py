@@ -261,6 +261,27 @@ class Session:
                 await close()
             except Exception as e:    # noqa: BLE001  一个关不掉不该挡住其他
                 log.info("关闭模型客户端时出错（忽略）：%s", e)
+        await self._close_lsp()
+
+    async def _close_lsp(self) -> None:
+        """释放 LSP 子进程。
+
+        每个会话都 new 一个 LspManager 并 acquire 一个语言服务器进程，但 release /
+        shutdown 原本全仓无调用：每个会话泄漏一个 lsp 子进程（报告 P1-11）。
+        会话销毁 / 服务退出时在这里收掉；重复调用安全。
+        """
+        mgr = getattr(self, "lsp_manager", None)
+        handle = getattr(self, "_lsp_handle", None)
+        if mgr is None:
+            return
+        self.lsp_manager = None
+        self._lsp_handle = None
+        try:
+            if handle is not None:
+                await mgr.release(handle)
+            await mgr.shutdown()
+        except Exception as e:        # noqa: BLE001  收尾失败不该让 aclose 失败
+            log.info("关闭 LSP 时出错（忽略）：%s", e)
 
     def set_mode(self, mode: str) -> None:
         self.policy.set_mode(mode)
