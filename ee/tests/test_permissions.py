@@ -144,3 +144,19 @@ def test_eeignore_also_blocks_shell_reads(tmp_path):
         assert d.action != "allow", f".eeignore 被 shell 绕过了：{c} → {d.action}"
     # 无关命令不受影响
     assert p.check("shell", {"command": "ls"}).action == "allow"
+
+
+def test_eeignore_does_not_false_positive_on_option_values(tmp_path):
+    """长选项的值不该被当成要读的文件，否则正常命令被误拦。
+
+    `grep secret --exclude-dir=.env` 里的 .env 是「要排除的目录名」，
+    不是去读它；早期实现先 replace("="," ") 再切分，会把它当候选路径（独立审查发现）。
+    """
+    from ee.core.permissions import PermissionPolicy
+    (tmp_path / ".eeignore").write_text(".env\n", encoding="utf-8")
+    p = PermissionPolicy(mode="default", workspace=tmp_path)
+    for c in ["grep secret --exclude-dir=.env", "rg foo --glob=*.env", "rg -n foo src", "ls"]:
+        assert p.check("shell", {"command": c}).action == "allow", f"误拦：{c}"
+    # 真正去读的写法仍要拦
+    for c in ["cat .env", "cat sub/.env"]:
+        assert p.check("shell", {"command": c}).action == "deny", f"漏拦：{c}"

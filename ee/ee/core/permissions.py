@@ -1373,10 +1373,24 @@ def _shell_path_args(command: str) -> list[str]:
     except Exception:  # noqa: BLE001  拆分器不该让权限判断崩掉
         segs = [command]
     for seg in segs:
-        parts = seg.replace("=", " ").split()
+        # 不要先 replace("="," ")：那会把 `--glob=*.env` 的值拆出来当路径，
+        # 产生误拦（`grep secret --exclude-dir=.env` 会被当成读了 .env）。
+        # 长选项整体跳过（含它的 = 值）；单独的 `--opt=value` 只在 value 带分隔符/
+        # 点前缀时才当候选。
+        parts = seg.split()
         for i, tok in enumerate(parts):
             t = tok.strip("\"'")
-            if not t or t.startswith("-"):
+            if not t:
+                continue
+            if t.startswith("--") and "=" in t:
+                name, _, value = t.partition("=")
+                value = value.strip("\"'")
+                # 只有真的像路径（带目录分隔符）才当候选。`--exclude-dir=.env`
+                # 里的 .env 是「要排除的目录名」，不是要去读的文件。
+                if value and (os.sep in value or "/" in value):
+                    out.append(value)
+                continue
+            if t.startswith("-"):
                 continue
             if t in ("|", "&&", "||", ";", ">", ">>"):
                 continue
