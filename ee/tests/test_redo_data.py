@@ -430,3 +430,31 @@ def test_memory_writes_are_atomic(tmp_path, crash_on_write):
     assert memory.parse_entries(f.read_text(encoding="utf-8")) == ["第二条", "第三条"]
     memory.save_text(f, "# 记忆\n\n- 全新\n")
     assert memory.parse_entries(f.read_text(encoding="utf-8")) == ["全新"]
+
+
+@needs_git
+def test_undo_without_end_snapshot_still_confirms_when_user_edited(ee_home, workspace):
+    """回合没有结束快照（中断/崩溃）时，用户手改仍要被发现并确认。
+
+    _conflicts 里 `if after and nxt` —— after 为空就把整段跳过，于是
+    "回合结束到下一次 undo 之间"的用户修改完全检测不到，/undo 会静默把
+    before → 当前 全部回滚，用户手改消失且不弹确认（报告 P1-6）。
+    """
+    script = [_write("c1", "v1"), text_chunks("ok") + finish("stop")]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 a"})
+        await wait_for(ev, "turn/completed")
+        # 模拟"回合没有结束快照"：把 after 抹掉
+        s = b.threads[tid].session
+        for e in s.turn_trees:
+            if e.get("before"):
+                e.pop("after", None)
+        (workspace / "a.txt").write_text("用户手改", encoding="utf-8")
+
+        r = await b.call("thread/undo", {"thread_id": tid})
+        assert r.get("needs_confirm") is True, f"没检测到用户手改：{r}"
+        assert (workspace / "a.txt").read_text(encoding="utf-8") == "用户手改"
+    asyncio.run(go())

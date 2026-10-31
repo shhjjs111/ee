@@ -620,16 +620,27 @@ class Session:
 
     @staticmethod
     def _conflicts(d, entries: list[tuple[str, str | None]], cur: str | None, paths: list[str]) -> list[str]:
-        """要恢复的文件里，哪些在 ee 的回合结束后被别人（用户/编辑器）改过：
-        回合后 tree → 下一回合前 tree（两回合之间）、最后一回合后 tree → 当前。回合后没有快照的（中断）无从比较。"""
+        """要恢复的文件里，哪些在 ee 的回合结束后被别人（用户/编辑器）改过。
+
+        两段窗口都要查：
+        1. 回合后 tree → 下一回合前 tree（两个回合之间）；
+        2. 最后一回合后 tree → 当前（最后一次 undo 之后用户又改的）。
+
+        回合后**没有**快照（回合中断 / 崩溃）时，旧代码用 `if after and nxt` 整段跳过，
+        于是第 2 段窗口的修改根本检测不到：/undo 会把 before → 当前全部回滚，
+        用户手改消失且不弹确认。这里改成「拿不到 after 就退到 before 比较」——
+        before 是回合开始时抓的，用来判断"当前内容和回合前是否不同"仍然成立，
+        宁可多问一次，也不静默覆盖用户的东西。
+        """
         want = set(paths)
         if not want:
             return []
         hit: set[str] = set()
-        for i, (_before, after) in enumerate(entries):
+        for i, (before, after) in enumerate(entries):
             nxt = entries[i + 1][0] if i + 1 < len(entries) else cur
-            if after and nxt and after != nxt:
-                hit |= want & set(d.changed(after, nxt))
+            base = after or before          # 没有回合后快照：用回合前快照做基线
+            if base and nxt and base != nxt:
+                hit |= want & set(d.changed(base, nxt))
         if hit and cur and entries[0][0]:     # 当前内容已经和恢复目标一样的（比如上次恢复到一半已写好的）不会丢东西
             hit &= set(d.changed(entries[0][0], cur))
         return sorted(hit)
