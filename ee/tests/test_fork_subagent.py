@@ -164,3 +164,21 @@ def test_fork_persisted_parent_history_clean(ee_home, workspace):
     msgs = SessionStore.load_messages(s.store.path)
     assert msgs == s.history
     assert not any(FORK_PREAMBLE in (m.get("content") or "") for m in msgs)
+
+
+# ---------------------------------------------------------------- 提示词里的 fork 成本判据
+#
+# 实测（~/.ee/sessions，9 会话 / 2100 请求）：子代理请求占 64%（1346/2100）、
+# 吃掉 70% 的 miss（4,170,888 / 5,979,431）——因为普通子代理用独立历史，
+# 前缀与主会话完全不同，每个请求都是全量 cache miss。
+# 而 34 次 task 调用全部是普通模式：fork 虽然写在工具描述里，但没说明「什么时候值得用」，
+# 模型没有依据去做这个选择。规则层补一条判据，不动子代理的独立上下文语义。
+
+def test_task_rules_explain_when_to_fork():
+    """task 的使用规则必须给出 fork 的成本判据，否则模型不会主动选它。"""
+    from ee.tools.agent import TaskTool
+    rules = TaskTool().rules
+    text = "\n".join(rules)
+    assert "fork" in text, f"规则里没提 fork：{rules}"
+    # 判据要能落到可判断的条件上：已经聊过一段、需要沿用上下文
+    assert any(k in text for k in ("上下文", "缓存", "命中")), f"没有给出成本判据：{text}"

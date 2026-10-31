@@ -8,7 +8,7 @@ from ee.tools.search import GlobTool, GrepTool, _glob_match
 from ee.tools.shell import ShellTool
 from ee.tools.shellenv import ShellNotFound, resolve_shell
 from ee.tools.todo import TodoTool
-from ee.tools.truncate import truncate_output
+from ee.tools.truncate import truncate_output, truncate_output_info
 
 
 def test_truncate_by_lines(tmp_path):
@@ -119,3 +119,51 @@ def test_todo_rules(workspace):
     assert "1/2" in r.output and ctx.state.todos[1]["status"] == "in_progress"
     with pytest.raises(ToolError):
         run(TodoTool().run({"todos": [{"content": "a", "status": "in_progress"}, {"content": "b", "status": "in_progress"}]}, ctx))
+
+
+# ---------------------------------------------------------------- 按工具调阈值（缓存优化）
+#
+# 为什么需要：DeepSeek 的前缀缓存只在「用户输入末尾」和「模型输出末尾」落缓存单元，
+# 后续请求必须完全匹配某个单元才命中。一个回合内每多一次工具调用，之前的工具结果就
+# 要重新计费一次。所以**工具输出越大，后续每一步的重复成本越高**。
+#
+# 实测（~/.ee/sessions 9 个真实会话 / 2084 次请求 / 命中率 97.19%）：某个回合内
+# 20 次工具调用、输出合计 8 万字符，实际 miss 却是 23.9 万 token——是新增量的 8.9 倍。
+# 按「每个工具输出在其后每次请求都重算」建模得 36.2 万，落在同一量级，机制吻合。
+#
+# 天枢用同一思路（src/tools/artifact-threshold.ts）：按工具类型设不同阈值，
+# 并明确「Cache impact: zero」——只改归档阈值，不动工具定义/系统提示/请求构造。
+# 这里给 web_fetch / web_search 这类「单次输出大、后续极少复用」的工具用更严的阈值。
+
+def test_web_fetch_truncated_earlier_than_default(tmp_path):
+    """web_fetch 的输出上限必须比默认阈值小：网页正文是缓存杀手。"""
+    from ee.tools.truncate import limit_for, MAX_BYTES
+    assert limit_for("web_fetch").bytes < MAX_BYTES, "web_fetch 应比默认更早归档"
+
+
+def test_web_search_truncated_earlier_than_default(tmp_path):
+    from ee.tools.truncate import limit_for, MAX_BYTES
+    assert limit_for("web_search").bytes < MAX_BYTES
+
+
+def test_small_tool_output_not_truncated(tmp_path):
+    """普通小输出不受影响：不能为了缓存把所有结果都砍掉。"""
+    text = "x" * 5_000
+    out, cut = truncate_output(text, tmp_path, "read")
+    assert not cut and out == text
+
+
+def test_unknown_tool_uses_default(tmp_path):
+    from ee.tools.truncate import limit_for, MAX_BYTES
+    assert limit_for("some_new_tool").bytes == MAX_BYTES
+
+
+def test_web_fetch_big_output_wrapped_and_recoverable(tmp_path):
+    """大网页正文被归档后，必须能按路径找回全文（不能真丢）。"""
+    text = "网页正文" * 20_000          # 远超 web_fetch 阈值
+    out, info = truncate_output_info(text, tmp_path, "web_fetch")
+    assert info is not None and info["path"], "应归档到磁盘并给出路径"
+    assert str(info["path"]) in out, "提示里必须带可读的路径"
+    from pathlib import Path
+    assert Path(info["path"]).read_text(encoding="utf-8") == text, "归档内容必须是完整原文"
+    assert len(out) < len(text) / 2, "进历史的预览要显著变小"
