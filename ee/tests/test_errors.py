@@ -292,3 +292,49 @@ def test_session_overflow_twice_gives_up(ee_home, workspace):
     ev = run(collect(s, "你好"))
     assert [e for e in ev if isinstance(e, TurnDone)][-1].reason == "error"
     assert s.compactions == 1 and len(fake.calls) == 3
+
+
+def test_stream_without_finish_reason_is_an_error(ee_home, workspace):
+    """流正常结束、但一个 finish_reason 都没收到 → 半截回答，必须当错误。
+
+    服务端中途断开、代理截断、中间设备切断时，HTTP 层是「正常结束」的：
+    迭代结束、没抛异常。此时 finish_reason is None 而 content 有内容，
+    现在的 _stream_once 直接 yield ("done", comp)，上层按 completed 收尾——
+    半截回答入历史、不重试、不报错，用户以为那就是完整答案（报告 P1-13）。
+    """
+    from ee.config import load_config
+    from ee.core.providers.openai_chat import ChatClient, ModelError
+
+    cfg = load_config(workspace)
+    spec = cfg.resolve_model("deepseek-flash")
+
+    class FakeStream:
+        def __aiter__(self):
+            async def gen():
+                # 只有内容，没有任何 finish_reason
+                yield {"choices": [{"index": 0, "delta": {"content": "半截回答"}, "finish_reason": None}]}
+            return gen()
+
+        async def close(self):
+            pass
+
+    class C:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kw):
+                    return FakeStream()
+
+    async def go():
+        c = ChatClient(spec, client=C())
+        done_ev = None
+        try:
+            async for kind, val in c._stream_once({}, None):
+                if kind == "done":
+                    done_ev = val
+        except ModelError as e:
+            return "error", e
+        return "done", done_ev
+
+    status, val = asyncio.run(go())
+    assert status == "error", f"半截流被当成成功：finish_reason={getattr(val, 'finish_reason', '?')}"

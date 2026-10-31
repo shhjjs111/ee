@@ -343,6 +343,13 @@ class ChatClient:
                 comp.tool_calls, comp.content, comp.recovered = rec, rest, True
         if comp.tool_calls and comp.finish_reason in (None, "stop"):
             comp.finish_reason = "tool_calls"
+        # 半截流：一个 finish_reason 都没收到，却已经有内容。
+        # 服务端中途断开 / 代理截断 / 中间设备切断时，HTTP 层是「正常结束」的
+        # （迭代结束、不抛异常），所以这一层不拦就没人拦了：半截回答会入历史、
+        # 不重试、不报错，用户以为那就是完整答案。抛可重试错误交给上层。
+        if comp.finish_reason is None and (comp.content or comp.tool_calls or comp.reasoning):
+            raise ModelError("模型输出不完整（流被中断，没有收到结束标记），已重试仍失败。",
+                             kind="truncated")
         yield ("done", comp)
 
 
