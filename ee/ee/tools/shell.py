@@ -11,6 +11,7 @@ import time
 from ee.core import sandbox as SB
 from ee.proc import child_environ, kill_tree
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
+from ee.core.events import Notice
 from ee.tools.shellenv import IS_WINDOWS, ShellInfo, resolve_shell, strip_clixml
 from ee.tools.textdecode import StreamDecoder
 from ee.tools.truncate import truncate_output_info
@@ -195,6 +196,16 @@ class ShellTool(Tool):
         if not command:
             raise ToolError("command 为空")
         shell = ctx.shell or resolve_shell("auto")
+        sb = sandbox_plan(ctx)
+        # 只读沙箱用的是受限令牌，Git Bash（cygwin）在它下面起不来（共享内存 DACL
+        # 不满足 WRITE_RESTRICTED，CreateFileMapping 直接 Win32 error 5）；cmd /
+        # powershell 不受影响。这里换成能用的那个，并把原因说出来——不静默换，
+        # 因为命令语法会从 POSIX 变成 PowerShell。
+        from ee.tools.sandbox_shell import readonly_shell_override
+        new_kind, why = readonly_shell_override(shell.kind, sandbox_active=sb is not None)
+        if why and new_kind != shell.kind:
+            shell = resolve_shell(new_kind)
+            ctx.emit(Notice(why, "warn"))
         timeout = min(MAX_TIMEOUT, max(1, int(args.get("timeout") or ctx.timeout_default)))
         if ctx.max_timeout > 0:                      # 会话级硬上限：模型显式传更大的 timeout 也不越界
             timeout = min(timeout, max(1, int(ctx.max_timeout)))
@@ -203,7 +214,6 @@ class ShellTool(Tool):
             raise ToolError(f"workdir 不存在：{cwd}")
         if args.get("background"):
             return await run_background(command, shell, cwd, ctx)
-        sb = sandbox_plan(ctx)
         t0 = time.monotonic()
         try:
             code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit, sandbox=sb)

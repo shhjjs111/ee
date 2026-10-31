@@ -52,7 +52,11 @@ BUILTIN: dict[str, AgentDef] = {
     "explore": AgentDef(name="explore", description="只读探索：搜索、阅读代码和网页，回答问题，不改任何文件",
                         # 只读探索不需要写型的步数预算：读几处就能给结论，30 步够用。
                         max_steps=30,
-                        tools=["read", "grep", "glob", "todo", "web_search", "web_fetch", "skill", "repo_map"],
+                        # shell 放回来：查「这个测试为什么失败」「这个命令输出什么」光靠
+                        # grep 不够。只读沙箱下它会自动换成 powershell（见
+                        # tools/sandbox_shell.py）——Git Bash 在受限令牌里起不来。
+                        tools=["read", "grep", "glob", "shell", "todo", "web_search", "web_fetch", "skill",
+                               "repo_map"],
                         prompt="你是只读的探索子代理：只搜索和阅读（代码、文档、网页），不修改任何文件。"
                                "尽量并行地读和搜，给出有依据的结论，并列出关键文件路径和行号。"),
 }

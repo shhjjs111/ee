@@ -118,3 +118,28 @@ def test_shell_tool_passes_readonly_flag(tmp_path, monkeypatch):
     FakePolicy.mode = "default"
     SH.sandbox_plan(ctx)
     assert seen["readonly"] is False
+
+
+def test_readonly_sandbox_switches_git_bash_to_powershell(tmp_path):
+    """只读沙箱下，shell 要自动从 Git Bash 换成 powershell。
+
+    Git Bash（cygwin）在受限令牌下起不来——cygwin1.dll 启动时要给自己的共享
+    内存对象设 DACL，它不知道自己受限，写的 DACL 不满足 WRITE_RESTRICTED，
+    于是 CreateFileMapping 直接 Win32 error 5。cmd / powershell 不受影响
+    （本机实测：沙箱内 cmd、powershell 都能正常 echo）。
+
+    以前用户只看到一行看不出所以然的 Win32 错误，或者整段 shell 不可用。
+    现在：检测到「沙箱启用 + 当前 shell 是 bash 族」就换成 powershell，并留一条
+    notice 说明原因（不静默换 shell，用户得知道命令语法变了）。
+    """
+    from ee.tools.sandbox_shell import readonly_shell_override
+
+    kind, note = readonly_shell_override("git-bash", sandbox_active=True)
+    assert kind in ("powershell", "pwsh"), f"没换 shell：{kind}"
+    assert note and "Git Bash" in note, f"换 shell 必须给出原因：{note}"
+    # 非沙箱场景不动
+    kind2, note2 = readonly_shell_override("git-bash", sandbox_active=False)
+    assert kind2 == "git-bash" and not note2
+    # 已经在用 powershell 时不重复替换
+    kind3, note3 = readonly_shell_override("powershell", sandbox_active=True)
+    assert not note3

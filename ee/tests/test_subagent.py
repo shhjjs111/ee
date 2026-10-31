@@ -158,13 +158,14 @@ def test_server_thread_attaches_subagent_meta(ee_home, workspace):
                for m, p in notes)
 
 
-def test_explore_has_no_shell(ee_home, workspace):
-    """explore 是只读探索，不该带 shell。
+def test_explore_has_shell_but_it_falls_back_in_sandbox(ee_home, workspace):
+    """explore 要用 shell，但只读沙箱下必须能换成 powershell。
 
-    只读模式下 shell 会进 Windows 受限令牌沙箱，而 Git Bash（本机默认 shell）
-    在受限令牌下起不来（CreateFileMapping Win32 error 5）；只读里能用的是
-    read/grep/glob/repo_map，它们都不走 shell。带上 shell 只会让子代理多一条
-    注定失败的路径，还白白把「沙箱能不能跑 bash」这个未解问题引进来。
+    早先的做法是把 shell 从 explore 的工具表里删掉，绕开「Git Bash 在受限令牌里
+    起不来」。但那样 explore 做不了「跑一下测试看哪里错」——grep 替代不了命令输出。
+    现在放回 shell，改由 tools/sandbox_shell.py 在沙箱启用时换成 powershell；
+    这里锁定工具表里有 shell（换不换是运行时决定，见
+    test_sandbox_readonly_default.py::test_readonly_sandbox_switches_git_bash_to_powershell）。
     """
     (workspace / "a.txt").write_text("secret-line\n", encoding="utf-8")
     s, fake = make_session(workspace, [
@@ -177,7 +178,7 @@ def test_explore_has_no_shell(ee_home, workspace):
     ev = run(collect(s, "帮我看看"))
     assert done(ev).reason == "completed"
     child_tools = {t["function"]["name"] for t in fake.calls[1]["tools"]}
-    assert "shell" not in child_tools, f"explore 不该有 shell：{sorted(child_tools)}"
+    assert "shell" in child_tools, f"explore 应该有 shell：{sorted(child_tools)}"
     assert {"read", "grep", "glob"} <= child_tools
 
 
