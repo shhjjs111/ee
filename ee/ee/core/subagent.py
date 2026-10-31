@@ -514,9 +514,48 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             "loop": "（子代理陷入重复调用被停止）", "error": "（子代理出错结束）",
             "budget": "（子代理因达到花费上限停止）"}.get(reason, "")
     fork_attr = ' fork="true"' if fork else ""
+    digest = build_digest(rec, step)
     out = (f'<task_result agent="{kind}"{fork_attr} status="{reason}" steps="{step}">\n{final.strip()}\n</task_result>' +
+           (f"\n{digest}" if digest else "") +
            (f"\n{note}" if note else "") + (f"\n{wt_note}" if wt_note else ""))
     return out, ok, rec
+
+
+def build_digest(rec: dict, steps: int) -> str:
+    """从**实际发生过**的工具调用推出结构化摘要。
+
+    主代理拿到一段自由文本时，「改完了没 / 改了哪些文件 / 跑没跑过测试」全靠读文本
+    猜；而模型的自述说的是它「打算」做什么（Claude Code 主代理侧提示词原话：
+    trust but verify）。这里只用 rec["tools"] 里已经记录的事实，不让模型编。
+    """
+    tools = rec.get("tools") or []
+    if not tools:
+        return ""
+    write_names = {"write", "edit", "apply_patch"}
+    changed: list[str] = []
+    ran: list[str] = []
+    failed: list[str] = []
+    for t in tools:
+        name = str(t.get("name") or "")
+        summ = str(t.get("summary") or "")
+        first = summ.splitlines()[0].strip() if summ else ""
+        if name in write_names and first:
+            if first not in changed:
+                changed.append(first)
+        elif name == "shell" and first:
+            if first not in ran:
+                ran.append(first)
+        if t.get("status") == "error":
+            failed.append(f"{name}: {first or '(无输出)'}")
+    lines: list[str] = []
+    if changed:
+        lines.append("改动文件：" + "、".join(changed[:12]) + ("（还有更多）" if len(changed) > 12 else ""))
+    if ran:
+        lines.append("执行命令：" + "；".join(ran[:6]) + ("（还有更多）" if len(ran) > 6 else ""))
+    if failed:
+        lines.append("出错工具：" + "；".join(failed[:6]))
+    lines.append(f"工具调用 {len(tools)} 次，步数 {steps}")
+    return "<task_digest>\n" + "\n".join(lines) + "\n</task_digest>"
 
 
 def worktree_note(summ: dict) -> str:

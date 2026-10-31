@@ -237,3 +237,35 @@ def test_readonly_subagent_skips_project_docs_and_skills(ee_home, workspace):
     child = "\n".join(m.get("content") or "" for m in fake.calls[1]["messages"])
     assert "PROJECT_RULE_MARK" not in child, "只读子代理不该背 AGENTS.md"
     assert "demo-skill" not in child, "只读子代理不该背技能清单"
+
+
+def test_task_result_carries_structured_digest(ee_home, workspace):
+    """<task_result> 要附一段从**实际工具调用**推出来的结构化摘要。
+
+    现在主代理只拿到一段自由文本（final.strip()），「到底改完了没、改了哪些文件、
+    有没有跑过测试」全靠读文本猜。Claude Code 的做法是让子代理交一份可核对的报告
+    （research/claude-code.md:30「a concise report covering what was done」），
+    而它的主代理侧提示词还专门提醒「trust but verify: 摘要说的是它打算做什么，
+    不一定是它真做了什么」。
+
+    这里不逼模型额外输出 JSON（容易编），而是从已经记录下来的工具调用里推：
+    改了哪些文件、跑没跑测试、有没有工具报错。这些是**实际发生过**的。
+    """
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "p1", "task", {"description": "改+测", "prompt": "改 a.txt 再跑测试"})
+        + finish("tool_calls"),
+        # 子代理：写文件 → 跑测试
+        tool_chunks(0, "k1", "write", {"path": "a.txt", "content": "y"}) + finish("tool_calls"),
+        tool_chunks(0, "k2", "shell", {"command": "pytest -q"}) + finish("tool_calls"),
+        text_chunks("改好了，测试通过") + finish("stop"),
+        text_chunks("收尾") + finish("stop"),
+    ])
+    ev = run(collect(s, "派活"))
+    assert done(ev).reason == "completed"
+    out = [m for m in s.history if m["role"] == "tool" and m["tool_call_id"] == "p1"][0]["content"]
+    assert "<task_digest>" in out, f"没有结构化摘要：{out[:200]}"
+    # 改了哪个文件要能看出来
+    assert "a.txt" in out
+    # 跑没跑过命令要能看出来
+    assert "shell" in out or "pytest" in out
