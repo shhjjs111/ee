@@ -752,8 +752,11 @@ function ChildApprovalBanner() {
 
   if (!note) return null;
   const isQuestion = note.kind === "question";
-  const respond = (decision: "once" | "deny") => {
-    void rpc?.call("approval/respond", { thread_id: note.thread_id, call_id: note.call_id, decision })
+  // 子会话的审批要指向**子线程**（note.thread_id），所以不能复用 store.respond
+  // （它固定打 activeThreadId）。参数名必须是后端签名里的 choice，不是 decision。
+  const respond = (choice: "once" | "always" | "forever" | "deny") => {
+    void rpc?.call("approval/respond",
+                   { thread_id: note.thread_id, call_id: note.call_id, choice, reason: "" })
       .catch(() => undefined);
     clear(note.parent_id);
   };

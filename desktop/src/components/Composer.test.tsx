@@ -177,7 +177,13 @@ describe("子会话卡在审批时，父界面要看得见（P1-8）", () => {
     await act(async () => {
       btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(calls.some(([m]) => m === "approval/respond")).toBe(true);
+    const hit = calls.find(([m]) => m === "approval/respond");
+    expect(hit, "没调 approval/respond").toBeTruthy();
+    // 后端签名是 (thread_id, call_id, choice, reason)；参数名写错会被
+    // test_rpc_contract 抓住，这里提前在组件层挡住。
+    const body = hit![1] as Record<string, unknown>;
+    expect(body.choice).toBe("once");
+    expect(body.thread_id).toBe("c1");
     // 点了之后提示必须消失，否则用户会反复点同一条
     expect(useApp.getState().pendingChildApprovals["t1"]).toBeFalsy();
   });
