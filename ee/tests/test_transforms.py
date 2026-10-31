@@ -140,3 +140,43 @@ def test_profiles_detection():
         assert detect_family(m) == fam, m
     p = profile_for("deepseek-flash", overrides={"context_window": 5, "price": {"input": 1.0}})
     assert p.context_window == 5 and p.price.input == 1.0 and p.price.output == 8.0
+
+
+# ---------------------------------------------------------------- 前缀缓存：id 必须确定性
+#
+# 这两个 bug 的共同特征：命中率莫名掉一截，但没有任何报错或外显信号。
+# 原因是 wire_messages / _mk_call 每次请求都会重跑，用 uuid4() 生成的 id 每次都不同，
+# 从该消息起的前缀字节全变 —— 服务端只能整段重算。实测用户日志里出现过单回合
+# miss/req 高达 13,000-16,000 token 的异常回合。
+
+def test_wire_messages_tool_id_is_deterministic():
+    """缺 tool_call_id 的 tool 消息：两次调用必须得到同一个 id（否则缓存永久失效）。"""
+    hist = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_a", "type": "function",
+                                                             "function": {"name": "read", "arguments": "{}"}}]},
+        {"role": "tool", "content": "文件内容很长" * 100},      # 故意不带 tool_call_id
+    ]
+    ds = T.PROFILE if hasattr(T, "PROFILE") else None
+    prof = ds or __import__("ee.core.providers.profiles", fromlist=["x"]).Profile()
+    first = T.wire_messages(hist, prof)
+    second = T.wire_messages(hist, prof)
+    assert first[1]["tool_call_id"] == second[1]["tool_call_id"], (
+        f"两次生成的 id 不同（{first[1]['tool_call_id']} vs {second[1]['tool_call_id']}）——"
+        "前缀缓存会永久失效")
+
+
+def test_wire_messages_tool_id_differs_for_different_content():
+    """确定性不等于所有消息共用一个 id：不同内容的占位 id 要能区分。"""
+    from ee.core.providers.profiles import Profile
+    prof = Profile()
+    a = T.wire_messages([{"role": "tool", "content": "AAA"}], prof)[0]["tool_call_id"]
+    b = T.wire_messages([{"role": "tool", "content": "BBB"}], prof)[0]["tool_call_id"]
+    assert a != b
+
+
+def test_mk_call_id_is_deterministic():
+    """兜底解析（模型把工具调用写进正文）生成的 id 也必须确定性。"""
+    c1 = T._mk_call("read", {"path": "a.py"})
+    c2 = T._mk_call("read", {"path": "a.py"})
+    assert c1["id"] == c2["id"], "同一调用两次解析得到不同 id —— 历史字节每次都在变"
+    assert c1["id"] != T._mk_call("read", {"path": "b.py"})["id"]

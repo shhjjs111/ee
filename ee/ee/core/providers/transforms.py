@@ -10,9 +10,9 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
-import uuid
 from typing import Any
 
 # ---------------------------------------------------------------- 推理字段
@@ -132,7 +132,12 @@ def wire_messages(history: list[dict], profile) -> list[dict]:
             w["content"] = wire_content(w.get("content") or "", list(m["_images"]), bool(profile.vision))
         elif role == "tool":
             if not w.get("tool_call_id"):
-                w["tool_call_id"] = "call_" + uuid.uuid4().hex[:12]
+                # 必须确定性：这一层每次请求都会重跑，随机 id 会让整段历史字节变化，
+                # 从该消息起的前缀缓存永久失效，而且没有任何外显信号（表现为命中率
+                # 莫名掉一截）。用内容哈希派生，同一消息每次得到同一个 id。
+                w["tool_call_id"] = "call_" + hashlib.sha256(
+                    (str(m.get("content")) + str(m.get("name") or "")).encode("utf-8", "replace")
+                ).hexdigest()[:12]
             if not isinstance(w.get("content"), str):
                 w["content"] = json.dumps(w.get("content"), ensure_ascii=False)
         out.append(w)
@@ -269,7 +274,10 @@ def _in(ranges, i) -> bool:
 
 
 def _mk_call(name: str, args: dict) -> dict:
-    return {"id": "call_" + uuid.uuid4().hex[:12], "type": "function",
+    """兜底解析出来的工具调用。id 必须确定性——这条路径每次请求都会重跑，
+    随机 id 会让历史字节每次都变、前缀缓存永久失效（与 wire_messages 里同一个理由）。"""
+    digest = hashlib.sha256((name + json.dumps(args, ensure_ascii=False, sort_keys=True)).encode("utf-8", "replace"))
+    return {"id": "call_" + digest.hexdigest()[:12], "type": "function",
             "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}
 
 
