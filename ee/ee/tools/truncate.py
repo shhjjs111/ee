@@ -51,7 +51,13 @@ def limit_for(tool: str) -> Limit:
 
 
 def truncate_output(text: str, out_dir: Path | None, tool: str = "tool",
-                    max_lines: int = MAX_LINES, max_bytes: int = MAX_BYTES) -> tuple[str, bool]:
+                    max_lines: int | None = None, max_bytes: int | None = None) -> tuple[str, bool]:
+    """max_lines / max_bytes 不传时按 tool 取阈值（见 limit_for）。
+
+    **默认值必须是 None，不能是 MAX_LINES/MAX_BYTES**：这两个值曾经作为默认实参直接
+    转交给 truncate_output_info，于是 limit_for 永远收不到 None、按工具阈值从不生效
+    （实测 20KB 的 web_fetch 输出一个字都没截）。
+    """
     out, info = truncate_output_info(text, out_dir, tool, max_lines, max_bytes)
     return out, info is not None
 
@@ -82,8 +88,12 @@ def truncate_output_info(text: str, out_dir: Path | None, tool: str = "tool",
             path_note = f"\n完整输出已保存到：{f}（可用 read 工具带 offset 分段读，或用 grep 搜索）"
         except OSError as e:
             path_note = f"\n（保存完整输出失败：{e}）"
-    head = _cap("\n".join(lines[:HEAD_LINES]), PREVIEW_BYTES * 2 // 3, keep="head")
-    tail = _cap("\n".join(lines[-TAIL_LINES:]), PREVIEW_BYTES // 3, keep="tail")
+    # 预览大小必须跟着工具阈值走：原来固定 PREVIEW_BYTES(24KB)，在 web_fetch 那种
+    # 12KB 阈值下会产出比原文还长的"截断"结果（实测 20KB 原文 → 24.7KB 输出），
+    # 归档了个寂寞。取阈值的 2/3，保证截断后一定明显变短。
+    preview = max(1024, min(PREVIEW_BYTES, max_bytes * 2 // 3))
+    head = _cap("\n".join(lines[:HEAD_LINES]), preview * 2 // 3, keep="head")
+    tail = _cap("\n".join(lines[-TAIL_LINES:]), preview // 3, keep="tail")
     omitted = max(0, len(lines) - HEAD_LINES - TAIL_LINES)
     msg = (f"[输出过长已截断：共 {len(lines)} 行 / {size} 字节，下面是开头和结尾]\n"
            f"{head}\n\n… 省略中间约 {omitted} 行 …\n\n{tail}{path_note}")

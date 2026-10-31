@@ -167,3 +167,25 @@ def test_web_fetch_big_output_wrapped_and_recoverable(tmp_path):
     from pathlib import Path
     assert Path(info["path"]).read_text(encoding="utf-8") == text, "归档内容必须是完整原文"
     assert len(out) < len(text) / 2, "进历史的预览要显著变小"
+
+
+def test_truncate_output_respects_per_tool_limit(tmp_path):
+    from ee.tools.truncate import limit_for as _lf
+    """真实调用路径必须按工具阈值走。
+
+    上一版只测了 truncate_output_info，而生产用的是 truncate_output——它把
+    MAX_LINES/MAX_BYTES 作为实参传下去，limit_for 永远收不到 None，按工具阈值
+    形同虚设（实测：20KB 的 web_fetch 输出一个字都没截）。
+    """
+    text = "x" * (20 * 1024)          # 超过 web_fetch 的 12KB 阈值，低于 50KB 默认值
+    out, cut = truncate_output(text, tmp_path, "web_fetch")
+    assert cut, f"web_fetch 阈值 {_lf('web_fetch').bytes} 字节，20KB 应被截断（实际 {len(text)} 字节未截）"
+    # 截断会把大段原文归档到磁盘、返回头尾预览 + 提示；只要显著短于原文即可
+    assert len(out) < len(text), "截断后必须比原文短"
+
+
+def test_truncate_output_unknown_tool_unaffected(tmp_path):
+    """未配置的工具仍走默认 50KB：不能顺手把所有工具都改严。"""
+    text = "y" * (20 * 1024)          # 低于默认 50KB
+    out, cut = truncate_output(text, tmp_path, "read")
+    assert not cut and out == text
