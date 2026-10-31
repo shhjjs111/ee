@@ -514,3 +514,32 @@ def test_checkpoint_restore_refuses_when_another_thread_in_same_cwd_is_running(e
             await b.call("checkpoint/restore", {"thread_id": tid, "checkpoint_id": cp})
         assert "运行" in str(ei.value) or "工作区" in str(ei.value), str(ei.value)
     asyncio.run(go())
+
+
+@needs_git
+def test_undo_without_end_snapshot_always_confirms(ee_home, workspace):
+    """锁定一个有意接受的权衡：回合没有结束快照时，/undo 恒要求确认（即使没人手改）。
+
+    after 为空时，before 与当前的差异既包含 ee 自己写过的内容，也包含用户手改，
+    快照层区分不了。我们选「多问一次」而不是「静默覆盖」——见 session._conflicts
+    的注释。这条测试防的是：有人看到「没手改也要确认」以为是 bug 直接改回去，
+    那会重新打开「静默覆盖用户手改」的洞。
+    """
+    from conftest import text_chunks, tool_chunks
+
+    async def go():
+        b, _, ev = make_backend(ee_home, [
+            tool_chunks(0, "c1", "write", {"path": "a.txt", "content": "v1"}) + finish("tool_calls"),
+            text_chunks("ok") + finish("stop"),
+        ])
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 a"})
+        await wait_for(ev, "turn/completed")
+        s = b.threads[tid].session
+        for e in s.turn_trees:
+            if e.get("before"):
+                e.pop("after", None)
+        # 不手改，直接 undo：仍应要求确认
+        r = await b.call("thread/undo", {"thread_id": tid})
+        assert r.get("needs_confirm") is True, "这个权衡被改掉了，请先读 _conflicts 的注释"
+    asyncio.run(go())

@@ -160,3 +160,28 @@ def test_eeignore_does_not_false_positive_on_option_values(tmp_path):
     # 真正去读的写法仍要拦
     for c in ["cat .env", "cat sub/.env"]:
         assert p.check("shell", {"command": c}).action == "deny", f"漏拦：{c}"
+
+
+def test_git_pager_is_neutralized_by_child_env(tmp_path):
+    """`git -p` 依赖分页器执行程序；ee 的 child_env 把 GIT_PAGER/PAGER 钉成 cat，
+    所以这条路径在当前实现下不可利用（独立审查列为 LOW 的纵深防御缺口）。
+
+    这里锁定前提：/bin/sh 类分页器被环境变量压住，`git -p` 不会启动它。
+    若将来有人去掉 child_env 里的 GIT_PAGER=cat，这条测试会提醒他同时补
+    permissions 的 -p 判定。
+    """
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from ee.tools.shell import child_env
+
+    if not shutil.which("git"):
+        pytest.skip("没装 git")
+    env = child_env()
+    assert env.get("GIT_PAGER") == "cat" and env.get("PAGER") == "cat"
+    r = subprocess.run(["git", "-p", "log", "-1", "--oneline"], capture_output=True,
+                       text=True, timeout=30, env=env, cwd=str(tmp_path))
+    # 不在仓库里 -> 退出码非 0，但关键是它没有卡在分页器上（能正常返回）
+    assert r.returncode is not None
