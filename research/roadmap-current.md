@@ -28,6 +28,52 @@
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | 后置 | 发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
 
+## 执行记录（2026-10-31，全仓体检修复 + 子代理优化）
+
+来源：`2026-10-31-agent-audit.md`（体检报告，79 条发现）。**修复前先做了实测复现**，
+推翻了原文 7 条结论（详见该文件「复核修正」章节）。共 31 个提交，`69fcdd8..4ad62ab`。
+
+**安全与数据正确性（P0 级）**
+
+| 问题 | 修复 | 验证 |
+|---|---|---|
+| 孤儿 tool_calls 导致会话永久 400 | `load_messages` 与**生产路径 `SessionStore.load`** 都补缺口；`_turn` 加 `finally` 兜底 BaseException | 真红灯：补齐全 `False → True` |
+| 危险短选项连写绕过只读模式（`git -cX`、`sort -no`） | `_any_short_opt` 按簇逐字母扫 | 探针实测：plan 4 条 deny、default 4 条 ask |
+| `.eeignore` 不挡 shell（`cat .env` 免问可读） | `_eeignored` 加 shell 分支；长选项值不误判 | 真红灯 + 实测对比表 |
+| 同 cwd 有会话在跑时 undo/restore 会覆盖对方成果 | 两处入口都加同 cwd 互斥检查 | 两个真红灯 |
+| 排队消息中途换模型（缓存全失效） | `_pending_*` 延迟到回合真正开始 | 真红灯：`flash → pro` |
+| 审批等待无超时 → 会话永久 running | `APPROVAL_TIMEOUT=300s`，超时按拒绝 | 回滚后 25s 被掐死 |
+| undo 无结束快照时静默覆盖用户手改 | 退到 `before` 做基线（代价：多弹一次确认，已加测试锁定） | 真红灯 |
+
+**稳定性**
+
+- `hooks.fire` 的 `gather` 加 `return_exceptions=True`：一个 hook 崩了不再打断整回合
+- 流无 `finish_reason` 时抛错（区分「端点不发该字段」的兼容端点，不误报）；`truncated` 真正可重试
+- 流中途失败：已显示的回答落库 + 记账（`usage_missing`）
+- `thread/children`、`thread/status` 改 `async + to_thread`（原本阻塞事件循环）
+- LSP manager 在 `aclose` 里 release/shutdown（原本全仓无调用，每会话泄漏一个子进程）
+- MCP 连接失败后下回合重试；`_mcp_done` 只在流程走完才置位
+- `store.append` 写盘失败不再静默吞掉
+
+**子代理（本轮重点优化）**
+
+| 改动 | 依据 | 实测效果 |
+|---|---|---|
+| 并发闸门跨步共享 | 原来每步 new 一个 Semaphore，「最多 N 个并发」只在单步内成立 | 上限真正生效 |
+| 步数按类型分档 | 写型 30 步常在收尾前用完，只能重派一次 | `general` 60 / `explore` 30 |
+| `explore` 用回 shell | 上一轮把它删了，等于砍掉「跑测试看错误」的能力 | 沙箱下自动换 powershell（Git Bash 在受限令牌里起不来） |
+| 只读子代理轻量上下文 | `research/claude-code.md:24`：Explore/Plan 跳过 CLAUDE.md | explore 首请求消息字符 **6486 → 2391（-63%）** |
+| `<task_digest>` 结构化摘要 | 从实际工具调用推（改动文件/执行命令/出错工具），不让模型自述 | 主代理不必读文本猜「改完没」 |
+
+**测试基础设施**
+
+- `BgManager.wait_exit`：原来的固定轮询（上限 5 秒）在负载下会读到空输出，是 `test_bgproc_gbk_output` 偶发红的真因
+- `test_rpc_contract` 抓到 `approval/respond` 参数名写错（`decision` → `choice`），组件测试补了同类断言
+
+**验证状态**：后端全量 `1946 passed, 16 skipped`（1101 秒）、前端 `288 passed`（57 文件）、`tsc --noEmit` 0 error，GitHub Actions 全绿。
+
+**未做**：P1-10（Electron 重启不等旧后端退出）、P2/P3 里未经复现的条目。P1-8（子会话审批在父界面不可见）本轮已做：`Composer` 顶部加横幅 + `store.clearChildApproval`，前端测试 5 passed。
+
 ## 执行记录（2026-10-29，T10 桌面端入口与 RPC）
 
 把 T10 的五项从「只有后端」推到「桌面端可达」，并补上界面缺的后端入口。提交：
