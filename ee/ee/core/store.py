@@ -167,6 +167,9 @@ class SessionStore:
                     items[it["id"]] = it
         if not items:   # 老会话（终端版）没有 item 记录：从消息粗略还原
             items = {it["id"]: it for it in _items_from_messages(messages)}
+        # 孤儿 tool_calls 也要在这里补：这是**生产恢复路径**（app.py:223 / headless.py:349 /
+        # cli.py:147 都走 load()），只补 load_messages() 等于只修了测试。
+        messages = _fill_orphan_tool_calls(messages)
         meta.setdefault("created", first_t)
         meta["updated"] = last_t
         # 上一个进程中途被杀留下的 running 按 interrupted 呈现（D6-1 U7）：不这么做的话

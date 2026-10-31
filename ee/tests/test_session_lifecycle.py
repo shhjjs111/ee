@@ -315,3 +315,22 @@ def test_store_append_failure_is_reported_not_swallowed(ee_home, workspace, monk
         st.append("message", {"message": {"role": "user", "content": "hi"}})
     assert any("磁盘" in r.message or "写入" in r.message or "落盘" in r.message
                for r in caplog.records), f"写盘失败没有任何日志：{[r.message for r in caplog.records]}"
+
+
+def test_sessionstore_load_fills_orphan_tool_calls(tmp_path):
+    """生产恢复路径走的是 SessionStore.load()，不是 load_messages()。
+
+    app.py:223 用 SessionStore.load(path) 拿 messages 交给 Thread 构造；
+    headless.py:349、cli.py:147 同样。只给 load_messages 补孤儿等于没修——
+    真实打开会话时，历史里的孤儿 tool_calls 依然会发出去，服务端照样 400。
+    """
+    from ee.core.store import SessionStore
+    p = tmp_path / "s.jsonl"
+    _write_jsonl(p, [
+        {"kind": "message", "message": {"role": "user", "content": "hi"}},
+        {"kind": "message", "message": {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_x", "type": "function", "function": {"name": "read", "arguments": "{}"}}]}},
+    ])
+    msgs = SessionStore.load(p)["messages"]
+    assert any(m.get("role") == "tool" and m.get("tool_call_id") == "call_x" for m in msgs), \
+        f"生产路径没补孤儿：{[m.get('role') for m in msgs]}"
