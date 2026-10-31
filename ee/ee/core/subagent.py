@@ -416,6 +416,9 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
                 child.history = fork_hist
                 child.updates = copy.deepcopy(parent.updates)
                 child.effort = parent.effort_for(child.spec)
+                # 会话级请求头（如 x-opencode-session）也用父会话的 id：前缀字节已经一致，
+                # 再让 session id 对不上，服务端就不会把它们算作同一对话的缓存。
+                child._fork_session_id = getattr(parent.store, "id", "") or None
             elif adef.tools:
                 keep = set(adef.tools)
                 child.tools = [t for t in child.tools if t.name in keep]

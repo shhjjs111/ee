@@ -97,12 +97,19 @@ class ChatClient:
     """注意：不传 client 时构造会解析代理（可能有 DNS 查询）并建 TLS 上下文，别在事件循环上直接构造。"""
 
     def __init__(self, spec, client: Any = None, state_path: Path | None = None, retries: int | None = None,
-                 network: dict | None = None):
+                 network: dict | None = None, headers: dict | None = None):
+        """headers：调用方算好的请求头（见 Session.request_headers）。
+
+        为什么不用 spec.headers 直接发：那里面可能带 `{session_id}` 这类需要按会话替换的
+        占位符，只有 Session 知道该换成什么。这里收到的已是可以直接发的最终值。
+        不传时退回 spec.headers（保持既有行为）。
+        """
         self.spec = spec
         self.profile = spec.profile
         self.state = QuirkState(state_path)
         self.key = f"{spec.base_url}|{spec.model}"
         self.np: net.NetPlan | None = None
+        send_headers = headers if headers is not None else (getattr(spec, "headers", None) or None)
         if client is None:
             key = spec.api_key()
             if not key:
@@ -110,7 +117,7 @@ class ChatClient:
             from openai import AsyncOpenAI
             self.np = net.plan(spec.base_url, network)
             http, timeout = net.make_http_client(self.np)
-            client = AsyncOpenAI(api_key=key, base_url=spec.base_url or None, default_headers=spec.headers or None,
+            client = AsyncOpenAI(api_key=key, base_url=spec.base_url or None, default_headers=send_headers or None,
                                  max_retries=0, timeout=timeout, http_client=http)
             log.info("模型客户端 %s：base_url=%s model=%s key=…%s %s；超时 连接 %.0fs / 读取 %.0fs，重试 %d 次",
                      spec.alias, spec.base_url, spec.model, key[-4:] if len(key) > 8 else "?", self.np.describe,

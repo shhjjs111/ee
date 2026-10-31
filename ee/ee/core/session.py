@@ -198,15 +198,44 @@ class Session:
     def profile(self):
         return self.spec.profile
 
+    def request_headers(self, session_id: str | None = None) -> dict:
+        """发给服务端的请求头：把配置里的 `{session_id}` 占位符换成会话 id。
+
+        **为什么需要**：有些网关要求「每个对话一个稳定 ID」——OpenCode Go 缺了
+        `x-opencode-session` 直接 400（MissingSessionID），官方文档还写明这个 ID 用于
+        **优化路由与复用 prompt cache**。所以不能配成固定值：全局同一个 ID 会让服务端
+        把不同会话当成同一对话，两边的缓存互相挤占（对 ee 这种重度依赖前缀缓存的场景
+        是净损失）。
+
+        **为什么在这一层**：`spec.headers` 是模型级静态配置，只有 Session 同时知道
+        「本会话的 id」和「这次是不是 fork 子代理」。fork 子代理继承了父会话的前缀与
+        历史，必须共用父的 id，否则前缀对得上、session id 对不上，缓存照样用不上。
+
+        session_id 参数用于 fork 子代理显式传入父会话 id；默认用本会话的。
+        其它 header 原样透传，不做任何改写。
+        """
+        headers = getattr(self.spec, "headers", None) or {}
+        if not headers:
+            return {}
+        sid = session_id or getattr(getattr(self, "store", None), "id", "") or ""
+        out: dict = {}
+        for k, v in headers.items():
+            out[k] = v.replace("{session_id}", sid) if isinstance(v, str) and "{session_id}" in v else v
+        return out
+
     def client(self):
         if self._client is None:
+            # fork 子代理继承主会话的前缀与历史 → 用父会话的 session id，
+            # 否则前缀对得上、session id 对不上，服务端缓存照样用不上。
+            sid = getattr(self, "_fork_session_id", None) or None
+            headers = self.request_headers(session_id=sid)
             if self._client_override is not None:
-                self._client = ChatClient(self.spec, client=self._client_override)
+                self._client = ChatClient(self.spec, client=self._client_override, headers=headers or None)
             elif self._client_factory is not None:
                 self._client = self._client_factory(self.spec)
             else:
                 self._client = ChatClient(self.spec, state_path=self.home / "state" / "quirks.json",
-                                          network=self.config.data.get("network"))
+                                          network=self.config.data.get("network"), headers=headers or None)
         return self._client
 
     async def ensure_client(self):
