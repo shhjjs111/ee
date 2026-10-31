@@ -376,12 +376,6 @@ class Thread:
             raise ValueError("ee 正在工作，等这一回合结束再发图片")
         if (readonly or display) and self.running:
             raise ValueError("ee 正在工作，等这一回合结束再开始审查")
-        if model and model != s.spec.alias:
-            s.set_model(model)
-            self.meta["model"] = s.spec.alias
-        if mode and mode != s.policy.mode:
-            s.set_mode(mode)
-            self.meta["mode"] = mode
         if effort is not None or style is not None:
             self.set_options(effort, style)
         user_item = {"type": "user", "text": display or text}
@@ -400,7 +394,24 @@ class Thread:
             user_item.update(queued=True, queue=qkind)
             user = self._add(user_item, persist=False)      # 送入时才落盘（撤回 / 退回的不留痕）
             s.queue_input(text, qkind, qid=user["id"])
+            # model/mode 属于「这一回合怎么跑」。回合正跑着时改它，等于中途换模型：
+            # 冻结前缀整段失效（缓存全 miss、双倍计费），已发出的 tool_call 还可能变
+            # 「未知工具」。这里先记下来，等回合真正开始（非排队路径）再生效。
+            if model or mode:
+                self._pending_model = model or getattr(self, "_pending_model", None)
+                self._pending_mode = mode or getattr(self, "_pending_mode", None)
             return {"queued": True, "item_id": user["id"], "queue": qkind}
+        pending_model = getattr(self, "_pending_model", None)
+        pending_mode = getattr(self, "_pending_mode", None)
+        self._pending_model = self._pending_mode = None
+        model = pending_model or model
+        mode = pending_mode or mode
+        if model and model != s.spec.alias:
+            s.set_model(model)
+            self.meta["model"] = s.spec.alias
+        if mode and mode != s.policy.mode:
+            s.set_mode(mode)
+            self.meta["mode"] = mode
         user = self._add(user_item)
         self._new_run(text, initiator=kind or "user")
         if not any(it.get("type") == "user" for it in self.items[:-1]) or self.meta.get("title") in (None, "", "新对话"):

@@ -438,3 +438,27 @@ def test_cli_serve_prints_ready(ee_home, tmp_path):
     finally:
         if p.poll() is None:
             p.kill()
+
+
+def test_queued_message_does_not_switch_model_midturn(ee_home, workspace):
+    """排队消息里的 model 必须等回合结束再生效，不能中途换掉正在跑的模型。
+
+    model/mode 在 `if self.running` 之前处理，于是「排队等着」的那条消息
+    会立刻 set_model。后果：当前回合下一步就换了模型，冻结前缀整段失效
+    （缓存全部 miss、双倍计费），已发出的 tool_call 还可能变「未知工具」
+    （报告 P1-4）。
+    """
+    script = [text_chunks("第一段", n=1) + finish("stop"), text_chunks("收到") + finish("stop")]
+
+    async def go():
+        b, fake, ev = make_backend(ee_home, script, delay=0.02)
+        tid = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "你好"})
+        await wait_for(ev, "item/delta")
+        before = b.threads[tid].session.spec.alias
+        r = await b.call("turn/start", {"thread_id": tid, "text": "补充", "model": "deepseek-pro"})
+        assert r["queued"] is True
+        after = b.threads[tid].session.spec.alias
+        assert after == before, f"排队消息中途换了模型：{before} → {after}"
+        await wait_for(ev, "turn/completed")
+    asyncio.run(go())
