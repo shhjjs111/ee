@@ -462,3 +462,33 @@ def test_queued_message_does_not_switch_model_midturn(ee_home, workspace):
         assert after == before, f"排队消息中途换了模型：{before} → {after}"
         await wait_for(ev, "turn/completed")
     asyncio.run(go())
+
+
+def test_withdrawn_queue_item_does_not_leak_pending_model(ee_home, workspace):
+    """排队的消息被撤回后，它带的 model 不能残留到下一回合。
+
+    _pending_model 只在「非排队路径」被读取并清零；撤回（withdraw）不清理它。
+    于是：排队发一条带 model 的消息 → 撤回 → 下一条不带 model 的消息会静默
+    套用残留的模型（独立审查发现）。
+    """
+    script = [text_chunks("第一段", n=1) + finish("stop"),
+              text_chunks("第二段") + finish("stop"),
+              text_chunks("第三段") + finish("stop")]
+
+    async def go():
+        b, fake, ev = make_backend(ee_home, script, delay=0.02)
+        tid = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "你好"})
+        await wait_for(ev, "item/delta")
+        r = await b.call("turn/start", {"thread_id": tid, "text": "补充", "model": "deepseek-pro"})
+        assert r["queued"] is True
+        # 撤回这条排队消息
+        await b.call("turn/withdraw", {"thread_id": tid, "item_id": r["item_id"]})
+        await wait_for(ev, "turn/completed")
+
+        before = b.threads[tid].session.spec.alias
+        # 下一回合不带 model
+        await b.call("turn/start", {"thread_id": tid, "text": "再问一句"})
+        after = b.threads[tid].session.spec.alias
+        assert after == before, f"撤回的消息把 model 残留下来了：{before} → {after}"
+    asyncio.run(go())

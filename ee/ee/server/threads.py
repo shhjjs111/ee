@@ -451,6 +451,9 @@ class Thread:
         if q is None:
             raise ValueError("这条消息已经送给 ee 了（或已退回），不能撤回")
         self._drop_item(item_id)
+        # 这条排队消息带来的 model/mode 随它一起作废，否则下一次「不带 model」的
+        # 回合会静默套用被撤回那条的模型（独立审查发现）。
+        self._pending_model = self._pending_mode = None
         return {"ok": True, "text": q.text, "queue": q.kind}
 
     def _drop_item(self, item_id: str) -> dict | None:
@@ -849,6 +852,8 @@ class Thread:
         elif isinstance(ev, QueueReturned):
             for q in ev.items:
                 self._drop_item(q["id"])
+            # 退回界面的排队消息也不会再执行，它带来的 model/mode 一并作废
+            self._pending_model = self._pending_mode = None
             self.notify("turn/queue_returned", {"thread_id": self.id, "items": ev.items})
         elif isinstance(ev, Notice):
             self._add({"type": "notice", "text": ev.text, "level": ev.level})

@@ -214,7 +214,7 @@ def helper_env(env: dict) -> dict:
     out = dict(env)
     if getattr(sys, "frozen", False):
         return out
-    pkg = Path(__file__).resolve().parents[1]        # <repo>/ee（含 ee/ 包的目录）
+    pkg = Path(__file__).resolve().parents[2]        # <repo>/ee（含 ee/ 包的 import 根）
     if pkg.is_dir():
         prev = out.get("PYTHONPATH") or ""
         parts = [str(pkg)] + [p for p in prev.split(os.pathsep) if p and p != str(pkg)]
