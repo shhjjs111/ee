@@ -200,3 +200,40 @@ def test_general_subagent_gets_more_steps_than_explore(ee_home, workspace):
     assert done(ev).reason == "completed"
     card = [e for e in ev if isinstance(e, SubagentStart)][0]
     assert card.max_steps >= 60, f"general 的步数预算太小：{card.max_steps}"
+
+
+def test_readonly_subagent_skips_project_docs_and_skills(ee_home, workspace):
+    """只读子代理不加载 AGENTS.md 和技能清单；写型子代理照旧。
+
+    依据（research/claude-code.md:24）：Claude Code 的子代理「只收到自身 system
+    prompt + 委派消息 + CLAUDE.md（Explore/Plan 跳过）+ git status」。
+    实测 ee 现在给 explore 的 4 条消息共 10213 字符，其中 AGENTS.md 1832 +
+    技能清单 2119 = 3951（39%）——而 explore 拿到的是一件已经定好的调研任务，
+    这两块它用不上，却要在每一步重复付。
+
+    这条不能一刀切：general（写型）要按项目约定改代码，AGENTS.md 必须留着。
+    """
+    # 造一份够长的 AGENTS.md 和一个技能，确保「有东西可跳」
+    (workspace / "AGENTS.md").write_text("PROJECT_RULE_MARK " * 60, encoding="utf-8")
+    d = ee_home / "skills" / "demo-skill"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: 演示技能\n---\n\nSKILL_BODY_MARK\n", encoding="utf-8")
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "p1", "task", {"description": "调研", "prompt": "看 a.txt", "agent": "explore"})
+        + finish("tool_calls"),
+        tool_chunks(0, "k1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        text_chunks("done") + finish("stop"),
+        text_chunks("收尾") + finish("stop"),
+    ])
+    ev = run(collect(s, "派活"))
+    assert done(ev).reason == "completed"
+
+    parent = "\n".join(m.get("content") or "" for m in fake.calls[0]["messages"])
+    assert "PROJECT_RULE_MARK" in parent, "前提不成立：主会话没读到 AGENTS.md"
+
+    child = "\n".join(m.get("content") or "" for m in fake.calls[1]["messages"])
+    assert "PROJECT_RULE_MARK" not in child, "只读子代理不该背 AGENTS.md"
+    assert "demo-skill" not in child, "只读子代理不该背技能清单"

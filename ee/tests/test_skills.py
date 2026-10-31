@@ -227,8 +227,11 @@ def test_disabled_globally(ee_home, workspace, uhome):
 
 def test_subagent_sees_catalog(ee_home, workspace, uhome):
     mk(ee_home / "skills", "pdf", "处理 PDF")
+    # 用写型子代理（general）验证：它的任务可能要用技能，清单必须能到它手里。
+    # 只读子代理（explore）现在走轻量上下文、不背清单——见
+    # test_subagent.py::test_readonly_subagent_skips_project_docs_and_skills。
     s, fake = make_session(workspace, [
-        tool_chunks(0, "p1", "task", {"description": "看看", "prompt": "调研", "agent": "explore"}) + finish("tool_calls"),
+        tool_chunks(0, "p1", "task", {"description": "看看", "prompt": "调研"}) + finish("tool_calls"),
         text_chunks("报告") + finish("stop"),
         text_chunks("好") + finish("stop"),
     ])

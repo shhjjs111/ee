@@ -379,6 +379,12 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             if read_only:
                 child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),
                                                 ask=list(p.ask), deny=list(p.deny), shell=p.shell)
+                # 只读子代理用轻量上下文：不加载 AGENTS.md / 记忆 / 技能清单。
+                # 依据 research/claude-code.md:24（子代理只收自身 system prompt +
+                # 委派消息 + CLAUDE.md「Explore/Plan 跳过」+ git status）。
+                # 实测这几块占 explore 首请求的 39%，而它拿到的是一件定好的调研任务。
+                # 写型子代理不走这里——它要按项目约定改代码，AGENTS.md 必须留着。
+                child._lean_context = True
             elif wt_info:
                 # 工作区换成 worktree；会话内“以后都行”与主会话共享（同一个集合对象）
                 child.policy = PermissionPolicy(mode=p.mode, workspace=child_cwd, allow=list(p.allow),

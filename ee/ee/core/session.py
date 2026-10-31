@@ -988,6 +988,16 @@ class Session:
             self._sys_src = await asyncio.to_thread(SP.resolve, self.cwd, self.home, self.config.data)
         if self.history:
             return
+        # 轻量上下文（只读子代理）：不加载 AGENTS.md / 记忆 / 技能清单。
+        #
+        # 依据 research/claude-code.md:24：Claude Code 的子代理「只收到自身 system
+        # prompt + 委派消息 + CLAUDE.md（Explore/Plan 跳过）+ git status」。
+        # 实测 ee 给 explore 的 4 条消息共 10213 字符，AGENTS.md 1832 + 技能清单
+        # 2119 = 3951（39%），而它拿到的是一件已经定好的调研任务，这两块用不上，
+        # 却要在每一步重复付。写型子代理（general）不设这个标记——它要按项目
+        # 约定改代码，AGENTS.md 必须留着。
+        if getattr(self, "_lean_context", False):
+            return
         cfg = self.config.data.get("agents_md", {}) or {}
         if cfg.get("enabled", True):
             ins = await asyncio.to_thread(load_instructions, self.cwd, self.home, int(cfg.get("max_bytes", 32768)))
