@@ -50,6 +50,11 @@ log = logging.getLogger("ee.session")
 LAST_STEP_NOTE = ("[系统提示] 已达到本回合允许的最大步数。请不要再调用任何工具，"
                   "只用文字总结目前的进展、结果、尚未完成的部分和建议的下一步。")
 INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执行）。"
+# 审批等待上限（秒）。无人值守 / 窗口关掉 / 前端断线时，ApprovalRequest 的 future
+# 永远等不到结果：_turn 一直挂着、_history_lock 一直被持有，/compact 和下一回合
+# 全堵在锁后，会话变成「永远 running」。超时按拒绝处理并给出提示。
+# 0 或负数 = 不超时（保留旧行为，给需要长时间等待的自动化留口子）。
+APPROVAL_TIMEOUT = 300.0
 
 
 class RestoreConflict(Exception):
@@ -1493,6 +1498,14 @@ class Session:
             _attach_suggestion(ev, decision=d, tool=tool.name, args=args,
                                mode=self.policy.mode, config=self.config.data)
             emit(ev)
+            if APPROVAL_TIMEOUT > 0:
+                try:
+                    return await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
+                except (asyncio.TimeoutError, TimeoutError):
+                    if not fut.done():
+                        fut.cancel()
+                    emit(Notice(f"审批等待超过 {APPROVAL_TIMEOUT:.0f} 秒没有回应，按拒绝处理。", "warn"))
+                    return ApprovalDecision("deny")
             return await fut
 
     # ------------------------------------------------------------ 侧路请求（不碰主会话）

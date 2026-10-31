@@ -191,3 +191,43 @@ def test_load_messages_leaves_healthy_history_untouched(tmp_path):
     _write_jsonl(p, recs)
     out = SessionStore.load_messages(p)
     assert out == [r["message"] for r in recs]
+
+
+def test_approval_without_answer_times_out(ee_home, workspace, monkeypatch):
+    """审批一直没人回答时，回合必须超时结束，不能永远占着 _history_lock。
+
+    无人值守（关掉窗口 / 自动运行 / 前端断线）时，ApprovalRequest 的 future
+    永远等不到结果：_turn 一直挂着、_history_lock 一直被持有，/compact 和
+    下一回合全部堵在锁后，会话变成"永远 running"（报告 P1-5）。
+    """
+    import asyncio as _a
+    from conftest import FakeClient, finish, text_chunks, tool_chunks
+
+    from ee.config import load_config
+
+    from ee.core import session as S
+
+    # 把超时压到很短，测试才跑得动
+    monkeypatch.setattr(S, "APPROVAL_TIMEOUT", 0.3)
+    # 工作区外的写入会落到 ask 分支，才会产生 ApprovalRequest
+    outside = str(workspace.parent / "outside.txt")
+    fake = FakeClient([
+        tool_chunks(0, "c1", "write", {"path": outside, "content": "x"}) + finish("tool_calls"),
+        text_chunks("好") + finish("stop"),
+    ])
+    s = S.Session(load_config(workspace), model="deepseek-flash", cwd=workspace,
+                  client=fake, persist=False)
+
+    async def go():
+        evs = []
+        # 不回应任何 ApprovalRequest
+        async for ev in s.run_turn("写个文件"):
+            evs.append(ev)
+        return evs
+
+    evs = _a.run(go())
+    assert any(type(e).__name__ == "ApprovalRequest" for e in evs), "没走到审批分支，测试无效"
+    reasons = [e.reason for e in evs if type(e).__name__ == "TurnDone"]
+    assert reasons, "没有 TurnDone"
+    # 关键：回合必须结束（不挂死），且锁已释放
+    assert not s._history_lock.locked(), "回合结束后 _history_lock 仍被持有"
