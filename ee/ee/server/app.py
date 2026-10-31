@@ -399,28 +399,38 @@ class Backend:
         return {"thread": t.summary()}
 
     # ------------------------------------------------------------ 编排 RPC（D6-1 U9）
-    def thread_children(self, parent_id: str) -> dict:
+    async def thread_children(self, parent_id: str) -> dict:
         """列出某个会话派发的子会话。
 
         父会话不存在时报错而不是返回空列表：空列表会被读成"没有子会话"，
         与"父会话写错了"混为一谈。
+
+        async + to_thread：list_children 会逐个 SessionStore.summary() 解析会话文件。
+        同步跑会把整个事件循环卡住（所有窗口的流式 token 一起停），而前端对每个
+        子会话并发调用，等于 N 次串行等待（报告 P1-9）。
         """
         from ee.server.orchestrator import OrchestratorError
         self._check_thread_id(parent_id)
         if self.threads.get(parent_id) is None and not (self.home / "sessions" / f"{parent_id}.jsonl").is_file():
             raise RpcError(f"会话不存在：{parent_id}", 404)
         try:
-            return {"threads": self.orchestrator.list_children(parent_id)}
+            rows = await asyncio.to_thread(self.orchestrator.list_children, parent_id)
+            return {"threads": rows}
         except OrchestratorError as e:
             raise RpcError(str(e), -32602) from None
 
-    def thread_status(self, parent_id: str, child_id: str) -> dict:
-        """单个子会话的详细状态（含 worktree 真实改动数，供界面卡片用）。"""
+    async def thread_status(self, parent_id: str, child_id: str) -> dict:
+        """单个子会话的详细状态（含 worktree 真实改动数，供界面卡片用）。
+
+        async + to_thread：状态里有 git status 子进程（worktree 或 cwd 两条路径），
+        同步跑会卡住事件循环（报告 P1-9）。
+        """
         from ee.server.orchestrator import OrchestratorError
         self._check_thread_id(parent_id)
         self._check_thread_id(child_id)
         try:
-            return {"thread": self.orchestrator.status(parent_id, child_id)}
+            row = await asyncio.to_thread(self.orchestrator.status, parent_id, child_id)
+            return {"thread": row}
         except OrchestratorError as e:
             raise RpcError(str(e), -32602) from None
 
