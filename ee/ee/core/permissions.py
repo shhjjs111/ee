@@ -1205,6 +1205,28 @@ def _any_opt(args: list[str], names: tuple[str, ...] | set[str]) -> bool:
     return any(_opt_is(a, names) for a in args)
 
 
+def _any_short_opt(args: list[str], flags: str) -> bool:
+    """短选项里是否出现了 flags 中的任一字母——含**连写**形式。
+
+    getopt 语义下 `-cX` ≡ `-c X`、`-no file` ≡ `-n -o file`，而原来只做
+    `a in ("-c",)`` / `a.startswith("-o")` 这类精确/前缀判断，会漏掉"带值选项写进簇里"
+    的形式（`git -ccore.fsmonitor=calc.exe`、`sort -no secret.txt`）。
+    这类选项一旦漏判就是只读模式下的任意程序执行 / 静默写文件，所以这里按簇逐字母扫。
+
+    只扫字母，遇到非字母（`-ccore.fsmonitor=...` 的 `.`、`=`、数字）即停止：
+    那之后是选项的**值**，不是选项字母。
+    """
+    for a in args:
+        if not a.startswith("-") or a.startswith("--") or a == "-":
+            continue
+        for ch in a[1:]:
+            if not ch.isalpha():
+                break
+            if ch in flags:
+                return True
+    return False
+
+
 # 各命令里能执行程序 / 写文件的长选项（完整写法；_opt_is 负责前缀）
 # --paginate：ee 的 child_env() 强制 GIT_PAGER=cat / PAGER=cat，实测当前不可利用
 #   （config core.pager 也被环境变量压住）；但它依赖那个前提，加一道纵深防御成本为零。
@@ -1248,15 +1270,16 @@ def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     # 白名单命令里能执行外部程序或写文件的参数（长选项按 GNU 前缀缩写匹配）
     if name == "rg" and _any_opt(args, {"--pre"}):
         return False
-    if name == "sort" and (any(a == "-o" or a.startswith("-o") for a in args)
+    if name == "sort" and (_any_short_opt(args, "o")
                            or _any_opt(args, _SORT_DANGEROUS_LONG)):
         return False
-    if name == "tree" and any(a == "-o" or a.startswith("-o") for a in args):
+    if name == "tree" and _any_short_opt(args, "o"):
         return False
     if name == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
         return False  # uniq IN OUT 会写 OUT
-    if name == "git" and (any(a in ("-c", "-O") for a in args) or _any_opt(args, _GIT_DANGEROUS_LONG)):
+    if name == "git" and (_any_short_opt(args, "cO") or _any_opt(args, _GIT_DANGEROUS_LONG)):
         return False  # -c 注入配置可执行任意命令；--output 写文件；外部 diff / 分页器会执行程序
+
     if name == "sed":
         return _sed_safe(args)
     if name in _PS_MEMBER_CMDLETS:

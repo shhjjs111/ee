@@ -94,6 +94,31 @@ def test_active_plan_wraps_with_helper(workspace, ee_home, tmp_path):
     assert env["TEMP"] == str(tmp_path) and env["TMP"] == str(tmp_path)
 
 
+def test_helper_runs_from_arbitrary_cwd(workspace, ee_home, tmp_path):
+    """helper 必须能在**用户工作区**里启动，不能被工作区里的同名目录劫持。
+
+    背景：helper 用 `python -m ee` 启动。`-m` 会把 cwd 放进 sys.path[0]，
+    而用户工作区很可能有个叫 `ee/` 的目录（本仓库就这样）——Python 把它当
+    namespace package，helper 自己 import 失败，用户只看到沙箱"起不来"。
+    直接子进程验证：在任意 cwd 下 helper 能打印版本。
+    """
+    import subprocess
+    import sys as _sys
+    p = SB.SandboxPlan(workspace=workspace, active=True, network=True, sid="S-1-5-21-1-2-3-4",
+                       tmp=tmp_path)
+    # 造一个会劫持 sys.path 的 cwd：里面有名为 ee 的目录
+    (workspace / "ee").mkdir(exist_ok=True)
+    argv, env = p.wrap(["cmd.exe", "/c", "echo hi"], {})
+    i = argv.index(SB.HELPER_CMD)
+    helper = argv[:i]                      # [python, (-P), -m, ee]
+    # 只验 helper 的解释器能否加载 ee 包（不真的跑沙箱命令）
+    probe = helper[:-2] + ["-c", "import ee, sys; print(ee.__version__)"]
+    r = subprocess.run(probe, capture_output=True, text=True, cwd=str(workspace), env={**env},
+                       timeout=60)
+    assert r.returncode == 0, f"helper 在工作区里加载 ee 失败：{r.stderr[:300]}"
+    assert r.stdout.strip(), "helper 没有输出版本"
+
+
 def test_capability_sid_persisted_per_workspace(ee_home, tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir(), b.mkdir()

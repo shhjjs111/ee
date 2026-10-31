@@ -96,6 +96,21 @@ class FakeClient:
         self.chat = _Chat()
 
 
+@pytest.fixture(autouse=True)
+def _fixed_pricing_clock(monkeypatch):
+    """让计价测试与真实时钟脱钩。
+
+    DEFAULTS 里 offpeak_discount = 0.5，而 session._current_discount 用 datetime.now()
+    判断峰谷。周末、节假日、工作日 18:00 之后跑，所有断言"全价"的用例都会拿到半价而失败
+    （见 test_style_budget / test_reasoning_roles 的历史红灯）。
+    这里把测试默认折扣钉成 1.0（全价），需要验证折扣的用例自己传 cfg/discount
+    （test_pricing_deepseek、test_pricing_hours、test_price_discount）。
+    """
+    from ee import config
+    monkeypatch.setitem(config.DEFAULTS, "pricing",
+                        {**(config.DEFAULTS.get("pricing") or {}), "offpeak_discount": 1.0})
+
+
 @pytest.fixture
 def ee_home(tmp_path, monkeypatch):
     home = tmp_path / "home"

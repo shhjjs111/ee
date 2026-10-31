@@ -142,3 +142,52 @@ def test_reload_config_uses_same_path_as_set_model(ee_home, workspace):
         assert len(after) == len(before) + 1, "旧 client 没有登记到待释放列表"
 
     asyncio.run(go())
+
+
+# ------------------------------------------------------------------ 孤儿 tool_calls
+
+def _write_jsonl(path, recs):
+    import json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")
+
+
+def test_load_messages_fills_orphan_tool_calls(tmp_path):
+    """assistant(tool_calls) 落盘后、tool 结果落盘前进程被杀 → 恢复时要补占位 tool 消息。
+
+    服务端硬约束：带 tool_calls 的 assistant 必须跟齐每个 id 的 tool 消息，
+    否则这条会话之后**每次**请求都 400，用户只能删会话重来。
+    """
+    from ee.core.store import SessionStore
+    p = tmp_path / "s.jsonl"
+    _write_jsonl(p, [
+        {"kind": "message", "message": {"role": "user", "content": "hi"}},
+        {"kind": "message", "message": {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_a", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+            {"id": "call_b", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+        ]}},
+        # 只有 call_a 的结果落盘了；call_b 丢了
+        {"kind": "message", "message": {"role": "tool", "tool_call_id": "call_a", "content": "ok"}},
+    ])
+    out = SessionStore.load_messages(p)
+    ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+    assert "call_a" in ids and "call_b" in ids, f"孤儿 tool_call 没补：{ids}"
+    # 补齐的占位必须紧跟在 assistant 之后，且不能重复补已有的那条
+    assert len(ids) == 2, f"补多了或重复了：{ids}"
+    assert [m["role"] for m in out] == ["user", "assistant", "tool", "tool"]
+
+
+def test_load_messages_leaves_healthy_history_untouched(tmp_path):
+    """配对完整的会话不能被改动（顺序、条数、内容都保持）。"""
+    from ee.core.store import SessionStore
+    p = tmp_path / "s.jsonl"
+    recs = [
+        {"kind": "message", "message": {"role": "user", "content": "hi"}},
+        {"kind": "message", "message": {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_a", "type": "function", "function": {"name": "read", "arguments": "{}"}}]}},
+        {"kind": "message", "message": {"role": "tool", "tool_call_id": "call_a", "content": "ok"}},
+        {"kind": "message", "message": {"role": "assistant", "content": "done"}},
+    ]
+    _write_jsonl(p, recs)
+    out = SessionStore.load_messages(p)
+    assert out == [r["message"] for r in recs]

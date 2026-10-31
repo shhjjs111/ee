@@ -109,3 +109,21 @@ def test_readonly_whitelist_bypass_flags(tmp_path):
         assert p.check("shell", {"command": c}).action == "deny", c
     for c in ["git -C sub status", "git log --oneline -5", "rg -n foo", "sort a", "git diff --stat", "uniq a"]:
         assert p.check("shell", {"command": c}).action == "allow", c
+
+
+def test_readonly_whitelist_bypass_clustered_flags(tmp_path):
+    """危险选项的**连写**形式（-cX ≡ -c X、-oX ≡ -o X）同样不能算只读。
+
+    背景：短选项簇走 `-{body[0]}` 回退放行，于是 `-ccore.fsmonitor=calc.exe` 被当成
+    「-c + 紧贴的值」直接 allow，而 getopt 语义里它就是 -c（注入配置、可执行任意程序）；
+    `sort -no secret.txt data` 同理等于 `-n -o secret.txt`，会静默覆盖工作区文件。
+    """
+    from ee.core.permissions import PermissionPolicy
+    p = PermissionPolicy(mode="read-only", workspace=tmp_path)
+    for c in ["git -ccore.fsmonitor=calc.exe status", "git -c core.fsmonitor=calc.exe status",
+              "git -Ofoo status", "sort -no secret.txt data", "sort -osecret.txt data",
+              "tree -ox a", "git -c core.pager=rm log"]:
+        assert p.check("shell", {"command": c}).action != "allow", c
+    # 不带值选项的正常簇仍然可用（别把 -la / -n5 一起打死）
+    for c in ["ls -la", "sort -n data", "git log --oneline -5", "git status"]:
+        assert p.check("shell", {"command": c}).action == "allow", c

@@ -118,7 +118,7 @@ class SessionStore:
                 out = out[: _int(rec.get("to"), len(out))]
             elif rec.get("kind") == "prune":
                 _apply_prune(out, rec)
-        return out
+        return _fill_orphan_tool_calls(out)
 
     @staticmethod
     def last_prefix(path: Path, compat: str) -> dict | None:
@@ -194,6 +194,48 @@ def _int(v, default: int) -> int:
         return int(v)
     except (TypeError, ValueError):
         return default
+
+
+# 回合被打断时补进历史、占住工具结果位置的那句话（与服务端约束对齐：tool_calls 必须跟齐 tool 消息）
+ORPHAN_TOOL_CONTENT = "（这一回合被中断，此调用没有结果）"
+
+
+def _fill_orphan_tool_calls(messages: list[dict]) -> list[dict]:
+    """补上带 tool_calls 的 assistant 后面缺失的 tool 消息。
+
+    落盘顺序是「assistant(tool_calls) 先写 → 整个工具执行期 → tool 结果再写」。中间被
+    杀进程 / 关窗，历史里就留下孤儿 tool_calls。服务端要求每个 tool_call_id 都有对应的
+    tool 消息，缺一条这条会话之后每次请求都 400，用户只能删会话。
+
+    只补缺失的，不重排、不改已有消息；补齐的占位紧跟在该 assistant 之后（与真实顺序一致）。
+    """
+    if not any(isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+               for m in messages):
+        return messages
+    out: list[dict] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        out.append(m)
+        i += 1
+        calls = m.get("tool_calls") if isinstance(m, dict) and m.get("role") == "assistant" else None
+        if not calls:
+            continue
+        want = [c.get("id") for c in calls if isinstance(c, dict) and c.get("id")]
+        # 紧跟其后的连续 tool 消息就是这批调用的结果（容忍缺项、容忍乱序）
+        have: set[str] = set()
+        while i < n and isinstance(messages[i], dict) and messages[i].get("role") == "tool":
+            cid = messages[i].get("tool_call_id")
+            if cid:
+                have.add(cid)
+            out.append(messages[i])
+            i += 1
+        for cid in want:
+            if cid not in have:
+                out.append({"role": "tool", "tool_call_id": cid, "content": ORPHAN_TOOL_CONTENT,
+                            "_orphan": True})
+    return out
 
 
 def _close_stale_runs(meta: dict) -> None:

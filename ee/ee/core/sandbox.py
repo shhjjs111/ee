@@ -186,13 +186,40 @@ class SandboxPlan:
         # 命令行原样（按 subprocess 的规则拼好后 base64）交给启动器，避免二次解析/拼接改变 cmd 的引号
         line = subprocess.list2cmdline(list(argv))
         b64 = base64.b64encode(line.encode("utf-8")).decode("ascii")
-        return helper_argv() + ["--sid", self.sid, "--cmdline", b64], env
+        # helper 是「跑在用户工作区里」的独立进程，要单独给它找包的路径；
+        # 命令本身的环境变量（含沙箱 TEMP/TMP）不受影响。
+        return helper_argv() + ["--sid", self.sid, "--cmdline", b64], helper_env(env)
 
 
 def helper_argv() -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, HELPER_CMD]
-    return [sys.executable, "-m", "ee", HELPER_CMD]
+    # -P：运行 helper 时不把 cwd（也就是用户工作区）放进 sys.path。
+    # 不这么做时 `python -m ee` 会被工作区里的同名目录劫持：仓库根下有个 `ee/` 目录
+    # （源码外层），Python 把它当 namespace package，于是 helper 自己 import 失败
+    # （ImportError: cannot import name '__version__' from 'ee'），用户只看到退出码 125 /
+    # 一条看不出所以然的错误，而真正原因是工作区结构。加 -P 后 helper 只从
+    # 装好的包 / PYTHONPATH 解析，与工作区内容无关。
+    # 只有 3.11+ 有 -P；更老的解释器退回原样（那时没有这个选项）。
+    flag = ["-P"] if sys.version_info >= (3, 11) else []
+    return [sys.executable, *flag, "-m", "ee", HELPER_CMD]
+
+
+def helper_env(env: dict) -> dict:
+    """helper 自己的解释器环境：确保它能找到 ee 包（而非被工作区同名目录遮蔽）。
+
+    源码运行时，ee 包在 <repo>/ee/ee，父目录 <repo>/ee 才是它的 import 根。
+    把它显式放进 PYTHONPATH，这样无论工作区是什么、cwd 在哪，helper 都能加载。
+    """
+    out = dict(env)
+    if getattr(sys, "frozen", False):
+        return out
+    pkg = Path(__file__).resolve().parents[1]        # <repo>/ee（含 ee/ 包的目录）
+    if pkg.is_dir():
+        prev = out.get("PYTHONPATH") or ""
+        parts = [str(pkg)] + [p for p in prev.split(os.pathsep) if p and p != str(pkg)]
+        out["PYTHONPATH"] = os.pathsep.join(parts)
+    return out
 
 
 _granted: set[tuple[str, str]] = set()      # 本进程已确认授权过的 (路径, SID)

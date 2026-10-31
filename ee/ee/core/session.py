@@ -1160,6 +1160,12 @@ class Session:
             self._fill_missing("执行出错，未完成。")
             emit(Error(_friendly_error(e)))
             emit(TurnDone("error", final))
+        finally:
+            # 兜底：KeyboardInterrupt / SystemExit 这类 BaseException 不是 Exception 的子类，
+            # 上面两个 except 都接不住；不补的话它们同样会留下孤儿 tool_calls（会话永久 400）。
+            # _fill_missing 幂等（_open_calls 已空时什么也不做），正常路径下这里是空操作。
+            self._fill_missing(INTERRUPTED)
+
 
     async def _sample_or_compact(self, emit) -> Completion:
         """服务端报上下文超长时：自动压缩一次再重试（自动压缩关了就直接报错，让用户自己决定）。"""
