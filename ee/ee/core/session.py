@@ -811,14 +811,21 @@ class Session:
                 t.root = str(self.cwd)
 
     async def _attach_mcp(self, emit) -> None:
-        """首次冻结前缀前连接 MCP 服务器（只做一次）；失败只出提示，不影响回合。"""
+        """首次冻结前缀前连接 MCP 服务器；失败只出提示，不影响回合。
+
+        _mcp_done 只在**成功**后置位。原来是「先置位再连接」，任何失败
+        （服务器还没起来、配置临时读失败、连接超时）都会让这个会话此后
+        再也连不上 MCP，只能新开会话（报告 P1-12）。现在失败会留下 _mcp_tried
+        供诊断，但下一回合仍会重试。
+        """
         if self._mcp_done or self.prefix is not None or not self.mcp_enabled:
             return
-        self._mcp_done = True
+        self._mcp_tried = getattr(self, "_mcp_tried", 0) + 1
         from ee.mcp.config import load_servers, mcp_settings
         data = self.config.data
         m = mcp_settings(data)
         if not m.get("enabled", True):
+            self._mcp_done = True          # 用户明确关掉：不必再试
             return
         try:
             servers, errors = await asyncio.to_thread(load_servers, data, self.cwd)
@@ -828,6 +835,7 @@ class Session:
         for err in errors:
             emit(Notice(f"MCP 配置：{err}", "warn"))
         if not servers:
+            self._mcp_done = True          # 没有配置任何服务器：不必再试
             return
         from ee.mcp.manager import get_manager
         from ee.mcp.tool import McpTool
@@ -836,8 +844,13 @@ class Session:
         mgr = get_manager()
         try:
             states = await mgr.connect_all(data, self.cwd)
-        finally:
+        except BaseException:
+            # 含 CancelledError：连到一半被取消时不能让 _mcp_done 永久为真。
+            # 状态条要先清掉，否则界面会一直显示"正在连接 MCP 服务器…"。
             emit(Status(""))
+            raise
+        emit(Status(""))
+        self._mcp_done = True              # 连接流程走完（成功或部分失败）才算完成
         tools, seen = [], set(self.tool_map)
         timeout = float(m.get("tool_timeout") or 120)
         for st in states:

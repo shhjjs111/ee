@@ -259,3 +259,36 @@ def test_aclose_releases_lsp_manager(ee_home, workspace):
     # 重复调用安全
     asyncio.run(s.aclose())
     assert len(calls) == 2, f"重复 aclose 又调了一次：{calls}"
+
+
+def test_mcp_failure_is_retried_on_next_turn(ee_home, workspace, monkeypatch):
+    """MCP 首次连接失败后，下一次回合要能重试，而不是整会话永久没有 MCP 工具。
+
+    _attach_mcp 在真正连接之前就置 _mcp_done=True，任何失败（服务器还没起来、
+    配置临时读失败、连接超时）都会让这个会话再也连不上 MCP（报告 P1-12）。
+    """
+    import ee.mcp.manager as MM
+    from conftest import finish, make_session, text_chunks
+
+    attempts = []
+
+    class FakeMgr:
+        async def connect_all(self, data, cwd):
+            attempts.append(1)
+            raise RuntimeError("服务器还没起来")
+
+    monkeypatch.setattr(MM, "get_manager", lambda: FakeMgr())
+    s, _ = make_session(workspace, [text_chunks("一") + finish("stop")])
+    s.mcp_enabled = True
+    s.config.data["mcp"] = {"enabled": True, "project_json": False,
+                            "servers": {"demo": {"command": "node", "args": ["x.js"]}}}
+
+    async def go():
+        for _ in range(2):
+            try:
+                await s._attach_mcp(lambda *a, **k: None)
+            except Exception:  # noqa: BLE001
+                pass
+
+    asyncio.run(go())
+    assert len(attempts) >= 2, f"失败后没有重试，只尝试了 {len(attempts)} 次"
