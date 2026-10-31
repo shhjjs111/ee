@@ -58,8 +58,12 @@ class SessionStore:
                     line = b"\n" + line
             with open(self.path, "ab") as f:
                 f.write(line)
-        except OSError:
-            pass
+        except OSError as e:
+            # 不能静默：磁盘满 / 杀软占用 / 权限问题时，对话看起来正常但没落盘，
+            # 重启即丢，用户完全不知道。这里记日志，并让调用方能通过 failed 属性感知。
+            self.failed = getattr(self, "failed", 0) + 1
+            log.error("会话记录写入失败（第 %d 次）：%s：%s；这条记录没落盘，重启后会丢",
+                      self.failed, self.path.name, e)
 
     def message(self, msg: dict) -> None:
         self.append("message", {"message": msg})

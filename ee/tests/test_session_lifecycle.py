@@ -292,3 +292,26 @@ def test_mcp_failure_is_retried_on_next_turn(ee_home, workspace, monkeypatch):
 
     asyncio.run(go())
     assert len(attempts) >= 2, f"失败后没有重试，只尝试了 {len(attempts)} 次"
+
+
+def test_store_append_failure_is_reported_not_swallowed(ee_home, workspace, monkeypatch, caplog):
+    """写盘失败不能静默吞掉。
+
+    store.append 里 `except OSError: pass`：磁盘满、杀软占用、权限问题时对话看起来
+    正常但没落盘，重启即丢，用户完全不知道（报告 P2-23）。
+    至少要留下日志，让问题可诊断。
+    """
+    import logging as _lg
+
+    from ee.core.store import SessionStore
+
+    st = SessionStore(workspace / "s.jsonl")
+
+    def boom(*a, **k):
+        raise OSError(28, "磁盘已满")
+
+    monkeypatch.setattr("builtins.open", boom)
+    with caplog.at_level(_lg.WARNING):
+        st.append("message", {"message": {"role": "user", "content": "hi"}})
+    assert any("磁盘" in r.message or "写入" in r.message or "落盘" in r.message
+               for r in caplog.records), f"写盘失败没有任何日志：{[r.message for r in caplog.records]}"
