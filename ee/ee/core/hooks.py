@@ -654,10 +654,29 @@ class HookRunner:
         if event != "Notification":
             emit(Status(f"正在运行 Hook（{EVENT_LABEL.get(event, event)}）…"))
         try:
-            runs = await asyncio.gather(*(run_hook(h, payload, s.cwd, shell, env) for h in hooks))
+            # return_exceptions=True：run_hook 的契约是「绝不抛异常」，但它真的抛出来时
+            # （编码错误、子解释器崩、第三方库 bug）不能让一个旁挂脚本吃掉整个回合。
+            # 收集异常后按「这条 hook 出错」处理，主流程继续。
+            runs = await asyncio.gather(*(run_hook(h, payload, s.cwd, shell, env) for h in hooks),
+                                        return_exceptions=True)
         finally:
             if event != "Notification":
                 emit(Status(""))
+        clean = []
+        for h, r in zip(hooks, runs):
+            if isinstance(r, BaseException):
+                if not isinstance(r, Exception):
+                    raise r                      # CancelledError 等继续向上（会话正在被取消）
+                log.error("Hook %s [%s] 内部异常：%s", event, h.source, r)
+                failed = HookRun(h)
+                failed.code = -1
+                failed.error = f"{type(r).__name__}: {r}"
+                failed.stderr = ""
+                failed.duration_ms = 0
+                clean.append(failed)
+                continue
+            clean.append(r)
+        runs = clean
         for r in runs:
             log.info("Hook %s [%s] %s：退出码 %s 用时 %dms%s%s", event, r.hook.source, r.hook.label, r.code,
                      r.duration_ms, " 超时" if r.timed_out else "", f" 错误 {r.error}" if r.error else "")

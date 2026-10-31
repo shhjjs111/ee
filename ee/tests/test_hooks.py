@@ -551,3 +551,29 @@ def test_cancel_hook_does_not_block_event_loop(monkeypatch, tmp_path):
         assert "\nState:\tZ" in state                    # 已死（尚未回收）
     except FileNotFoundError:
         pass
+
+
+def test_one_broken_hook_does_not_break_the_turn(ee_home, workspace, hook_py, tmp_path, monkeypatch):
+    """一个 hook 内部抛异常，不能让整个回合挂掉。
+
+    run_hook 的契约写着「绝不抛异常（取消除外）」，但 fire() 用 asyncio.gather
+    没有 return_exceptions=True：任何一个 hook 真抛出来（编码错误、ctypes、
+    子解释器崩、第三方库 bug），整个 UserPromptSubmit 就炸，回合变 error。
+    Hook 是用户的旁挂脚本，它的 bug 不能吃掉主流程。
+
+    用 UserPromptSubmit 做触发点：它每条用户消息都会跑，不依赖工具调用。
+    """
+    log = tmp_path / "hook.log"
+    write_user_hooks(ee_home, {"UserPromptSubmit": [{"command": cmd(hook_py, log)}]})
+
+    called = []
+
+    async def boom(*a, **kw):
+        called.append(1)
+        raise RuntimeError("hook 内部崩了")
+
+    monkeypatch.setattr(H, "run_hook", boom)
+    s, fake = make_session(workspace, [text_chunks("好") + finish("stop")])
+    ev = asyncio.run(collect(s, "你好"))
+    assert called, "hook 没被触发，测试是空转的"
+    assert done(ev).reason == "completed", "hook 抛异常不该打断回合"
