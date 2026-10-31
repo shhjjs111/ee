@@ -458,3 +458,59 @@ def test_undo_without_end_snapshot_still_confirms_when_user_edited(ee_home, work
         assert r.get("needs_confirm") is True, f"没检测到用户手改：{r}"
         assert (workspace / "a.txt").read_text(encoding="utf-8") == "用户手改"
     asyncio.run(go())
+
+
+@needs_git
+def test_undo_refuses_when_another_thread_in_same_cwd_is_running(ee_home, workspace):
+    """/undo 只检查自己会话的 running，不管同一 cwd 的其它会话。
+
+    两个会话开在同一个工作区时（桌面多标签、ee exec 并行），A 在跑回合正在写文件，
+    B 执行 /undo 会把 A 刚写的东西一起回滚掉，且双方都不知道（报告 P1-7）。
+    """
+    from ee.server.app import RpcError
+
+    script = [_write("c1", "v1"), text_chunks("ok") + finish("stop")]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 a"})
+        await wait_for(ev, "turn/completed")
+
+        # 另一个会话开在同一 cwd，并把它标成"正在跑"
+        other = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        # running 是 property（看 task 状态），给一个永不结束的 task 来模拟"正在跑"
+        b.threads[other].task = asyncio.create_task(asyncio.sleep(3600))
+
+        with pytest.raises(RpcError) as ei:
+            await b.call("thread/undo", {"thread_id": tid})
+        assert "正在" in str(ei.value) or "运行" in str(ei.value), str(ei.value)
+    asyncio.run(go())
+
+
+@needs_git
+def test_checkpoint_restore_refuses_when_another_thread_in_same_cwd_is_running(ee_home, workspace):
+    """同 /undo：checkpoint/restore 也要挡住同 cwd 正在跑的会话。
+
+    两者都按文件内容整体回滚工作区；只挡 undo 不挡 restore 等于没修——
+    用户从时间线点「恢复到这个检查点」一样会盖掉另一个会话正在写的成果。
+    """
+    from ee.server.app import RpcError
+
+    script = [_write("c1", "v1"), text_chunks("ok") + finish("stop")]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 a"})
+        await wait_for(ev, "turn/completed")
+        lst = await b.call("checkpoint/list", {"thread_id": tid})
+        cp = lst["checkpoints"][0]["id"]
+
+        other = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        b.threads[other].task = asyncio.create_task(asyncio.sleep(3600))
+
+        with pytest.raises(RpcError) as ei:
+            await b.call("checkpoint/restore", {"thread_id": tid, "checkpoint_id": cp})
+        assert "运行" in str(ei.value) or "工作区" in str(ei.value), str(ei.value)
+    asyncio.run(go())

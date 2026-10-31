@@ -179,6 +179,15 @@ def register(methods: dict, backend) -> None:
 
     # ------------------------------------------------------------ restore
     def _restore(t, s, checkpoint_id: str, side: str) -> dict:
+        # 与 thread/undo 同一不变量：按文件内容整体回滚工作区前，先确认没有别的会话
+        # 正在同一个 cwd 里写东西。否则恢复会把对方刚写的成果一起盖掉，双方都不知道。
+        cwd = str(t.meta.get("cwd") or "")
+        if cwd:
+            busy = [k for k, o in backend.threads.items()
+                    if k != t.id and o.running and str(o.meta.get("cwd") or "") == cwd]
+            if busy:
+                raise RpcError(f"同一个工作区还有 {len(busy)} 个会话正在运行，恢复会覆盖它们的改动。"
+                               f"等它们结束再试。")
         d = _disk_or_raise(s)
         kind, n, ent = _find(t, checkpoint_id)
         if kind == "turn":

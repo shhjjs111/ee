@@ -555,6 +555,15 @@ class Backend:
         s = await t.ensure_session_async()
         if s.running:
             raise RpcError("运行中不能撤销")
+        # 同一 cwd 的其它会话正在跑时也不能撤销：undo 会按文件内容把工作区整体回滚，
+        # 对方正在写的东西会被一起盖掉，而双方都不知道（多标签 / ee exec 并行）。
+        cwd = str(t.meta.get("cwd") or "")
+        if cwd:
+            busy = [k for k, o in self.threads.items()
+                    if k != thread_id and o.running and str(o.meta.get("cwd") or "") == cwd]
+            if busy:
+                raise RpcError(f"同一个工作区还有 {len(busy)} 个会话正在运行，撤销会覆盖它们的改动。"
+                               f"等它们结束再试。")
         box: dict = {}
 
         def keep(tree: str) -> None:
