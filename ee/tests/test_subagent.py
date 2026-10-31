@@ -156,3 +156,26 @@ def test_server_thread_attaches_subagent_meta(ee_home, workspace):
     assert tool["details"]["kind"] == "subagent" and tool["details"]["subagent"]["status"] == "completed"
     assert any(m == "item/updated" and p["item"].get("details", {}).get("subagent", {}).get("status") == "running"
                for m, p in notes)
+
+
+def test_explore_has_no_shell(ee_home, workspace):
+    """explore 是只读探索，不该带 shell。
+
+    只读模式下 shell 会进 Windows 受限令牌沙箱，而 Git Bash（本机默认 shell）
+    在受限令牌下起不来（CreateFileMapping Win32 error 5）；只读里能用的是
+    read/grep/glob/repo_map，它们都不走 shell。带上 shell 只会让子代理多一条
+    注定失败的路径，还白白把「沙箱能不能跑 bash」这个未解问题引进来。
+    """
+    (workspace / "a.txt").write_text("secret-line\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "p1", "task", {"description": "读文件", "prompt": "读 a.txt", "agent": "explore"})
+        + finish("tool_calls"),
+        tool_chunks(0, "k1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        text_chunks("done") + finish("stop"),
+        text_chunks("收尾") + finish("stop"),
+    ])
+    ev = run(collect(s, "帮我看看"))
+    assert done(ev).reason == "completed"
+    child_tools = {t["function"]["name"] for t in fake.calls[1]["tools"]}
+    assert "shell" not in child_tools, f"explore 不该有 shell：{sorted(child_tools)}"
+    assert {"read", "grep", "glob"} <= child_tools
