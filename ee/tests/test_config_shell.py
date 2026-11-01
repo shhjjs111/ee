@@ -51,6 +51,19 @@ def test_env_block_tells_shell():
     assert "gh" in parts["tools"] and "不是 git 仓库" in parts["git"]
 
 
+def test_env_block_says_whether_a_window_exists():
+    """桌面会话要明确告诉模型「有窗口、可以截图」。
+
+    背景：实测发现，环境块不说这件事时，模型会绕开 screenshot 去开无头浏览器；
+    补上这一行后同一个任务就会正常调用截图工具。
+    """
+    ps = ShellInfo("pwsh", "pwsh.exe", "PowerShell 7 (pwsh)")
+    desktop = env_parts(SE.Path("C:/proj"), ps, None, True, "默认", desktop=True)
+    cli = env_parts(SE.Path("C:/proj"), ps, None, True, "默认")
+    assert "screenshot" in desktop["ui"] and "桌面端窗口" in desktop["ui"]
+    assert "ui" not in cli, "CLI 里谎称有窗口会让模型去调一个注定失败的截图"
+
+
 def test_write_setting_roundtrip(ee_home, tmp_path):
     p = write_setting("shell", "git-bash")
     write_setting("permissions.mode", "auto")

@@ -357,8 +357,9 @@ class Session:
         return ST.switch_part(ST.get(self.home, self.style))
 
     def _env_parts(self) -> dict:
+        desktop = "screenshot" in self.tool_map      # 工具只在桌面端下发的后端里注册
         parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode),
-                          plan_tool="present_plan" in self.tool_map)
+                          plan_tool="present_plan" in self.tool_map, desktop=desktop)
         sp = self._style_part()
         if sp:
             parts["style"] = sp
@@ -1666,7 +1667,12 @@ class Session:
         window = self.profile.context_window
         if window <= 0:
             return False
-        return self.context_tokens() >= float(cfg.get("threshold", 0.8)) * window
+        limit = float(cfg.get("threshold", 0.8)) * window
+        # 绝对上限：1M 窗口按百分比要等 80 万，而实测 15 万 token 首包就到 20 秒了
+        cap = int(cfg.get("max_tokens", 0) or 0)
+        if cap > 0:
+            limit = min(limit, cap)
+        return self.context_tokens() >= limit
 
     async def _maybe_auto_compact(self, emit) -> None:
         from ee.core import prune as _prune

@@ -99,9 +99,11 @@ PLAN_NOTE_TEXT = ("计划模式：现在只调研、出方案，不修改任何�
 
 
 def env_parts(cwd: Path, shell, git: gitinfo.GitStatus | None, gh_available: bool, mode_label: str,
-              today: str | None = None, plan_tool: bool = True) -> dict[str, str]:
+              today: str | None = None, plan_tool: bool = True, desktop: bool = False) -> dict[str, str]:
     """返回 name → 内容。每个子块独立比较变化；量化到“天”，避免无谓抖动。
-    plan_tool=False：没有 present_plan 工具（关掉或精简模式），计划模式改为用文字给方案。"""
+    plan_tool=False：没有 present_plan 工具（关掉或精简模式），计划模式改为用文字给方案。
+    desktop=True：有真窗口，`screenshot` 可用——不写这一行，模型判断“要不要截图”时没法区分
+    桌面会话和 CLI（实测：它会绕过截图工具去开无头浏览器，哪怕窗口就在那里）。"""
     osname = {"Windows": "Windows", "Darwin": "macOS", "Linux": "Linux"}.get(platform.system(), platform.system())
     parts = {
         "env": (f"<env>\n工作目录：{cwd}\n操作系统：{osname} {platform.release()}\n"
@@ -119,6 +121,9 @@ def env_parts(cwd: Path, shell, git: gitinfo.GitStatus | None, gh_available: boo
     if gh_available:
         parts["tools"] = ("<dev-tools>\n已安装 gh（GitHub CLI）：可用 gh pr view/list、gh issue view/list、"
                           "gh run list 等查询 PR、issue、CI；gh 的写操作（创建/评论/合并）需要用户要求并会请求批准。\n</dev-tools>")
+    if desktop:
+        parts["ui"] = ("<ui>\n当前在桌面端窗口里运行：改完界面可以用 screenshot 截当前窗口，"
+                       "直接确认真实渲染（间距、颜色、布局）。\n</ui>")
     return parts
 
 
