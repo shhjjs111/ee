@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# 本地一键验证 —— 替代 GitHub Actions（额度不可用时的等价入口）。
+# 本地一键验证 —— 与 GitHub Actions 等价的本地入口。
 #
-# 为什么有它：desktop-windows.yml 已改成只手动触发（不再随 push 自动跑），
-# 因为账号没有可用的 Actions 额度。CI 那套步骤不能凭空消失，
-# 否则「有没有退化」就完全没判据了。这里把同样的检查搬到本地。
+# 定位：CI（.github/workflows/desktop-windows.yml）在 push/PR 上自动跑，是主门禁。
+# 这里提供同时可以离线、只跑子集的等价入口：没网、想提交前先自查、
+# 或 CI 挂了要本地复现同一批步骤时用它。两边的检查项要同步（test_ci_offline_gate.py 守着 CI 那侧）。
 #
 # 用法：
 #   ./scripts/verify.sh            # 全量：后端全量 pytest + 前端全量 vitest + typecheck
 #   ./scripts/verify.sh --quick    # 快速：只跑改动相关的后端测试 + 前端全量 + typecheck
+#   ./scripts/verify.sh --e2e      # 额外跑真实 Electron 的 Playwright（需要先 npm run build）
 #
 # 退出码非 0 表示有检查失败（可安全用作提交前的门禁）。
 
@@ -24,10 +25,12 @@ if [ ! -x "$PY" ]; then
 fi
 
 QUICK=0
+E2E=0
 for a in "$@"; do
   case "$a" in
     --quick) QUICK=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --e2e) E2E=1 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "未知参数：$a" >&2; exit 2 ;;
   esac
 done
@@ -36,6 +39,13 @@ FAILED=()
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
 # ---------------------------------------------------------------- 后端
+step "后端 lint（ruff）"
+if command -v ruff >/dev/null 2>&1; then
+  ruff check ee/ || FAILED+=("后端 lint")
+else
+  echo "（没装 ruff，跳过：uv tool install ruff，或 pip install ruff）"
+fi
+
 step "后端 pytest（$([ $QUICK -eq 1 ] && echo 定向子集 || echo 全量)）"
 if [ $QUICK -eq 1 ]; then
   # 只跑与当前工作区改动相关的测试文件；没有改动就跳过（不假装跑过）
@@ -67,6 +77,14 @@ step "前端 vitest"
 
 step "类型检查"
 ( cd desktop && npm run typecheck --silent ) || FAILED+=("typecheck")
+
+# e2e 不默认跑：要真实 Electron 窗口 + 先构建，且比前几项慢一个量级。
+# 它守的是 jsdom 测不出来的东西（布局、滚动链、深色实背景、真实回合闭环），
+# 改动界面或 Composer/store 时应当显式带上。
+if [ $E2E -eq 1 ]; then
+  step "e2e（真实 Electron）"
+  ( cd desktop && npm run build --silent && npx playwright test ) || FAILED+=("e2e")
+fi
 
 # ---------------------------------------------------------------- 汇总
 printf '\n'

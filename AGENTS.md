@@ -29,6 +29,8 @@ Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 We
 - **必须用仓库根的 `.venv`**（`./.venv/Scripts/python.exe`）。PATH 上的 `python` 是 Anaconda，缺 `openai`/`tree_sitter`，会产生大量假失败。
 - **测试不需要 `pip install -e`**：`ee/tests/conftest.py` 已经把仓库根加进 `sys.path`，直接跑 `pytest -c ee/pyproject.toml` 即可。pytest / openai / tree-sitter 等依赖 `.venv` 里已有；`pip install -e "ee[test]"` 会联网、很慢（实测撞过单次 shell 超时），而且不装也能测。
 - 前端：`cd desktop && npx vitest run <文件>`；类型检查 `npm run typecheck`。
+- 后端 lint：`ruff check ee/`（规则在 `ee/pyproject.toml`，只检「代码有误」类：语法、未定义名、未用导入/变量）。
+- 真实 Electron 的 Playwright：`cd desktop && npm run build && npx playwright test`（约 1 分钟）。要改界面才必须跑，但它守的是 jsdom 测不出来的东西（布局、滚动链、真实回合闭环）。**必须经 `e2e/launch.ts` 启动**，否则会改用户真实的 `~/.ee`。
 - 行尾：仓库用 LF（`.gitattributes` 统一），新增文件不要留 CRLF。
 
 ## 验证（CI 已恢复自动）
@@ -37,8 +39,9 @@ Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 We
 本地仍可手动验证（无网络/想快速跑时）：
 
 ```bash
-./scripts/verify.sh           # 全量：后端全量 pytest + 前端 vitest + typecheck
-./scripts/verify.sh --quick   # 快速：只跑改动相关的后端测试 + 前端全量 + typecheck
+./scripts/verify.sh           # 全量：后端 lint + 后端全量 pytest + 前端 vitest + typecheck
+./scripts/verify.sh --quick   # 快速：后端 lint + 只跑改动相关的后端测试 + 前端全量 + typecheck
+./scripts/verify.sh --e2e     # 再加真实 Electron 的 Playwright（会先 npm run build）
 ```
 
 `ee/tests/test_ci_offline_gate.py` 会守着这件事：**自动触发或本地等价入口，二者必须有其一**。

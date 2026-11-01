@@ -31,13 +31,21 @@ npm run build            # 必须先构建：Electron 加载 dist/，不重建�
 npm run test:ui          # 真实 Electron 窗口的渲染基线（Playwright）
 ```
 `test:ui` 测的是用户能看见的几何结果：首屏是否对话优先、输入框有没有常显滚动条、
-工具面板打开后是否真有宽度、960×600 下中区是否还可用、深色令牌是否生效。
+工具面板打开后是否真有宽度、960×600 下中区是否还可用、深色令牌是否生效，
+以及一条真实回合闭环（输入 → 工具调用 → 审批 → 完成，模型换成假服务）。
 判定用真实尺寸测量而非截图相似度——本机没有基线图维护流程，尺寸断言更稳，失败时也更能指出问题。
+
+**跑 `test:ui` 前最好先构建**（它加载 `dist/`，不重建看不到源码改动），
+并且 **ee 桌面端开着也没关系**：所有 spec 经 `e2e/launch.ts` 启动，
+`EE_HOME` 与 Electron `userData` 都指向临时目录，跑完自动清理。
+没有这层隔离时会撞两个真事故（都实测过）：第二个实例被单实例锁顶掉、
+以及 spec 里的 `settings/set` / `workspace/remove` 写进用户真实的 `~/.ee`（改掉默认模型、隐藏真实项目）。
 失败截图与 trace 落在 `test-results/`（已 gitignore）。
 
 界面布局的取舍与设计边界见 `.rivet/plans/ee-codex-桌面工作台-ui-改版完整计划.md`（本地工作记录，不入库）。
 
-**务必用 `.venv`，不要用 PATH 里的 `python`**：`openai` 与 `tree_sitter` 是延迟导入，装错解释器时多数测试仍通过，只在触及真客户端、Windows 沙箱、仓库地图时失败——看起来是代码问题，其实是环境。实测同一批文件：PATH 的 Anaconda python 下 17 failed，项目 `.venv` 下 0 failed。全量测试：`./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q`（当前基线 1578 passed / 15 skipped / 0 failed，约 17 分钟）。
+**务必用 `.venv`，不要用 PATH 里的 `python`**：`openai` 与 `tree_sitter` 是延迟导入，装错解释器时多数测试仍通过，只在触及真客户端、Windows 沙箱、仓库地图时失败——看起来是代码问题，其实是环境。实测同一批文件：PATH 的 Anaconda python 下 17 failed，项目 `.venv` 下 0 failed。全量测试：`./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q`（**很慢（约 17～19 分钟、2000+ 用例），日常只跑相关子集**，见 `AGENTS.md`）。
+静态检查：`ruff check ee/`（在 `ee/pyproject.toml` 里只启用了「代码有误」那组规则，CI 与 `scripts/verify.sh` 都跑）。
 
 ### 行尾约定
 仓库用 `.gitattributes` 统一行尾（文本 LF、`.bat/.cmd/.ps1` 保留 CRLF），

@@ -65,7 +65,14 @@ jobs:
       - name: Install Python backend
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "./ee[test]"
+          python -m pip install "./ee[test]" ruff
+
+      # 只跑 pyproject.toml 里 select 的那组「代码有误」规则（见 ee/pyproject.toml 注释）。
+      # 它是廉价的硬指标：语法错 / 未定义名 / 未用导入与变量，一条 0.3 秒就能查完，
+      # 放在 pytest 前面，坏代码不用等 7 分钟才报。
+      - name: Backend lint
+        working-directory: ee
+        run: ruff check .
 
       - name: Backend tests
         working-directory: ee
@@ -107,6 +114,15 @@ jobs:
         working-directory: desktop
         run: npm run build
 
+      # 必须放在 build 后面：Electron 加载的是 dist/，不重建就测的是旧代码。
+      # 这一步长期缺席（只在本地手动跑），于是「所有 spec 没隔离用户目录」这种
+      # 会改用户真实配置的缺陷在仓库里静默活了很久——没人跑，就没人发现。
+      - name: E2E with real Electron (Playwright)
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        timeout-minutes: 15
+        run: npx playwright test
+
   package:
     name: package
     # 只有手动触发且明确勾选打包时才发布；必须先通过同一提交的 verify
@@ -129,10 +145,10 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: Install Python backend + PyInstaller
+      - name: Install backend + PyInstaller
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "./ee[test]" pyinstaller
+          python -m pip install "./ee[test]" pyinstaller ruff
 
       - name: Record resolved dependencies (release manifest)
         shell: pwsh
