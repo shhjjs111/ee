@@ -42,7 +42,7 @@ def test_compute_categories_and_percent():
     assert d["total"] == sum(x["tokens"] for x in d["items"])
     assert abs(sum(x["percent"] for x in d["items"]) - 100) < 1
     assert d["tools"][0]["name"] == "shell"                                  # 按大小排序
-    assert d["savings"] == {"pruned": 123, "prunes": 1, "pruned_outputs": 0, "compacted": 456}
+    assert d["savings"] == {"pruned": 123, "prunes": 1, "pruned_outputs": 0, "compacted": 456, "reasoning": 0}
     # 不看图的模型：图片降级成文字说明，不计图片 token
     d2 = B.compute("s", [], hist, SimpleNamespace(vision=False, reasoning_passback="none",
                                                  empty_assistant_content=""), 1000)
@@ -74,7 +74,8 @@ def test_session_breakdown_is_read_only(ee_home, workspace):
     assert it["agents"]["tokens"] > 0 and it["tool_output"]["tokens"] > 0 and it["history"]["tokens"] > 0
     assert d["frozen"] is True and d["actual"] is True and d["used"] == 4120
     assert d["window"] == s.profile.context_window and d["thresholds"]["compact"] == 0.8
-    assert d["thresholds"]["prune"] is None             # 修剪默认关闭（会让 DeepSeek 缓存失效）
+    assert d["thresholds"]["prune"] == 0.6        # 修剪默认开启，但只在绝对水位以上才动手
+    assert d["thresholds"]["prune_tokens"] == 100000
     assert {t["name"] for t in d["tools"]} >= {"read", "shell"}
     # 系统提示用的就是冻结的那份
     assert it["system"]["tokens"] == C.estimate_tokens(s.prefix.system["content"])

@@ -568,12 +568,12 @@ export type ContextBreakdown = {
   actual: boolean;
   images: number;
   messages: number;
-  savings: { pruned: number; prunes: number; pruned_outputs: number; compacted: number };
+  savings: { pruned: number; prunes: number; pruned_outputs: number; compacted: number; reasoning?: number };
   /** 缓存命中（T19）：hit_rate/hit_coverage 未知时是 null（不是 0）。 */
   cache: { hit: number; hit_rate: number | null; hit_coverage: number | null };
   compactions: number;
   frozen: boolean;
-  thresholds: { compact: number | null; prune: number | null; prune_tokens?: number | null };
+  thresholds: { compact: number | null; prune: number | null; prune_tokens?: number | null; compact_tokens?: number | null };
   model: string;
   estimated: boolean;
 };

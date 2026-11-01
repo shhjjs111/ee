@@ -35,16 +35,22 @@ DEFAULTS: dict = {
     "todo": True,                  # todo 计划清单工具
     "present_plan": True,          # 计划模式的 present_plan 工具（关掉时计划模式用文字给方案）
     "ask_user": True,              # ask_user 提问工具（D4-8）      # shell 工具可后台运行 + shell_output/shell_write/shell_kill（D4-6）
-    # 上下文压缩：上下文用量 ≥ threshold × 模型窗口时自动压缩（回合开始时和回合内每步之前检查）
+    # 上下文压缩：上下文用量 ≥ threshold × 模型窗口，或达到绝对上限 max_tokens 时自动压缩
+    # （回合开始时和回合内每步之前检查）。max_tokens 是给 1M 窗口模型的：按百分比算要等 80 万才开始，
+    # 而实测 prompt 超过 15 万 token 首包就到 20 秒级，所以用绝对值提前压。
     # 磁盘快照（影子 git 仓库）：disk=false 回退内存快照；清理时每个会话保留最近 keep_days 天、最近 keep_turns 个回合
     "snapshot": {"disk": True, "keep_days": 14, "keep_turns": 100},
     # 工具输出归档（~/.ee/tool-output：超长输出全文 + 后台命令日志）：保留天数，0 = 不清理
     "tool_output": {"keep_days": 30},
-    "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
-    # 修剪旧工具输出（D5-10）：上下文 ≥ threshold × 窗口（低于压缩阈值）时把较早的大块工具结果换成占位，成批做一次。
-    # 默认关闭：修剪会让后面整段历史的前缀缓存失效，DeepSeek（缓存命中价约 1/50）上往往更贵；需要时设 enabled = true
-    "prune": {"enabled": False, "threshold": 0.6, "keep_turns": 2, "keep_tokens": 40000, "min_tokens": 20000,
-              "min_output_tokens": 300},
+    "compact": {"auto": True, "threshold": 0.8, "max_tokens": 140000, "keep_user_messages": 3,
+                "keep_user_tokens": 20000},
+    # 修剪旧工具输出（D5-10）：上下文到水位时把较早的大块工具结果换成占位，成批做一次。
+    # max_tokens 是绝对水位：触发线取 min(threshold × 窗口, max_tokens)。百分比项对 1M 窗口永远够不着，
+    # 而实测首包几乎只跟 prompt 的绝对 token 数挂勾（32k→5.2s / 96k→13.9s / 160k→19.8s）。
+    # 代价是修剪那一次前缀缓存失效；只在 10 万 token 以上才动手，短会话无影响。
+    "prune": {"enabled": True, "threshold": 0.6, "max_tokens": 100000, "keep_turns": 2, "keep_tokens": 16000,
+              "min_tokens": 20000, "min_output_tokens": 300,
+              "strip_reasoning": True, "keep_reasoning_turns": 2},
     # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限
     "agents_md": {"enabled": True, "max_bytes": 32768},
     # 防死循环：同调用连续 repeat_limit 次不执行并纠正，repeat_hard 次停止回合；无进展步数提醒/停止

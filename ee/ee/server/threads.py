@@ -250,6 +250,10 @@ class Thread:
             s.turn_starts = sorted({int(it["hist"]) for it in self.items
                                     if it.get("type") == "user" and isinstance(it.get("hist"), int)
                                     and s.user_text_at(int(it["hist"])) is not None})
+        # 旧推理清理游标（重启后别退回全带 reasoning，那会让首包再翻一倍）
+        to = self.meta.get("reasoning_strip_to")
+        if isinstance(to, int) and to >= 0:
+            s._reasoning_strip_to = min(to, len(s.history) - 1)
         # 磁盘快照（D4-1）：从用户条目重建每回合前后 tree，重启后 /undo、编辑重发照样能恢复文件
         s.turn_trees = [{"before": it["tree"], "after": it.get("tree_after"), "undone": bool(it.get("undone"))}
                         for it in self.items if it.get("type") == "user" and it.get("tree")]

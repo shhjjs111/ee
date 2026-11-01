@@ -108,21 +108,26 @@ class ThinkSplitter:
 
 # ---------------------------------------------------------------- 请求消息变换
 
-def wire_messages(history: list[dict], profile) -> list[dict]:
+def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1) -> list[dict]:
     """历史（内部格式）→ 发给服务端的消息。总是复制，绝不原地改历史。
 
     内部 assistant 消息可带 "reasoning" 键（推理全文），这里按回传规则决定是否变成
     reasoning_content。规则只依赖消息本身 → 同一条消息每次产出的字节都一样。
+
+    strip_reasoning_to：索引 ≤ 它的 assistant 推理置空。实测 reasoning 占长会话 prompt 的 26%
+    （233k→171k token），清掉后首包 25.6s→12.8s，上游接受空串（不会 400）。游标只前进，
+    所以每条消息的字节最多变一次——不改历史也能省 token，需要回传时把游标调回去就恢复。
     """
     mode = profile.reasoning_passback
     out = []
-    for m in history:
+    for idx, m in enumerate(history):
         role = m.get("role")
         w = {k: v for k, v in m.items() if not k.startswith("_") and k != "reasoning"}
         if role == "assistant":
             has_tools = bool(m.get("tool_calls"))
             if mode == "all" or (mode == "tool_turns" and has_tools):
-                w["reasoning_content"] = m.get("reasoning") or ""
+                stripped = 0 <= strip_reasoning_to and idx <= strip_reasoning_to
+                w["reasoning_content"] = "" if stripped else (m.get("reasoning") or "")
             if w.get("content") in (None, ""):
                 w["content"] = None if profile.empty_assistant_content == "null" and has_tools else ""
             if not has_tools:

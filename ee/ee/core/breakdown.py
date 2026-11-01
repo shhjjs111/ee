@@ -51,7 +51,8 @@ def _msg_tokens(m: dict, wire: dict) -> int:
 
 
 def compute(system: str, tools: list[dict], history: list[dict], profile, window: int,
-            used: int | None = None, actual: bool = False, stats=None) -> dict:
+            used: int | None = None, actual: bool = False, stats=None,
+            strip_reasoning_to: int = -1) -> dict:
     from ee.core.providers import transforms as T
     counts = {k: 0 for k in LABELS}
     counts["system"] = C.estimate_tokens(system)
@@ -60,11 +61,15 @@ def compute(system: str, tools: list[dict], history: list[dict], profile, window
         n = C.estimate_tokens(json.dumps(t, ensure_ascii=False))
         per_tool.append({"name": (t.get("function") or {}).get("name", ""), "tokens": n})
     counts["tools"] = sum(x["tokens"] for x in per_tool)
-    wires = T.wire_messages([{k: v for k, v in m.items() if k != "_images"} for m in history], profile)
+    wires = T.wire_messages([{k: v for k, v in m.items() if k != "_images"} for m in history], profile,
+                            strip_reasoning_to)
     images = 0
     pruned_now = 0
-    for m, w in zip(history, wires):
+    reasoning_cut = 0
+    for idx, (m, w) in enumerate(zip(history, wires)):
         counts[_category(m)] += _msg_tokens(m, w)
+        if m.get("role") == "assistant" and m.get("reasoning") and 0 <= strip_reasoning_to and idx <= strip_reasoning_to:
+            reasoning_cut += C.estimate_tokens(m["reasoning"])      # 发送时裁掉的旧推理
         if m.get("_images"):
             n = len(m["_images"])
             images += n
@@ -83,7 +88,8 @@ def compute(system: str, tools: list[dict], history: list[dict], profile, window
     savings = {"pruned": int(getattr(stats, "pruned_tokens", 0) or 0),
                "prunes": int(getattr(stats, "prunes", 0) or 0),
                "pruned_outputs": pruned_now,
-               "compacted": int(getattr(stats, "compacted_tokens", 0) or 0)}
+               "compacted": int(getattr(stats, "compacted_tokens", 0) or 0),
+               "reasoning": reasoning_cut}
     return {"items": items, "tools": per_tool, "total": total, "window": int(window or 0),
             "used": int(used if used is not None else total), "actual": bool(actual),
             "images": images, "messages": len(history), "savings": savings, "estimated": True}
@@ -101,7 +107,8 @@ def for_session(s) -> dict:
     history = list(s.history)
     actual_used = s.stats.last_prompt + s.stats.last_completion
     d = compute(prefix.system["content"], prefix.tools, history, s.profile, s.profile.context_window,
-                used=actual_used or None, actual=actual_used > 0, stats=s.stats)
+                used=actual_used or None, actual=actual_used > 0, stats=s.stats,
+                strip_reasoning_to=getattr(s, "_reasoning_strip_to", -1))
     d["compactions"] = int(getattr(s, "compactions", 0) or 0)
     d["frozen"] = s.prefix is not None
     # T19：缓存命中要带覆盖率。hit_rate 的分母只含"返回了 hit 字段的请求"，
@@ -120,6 +127,10 @@ def for_session(s) -> dict:
     from ee.core import prune as P
     pcfg = P.settings(s.config.data)
     d["thresholds"] = {"compact": float(cfg.get("threshold", 0.8)) if cfg.get("auto", True) else None,
-                       "prune": float(pcfg["threshold"]) if pcfg.get("enabled", True) else None}
+                       "compact_tokens": int(cfg.get("max_tokens", 0) or 0)
+                       if cfg.get("auto", True) and int(cfg.get("max_tokens", 0) or 0) > 0 else None,
+                       "prune": float(pcfg["threshold"]) if pcfg.get("enabled", True) else None,
+                       # 绝对上限：1M 窗口下百分比永远到不了，界面要按 token 数说真话
+                       "prune_tokens": int(pcfg["max_tokens"]) if pcfg.get("enabled", True) and pcfg.get("max_tokens", 0) > 0 else None}
     d["model"] = s.spec.alias
     return d

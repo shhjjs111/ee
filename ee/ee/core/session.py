@@ -176,6 +176,9 @@ class Session:
         self._skills_cat = None
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
+        # 旧轮次推理的发送游标（-1 = 全带）：实测 reasoning 占长会话 prompt 的 26%，
+        # 到水位时往前推，只推不回退（每条消息的字节最多变一次，不反复冲掉前缀缓存）。
+        self._reasoning_strip_to = -1
         self.compactions = 0
         # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
         self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data, self.home, self.spec.alias))
@@ -510,6 +513,7 @@ class Session:
         self.skill_names = []
         self._skills_cat = None
         self._fresh_usage = False
+        self._reasoning_strip_to = -1
         self.store = SessionStore(self.home, enabled=self.store.enabled)
 
     def _invalidate_read_refs(self, why: str) -> None:
@@ -536,6 +540,7 @@ class Session:
         text = content.split("\n\n<context-update")[0]
         self.history = self.history[:i]
         self.updates.reset()          # 被删的消息可能带着基线附录，下一条补发全量
+        self._reasoning_strip_to = min(self._reasoning_strip_to, len(self.history) - 1)
         self._invalidate_read_refs("rewind")
         self.store.append("rewind", {"to": i})
         return text
@@ -556,6 +561,7 @@ class Session:
         self.history = self.history[:i]
         self.turn_starts = [x for x in self.turn_starts if x < i]
         self.updates.reset()
+        self._reasoning_strip_to = min(self._reasoning_strip_to, len(self.history) - 1)
         self._invalidate_read_refs("truncate")
         self.queue.clear()
         self.notes.clear()
@@ -1288,6 +1294,14 @@ class Session:
         try:
             return await self._sample(emit)
         except ModelError as e:
+            # 清了旧推理但服务端要求回传（DeepSeek 官方某些形态会这么报）：把游标调回去重试一次，
+            # 并记住本会话不再清（否则每轮都白白多一次 400 往返）。
+            if getattr(e, "kind", "") == "bad_request" and self._reasoning_strip_to >= 0 \
+                    and T.needs_reasoning_passback(str(e)):
+                self._reasoning_strip_to = -1
+                self._reasoning_strip_disabled = True
+                emit(Notice("服务端要求回传推理内容，已恢复旧推理（本次会话不再清理）。", "warn"))
+                return await self._sample(emit)
             cfg = self.config.data.get("compact", {}) or {}
             if getattr(e, "kind", "") != "overflow" or not cfg.get("auto", True) \
                     or not any(m.get("_kind") != "agents" for m in self.history):
@@ -1301,7 +1315,7 @@ class Session:
     async def _sample(self, emit) -> Completion:
         prefix = self._ensure_prefix(emit)
         spec = self.role_spec(self.active_role())     # 计划模式 / 审查回合可配不同模型（D5-9）
-        messages = [prefix.system] + T.wire_messages(self.history, spec.profile)
+        messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to)
         comp: Completion | None = None
         text, reasoning = [], []
         emit(Status(f"正在准备请求 {spec.alias}…"))
@@ -1713,7 +1727,7 @@ class Session:
         if prev is not None and spec.alias != self.spec.alias:
             hist = [m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] + self.history[prev[0]:]
         instr = C.compact_update_prompt() if prev is not None else C.compact_prompt()
-        messages = ([prefix.system] + T.wire_messages(hist, spec.profile) +
+        messages = ([prefix.system] + T.wire_messages(hist, spec.profile, self._reasoning_strip_to) +
                     [{"role": "user", "content": instr}])
         if spec.alias != self.spec.alias and C.estimate_messages(messages) > 0.85 * spec.profile.context_window:
             raise RuntimeError(f"历史放不进压缩模型 {spec.alias} 的上下文窗口")
@@ -1781,6 +1795,7 @@ class Session:
         new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
                               int(cfg.get("keep_user_tokens", 20000)))
         self.history = new
+        self._reasoning_strip_to = -1      # 历史重建了：旧游标指向的消息已经不在，重新算
         self.store.append("reset", {"why": "compact"})
         for m in new:
             self.store.message(m)

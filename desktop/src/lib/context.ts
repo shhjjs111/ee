@@ -17,17 +17,22 @@ export function usageLine(d: ContextBreakdown): string {
 /** 修剪 / 压缩节省说明；都没有返回 null。 */
 export function savingsLine(d: ContextBreakdown): string | null {
   const parts: string[] = [];
+  if (d.savings.reasoning) parts.push(`旧推理不再回传省 ~${fmtTokens(d.savings.reasoning)}`);
   if (d.savings.pruned > 0) parts.push(`修剪旧工具输出省 ~${fmtTokens(d.savings.pruned)}`);
   if (d.savings.compacted > 0) parts.push(`压缩 ${d.compactions || 1} 次省 ~${fmtTokens(d.savings.compacted)}`);
   return parts.length ? parts.join(" · ") : null;
 }
 
-/** 阈值说明：「60% 时修剪旧工具输出，80% 时自动压缩」。 */
+/** 阈值说明：「60% 时修剪旧工具输出，80% 时自动压缩」；配了绝对上限时改说 token 数。 */
 export function thresholdLine(d: ContextBreakdown): string | null {
   const t = d.thresholds;
   const parts: string[] = [];
-  if (t.prune != null) parts.push(`${Math.round(t.prune * 100)}% 时修剪旧工具输出`);
-  if (t.compact != null) parts.push(`${Math.round(t.compact * 100)}% 时自动压缩`);
+  if (t.prune != null) {
+    parts.push(t.prune_tokens ? `${fmtTokens(t.prune_tokens)} token 时修剪旧工具输出` : `${Math.round(t.prune * 100)}% 时修剪旧工具输出`);
+  }
+  if (t.compact != null) {
+    parts.push(t.compact_tokens ? `${fmtTokens(t.compact_tokens)} token 时自动压缩` : `${Math.round(t.compact * 100)}% 时自动压缩`);
+  }
   return parts.length ? parts.join("，") : null;
 }
 

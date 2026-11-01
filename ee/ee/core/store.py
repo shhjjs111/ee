@@ -151,13 +151,21 @@ class SessionStore:
                     messages.append(rec["message"])
             elif kind == "reset":
                 messages = []
+                meta.pop("reasoning_strip_to", None)      # 历史重建：旧游标指向的消息已经不在了
             elif kind == "rewind":
                 messages = messages[: _int(rec.get("to"), len(messages))]
+                meta.pop("reasoning_strip_to", None)
             elif kind == "prune":
                 _apply_prune(messages, rec)
+            elif kind == "reasoning_strip":
+                # 旧推理清理的游标：历史下标，只前进。重建/截断时上面的分支会清掉它。
+                to = _int(rec.get("to"), -1)
+                if to >= 0:
+                    meta["reasoning_strip_to"] = to
             elif kind == "truncate":
                 cut = _int(rec.get("from_seq"), 0)
                 items = {k: v for k, v in items.items() if _int(v.get("seq"), 0) < cut}
+                meta.pop("reasoning_strip_to", None)
             elif kind == "meta":
                 if isinstance(rec.get("meta"), dict):
                     meta.update(rec["meta"])

@@ -27,6 +27,9 @@ describe("context", () => {
       "修剪旧工具输出省 ~2.0k · 压缩 2 次省 ~50k",
     );
     expect(thresholdLine(bd())).toBe("60% 时修剪旧工具输出，80% 时自动压缩");
+    expect(thresholdLine(bd({ thresholds: { compact: 0.8, prune: 0.6, prune_tokens: 150_000 } }))).toBe(
+      "150k token 时修剪旧工具输出，80% 时自动压缩",
+    );
     expect(thresholdLine(bd({ thresholds: { compact: null, prune: null } }))).toBeNull();
   });
 

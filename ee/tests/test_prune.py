@@ -1,4 +1,5 @@
 """D5-10 修剪旧工具输出：触发、保护范围、缓存稳定、恢复会话。"""
+import asyncio
 import json
 
 from conftest import FakeClient, collect, finish, run, text_chunks, tool_chunks
@@ -120,6 +121,28 @@ def test_reread_after_prune_returns_full_text(ee_home, workspace):
     assert "line 0001" in out and "与上次读取相同" not in out
 
 
+def test_reasoning_strip_cursor_survives_reload(ee_home, workspace):
+    """游标存盘：重开会话后仍然只发空推理，不会退回全带（那会把首包再翻一倍）。"""
+    path = ee_home / "sessions" / "t1.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    recs = [
+        {"kind": "meta", "meta": {"cwd": str(workspace)}},
+        {"kind": "message", "message": {"role": "user", "content": "一"}},
+        {"kind": "message", "message": {"role": "assistant", "content": "", "reasoning": "r1"}},
+        {"kind": "message", "message": {"role": "user", "content": "二"}},
+        {"kind": "message", "message": {"role": "assistant", "content": "", "reasoning": "r2"}},
+        {"kind": "reasoning_strip", "to": 2},
+    ]
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")
+    d = SessionStore.load(path)
+    assert d["meta"]["reasoning_strip_to"] == 2
+    # 历史重建（压缩 / 回退 / 截断）后旧游标必须作废，否则会指向不存在的消息
+    for kind in ({"kind": "reset"}, {"kind": "rewind", "to": 1}, {"kind": "truncate", "from_seq": 1}):
+        with_extra = recs + [kind]
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in with_extra) + "\n", encoding="utf-8")
+        assert "reasoning_strip_to" not in SessionStore.load(path)["meta"], kind["kind"]
+
+
 def test_resume_replays_prune_and_keeps_original(ee_home, workspace):
     files(workspace)
     s, _ = make(workspace, three_turns(), persist=True)
@@ -176,6 +199,108 @@ def test_skip_non_prunable_tools(ee_home, workspace):
     # keep_tokens 保护最近的工具输出（从新到旧数）
     items = P.plan(hist, P.settings({"prune": {"keep_turns": 1, "keep_tokens": 5000, "min_tokens": 100}}))
     assert [x["id"] for x in items] == ["t2"]
+
+
+def test_due_absolute_ceiling_for_huge_window():
+    """1M 窗口的模型：threshold × 窗口 = 60 万永远到不了，max_tokens 按绝对值封顶。"""
+    from types import SimpleNamespace
+    from ee.core.context import UsageStats
+    st = UsageStats()
+    s = SimpleNamespace(profile=SimpleNamespace(context_window=1_000_000), stats=st, compactions=0)
+    st.requests, st.last_prompt = 3, 190_000
+    assert not P.due(s, P.settings({"prune": {"enabled": True, "threshold": 0.6, "max_tokens": 0}}))
+    cfg = P.settings({"prune": {"enabled": True, "threshold": 0.6, "max_tokens": 150_000}})
+    assert P.due(s, cfg)
+    st.last_prompt = 140_000                     # 低于绝对上限就不动
+    s._prune_mark = None
+    assert not P.due(s, cfg)
+
+
+def test_due_absolute_ceiling_never_raises_percent_threshold():
+    """小窗口时 max_tokens 比百分比高就不起作用：仍按百分比。"""
+    from types import SimpleNamespace
+    from ee.core.context import UsageStats
+    st = UsageStats()
+    s = SimpleNamespace(profile=SimpleNamespace(context_window=10_000), stats=st, compactions=0)
+    st.requests, st.last_prompt = 3, 6000
+    cfg = P.settings({"prune": {"enabled": True, "threshold": 0.5, "max_tokens": 500_000}})
+    assert P.due(s, cfg)                          # 60% ≥ 50% × 1 万
+    st.last_prompt = 4000
+    s._prune_mark = None
+    assert not P.due(s, cfg)                      # 40% < 50%：绝对上限没有把它放低
+
+
+def test_default_config_prunes_at_absolute_waterline():
+    """默认配置：1M 窗口下百分比永远够不着，靠 10 万 token 的绝对水位动手。"""
+    from types import SimpleNamespace
+    from ee.core.context import UsageStats
+    st = UsageStats()
+    s = SimpleNamespace(profile=SimpleNamespace(context_window=1_000_000), stats=st, compactions=0)
+    cfg = P.settings({})
+    st.requests, st.last_prompt = 3, 90_000
+    assert not P.due(s, cfg)                     # 9 万还快（实测首包 5–7 秒）
+    st.last_prompt = 100_000
+    assert P.due(s, cfg)                         # 10 万以上开始拖慢，修一次
+
+
+def test_prune_waterline_stays_below_compaction():
+    """两边都配了绝对水位时，修剪线不得高于压缩线（否则压缩永远轮不到）。"""
+    cfg = P.settings({"prune": {"max_tokens": 200_000}, "compact": {"max_tokens": 140_000}})
+    assert cfg["max_tokens"] == 140_000
+
+
+def test_wire_messages_strip_old_reasoning():
+    """清旧推理在发送时做：历史不动，游标只影响发出去的字节。"""
+    from ee.core.providers import transforms as T
+    from ee.core.providers.profiles import profile_for
+    prof = profile_for("deepseek-flash")
+    hist = [{"role": "assistant", "content": f"c{i}", "reasoning": f"r{i}"} for i in range(3)]
+    assert [w["reasoning_content"] for w in T.wire_messages(hist, prof)] == ["r0", "r1", "r2"]
+    # 游标 1：前两条置空，最后一条保留；历史里的 reasoning 一字不动
+    assert [w["reasoning_content"] for w in T.wire_messages(hist, prof, 1)] == ["", "", "r2"]
+    assert [m["reasoning"] for m in hist] == ["r0", "r1", "r2"]
+
+
+def test_maybe_prune_strips_old_reasoning(ee_home, workspace):
+    """到水位时：旧回合的推理不再回传，最近回合完整保留，历史本身不动。"""
+    from types import SimpleNamespace
+    from ee.config import load_config
+    from ee.core.context import UsageStats
+
+    history = []
+    for i in range(5):
+        history.append({"role": "user", "content": f"第{i}件事"})
+        # 每个用户回合里两次工具调用：同一个用户问题内的思维链必须完整回传（否则 400）
+        for j in range(2):
+            history.append({"role": "assistant", "content": "", "reasoning": "推" * 400,
+                            "tool_calls": [{"id": f"c{i}_{j}", "type": "function",
+                                            "function": {"name": "shell", "arguments": "{}"}}]})
+            history.append({"role": "tool", "tool_call_id": f"c{i}_{j}", "content": "x" * 200})
+    cfg = load_config(workspace)
+    st = UsageStats()
+    st.requests, st.last_prompt = 10, 120_000
+    store_appends = []
+    s = SimpleNamespace(config=SimpleNamespace(data=cfg.data), history=history, stats=st,
+                        profile=SimpleNamespace(context_window=1_000_000),
+                        spec=SimpleNamespace(profile=SimpleNamespace(reasoning_passback="all",
+                                                                     empty_assistant_content="null")),
+                        compactions=0, store=SimpleNamespace(append=lambda k, p: store_appends.append((k, p))),
+                        state=SimpleNamespace(files={}),
+                        _prune_mark=None, _prune_floor=None, _prune_comp=0, _reasoning_strip_to=-1)
+    saved = asyncio.run(P.maybe_prune(s, lambda ev: None))
+    assert saved > 0
+    assert s._reasoning_strip_to == 13
+    # 每回合 5 条（user + 2 组 assistant/tool），保留最近 2 个用户回合（下标 15 起）→ 清到下标 13
+    assert history[15]["role"] == "user" and history[15]["content"] == "第3件事"
+    assert any(k == "reasoning_strip" and p["to"] == 13 for k, p in store_appends)
+    # 游标之后（回合 4、5）的推理保留，之前清空——但历史里一律原样，裁剪只发生在发送时
+    assert all(m.get("reasoning") == "推" * 400 for m in history if m.get("role") == "assistant")
+    from ee.core.providers import transforms as T
+    wired = T.wire_messages(history, s.spec.profile, s._reasoning_strip_to)
+    for i, (w, m) in enumerate(zip(wired, history)):
+        if m.get("role") != "assistant":
+            continue
+        assert w["reasoning_content"] == ("推" * 400 if i >= 15 else "")
 
 
 def test_due_hysteresis():

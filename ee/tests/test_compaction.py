@@ -27,6 +27,26 @@ def done(ev):
     return [e for e in ev if isinstance(e, TurnDone)][-1]
 
 
+def test_needs_compaction_absolute_cap_for_huge_window(ee_home, workspace):
+    """1M 窗口按 80% 要等 80 万；max_tokens 让它 14 万就压。"""
+    s, _ = make(workspace, [], window=1_000_000, compact={"max_tokens": 140_000})
+    s._fresh_usage = True
+    s.stats.last_prompt, s.stats.last_completion = 139_000, 500
+    assert not s.needs_compaction()
+    s.stats.last_prompt = 140_000
+    assert s.needs_compaction()
+
+
+def test_needs_compaction_percent_without_cap(ee_home, workspace):
+    """没配 max_tokens 时仍按窗口百分比（小窗口模型的原有行为）。"""
+    s, _ = make(workspace, [], window=100_000, compact={"max_tokens": 0})
+    s._fresh_usage = True
+    s.stats.last_prompt, s.stats.last_completion = 70_000, 0
+    assert not s.needs_compaction()
+    s.stats.last_prompt = 80_000
+    assert s.needs_compaction()
+
+
 def test_manual_compact_rebuilds_history(ee_home, workspace):
     (workspace / "a.txt").write_text("hello\n", encoding="utf-8")
     s, fake = make(workspace, [
