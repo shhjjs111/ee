@@ -9,3 +9,6 @@ __pycache__/
 .mypy_cache/
 .venv/
 .rivet/
+
+# 工作区级长期记忆是本机个人数据，不进仓库（项目 .ee/config.toml、hooks.toml、skills/ 等仍可提交）
+.ee/memory.md
