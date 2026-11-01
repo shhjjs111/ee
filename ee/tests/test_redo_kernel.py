@@ -221,16 +221,17 @@ def test_session_set_effort_deepseek_max(ee_home, workspace):
     assert s.effort == "max"
 
 
-# ---------------------------------------------------------------- 6) prune 默认关闭；~/.claude/skills 默认不读
+# ---------------------------------------------------------------- 6) prune 默认开启（到水位才动手）；~/.claude/skills 默认不读
 
-def test_prune_disabled_by_default_but_configurable(workspace):
+def test_prune_enabled_by_default_but_configurable(workspace):
     from ee.config import load_config
     from ee.core import prune as P
     data = load_config(workspace).data
-    assert P.settings(data)["enabled"] is False
-    assert P.settings({})["enabled"] is False
-    assert P.settings({"prune": {"enabled": True}})["enabled"] is True
-    assert "缓存" in (P.__doc__ or "") and "DeepSeek" in (P.__doc__ or "")
+    assert P.settings(data)["enabled"] is True
+    assert P.settings({})["enabled"] is True                       # 默认开：prompt 越大首包越慢，短会话不动手
+    assert P.settings({})["max_tokens"] == 100000                  # 绝对水位，1M 窗口也够得着
+    assert P.settings({"prune": {"enabled": False}})["enabled"] is False
+    assert "缓存" in (P.__doc__ or "") and "首包" in (P.__doc__ or "")
 
 
 def _mk_skill(d, name):
