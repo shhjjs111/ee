@@ -11,6 +11,7 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import path from "node:path";
 import { launchIsolated, type IsolatedApp } from "./launch";
+import { pageRpc } from "./rpc";
 
 let app: ElectronApplication;
 let iso: IsolatedApp;
@@ -44,46 +45,15 @@ test.afterAll(async () => {
   }
 });
 
-/** 通过页面里的真实 RPC 调用后端。 */
-async function rpc<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-  return win.evaluate(
-    async ({ method, params }) => {
-      const info = await (window as any).ee.getBackend();
-      if (!info?.ok) throw new Error("后端不可用");
-      const ws = new WebSocket(`ws://127.0.0.1:${info.port}/?token=${encodeURIComponent(info.token)}`);
-      let seq = 0;
-      const pending = new Map<number, (m: any) => void>();
-      ws.addEventListener("message", (ev) => {
-        try {
-          const m = JSON.parse(ev.data as string);
-          if (m.id && pending.has(m.id)) {
-            pending.get(m.id)!(m);
-            pending.delete(m.id);
-          }
-        } catch {
-          /* ignore */
-        }
-      });
-      const call = (method: string, params: any) =>
-        new Promise<any>((res, rej) => {
-          const id = ++seq;
-          pending.set(id, (m) => (m.error ? rej(new Error(m.error.message)) : res(m.result)));
-          ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-        });
-      await new Promise<void>((r) => (ws.readyState === 1 ? r() : ws.addEventListener("open", () => r(), { once: true })));
-      const out = await call(method, params);
-      ws.close();
-      return out;
-    },
-    { method, params },
-  ) as Promise<T>;
-}
+/** 通过页面里的真实 RPC 调用后端（实现见 rpc.ts，与 interaction.spec 共用）。 */
+const rpc = <T = any>(method: string, params: Record<string, unknown> = {}) =>
+  pageRpc<T>(win, method, params);
 
 test("workspace/list 能返回项目（后端与侧栏同源）", async () => {
   const r = await rpc("workspace/list", {});
   expect(Array.isArray(r.workspaces)).toBe(true);
-  // 该机器上必有历史会话，合并后至少 1 个
-  expect(r.workspaces.length, "列表为空说明没有合并历史会话目录").toBeGreaterThan(0);
+  // 隔离环境里只有 beforeAll 自己 open 的两个临时项目——正好能验「后端真的把它们列出来了」
+  expect(r.workspaces.length, "列表为空说明 workspace/open 没落到 workspace/list").toBe(dirs.length);
   for (const w of r.workspaces) {
     expect(typeof w.path).toBe("string");
     expect(w.path.length).toBeGreaterThan(0);
