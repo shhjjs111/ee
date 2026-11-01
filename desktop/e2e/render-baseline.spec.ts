@@ -9,17 +9,16 @@
 // 判定一律用真实几何测量（getBoundingClientRect / offsetWidth），
 // 不用截图相似度：这台机器上没人维护基线图，比像素更稳的是尺寸断言。
 
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import path from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { launchIsolated, type IsolatedApp } from "./launch";
 
 let app: ElectronApplication;
+let iso: IsolatedApp;
 let win: Page;
 
 test.beforeAll(async () => {
-  app = await electron.launch({
-    args: ["."],
-    cwd: path.resolve(__dirname, ".."),
-  });
+  iso = await launchIsolated();
+  app = iso.app;
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   // 等首屏连上内核（启动页消失、侧栏出现）
@@ -27,7 +26,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close().catch(() => undefined);
+  await iso?.dispose();
 });
 
 test("首屏是对话优先：全新偏好下工具面板不占位", async () => {

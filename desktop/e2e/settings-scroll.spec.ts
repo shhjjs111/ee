@@ -8,14 +8,16 @@
 //
 // 这类缺陷用 jsdom 测不出来（它不算布局），必须用真实 Electron 窗口量 scrollHeight。
 
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import path from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { launchIsolated, type IsolatedApp } from "./launch";
 
 let app: ElectronApplication;
+let iso: IsolatedApp;
 let win: Page;
 
 test.beforeAll(async () => {
-  app = await electron.launch({ args: ["."], cwd: path.resolve(__dirname, "..") });
+  iso = await launchIsolated();
+  app = iso.app;
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
@@ -27,7 +29,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close().catch(() => undefined);
+  await iso?.dispose();
 });
 
 test("设置页能滚动到底部内容", async () => {

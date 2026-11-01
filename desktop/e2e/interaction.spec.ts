@@ -7,19 +7,25 @@
 // 于是链条上只剩「模型推理」被替换，Composer / store / RpcClient / 后端 / 工具
 // 全是真实实现。判定看 UI 上真实出现的内容和 turn 结束标记。
 
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { launchIsolated, type IsolatedApp } from "./launch";
+import { pageRpc } from "./rpc";
 
 const ROOT = path.resolve(__dirname, "../..");
 const FAKE_PORT = 18099;
 const FAKE_URL = `http://127.0.0.1:${FAKE_PORT}/v1`;
 
 let app: ElectronApplication;
+let iso: IsolatedApp;
 let win: Page;
 let fake: ChildProcess | null = null;
 let ready = false;
 let configured = false;
+let projDir = "";
 
 test.beforeAll(async () => {
   fake = spawn("python", [path.join(ROOT, "desktop/scripts/fake_model_server.py"), String(FAKE_PORT)], {
@@ -27,7 +33,8 @@ test.beforeAll(async () => {
   });
   await new Promise((r) => setTimeout(r, 1800));
 
-  app = await electron.launch({ args: ["."], cwd: path.join(ROOT, "desktop") });
+  iso = await launchIsolated();
+  app = iso.app;
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
 
@@ -37,6 +44,13 @@ test.beforeAll(async () => {
     .then(() => true)
     .catch(() => false);
   if (!ready) return;
+
+  // 隔离后的 home 是空的：必须自己造一个项目并打开，否则 Composer 没有 cwd，
+  // 回合根本发不出去（旧版靠的是用户真实 home 里已经存在的项目，等于在测别人的机器）。
+  projDir = fs.mkdtempSync(path.join(os.tmpdir(), "ee-e2e-proj-"));
+  await pageRpc(win, "workspace/open", { path: projDir });
+  await win.reload();
+  await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 45_000 });
 
   // 通过真实 RPC 把默认模型指向本地假模型（等价于用户在设置页填写供应商）
   configured = await win
@@ -93,8 +107,13 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close().catch(() => undefined);
+  await iso?.dispose();
   fake?.kill();
+  try {
+    if (projDir) fs.rmSync(projDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });
 
 test("前置条件：后端就绪 + 假模型已接入", () => {

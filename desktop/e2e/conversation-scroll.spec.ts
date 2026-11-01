@@ -1,14 +1,13 @@
 import { test, expect, ElectronApplication, Page } from "@playwright/test";
-import { _electron as electron } from "playwright";
-import path from "node:path";
+import { launchIsolated, type IsolatedApp } from "./launch";
 
 let app: ElectronApplication;
+let iso: IsolatedApp;
 let win: Page;
 
 test.beforeAll(async () => {
-  // EE_TEST_USER_DATA：独立 userData，避免与正在运行的 ee 抢 disk cache（主进程支持）
-  process.env.EE_TEST_USER_DATA = path.resolve(__dirname, "../test-results/electron-user-data");
-  app = await electron.launch({ args: ["."], cwd: path.resolve(__dirname, "..") });
+  iso = await launchIsolated();
+  app = iso.app;
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
@@ -16,7 +15,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close().catch(() => undefined);
+  await iso?.dispose();
 });
 
 /**

@@ -6,14 +6,16 @@
 //
 // 判定一律用几何量：中区宽度、输入框宽度、标题栏高度、是否出现横向溢出。
 
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import path from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { launchIsolated, type IsolatedApp } from "./launch";
 
 let app: ElectronApplication;
+let iso: IsolatedApp;
 let win: Page;
 
 test.beforeAll(async () => {
-  app = await electron.launch({ args: ["."], cwd: path.resolve(__dirname, "..") });
+  iso = await launchIsolated();
+  app = iso.app;
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
@@ -26,7 +28,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close().catch(() => undefined);
+  await iso?.dispose();
 });
 
 async function resize(w: number, h: number) {

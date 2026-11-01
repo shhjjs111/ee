@@ -8,10 +8,11 @@
 //   - 不能出现「大面积近白背景」（写死颜色的典型症状）
 //   - 正文文字与背景的对比度要够（用 luminance 算，不靠眼估）
 
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import path from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { launchIsolated, type IsolatedApp } from "./launch";
 
 let app: ElectronApplication;
+let iso: IsolatedApp;
 let win: Page;
 
 /** 在页面里跑：把颜色转成相对亮度，算对比度。支持 #rgb / #rrggbb / rgb() / rgba()。 */
@@ -46,7 +47,8 @@ function contrast(a, b) {
 `;
 
 test.beforeAll(async () => {
-  app = await electron.launch({ args: ["."], cwd: path.resolve(__dirname, "..") });
+  iso = await launchIsolated();
+  app = iso.app;
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
@@ -61,7 +63,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close().catch(() => undefined);
+  await iso?.dispose();
 });
 
 test("深色下主背景是深色，且没有大面积写死的近白块", async () => {
