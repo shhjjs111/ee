@@ -6,9 +6,9 @@
 # 或 CI 挂了要本地复现同一批步骤时用它。两边的检查项要同步（test_ci_offline_gate.py 守着 CI 那侧）。
 #
 # 用法：
-#   ./scripts/verify.sh            # 全量：后端全量 pytest + 前端全量 vitest + typecheck
-#   ./scripts/verify.sh --quick    # 快速：只跑改动相关的后端测试 + 前端全量 + typecheck
-#   ./scripts/verify.sh --e2e      # 额外跑真实 Electron 的 Playwright（需要先 npm run build）
+#   ./scripts/verify.sh            # 全量：后端 lint + 全量 pytest + 前端 vitest + typecheck
+#   ./scripts/verify.sh --quick    # 快速：lint + 只跑改动相关的后端测试 + 前端全量 + typecheck
+#   ./scripts/verify.sh --e2e      # 额外跑真实 Electron 的 Playwright（会先 npm run build）
 #
 # 退出码非 0 表示有检查失败（可安全用作提交前的门禁）。
 

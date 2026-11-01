@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-11-01（修订各节里已过时的「未验证」结论，见下方「修订」段）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-02（补 e2e 隔离、CI 接入 e2e 与 lint、发布链路首跑，见「执行记录（2026-11-02）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -26,14 +26,24 @@
 | T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证**（建议态 + 落库 + 审批卡片显示）；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`、`server\threads.py` 的 `_on_event` 落 `ApprovalItem`、`desktop\src\components\Items.tsx` 的建议区；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5）、`test_autoapprove_persist.py`（3）、`ApprovalSuggestion.test.tsx`（4） |
 | T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 判据编排 + 桌面端） | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`server\bestof_verify.py` 的 `bestof/verify`（每候选单轮判据）、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`test_bestof_verify.py`（5）、`BestofDialog.test.tsx`（7） |
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
-| 后置 | 发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+| 后置 | 发布 | **打包链路已验证（2026-11-02，run #152）**；更新渠道/签名/版本策略未定，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+
+## 执行记录（2026-11-02，验证链路补齐）
+
+这一批没有动产品功能，补的是「怎么知道自己没坏」（之前几个真事故就是因为没人跑）。
+
+- **e2e 隔离（`eb3edf1`）**：7 个 Playwright spec 里只有1个隔离了 `EE_HOME`、0 个隔离 `userData`。两个后果都实测到了：日常开着 ee 时 `test:ui` 必然报 `Target page closed`（单实例锁 + disk cache 被锁）；`interaction.spec.ts` 的 `settings/set` 直接写用户真实的 `~/.ee/config.toml`（把 `default_model` 改成了指向本地假服务的 fake-gpt），`workspace/remove` 还会隐藏真实项目。现在统一走 `desktop/e2e/launch.ts`（临时 home + 临时 userData），跑完即删。结果：27 passed / 1 skipped、57 秒（改前 8 分钟 4 failed），跑前跑后配置 sha256 一致。
+- **e2e 进 CI（`8457ad5`）**：这个套件长期只靠本地手动跑，所以上面的缺陷能静默存活。现已接在 `npm run build` 之后，远端实测 27 passed / 1 skipped、47 秒。
+- **后端静态检查（`b7968c6`、`a8903dc`）**：`ruff` 只启用「代码有误」那组（`E9/F63/F7/F82/F401/F811/F841`），不做风格强制；清掉产品代码 4 处未用导入、测试 51 处未用导入与 10 处未用变量（其中 1 处补了漏掉的断言）。依赖补了主版本上界，避免上游发大版本把 CI 打红。
+- **发布链路首跑（run #152，手动触发 `package=true`）**：验证与打包全绿——PyInstaller onedir 后端、打包后端 `selftest --secrets`、假模型 E2E、黑洞超时 E2E、NSIS 安装包、node-pty 在 asar 外、两份 artifact 上传。**仍未做**：代码签名（`CSC_IDENTITY_AUTO_DISCOVERY=false` 是现成值）、版本号策略（仍 0.1.0）、更新渠道、安装包的真人安装验证。
+- 仍成立的历史边界：`test_goal_acceptance` 与 `test_bgshell_guidance` 各失败过一次，但都在对应的针对性修复之前，此后连跑全绿（后者本地连跑 3 次）。
 
 ## 修订（2026-11-01）
 
 清掉 2026-10 各节里「桌面端从未启动过」「远端触发未验证」这类已经不成立的结论。只改状态描述，不动当时的验证数字；仍成立的边界保留，但把「未验」收窄到具体控件和视觉项。
 
 - **桌面端已在日常使用**：启动、三栏、会话与审批主流程都有实证。仍没有核对记录的是间距/字号/动画/`+` 菜单 `side="top"` 的弹层方向，以及 best-of-n 的判据输入框与「验证 N 个候选」按钮。
-- **CI**：`push main` / `pull_request` 自动触发已恢复（`.github/workflows/desktop-windows.yml`），`ee/tests/test_ci_offline_gate.py` 守着这条；`verify→package` 的远端依赖关系仍没走过。
+- **CI**：`push main` / `pull_request` 自动触发已恢复（`.github/workflows/desktop-windows.yml`），`ee/tests/test_ci_offline_gate.py` 守着这条；~~`verify→package` 的远端依赖关系仍没走过~~ → 2026-11-02 已走过（run #152 全绿，见下一节）。
 - **T2、导出与 Goal 桌面端入口、D6-1 编排关系模型**：状态从「未做 / 未验」更新为已完成（行内用 `~~旧结论~~ →` 标注）。
 - **视觉验收闭环**：内核原先没有截图通路，UI 改动只能由用户肉眼验收。→ 2026-11-01 已补上（见下一节），现在 agent 能自己截一张当前窗口的图并看。
 
