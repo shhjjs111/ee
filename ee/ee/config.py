@@ -38,6 +38,8 @@ DEFAULTS: dict = {
     # 上下文压缩：上下文用量 ≥ threshold × 模型窗口时自动压缩（回合开始时和回合内每步之前检查）
     # 磁盘快照（影子 git 仓库）：disk=false 回退内存快照；清理时每个会话保留最近 keep_days 天、最近 keep_turns 个回合
     "snapshot": {"disk": True, "keep_days": 14, "keep_turns": 100},
+    # 工具输出归档（~/.ee/tool-output：超长输出全文 + 后台命令日志）：保留天数，0 = 不清理
+    "tool_output": {"keep_days": 30},
     "compact": {"auto": True, "threshold": 0.8, "keep_user_messages": 3, "keep_user_tokens": 20000},
     # 修剪旧工具输出（D5-10）：上下文 ≥ threshold × 窗口（低于压缩阈值）时把较早的大块工具结果换成占位，成批做一次。
     # 默认关闭：修剪会让后面整段历史的前缀缓存失效，DeepSeek（缓存命中价约 1/50）上往往更贵；需要时设 enabled = true

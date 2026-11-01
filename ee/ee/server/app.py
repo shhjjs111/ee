@@ -1073,8 +1073,10 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         backend.automations.start()                    # 自动化调度（D4-10）：错过的启动后补跑一次
         backend.loops.start()                          # 会话内 /loop（D5-3，只在内存里）
         gc_task = asyncio.create_task(_snapshot_gc_later(backend), name="ee-snapshot-gc")
+        out_gc_task = asyncio.create_task(_tool_output_gc_later(backend), name="ee-tool-output-gc")
         await stop
     gc_task.cancel()
+    out_gc_task.cancel()
     watchdog.stop()
     await backend.automations.stop()
     await backend.loops.stop()
@@ -1120,6 +1122,25 @@ async def _snapshot_gc_later(backend: Backend, delay: float = 120.0) -> None:
         pass
     except Exception:  # noqa: BLE001
         log.warning("影子仓库清理失败", exc_info=True)
+
+
+async def _tool_output_gc_later(backend: Backend, delay: float = 150.0) -> None:
+    """启动后清理一次工具输出归档（一天最多一次，保留天数见 [tool_output] keep_days）。
+
+    放在影子仓库清理之后（delay 更大），两件事都不急，避免启动瞬间抢磁盘。
+    """
+    from ee.core import retention
+    try:
+        await asyncio.sleep(delay)
+        cfg = await asyncio.to_thread(load_config, Path.home())
+        days = retention.settings(cfg.data)
+        r = await asyncio.to_thread(retention.gc, backend.home, days)
+        if not r.get("skipped"):
+            log.info("工具输出归档清理：%s", r)
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        log.warning("工具输出归档清理失败", exc_info=True)
 
 
 def _detach_stdin() -> int | None:
