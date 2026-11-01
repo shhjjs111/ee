@@ -24,6 +24,16 @@ def _fix_windows_console() -> None:
                 pass
 
 
+def _setup_logging() -> None:
+    """配日志，并顺手用日志里已有的首包记录回填延迟统计。
+
+    回填放在这里而不是每处 record 之前：日志目录就在 log.setup() 里确定，一次就能拿全。
+    """
+    from ee import log as eelog
+    from ee.core import latency
+    latency.backfill_from_log(eelog.setup())
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ee", description="ee：个人 AI 编程 agent（桌面端后端）")
     p.add_argument("-V", "--version", action="version", version=f"ee {__version__}")
@@ -67,8 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "serve":
-        from ee import log as eelog
-        eelog.setup()
+        _setup_logging()
         _migrate_secrets()
         from ee.server import app as server_app
         token = server_app.take_serve_token(args.token)        # 读完即从 os.environ 删除，子进程拿不到
@@ -85,8 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
         return 0
     if args.cmd == "exec":
-        from ee import log as eelog
-        eelog.setup()
+        _setup_logging()
         _migrate_secrets()
         from ee.headless import run as run_exec
         return run_exec(args)

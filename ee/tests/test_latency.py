@@ -144,3 +144,90 @@ def test_first_byte_is_recorded_after_a_successful_request():
     asyncio.run(go())
     key = latency.key_for("http://127.0.0.1:1/v1", "m")
     assert latency.samples(key) == 1
+
+
+# ---------------------------------------------------------------- 启动回填
+
+START = ("2026-11-01 16:{s:02d}:00,000 INFO [ee.model] 模型请求开始：{alias}（{url}，"
+         "系统代理 http://127.0.0.1:7897（来自系统代理设置））messages=82 tools=18 第 1 次")
+END = ("2026-11-01 16:{s:02d}:25,000 INFO [ee.model] 模型请求结束：{alias} 用时 22.3s finish=stop "
+       "文本 1192 字 工具调用 0 个 usage={{'prompt': 165246}} 首包={ms}ms 首字={ms}ms")
+
+
+def _log_lines(url, ms_list, alias="t"):
+    out = []
+    for i, ms in enumerate(ms_list):
+        out.append(START.format(s=i, alias=alias, url=url))
+        out.append(END.format(s=i, alias=alias, ms=ms))
+    return out
+
+
+def test_backfill_reads_first_byte_from_log(tmp_path):
+    """重启后统计清零，但慢接口往往刚开工就慢：从日志尾部回填，第一次慢请求就有参照。"""
+    f = tmp_path / "ee-backend.log"
+    f.write_text("\n".join(_log_lines("https://x/v1", [18000, 19000, 20000])) + "\n", encoding="utf-8")
+    assert latency.backfill_from_log(f) == 3
+    key = latency.key_for("https://x/v1")
+    assert latency.samples(key) == 3
+    assert latency.median_ms(key) == 19000
+
+
+def test_backfill_uses_alias_to_pair_address_with_first_byte(tmp_path):
+    """两个接口的记录混在同一个文件里也不能串：按 alias 把开始行的地址和结束行的首包配对。"""
+    f = tmp_path / "log"
+    f.write_text("\n".join(_log_lines("https://a/v1", [1000, 1000, 1000], alias="a")
+                         + _log_lines("https://b/v1", [9000, 9000, 9000], alias="b")) + "\n",
+                 encoding="utf-8")
+    latency.backfill_from_log(f)
+    assert latency.median_ms(latency.key_for("https://a/v1")) == 1000
+    assert latency.median_ms(latency.key_for("https://b/v1")) == 9000
+
+
+def test_backfill_falls_back_to_rotated_file(tmp_path):
+    """刚轮转过、当前文件几乎空时，往前翻备份，否则一启动照样没参照。"""
+    (tmp_path / "log.1").write_text("\n".join(_log_lines("https://x/v1", [18000, 19000])) + "\n",
+                                   encoding="utf-8")
+    cur = tmp_path / "log"
+    cur.write_text("\n".join(_log_lines("https://x/v1", [20000])) + "\n", encoding="utf-8")
+    assert latency.backfill_from_log(cur) == 3
+    assert latency.median_ms(latency.key_for("https://x/v1")) == 19000
+
+
+def test_backfill_keeps_only_recent_samples(tmp_path):
+    """回填同样受 KEEP 限制，且保留的是最近的（文件末尾）那些。"""
+    f = tmp_path / "log"
+    f.write_text("\n".join(_log_lines("https://x/v1", list(range(10, 10 + latency.KEEP + 10)))) + "\n",
+                 encoding="utf-8")
+    latency.backfill_from_log(f)
+    key = latency.key_for("https://x/v1")
+    assert latency.samples(key) == latency.KEEP
+    assert latency.median_ms(key) == 29        # 最后 20 条是 20..39，偶数个取中间两个 (29,30) 的平均向下取整
+
+
+def test_backfill_skips_default_interface_and_orphan_lines(tmp_path):
+    """没配 base_url 的默认接口对不上运行时的 key；只有结束行（开始行被轮转截掉）也跳过。"""
+    f = tmp_path / "log"
+    f.write_text("\n".join(_log_lines("默认接口", [18000, 19000, 20000])
+                         + [END.format(s=30, alias="t", ms=18000)]) + "\n", encoding="utf-8")
+    assert latency.backfill_from_log(f) == 0
+    assert not latency._data
+
+
+def test_backfill_only_takes_recent_requests(tmp_path):
+    """日志里的陈年记录不代表“现在这个接口”：只回填最近 hits_limit 次。"""
+    f = tmp_path / "log"
+    f.write_text("\n".join(_log_lines("https://x/v1", [1000] * 10 + [30000] * 5)) + "\n",
+                 encoding="utf-8")
+    assert latency.backfill_from_log(f, hits_limit=5) == 5
+    assert latency.samples(latency.key_for("https://x/v1")) == 5
+    assert latency.median_ms(latency.key_for("https://x/v1")) == 30000
+
+
+def test_backfill_is_idempotent_and_missing_file_is_harmless(tmp_path):
+    """serve/exec 两条入口都会配日志：重复调用不能把同一批记录记两遍。"""
+    assert latency.backfill_from_log(tmp_path / "nope.log") == 0
+    f = tmp_path / "log"
+    f.write_text("\n".join(_log_lines("https://x/v1", [18000, 19000, 20000])) + "\n", encoding="utf-8")
+    latency.backfill_from_log(f)
+    latency.backfill_from_log(f)
+    assert latency.samples(latency.key_for("https://x/v1")) == 3
