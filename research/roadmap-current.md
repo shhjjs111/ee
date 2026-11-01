@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-10-29。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-01（修订各节里已过时的「未验证」结论，见下方「修订」段）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -9,7 +9,7 @@
 | 阶段 | 工作 | 当前状态 | 生产入口 / 验证入口 |
 |---|---|---|---|
 | Wave 0 / T1 | 现行路线与历史设计分离 | 已完成（纯文档） | 本页、README、HANDOFF |
-| Wave 0 / T2 | PR/main 验证与显式发布分离，补 Vitest | 已完成（本地配置；远端触发未验证） | `.github\workflows\desktop-windows.yml`；`desktop\package.json` |
+| Wave 0 / T2 | PR/main 验证与显式发布分离，补 Vitest | 已完成（恢复 `push`/`PR` 自动触发；`test_ci_offline_gate.py` 守着，远端已多次跑绿） | `.github\workflows\desktop-windows.yml`；`desktop\package.json` |
 | Wave 1 / T3 | worktree 查询不改索引、读取失败不删成果、备份不完整不删、报告一致 | 已完成并验证 | `ee\ee\core\worktree.py`、`core\subagent.py`、`server\automations.py`；`ee\tests\test_worktree_contract.py` |
 | Wave 1 / T4 | MCP 连接绑定工作区/配置、用户侧信任、总截止时间 | 已完成并验证 | `ee\ee\mcp\`、`server\mcp_rpc.py`；`ee\tests\test_mcp_isolation.py` |
 | Wave 1 / T5 | 项目只能收紧预算；隔离失败不回退写主目录 | 已完成并验证 | `ee\ee\config.py`、`server\automations.py`；`ee\tests\test_budget_and_isolation.py` |
@@ -27,6 +27,15 @@
 | T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 判据编排 + 桌面端） | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`server\bestof_verify.py` 的 `bestof/verify`（每候选单轮判据）、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`test_bestof_verify.py`（5）、`BestofDialog.test.tsx`（7） |
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | 后置 | 发布 | 未开始，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+
+## 修订（2026-11-01）
+
+清掉 2026-10 各节里「桌面端从未启动过」「远端触发未验证」这类已经不成立的结论。只改状态描述，不动当时的验证数字；仍成立的边界保留，但把「未验」收窄到具体控件和视觉项。
+
+- **桌面端已在日常使用**：启动、三栏、会话与审批主流程都有实证。仍没有核对记录的是间距/字号/动画/`+` 菜单 `side="top"` 的弹层方向，以及 best-of-n 的判据输入框与「验证 N 个候选」按钮。
+- **CI**：`push main` / `pull_request` 自动触发已恢复（`.github/workflows/desktop-windows.yml`），`ee/tests/test_ci_offline_gate.py` 守着这条；`verify→package` 的远端依赖关系仍没走过。
+- **T2、导出与 Goal 桌面端入口、D6-1 编排关系模型**：状态从「未做 / 未验」更新为已完成（行内用 `~~旧结论~~ →` 标注）。
+- **视觉验收闭环**：内核没有截图能力，UI 改动只能由用户肉眼验收；agent 这一侧能自证的上限是 jsdom 断言 + `tsc`。这是当前设计边界，不是待办。
 
 ## 执行记录（2026-10-31，全仓体检修复 + 子代理优化）
 
@@ -110,7 +119,7 @@
 
 未执行 / 未验证：
 
-- **桌面端从未启动过**（`cd desktop && npm run dev` 没跑过）：间距、字号、弹出方向、动画、`+` 菜单的 `side="top"` 实际弹出位置全部未验。所有前端断言都停留在 jsdom 的 DOM 结构层。
+- ~~**桌面端从未启动过**~~ → 2026-11-01 纠正：桌面端已在日常使用，启动与主流程可用已有实证。当时未验的具体项（间距、字号、弹出方向、动画、`+` 菜单的 `side="top"` 实际弹出位置）仍没有逐条记录，jsdom 断言也仍然证明不了这些。
 - **`GoalMenu` 键盘导航未测**：↑↓ 选择、Esc 关闭只有实现没有断言。
 - ~~best-of-n 端到端不可用~~ → 已在 `5e33775` 补上 `bestof/verify`（见上节「判据编排」）。**仍未在真实桌面端点过**：判据输入框与「验证 N 个候选」按钮只有 jsdom 断言。
 
@@ -145,7 +154,7 @@
 
 未验证 / 保留边界：
 
-- **桌面端点不了**：判据输入框与「验证 N 个候选」按钮只有 jsdom 断言，未在真实 Electron 窗口里点过。
+- **判据输入框与「验证 N 个候选」按钮**：只有 jsdom 断言，没有在真实 Electron 窗口里操作过的记录（桌面端本身可用，未见的是这两个控件的实际操作）。
 - **`test_rpc_contract.py` 只跑了 1 个用例、1.02s**——交接文档说它会扫描整个 `desktop\src`、约 3 分钟。这里 1 秒跑完说明本次没有触发那一步扫描，**不能当作前端 RPC 名一致性已验证**。
 - 每个候选串行还是并行：实现里用 `asyncio.gather` 并行跑，但 `ee\tools\shell.run_command` 是否在同一事件循环里争用未实测。
 
@@ -198,10 +207,10 @@ e2e 卡住的根因（非后端）：`e2e_ws.py` 的 `reader()` 把每条通知 
 
 未验证 / 保留边界：
 
-- 导出与 Goal 的**桌面端入口**未做（导出只有 CLI，Goal 只有 `ee exec --goal`）。用户明确要求先不做桌面端。
+- ~~导出与 Goal 的**桌面端入口**未做~~ → 已在 `684500a`（会话行菜单「导出…」）、`9eb4010`（`+` 菜单「目标」）补齐，`turn/start` 接 goal 见 `031dd19`。
 - Goal 判据的测试计数解析只保证 pytest；vitest / go test 解析不到会按 0 处理（保守方向：
   表现为跑满轮次后 exhausted，不会假成功）。
-- `ee export` 的 Electron 保存对话框路径未验（本机未启动过桌面端）。
+- `ee export` 的 Electron 保存对话框路径未验（当时本机没启动过桌面端；桌面端现在已日用，但这个对话框仍没有走通的记录）。
 - 附件不参与导出：实测 items 里没有 image/attachment 字段（`threads.py:289` 接收但未落 items）。
 
 
@@ -233,7 +242,7 @@ e2e 卡住的根因（非后端）：`e2e_ws.py` 的 `reader()` 把每条通知 
 
 - **typescript 语言服务器未验**：本机没有 `typescript-language-server`，只有 python 路径跑过真实服务器。
 - **进程退出/崩溃恢复未用真实服务器验**：`test_crash_restarts_on_next_acquire` 仍是 Fake client。
-- **编辑器里的实际观感未验**：桌面端没启动过，工具输出的可见性只验到字符串层面。
+- **编辑器里的实际观感未验**：工具输出的可见性只验到字符串层面，没做视觉核对（桌面端已在日用，但这一项不是启动就能证明的）。
 - 集成用例用 `npx --package pyright` 启动，首次拉包约 60 秒；已给它 120 秒预算。机器上直接有 `pyright-langserver` 时走 PATH，不经过 npx。
 - 会话内只起一种语言的服务器（按根目录特征文件判定），多语言项目需要后续扩。
 
@@ -279,9 +288,9 @@ D6-1 的 U1–U7 已全部提交并推送（`9d867f6`、`d68af00`、`58e1e67`、
 
 未执行 / 未验证：
 
-- 远端 GitHub Actions：新 workflow 的 PR 触发、verify→package 依赖关系未在真实远端跑过；本地无法验证。
+- ~~远端 GitHub Actions：新 workflow 的 PR 触发、verify→package 依赖关系未在真实远端跑过~~ → 2026-10-30 仓库公开后恢复 `push`/`PR` 自动触发，后续提交的 verify 均在远端跑绿（见上两节记录）。仍未走过的是 `verify→package` 这一段依赖关系。
 - 全量 pytest 已在项目 `.venv` 下执行过一次（1578 passed / 15 skipped / 0 failed）；日常仍按波次跑相关子集。
-- Electron 桌面端实际渲染与交互。
+- ~~Electron 桌面端实际渲染与交互~~ → 桌面端已日常使用（启动、三栏、会话、审批主流程可用）。仍未核对的是逐项视觉细节：间距、字号、动画、弹层方向。
 - 真实 MCP 服务器跨项目行为、真实模型评测。
 - `ee\scripts\e2e_ws.py` 已接入 CI 并实跑通过（普通 / `--blackhole` / 编排三种场景）。CI 的源码后端那一步原先缺 `working-directory: ee`，从仓库根跑会因命名空间包崩溃，已修。编排闭环已验通：`thread/create_child` → `thread/wait` → 终态 `completed` → `thread/children` 能列出，exit=0。
 - 桌面端已接 `thread/status`：`refreshChildStatus` 在列表加载后补拉子会话的 `changed_count` 与终态，U8 卡片的「N 处改动」不再是空的。逐个子会话查、单个失败静默跳过。
@@ -290,7 +299,7 @@ D6-1 的 U1–U7 已全部提交并推送（`9d867f6`、`d68af00`、`58e1e67`、
 
 - 删除“正在运行/等待压缩/等待审批”会话的完整时序测试（当前只覆盖删除后迟到写入）。
 - settings 保存与在途请求的竞争场景。
-- D6-1 编排关系模型（需与普通 fork 的 `parent_id` 分离）。
+- ~~D6-1 编排关系模型（需与普通 fork 的 `parent_id` 分离）~~ → 已在 D6-1 Wave A / U1–U4 完成（`orchestrator_cap.py`，见上方状态表）。
 
 ## 文档用途
 

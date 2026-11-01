@@ -186,7 +186,7 @@ graph TD
 
 ## 未验证 / 待确认
 
-- 桌面端 Electron 保存对话框的实际行为未验（本机未启动过桌面端）。
+- 桌面端 Electron 保存对话框的实际行为未验（成文时本机未启动过桌面端；2026-11-01 起桌面端已日用，但这个对话框仍没有走通的记录）。
 - **附件已取证**：`threads.py:289` 的 `start_turn(images, attachments)` 确实接受附件，
   但实测 5 个真实会话的 items 键集合里没有任何 image/attachment 字段
   （`{type,text,id,ts,seq,hist,snap,snap_epoch,tree,tree_after,call_id,name,args,summary,status,output,details,reasoning,streaming,reason,duration_ms,usage}`）。
