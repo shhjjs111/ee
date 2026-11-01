@@ -35,7 +35,29 @@
 - **桌面端已在日常使用**：启动、三栏、会话与审批主流程都有实证。仍没有核对记录的是间距/字号/动画/`+` 菜单 `side="top"` 的弹层方向，以及 best-of-n 的判据输入框与「验证 N 个候选」按钮。
 - **CI**：`push main` / `pull_request` 自动触发已恢复（`.github/workflows/desktop-windows.yml`），`ee/tests/test_ci_offline_gate.py` 守着这条；`verify→package` 的远端依赖关系仍没走过。
 - **T2、导出与 Goal 桌面端入口、D6-1 编排关系模型**：状态从「未做 / 未验」更新为已完成（行内用 `~~旧结论~~ →` 标注）。
-- **视觉验收闭环**：内核没有截图能力，UI 改动只能由用户肉眼验收；agent 这一侧能自证的上限是 jsdom 断言 + `tsc`。这是当前设计边界，不是待办。
+- **视觉验收闭环**：内核原先没有截图通路，UI 改动只能由用户肉眼验收。→ 2026-11-01 已补上（见下一节），现在 agent 能自己截一张当前窗口的图并看。
+
+## 执行记录（2026-11-01，回合内看图 + 桌面端截图）
+
+起因：想给「改完 UI 自己看一眼」搭一条路，读代码时发现两个前置问题。
+
+| 问题 | 实测现象 | 修法 |
+|---|---|---|
+| `pending_images` 只在 `_add_user`（回合开始 / 下一条用户消息）注入 | `read(as_image=true)` 本回合里看到的是「下一轮可见」——模型得先把回合交还给用户，等于不可用 | `Session._flush_pending_images`：工具返回后、下一步采样前补一条 `_kind="note"` 的 meta 用户消息（不污染用户原话/界面）；`test_midturn_images` 3 例 |
+| 没有截图通路 | `grep capturePage desktop/electron` 零命中 | 新增 `core/screen.py`（等待表 + PNG 校验）、`tools/screenshot.py`、notify `ui/capture`、RPC `ui/capture_result`、Electron `win.webContents.capturePage()` |
+
+端到端探针（真后端 + 假模型 + 假桌面，走真 WebSocket）当场抓到两个只靠单测发现不了的缺陷：
+
+| 缺陷 | 后果 | 修法 |
+|---|---|---|
+| `screenshot` 没进 `permissions.READ_TOOLS` | 走「未知工具」分支：默认模式每次弹审批，只读模式直接拒 | 加进白名单 + `test_screenshot_is_a_read_tool` |
+| 工具把 `CaptureRequest` 发给了 `ctx.emit` | `ctx.emit` 是往工具输出追加文字的字符串通道，直接 `TypeError` | 改走 `ctx.extra["emit_event"]`，并在 `screen.request` 的注释里写明 |
+
+取舍：截图只在 `EE_DESKTOP=1`（桌面端下发的后端）注册——CLI / headless 没有窗口，不该背 schema 开销；`FULL_LIMIT` 4500 → 4650，抬高部分正好等于这个工具（实测 +113 近似）。
+
+验证：后端 `test_server / test_permissions / test_screenshot / test_midturn_images / test_prefix_budget / test_tool_output_gc / test_rpc_contract / test_loop` 123 passed；`scripts/verify.sh --quick` 全部通过（含前端 293 例 + tsc）；真模型验图（同回合读出随机码 `JOMT-9163`）；端到端探针 PASS（`ui/capture` 1 次、截图 8×8、模型下一步收到 1 张图）。
+
+未验证：真机 Electron 窗口的 `capturePage` 结果（需要重启桌面端才加载新代码）；截图的可读性（Retina 缩放后字太小 / 暗色主题对比度）需要看真实渲染才知道。
 
 ## 执行记录（2026-10-31，全仓体检修复 + 子代理优化）
 
