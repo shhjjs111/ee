@@ -472,6 +472,7 @@ export interface EeBridge {
   openExternal(url: string): Promise<void>;
   setTheme(t: string): Promise<boolean>;
   appInfo(): Promise<{ version: string; logs: string; packaged: boolean }>;
+  captureWindow?(): Promise<{ data_url?: string; error?: string }>;
   onBackendExit(cb: (info: { code: number | null; tail: string }) => void): () => void;
   log?(line: string): void; // 写进 logs/backend.log
   // D4-5 桌面通知 + 托盘
@@ -572,7 +573,7 @@ export type ContextBreakdown = {
   cache: { hit: number; hit_rate: number | null; hit_coverage: number | null };
   compactions: number;
   frozen: boolean;
-  thresholds: { compact: number | null; prune: number | null };
+  thresholds: { compact: number | null; prune: number | null; prune_tokens?: number | null };
   model: string;
   estimated: boolean;
 };

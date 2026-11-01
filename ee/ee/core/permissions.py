@@ -22,6 +22,9 @@ MODE_LABEL = {"read-only": "只读", "default": "默认", "auto": "全自动", "
 READONLY_MODES = ("read-only", "plan")
 
 READ_TOOLS = {"read", "grep", "glob", "todo", "present_plan", "ask_user", "skill", "repo_map",
+              # 桌面端截图（2026-11-01）：只读 ee 自己的窗口，不碰文件也不跑命令。
+              # 不列在这里会走"未知工具"分支——默认模式每次都问，只读模式直接拒。
+              "screenshot",
               # 指挥会话的查询工具（D6-1）：只读、不改索引、不建会话。不列在这里会走"未知工具"
               # 分支——默认模式每次都问，只读模式直接拒，查询工具等于用不了。
               "threads_list", "thread_status", "thread_wait"}

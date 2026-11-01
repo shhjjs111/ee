@@ -134,6 +134,19 @@ ipcMain.on("log:write", (_e, line: string) => {
   if (typeof line === "string") backend.appendLog(line.slice(0, 4000));
 });
 ipcMain.handle("app:info", () => ({ version: app.getVersion(), logs: app.getPath("logs"), packaged: app.isPackaged }));
+// 截图给模型看（后端 screenshot 工具 → notify ui/capture → 这里）：只截 ee 自己的窗口，
+// 截不到别的程序；返回 PNG data URL，由渲染进程回送 RPC ui/capture_result。
+ipcMain.handle("ui:capture", async () => {
+  try {
+    if (!win || win.isDestroyed()) return { error: "窗口不存在（可能已关到托盘）" };
+    if (win.webContents.isLoading()) return { error: "窗口还在加载" };
+    const img = await win.webContents.capturePage();
+    if (img.isEmpty()) return { error: "截到的是空图（窗口可能被最小化）" };
+    return { data_url: img.toDataURL() };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+});
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

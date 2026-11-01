@@ -185,3 +185,16 @@ def test_git_pager_is_neutralized_by_child_env(tmp_path):
                        text=True, timeout=30, env=env, cwd=str(tmp_path))
     # 不在仓库里 -> 退出码非 0，但关键是它没有卡在分页器上（能正常返回）
     assert r.returncode is not None
+
+
+def test_screenshot_is_a_read_tool(tmp_path):
+    """截图只读 ee 自己的窗口：不该在默认模式弹审批，也不该在只读模式被拒。
+
+    背景：端到端探针抓到的真实问题——screenshot 没进 READ_TOOLS，走"未知工具"分支，
+    默认模式每次都要用户点一次批准，截图能力等于半残。
+    """
+    from ee.core.permissions import READ_TOOLS
+
+    assert "screenshot" in READ_TOOLS
+    for mode in ("default", "read-only", "auto"):
+        assert pol(tmp_path, mode).check("screenshot", {}).action == "allow", mode

@@ -96,6 +96,12 @@ class QuestionRequest(Event):
 
 
 @dataclass
+class CaptureRequest(Event):
+    """请求界面截一张当前窗口的图（screenshot 工具用）。界面通过 RPC `ui/capture_result` 回送。"""
+    request_id: str
+
+
+@dataclass
 class ApprovalDecision:
     choice: str             # once | always | deny | deny_with_reason
     reason: str = ""

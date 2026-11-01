@@ -857,6 +857,30 @@ export function onNotification(method: string, p: any) {
   // 保证 turn/completed、item/updated 到达前流式文本已经追平（T22）。
   if (method !== "item/delta") deltaBuf.flush();
   const st = useApp.getState();
+  if (method === "ui/capture") {
+    // 后端要一张当前窗口的图（screenshot 工具）：截完把 PNG 回送。
+    // 失败也要回——不回的话工具那边要等满 20 秒超时，白浪费一拍。
+    const { thread_id, id } = p || {};
+    void (async () => {
+      let r: { data_url?: string; error?: string } = { error: "当前环境不支持截图" };
+      try {
+        r = (await window.ee?.captureWindow?.()) ?? r;
+      } catch (e) {
+        r = { error: (e as Error).message };
+      }
+      try {
+        await st.rpc?.call("ui/capture_result", {
+          thread_id,
+          id,
+          data_url: r.data_url || "",
+          error: r.data_url ? "" : r.error || "截图失败",
+        });
+      } catch {
+        /* 后端已超时或正在重连：工具那边会自己按超时收尾，这里不必再打扰用户 */
+      }
+    })();
+    return;
+  }
   if (method === "thread/updated") {
     const t = p.thread as ThreadSummary;
     const prev = st.threads.find((x) => x.id === t.id);

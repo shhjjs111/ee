@@ -101,6 +101,7 @@ class Backend:
             "turn/withdraw": self.turn_withdraw,
             "approval/respond": self.approval_respond,
             "question/respond": self.question_respond,
+            "ui/capture_result": self.capture_result,
             "settings/get": self.settings_get,
             "settings/set": self.settings_set,
             "models/list": self.models_list,
@@ -675,6 +676,26 @@ class Backend:
             return t.answer(call_id, answer)
         except ValueError as e:
             raise RpcError(str(e))
+
+    async def capture_result(self, thread_id: str, id: str, data_url: str = "", error: str = "") -> dict:
+        """界面回送截图（或报错）：唤醒等着这张图的 screenshot 工具。
+
+        超时后到达的回包一律返回 ok=False（工具那边已经按失败收尾了），不能抛错——
+        前端不该因为晚到一步就弹一个失败提示。
+        """
+        self._check_thread_id(thread_id)
+        t = await self._athread(thread_id)
+        hub = getattr(t.session, "screen", None) if t.session is not None else None
+        if hub is None:
+            return {"ok": False, "reason": "这个会话没有截图通道"}
+        if error and not data_url:
+            return {"ok": hub.resolve(id, None, error)}
+        from ee.core.screen import decode_data_url
+        try:
+            png = await asyncio.to_thread(decode_data_url, data_url)
+        except Exception as e:  # noqa: BLE001  非 PNG / 太大 / base64 坏了：都是界面侧的问题
+            return {"ok": hub.resolve(id, None, f"截图数据无效：{e}")}
+        return {"ok": hub.resolve(id, png)}
 
     # ------------------------------------------------------------ 设置 / 模型
     async def settings_get(self) -> dict:

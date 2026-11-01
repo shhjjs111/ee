@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("ee", {
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   setTheme: (t: string) => ipcRenderer.invoke("app:setTheme", t),
   appInfo: () => ipcRenderer.invoke("app:info"),
+  captureWindow: () => ipcRenderer.invoke("ui:capture"),
   log: (line: string) => ipcRenderer.send("log:write", line),
   term: {
     available: () => ipcRenderer.invoke("term:available"),

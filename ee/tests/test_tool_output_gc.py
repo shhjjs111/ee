@@ -73,6 +73,19 @@ def test_gc_without_dir_is_noop(tmp_path):
     assert r["skipped"] is True and r["removed"] == 0
 
 
+def test_gc_also_cleans_screenshots(tmp_path):
+    """截图也在这套保留策略里：只删带时间戳的 PNG，目录里的其它东西不碰。"""
+    shots = tmp_path / "screenshots"
+    old = _mk(shots, "20260101-000000-abcdef.png", 40)
+    new = _mk(shots, "20990101-000000-abcdef.png", 0)
+    keep = _mk(shots, "my-note.png", 40)
+
+    r = R.gc(tmp_path, keep_days=30, force=True)
+
+    assert r["removed"] == 1 and r["kept"] == 1
+    assert not old.exists() and new.exists() and keep.exists()
+
+
 def test_default_config_has_the_setting():
     from ee.config import DEFAULTS
     assert R.DEFAULT_DAYS == 30                     # 写死：两处默认值不能各自漂走

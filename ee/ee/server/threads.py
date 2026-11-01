@@ -26,6 +26,7 @@ from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage,
                             ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
                             TurnStart, Usage)
 from ee.core.events import QuestionRequest, QueueDelivered, QueueReturned, SubagentEnd, SubagentStart, SubagentUpdate
+from ee.core.events import CaptureRequest
 from ee.core import queue as Q
 from ee.core.permissions import MODES
 from ee.core.subagent import apply_event as apply_subagent_event
@@ -860,6 +861,9 @@ class Thread:
                 self.approvals[ev.call_id] = (ev.future, it)
             self.notify("thread/updated", {"thread": self.summary()})
             self._bubble_to_parent("approval", ev.call_id, ev.tool, ev.title, ev.detail, ev.prefix)
+        elif isinstance(ev, CaptureRequest):
+            # 截图：工具正等着界面回图（RPC ui/capture_result 唤醒），这里只把请求递给前端。
+            self.notify("ui/capture", {"thread_id": self.id, "id": ev.request_id})
         elif isinstance(ev, PlanUpdate):
             if self.plan_item is None:
                 self.plan_item = self._add({"type": "plan", "items": ev.items})

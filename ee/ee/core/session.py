@@ -50,6 +50,7 @@ log = logging.getLogger("ee.session")
 LAST_STEP_NOTE = ("[系统提示] 已达到本回合允许的最大步数。请不要再调用任何工具，"
                   "只用文字总结目前的进展、结果、尚未完成的部分和建议的下一步。")
 INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执行）。"
+MIDTURN_IMAGE_NOTE = ("[系统提示] 下面是刚读到的图片，用来继续当前任务（不是新的用户要求）。")
 # 审批等待上限（秒）。无人值守 / 窗口关掉 / 前端断线时，ApprovalRequest 的 future
 # 永远等不到结果：_turn 一直挂着、_history_lock 一直被持有，/compact 和下一回合
 # 全堵在锁后，会话变成「永远 running」。超时按拒绝处理并给出提示。
@@ -101,6 +102,8 @@ class Session:
         from ee.core.bgproc import BgManager
         import uuid as _uuid
         self.bg = BgManager(self.home / "tool-output", owner=_uuid.uuid4().hex[:8])   # 后台命令（D4-6）
+        from ee.core.screen import ScreenHub
+        self.screen = ScreenHub(self.home / "screenshots")   # 桌面端截图（screenshot 工具）
         perms = config.permissions
         self.policy = PermissionPolicy(mode=mode or perms.get("mode", "default"), workspace=self.cwd,
                                        allow=list(perms.get("allow", [])), ask=list(perms.get("ask", [])),
@@ -1012,6 +1015,23 @@ class Session:
             msg["_images"] = list(images)
         self._append(msg)
 
+    def _flush_pending_images(self, emit) -> None:
+        """回合内看图：工具登记了待看图片（`read(as_image=true)`、截图）时，在下一步采样前
+        补一条 meta 用户消息。
+
+        不补的话图片要到下一条用户消息才生效（`_add_user`），对「改完自己看一眼」这种用法
+        等于不可用——模型得先把回合交还给用户才看得见。消息带 `_kind="note"`：压缩时
+        不当成用户原话（`compaction.is_real_user` 会跳过），界面也不会多出一条用户发言。
+        """
+        pending = list(getattr(self.state, "pending_images", None) or [])
+        if not pending:
+            return
+        self.state.pending_images = []
+        if not self.profile.vision:
+            emit(Notice(f"当前模型 {self.spec.alias} 不支持看图，这 {len(pending)} 张图片没有发给模型（换支持图像的模型，例如 deepseek-flash）。", "warn"))
+            return
+        self._append({"role": "user", "content": MIDTURN_IMAGE_NOTE, "_kind": "note", "_images": pending})
+
     async def _ensure_instructions_async(self) -> None:
         if self._sys_src is None and self.prefix is None:   # 文件读取放到线程里，别卡事件循环
             self._sys_src = await asyncio.to_thread(SP.resolve, self.cwd, self.home, self.config.data)
@@ -1243,6 +1263,7 @@ class Session:
                     return
                 if note:
                     self._append({"role": "user", "content": note, "_kind": "note"})
+                self._flush_pending_images(emit)      # 工具刚读到的图，下一步就能看到
                 await self._deliver(Q.STEER, emit)
         except asyncio.CancelledError:
             log.info("回合被中断：会话 %s", self.store.id)

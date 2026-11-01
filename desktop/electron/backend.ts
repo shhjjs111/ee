@@ -130,7 +130,8 @@ export class Backend {
       const child = spawn(cmd, args, {
         cwd,
         // EE_LOG_DIR：后端自己的 ee-backend.log 写到同一个 logs 目录（Windows：%APPDATA%\ee\logs）
-        env: { ...process.env, ...env, EE_SERVE_TOKEN: token, EE_LOG_DIR: path.dirname(this.opts.logFile), PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" },
+        // EE_DESKTOP：告诉内核“这次是桌面端下发的”，screenshot 工具只在有真窗口时注册（子进程会被剥掉）
+        env: { ...process.env, ...env, EE_SERVE_TOKEN: token, EE_DESKTOP: "1", EE_LOG_DIR: path.dirname(this.opts.logFile), PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });

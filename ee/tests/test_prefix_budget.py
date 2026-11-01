@@ -16,7 +16,9 @@ from conftest import make_session
 
 APPROX_CHARS_PER_TOKEN = 2.2
 LEAN_LIMIT = 1250        # 近似 token（2026-10-30 read 加 as_image 参数 +26，预算随之放宽；仍是防 schema 膨胀的守卫）
-FULL_LIMIT = 4500        # 近似 token（实测约 4,398；真实 tokenizer 约 3,822）
+FULL_LIMIT = 4650        # 近似 token（2026-11-01 由 4500 抬到 4650：新增桌面端 screenshot 工具，
+#                         实测 +113 近似 ≈ +98 真实；真实 tokenizer 口径约 4,010，仍低于当初实测线
+#                         （3,822 真实 / 4,398 近似）。抬高部分正好等于这个工具，不是留新余量）
 
 
 def _prefix(workspace, **data):
@@ -64,6 +66,25 @@ def test_every_tool_description_is_short(ee_home, workspace, profile):
         assert f["description"].count("。") + f["description"].count("；") <= 3, f["name"]
         for k, v in (f["parameters"].get("properties") or {}).items():
             assert len(v.get("description", "")) <= 70, (f["name"], k)
+
+
+def test_desktop_table_fits_with_screenshot(ee_home, workspace, monkeypatch):
+    """桌面端多一个 screenshot：工具表仍然要在预算内（这个工具只在 EE_DESKTOP=1 时注册）。"""
+    monkeypatch.setenv("EE_DESKTOP", "1")
+    s, p = _prefix(workspace)
+    names = [t["function"]["name"] for t in p.tools]
+    assert "screenshot" in names, f"桌面端工具表里没有 screenshot：{names}"
+    n = approx_tokens(p)
+    print(f"desktop 近似 {n} token（{len(names)} 个工具）")
+    assert n <= FULL_LIMIT
+
+
+def test_cli_table_has_no_screenshot(ee_home, workspace, monkeypatch):
+    """CLI / headless 没有窗口：不该为截图工具付前缀开销。"""
+    monkeypatch.delenv("EE_DESKTOP", raising=False)
+    s, p = _prefix(workspace)
+    names = [t["function"]["name"] for t in p.tools]
+    assert "screenshot" not in names, f"没有界面时不该注册 screenshot：{names}"
 
 
 def test_lsp_tool_schema_is_small():

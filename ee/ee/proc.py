@@ -20,6 +20,9 @@ IS_WINDOWS = sys.platform == "win32"
 # 只属于 ee 后端自己的机密环境变量：绝不传给任何子进程（shell、后台命令、MCP、hooks、git…）。
 # EE_SERVE_TOKEN 是桌面端连后端 WebSocket 的口令，模型跑的命令拿到它就能连上来自己批准审批。
 SECRET_ENV_KEYS = ("EE_SERVE_TOKEN",)
+# 后端自己的运行标记：不是机密，但同样不该漏给子进程——`EE_DESKTOP=1` 会决定工具表里有没有
+# screenshot，漏给 pytest / shell 会让同一个测试在不同运行环境下收集到不同工具表（随机红）。
+BACKEND_ONLY_ENV = ("EE_DESKTOP",)
 
 
 def child_environ(base=None, extra: dict | None = None) -> dict:
@@ -27,7 +30,7 @@ def child_environ(base=None, extra: dict | None = None) -> dict:
     env = dict(os.environ if base is None else base)
     if extra:
         env.update(extra)
-    for k in SECRET_ENV_KEYS:
+    for k in SECRET_ENV_KEYS + BACKEND_ONLY_ENV:
         env.pop(k, None)
     return env
 

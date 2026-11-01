@@ -1,6 +1,8 @@
 """工具注册。顺序固定（工具表是缓存前缀的一部分，不能重排）。"""
 from __future__ import annotations
 
+import os
+
 from ee.tools.apply_patch import ApplyPatchTool
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult, ToolState
 from ee.tools.edit import EditTool
@@ -48,6 +50,12 @@ def build_tools(profile, config=None, agent: str | None = None,
         tools.append(AskUserTool())
     if getattr(profile, "edit_style", "edit") == "apply_patch":
         tools.append(ApplyPatchTool())
+    # 桌面端截图（2026-11-01）：截图需要真实窗口，CLI / headless 里调了只会报错，所以只在
+    # 桌面端下发的后端里注册（desktop/electron/backend.ts 设 EE_DESKTOP=1），
+    # 那些环境不背这 ~95 token 的 schema + 规则开销。
+    if data0.get("screenshot", True) and os.environ.get("EE_DESKTOP") == "1":
+        from ee.tools.screenshot import ScreenshotTool
+        tools.append(ScreenshotTool())
     if config is None:
         return tools
     from ee.tools.web import WebFetchTool, WebSearchTool, fetch_mode, web_config
