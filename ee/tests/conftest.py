@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -13,6 +15,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 测试不能写用户真实的 ee-backend.log（%APPDATA%\ee\logs）：那个目录要只留真实运行。
+# 实测一份生产日志 14104 行里约 1745 行是 pytest 写的——“事件循环卡住 8 秒”“磁盘已满”
+# “项目配置字段被忽略”全是测试制造的，真实问题被淹没，排查时得先花力气剔噪声。
+_TEST_LOG_DIR = Path(tempfile.mkdtemp(prefix="ee-test-logs-"))
+os.environ["EE_LOG_DIR"] = str(_TEST_LOG_DIR)
+atexit.register(lambda: shutil.rmtree(_TEST_LOG_DIR, ignore_errors=True))
 
 
 def text_chunks(s: str, n: int = 3) -> list[dict]:
