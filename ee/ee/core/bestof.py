@@ -17,7 +17,7 @@ unverified——这与本项目在 CI 上踩过的「0 passed 也是 exit 0」�
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

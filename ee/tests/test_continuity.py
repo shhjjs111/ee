@@ -15,7 +15,6 @@ Goal 的判据命令只存在于 `threads._consume_goal` 的局部变量 `goal["
 """
 from __future__ import annotations
 
-import pytest
 
 from ee.core.goal_feedback import build_feedback
 from ee.core.goal import GoalSpec, Verdict

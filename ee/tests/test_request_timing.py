@@ -12,9 +12,7 @@
 """
 from __future__ import annotations
 
-import asyncio
 
-import pytest
 
 from conftest import finish, make_session, run, text_chunks
 

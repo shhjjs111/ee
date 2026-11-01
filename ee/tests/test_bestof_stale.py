@@ -76,7 +76,6 @@ def test_report_and_dict_expose_stale():
 
 def test_verify_binds_state_fingerprint(ee_home, workspace):
     """真实 bestof/verify 必须给候选写上 verified_state，否则 stale 永远判不出来。"""
-    import asyncio
     import subprocess
 
     from ee.core import bestof as B

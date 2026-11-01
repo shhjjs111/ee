@@ -15,7 +15,6 @@ import pytest
 from conftest import finish, text_chunks
 
 from ee.config import load_config
-from ee.server.app import RpcError
 from test_automations import make_backend, new_auto
 
 

@@ -35,7 +35,7 @@ def test_image_visible_in_the_same_turn(workspace):
     ]
     s, fake = make_session(workspace, script)
 
-    events = run(collect(s, "读一下这张图"))
+    run(collect(s, "读一下这张图"))
 
     assert len(fake.calls) == 2, "应该有两步：工具调用 + 收尾"
     blocks = _image_blocks(fake.calls[1])

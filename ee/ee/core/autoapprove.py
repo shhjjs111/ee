@@ -21,7 +21,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # 只读 / 计划模式下，这些工具连"建议放行"都不该出现
 MUTATING_TOOLS = frozenset({"edit", "write", "apply_patch"})

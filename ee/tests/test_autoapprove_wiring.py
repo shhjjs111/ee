@@ -10,9 +10,7 @@
 """
 from __future__ import annotations
 
-import asyncio
 
-import pytest
 
 
 def _decision(action="ask", prefix="shell(git status *)", force=False):

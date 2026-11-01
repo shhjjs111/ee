@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeClient, finish, text_chunks
+from conftest import FakeClient
 from ee.config import load_config
 from ee.core.providers.openai_chat import ChatClient
 from ee.server.app import Backend

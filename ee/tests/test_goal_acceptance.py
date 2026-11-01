@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import io
-import json
 import sys
 
 from conftest import FakeClient, finish, text_chunks, tool_chunks

@@ -121,8 +121,6 @@ def test_settings_tolerates_garbage():
 
 def test_observe_writes_nothing_when_disabled(tmp_path):
     """默认关闭时，observe() 连日志都不写——老用户行为完全不变。"""
-    import asyncio
-    from pathlib import Path
 
     from ee.config import load_config
     from ee.core.session import Session

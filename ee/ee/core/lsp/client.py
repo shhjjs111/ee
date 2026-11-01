@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
 from typing import Any
 

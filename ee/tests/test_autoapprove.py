@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 
 def _dec(action: str, reason: str = "", prefix: str = "", force: bool = False):

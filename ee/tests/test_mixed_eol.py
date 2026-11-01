@@ -7,7 +7,6 @@
 
 修法：读入时记住**每一行**原来的换行符，写回时按行还原；只有新加的行才用文件的主风格。
 """
-import pytest
 
 from ee.core.atomic import write_bytes as atomic_write
 from ee.tools import fileops

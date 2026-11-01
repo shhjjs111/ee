@@ -8,7 +8,6 @@ todo/read/read/grep —— 这四个都在 permissions.READ_TOOLS 里，**免审
 import sys
 from pathlib import Path
 
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

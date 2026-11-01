@@ -15,7 +15,6 @@
 """
 from pathlib import Path
 
-import pytest
 
 from ee.core import sandbox as SB
 

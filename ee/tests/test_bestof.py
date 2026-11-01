@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 
 def _cand(cid: str, *, verified=False, cost=0.0, worktree=None):

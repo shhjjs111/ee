@@ -4,7 +4,7 @@ from conftest import run
 
 from ee.tools import ToolContext, ToolError, ToolState
 from ee.tools.edit import EditTool
-from ee.tools.fileops import Edit, apply_edits, replace
+from ee.tools.fileops import replace
 from ee.tools.read import ReadTool
 
 

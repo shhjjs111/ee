@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 
 def _make_thread(workspace):

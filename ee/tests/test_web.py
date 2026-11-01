@@ -174,7 +174,7 @@ def test_web_tools_allowed_in_read_only(ee_home, workspace, mock):
         tool_chunks(0, "c1", "web_search", {"query": "abc"}) + finish("tool_calls"),
         text_chunks("好") + finish("stop"),
     ], mode="read-only")
-    ev = run(collect(s, "搜一下"))
+    run(collect(s, "搜一下"))
     tool_out = [m for m in s.history if m["role"] == "tool"][0]["content"]
     assert "https://u" in tool_out
     names = [t["function"]["name"] for t in fake.calls[0]["tools"]]

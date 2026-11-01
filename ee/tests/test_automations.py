@@ -370,6 +370,7 @@ def test_scheduler_loop_starts_and_stops(ee_home, workspace):
         b.automations.tick = 0.05
         b.automations.startup_delay = 0
         a = (await b.call("automations/create", {"automation": new_auto(b, workspace)}))["automation"]
+        assert a["id"], "创建失败后面根本不会跑，这里先钉住返回值"
         b.automations.start()
         await asyncio.sleep(0.1)
         clock.t += 600

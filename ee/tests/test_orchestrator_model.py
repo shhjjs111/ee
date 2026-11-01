@@ -8,7 +8,6 @@
 """
 import asyncio
 
-import pytest
 
 from ee.server.app import Backend
 

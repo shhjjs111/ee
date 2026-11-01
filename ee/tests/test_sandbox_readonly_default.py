@@ -11,9 +11,7 @@ PowerShell 管道操作符的成员调用已经修了三轮（裸词 / 冒号 / 
 
 这条不变量要在"计划生成"这一层钉住：sandbox.plan() 收到的 data 决定一切。
 """
-from pathlib import Path
 
-import pytest
 
 from ee.core import sandbox as SB
 

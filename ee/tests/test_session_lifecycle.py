@@ -13,7 +13,6 @@
 """
 import asyncio
 
-import pytest
 
 from ee.server.app import Backend
 
@@ -239,7 +238,7 @@ def test_aclose_releases_lsp_manager(ee_home, workspace):
     session 里 new LspManager() + acquire()，但 release/shutdown 全仓无调用
     （报告 P1-11）。会话删除 / 服务退出后子进程一直挂着。
     """
-    from conftest import FakeClient, finish, make_session, text_chunks
+    from conftest import finish, make_session, text_chunks
 
     calls = []
 

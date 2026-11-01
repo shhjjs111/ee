@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 
 def test_pending_images_injected_into_next_user_message(tmp_path, monkeypatch):

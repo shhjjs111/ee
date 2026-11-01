@@ -180,7 +180,7 @@ def test_session_attaches_mcp_tools(ee_home, workspace):
 
     async def go():
         s, fake = make_session(workspace, script)
-        evs = await collect(s, "调用 echo")
+        await collect(s, "调用 echo")
         names = [t["function"]["name"] for t in fake.calls[0]["tools"]]
         assert names[-4:] == ["mcp__fake__echo", "mcp__fake__add", "mcp__fake__fail", "mcp__fake__pic"]
         tool_msg = [m for m in fake.calls[1]["messages"] if m.get("role") == "tool"][0]

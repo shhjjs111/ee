@@ -1,5 +1,4 @@
 """输出读取上限（Hook stdout、read 大文件、shell 输出）与 GBK/cp936 解码回退。"""
-import asyncio
 import sys
 
 import pytest

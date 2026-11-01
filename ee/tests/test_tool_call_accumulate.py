@@ -21,7 +21,6 @@
 """
 import json
 
-import pytest
 
 from ee.core.providers.openai_chat import _accumulate
 

@@ -4,7 +4,7 @@ import json
 import sys
 
 import pytest
-from conftest import FakeClient, collect, finish, make_session, run, text_chunks, tool_chunks
+from conftest import FakeClient, collect, finish, run, text_chunks, tool_chunks
 
 from ee.core.context import system_prompt
 from ee.core.events import ApprovalRequest, ToolEnd

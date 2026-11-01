@@ -4,11 +4,10 @@
 - details 不进模型上下文（history / 发给模型的请求里只有 content）；
 - details 持久化到条目，重启后还在；旧会话里条目的 meta/diff 读取时迁成 details。
 """
-import asyncio
 import json
 import sys
 
-from conftest import FakeClient, collect, finish, make_session, run, text_chunks, tool_chunks
+from conftest import collect, finish, make_session, run, text_chunks, tool_chunks
 
 from ee.core.events import ToolEnd
 from ee.tools.details import DETAIL_KINDS, finalize

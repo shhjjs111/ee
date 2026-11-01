@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pytest
 from conftest import text_chunks, finish
-from test_automations import make_backend, new_auto, ts
+from test_automations import make_backend, new_auto
 
 from ee.core import schedule as SC
 

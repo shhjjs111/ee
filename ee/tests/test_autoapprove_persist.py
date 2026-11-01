@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 
 def _thread(home, workspace):

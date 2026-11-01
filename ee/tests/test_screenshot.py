@@ -94,11 +94,9 @@ def _session_stub(workspace):
 
 
 def test_tool_saves_png_and_registers_for_next_step(workspace, ee_home):
-    from ee.core import events as E
     from ee.core.screen import ScreenHub
     from ee.tools.base import ToolContext, ToolState
     from ee.tools.screenshot import ScreenshotTool
-    import time
 
     s = _session_stub(workspace)
     s.screen = ScreenHub(ee_home / "screenshots")
@@ -148,7 +146,6 @@ def test_tool_reports_unavailable_without_desktop(workspace):
 
 def test_rpc_delivers_image_to_waiting_tool(ee_home, workspace, monkeypatch):
     """走完整 RPC：界面回送 data URL → 唤醒等待 → 拿到 PNG 字节。"""
-    from test_server import wait_for
 
     monkeypatch.setenv("EE_DESKTOP", "1")
 

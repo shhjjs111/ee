@@ -38,3 +38,14 @@ include = ["ee*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# 静态检查只跑「真正的错误」类规则（E9 语法、F63/F7 断言与调试、F82 未定义名、
+# F401 未用导入、F811 重定义、F841 未用变量）。不做风格强制：仓库的排版约定是
+# 人写的（中文注释、对齐的参数表），formatter 会把它们打散。
+# 进 CI 的门只跑这一组：它是「代码有误」的硬指标，可以零容忍。
+# 必须先有 [tool.ruff] 表：没有这个表，ruff 不会把 pyproject.toml 当配置文件。
+[tool.ruff]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841"]
+

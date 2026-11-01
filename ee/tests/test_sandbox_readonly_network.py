@@ -12,9 +12,7 @@
 显式 `[sandbox] network = false` 本来就禁；显式 `network = true` 时只读模式是否放行，
 由 readonly_network_default 决定（默认仍禁，与"默认关"的意图一致）。
 """
-from pathlib import Path
 
-import pytest
 
 from ee.core import sandbox as SB
 

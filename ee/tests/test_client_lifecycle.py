@@ -12,7 +12,6 @@ Windows 上表现为 `WinError 10053`（已建立的连接被中止）这类难�
 import asyncio
 
 import pytest
-from conftest import FakeClient
 
 from ee.config import load_config
 from ee.core.session import Session

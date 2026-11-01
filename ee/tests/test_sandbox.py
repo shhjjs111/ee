@@ -103,7 +103,6 @@ def test_helper_runs_from_arbitrary_cwd(workspace, ee_home, tmp_path):
     直接子进程验证：在任意 cwd 下 helper 能打印版本。
     """
     import subprocess
-    import sys as _sys
     p = SB.SandboxPlan(workspace=workspace, active=True, network=True, sid="S-1-5-21-1-2-3-4",
                        tmp=tmp_path)
     # 造一个会劫持 sys.path 的 cwd：里面有名为 ee 的目录
@@ -228,7 +227,7 @@ except OSError as e:
 @win_only
 @pytest.mark.parametrize("shell_name", ["cmd", "auto"])
 def test_win_cwd_preserved(wdirs, shell_name):
-    workspace, tmp_path = wdirs.ws, wdirs.root
+    workspace = wdirs.ws
     sh = resolve_shell(shell_name)
     r = _run(workspace, "c.py", "import os; print('CWD=' + os.getcwd())", _cfg(True), sh=sh)
     assert f"CWD={workspace}".lower() in r.output.lower() or f"CWD={workspace.resolve()}".lower() in r.output.lower(), \
@@ -237,7 +236,7 @@ def test_win_cwd_preserved(wdirs, shell_name):
 
 @win_only
 def test_win_write_inside_workspace_ok(wdirs):
-    workspace, tmp_path = wdirs.ws, wdirs.root
+    workspace = wdirs.ws
     target = str(workspace / "inside.txt")
     r = _run(workspace, "w.py", WRITE.format(target=target), _cfg(True))
     assert "WROTE" in r.output, r.output
@@ -264,7 +263,7 @@ def test_win_write_outside_workspace_denied(wdirs):
 
 @win_only
 def test_win_temp_points_to_sandbox_tmp(wdirs):
-    workspace, tmp_path = wdirs.ws, wdirs.root
+    workspace = wdirs.ws
     body = ("import os, tempfile; t = os.environ['TEMP']; print('T=' + t);"
             "f = tempfile.NamedTemporaryFile(delete=False); f.write(b'1'); f.close(); print('TMPOK')")
     r = _run(workspace, "t.py", body, _cfg(True))
@@ -274,7 +273,7 @@ def test_win_temp_points_to_sandbox_tmp(wdirs):
 
 @win_only
 def test_win_network_env_blocks_proxy_aware_clients(wdirs):
-    workspace, tmp_path = wdirs.ws, wdirs.root
+    workspace = wdirs.ws
     body = """
 import os, urllib.request, urllib.error
 print('P=' + os.environ.get('HTTPS_PROXY', ''))
@@ -337,7 +336,7 @@ def test_win_background_command_sandboxed(wdirs):
 
 @win_only
 def test_win_helper_failure_reported(wdirs, monkeypatch):
-    workspace, tmp_path = wdirs.ws, wdirs.root
+    workspace = wdirs.ws
     p = SB.plan({"sandbox": {"enabled": True}}, workspace)
     assert p is not None and p.active
     p.sid = "not-a-sid"

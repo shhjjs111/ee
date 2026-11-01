@@ -100,8 +100,8 @@ def test_export_overwrite_allowed_when_explicit(backend, tmp_path):
     target = tmp_path / "exists2.md"
     target.write_text("旧", encoding="utf-8")
 
-    res = _call(backend, "thread/export", thread_id=tid, format="markdown",
-                path=str(target), overwrite=True)
+    _call(backend, "thread/export", thread_id=tid, format="markdown",
+          path=str(target), overwrite=True)
     assert "你好" in target.read_text(encoding="utf-8")
 
 

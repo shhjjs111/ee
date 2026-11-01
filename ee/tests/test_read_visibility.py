@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from ee.tools.base import ToolContext, ToolState
 from ee.tools.read import ReadTool

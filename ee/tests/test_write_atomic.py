@@ -8,14 +8,12 @@ O_TRUNC 会先把原文件清零再写。写到一半失败 → 原内容永久�
 `write` / `edit` / `apply_patch` 三个工具共用这个函数，等于三个工具都不安全。
 修法：改用 `ee.core.atomic.write_bytes`（临时文件 + fsync + os.replace）。
 """
-import os
 from pathlib import Path
 
 import pytest
 
 from ee.core import atomic
 from ee.tools import fileops
-from ee.tools.base import ToolError
 
 
 def _tf(text: str):

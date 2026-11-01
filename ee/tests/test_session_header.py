@@ -13,7 +13,6 @@ ee 把 {session_id} 替换成该会话自己的 SessionStore.id；其他 header 
 """
 from __future__ import annotations
 
-import pytest
 
 
 def _spec_with(headers: dict):
@@ -80,7 +79,6 @@ def test_forked_subagent_shares_parent_session_id(ee_home, workspace):
     parent.spec = _spec_with({"x-opencode-session": "{session_id}"})
     parent._client = None
 
-    from ee.core.subagent import fork_history
     # 直接验证：fork 分支里 child.store 应被置为父的 id（实现方式见 session.py）
     # 这里用最小可验证的形式：解析函数支持传入显式 id
     assert parent.request_headers(session_id=parent.store.id)["x-opencode-session"] == parent.store.id

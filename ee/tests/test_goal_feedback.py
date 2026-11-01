@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 from ee.core import goal as goal_mod
 from ee.core.goal import Verdict
