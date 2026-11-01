@@ -14,10 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from ee.core import latency
 from ee.core.providers import net
 from ee.core.providers import transforms as T
 
 log = logging.getLogger("ee.model")
+
+HEARTBEAT_S = 5.0      # 等首个响应对象时，多久更新一次“已等待 N 秒”的状态行
 
 
 class ModelError(RuntimeError):
@@ -123,6 +126,7 @@ class ChatClient:
                      spec.alias, spec.base_url, spec.model, key[-4:] if len(key) > 8 else "?", self.np.describe,
                      self.np.connect_timeout, self.np.read_timeout, self.np.retries)
         self.retries = retries if retries is not None else (self.np.retries if self.np else 3)
+        self.heartbeat_s = HEARTBEAT_S     # 测试可以调小，免得每个用例等 5 秒
         self.client = client
         self.notices: list[str] = []
         self._closed = False
@@ -226,6 +230,7 @@ class ChatClient:
                             self.state.save()
                             yield ("notice", f"模型 {self.spec.alias} 不接受推理强度参数，已去掉并记住（以后不再发送）")
                         ms = timing.as_dict()
+                        latency.record(latency.key_for(self.spec.base_url, self.spec.model), ms.get("first_byte_ms"))
                         log.info("模型请求结束：%s 用时 %.1fs finish=%s 文本 %d 字 工具调用 %d 个 usage=%s "
                                  "首包=%sms 首字=%sms", self.spec.alias,
                                  time.monotonic() - t0, c.finish_reason, len(c.content), len(c.tool_calls), c.usage,
@@ -284,7 +289,23 @@ class ChatClient:
     async def _stream_once(self, params: dict, tools: list[dict] | None, timing=None):
         known = [t["function"]["name"] for t in (tools or [])]
         self._saw_finish_field = False      # 每次请求重置，避免上一次的痕迹影响判断
-        stream = await self.client.chat.completions.create(**params)
+        # 等响应对象（连接 + 上游出首包）期间每 heartbeat_s 秒更新一次状态。
+        # 实测首包中位 18.8 秒、p90 35.9 秒：一句静态的“正在连接…”在那段时间里是不动的，
+        # 用户分不清在排队还是卡死；带上该接口的历史中位数才知道该等还是该换接口。
+        task = asyncio.ensure_future(self.client.chat.completions.create(**params))
+        key = latency.key_for(self.spec.base_url, self.spec.model)
+        waited = 0.0
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self.heartbeat_s)
+                if done:
+                    break
+                waited += self.heartbeat_s
+                yield ("status", latency.heartbeat_text(self.spec.alias, waited, latency.median_ms(key)))
+            stream = task.result()
+        finally:
+            if not task.done():             # 取消 / 出错：发出去但没人等的请求要收掉
+                task.cancel()
         if timing is not None:
             timing.mark_byte()          # 连上了、拿到响应对象：首包
         yield ("status", "已连接，等待模型输出…")
