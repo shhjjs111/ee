@@ -31,8 +31,9 @@ def register(methods: dict, backend) -> None:
                                         ignored_policy=ignored_policy,
                                         include_ignored=include_ignored)
         except RuntimeError as e:
-            # build_manifest 里的 git 失败（典型是非 git 仓库）走这里
-            raise RpcError(f"生成清单失败（不是 git 仓库？）：{e}") from None
+            # build_manifest 先判仓库：非仓库时 e 已经是「不是 git 仓库：<路径>」，
+            # 不再加「（不是 git 仓库？）」这种让用户猜的后缀
+            raise RpcError(f"生成清单失败：{e}") from None
         return {"root": m.root,
                 "ignored_policy": m.ignored_policy,
                 "entries": [e.as_dict() for e in m.entries],
@@ -44,7 +45,7 @@ def register(methods: dict, backend) -> None:
         try:
             m = await asyncio.to_thread(H.build_manifest, root)
         except RuntimeError as e:
-            raise RpcError(f"生成清单失败（不是 git 仓库？）：{e}") from None
+            raise RpcError(f"生成清单失败：{e}") from None
         problems = await asyncio.to_thread(H.verify_target, m, target)
         return {"ok": not problems, "problems": problems,
                 "checked": sum(1 for e in m.entries if e.selected and e.kind in ("file", "symlink"))}

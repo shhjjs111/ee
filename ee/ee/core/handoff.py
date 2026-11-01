@@ -90,12 +90,30 @@ def _nul_split(text: str) -> list[str]:
     return [x for x in text.split("\0") if x]
 
 
+def _require_repo(base: Path) -> None:
+    """不是 git 仓库时给出明确原因，而不是把 git 的误导性好错误往上传。
+
+    在非仓库目录跑 `git diff --cached` 时，git 会退化成 `--no-index` 模式，
+    而那个模式不支持 `--cached`，于是报 `error: unknown option `cached'`
+    （退出码 129）——看着像参数拼错，实际是「这里不是仓库」。桌面端日志里
+    实测出现过 3 次，用户看到的就是这句无从下手的话。
+    """
+    try:
+        r = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                           cwd=str(base), capture_output=True)
+    except OSError as e:
+        raise RuntimeError(f"无法运行 git：{e}") from None
+    if r.returncode != 0 or r.stdout.strip() != b"true":
+        raise RuntimeError(f"不是 git 仓库：{base}")
+
+
 def build_manifest(root: Path | str, *, ignored_policy: str = "skip",
                    include_ignored: bool = False) -> Manifest:
     """生成迁移清单。只读，不碰工作区。"""
     base = Path(root).resolve()
     if ignored_policy not in ("skip", "include"):
         raise ValueError(f"unknown ignored_policy: {ignored_policy}")
+    _require_repo(base)
     m = Manifest(root=str(base), ignored_policy=ignored_policy)
     seen: dict[str, Entry] = {}
 

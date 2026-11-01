@@ -77,13 +77,19 @@ def test_manifest_rejects_missing_path(backend, tmp_path):
 
 
 def test_manifest_rejects_non_git_dir(backend, tmp_path):
-    """不是 git 仓库时明确报错，不返回空清单冒充'没东西要搬'。"""
+    """不是 git 仓库时明确报错，不返回空清单冒充'没东西要搬'。
+
+    断言收紧：必须说「不是 git 仓库」，不能把 git 在非仓库目录退化到 --no-index
+    后报的 `unknown option `cached'` 原样传给用户（2026-10-29 桌面端日志 3 次）。
+    """
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "x.txt").write_text("x", encoding="utf-8")
     with pytest.raises(Exception) as ei:
         _call(backend, "handoff/manifest", path=str(plain))
-    assert "git" in str(ei.value).lower() or "仓库" in str(ei.value)
+    msg = str(ei.value)
+    assert "不是 git 仓库" in msg, msg
+    assert "unknown option" not in msg, msg
 
 
 def test_verify_reports_problems_for_empty_target(backend, repo, tmp_path):

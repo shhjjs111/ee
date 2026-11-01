@@ -195,3 +195,32 @@ def test_manifest_is_deterministic(repo):
     a = [(e.path, e.sha256, e.category) for e in build_manifest(repo).entries]
     b = [(e.path, e.sha256, e.category) for e in build_manifest(repo).entries]
     assert a == b
+
+
+def test_non_repo_dir_says_so(tmp_path):
+    """非 git 目录要直说「不是 git 仓库」，不能把 git 的 unknown option 抛给用户。
+
+    真实缺陷（2026-10-29 桌面端日志 3 次）：`git diff --cached` 在非仓库目录会
+    退化成 `--no-index` 模式，而 `--no-index` 不认 `--cached`，报的是
+    `error: unknown option `cached'`（退出码 129）——看着像参数拼错。
+    """
+    from ee.core.handoff import build_manifest
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(RuntimeError) as ei:
+        build_manifest(plain)
+    msg = str(ei.value)
+    assert "不是 git 仓库" in msg, msg
+    assert "unknown option" not in msg, msg
+
+
+def test_repo_subdir_is_still_a_repo(repo):
+    """仓库子目录也算仓库：显式判断不能把「在子目录里用」误伤成非仓库。"""
+    from ee.core.handoff import build_manifest
+
+    sub = repo / "pkg"
+    sub.mkdir(exist_ok=True)
+    (sub / "c.py").write_text("y = 1\n", encoding="utf-8")
+    m = build_manifest(sub)
+    assert m.root == str(sub.resolve())
