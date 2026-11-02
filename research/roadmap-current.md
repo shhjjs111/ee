@@ -89,7 +89,7 @@ scroll anchoring，点按钮与滚到顶两条路径行为一致，问题消失�
 
 验证：`vitest` 297 passed（58 文件，新增 3 条分页用例）；`playwright test` 全量 27 passed / 1 skipped（58.2s，`conversation-scroll.spec.ts` 4 条全绿）；
 后端 `test_server.py` 14 passed（含新增的分页往返用例：`tail` 逐页往前翻能逐条拼回完整历史、不传参行为不变、`tail=0` 不退化成全量）、
-`test_details.py`/`test_branch.py` 等合计 24 passed、`test_queue.py`/`test_plan.py`/`test_redo_data.py` 47 passed；
+`test_details.py` + `test_branch.py` 11 passed、`test_queue.py`/`test_plan.py`/`test_redo_data.py` 47 passed；
 `ruff check ee/` 通过；`npm run typecheck` 通过。真实大会话探针实跑：打开时 61 块、在底部（`top: 1911`、`atBottom: true`、按钮「显示更早的 60 条（还有 60 条）」），
 滚到顶自动补拉到 121 块（`top: 0`、按钮变「加载更早的历史」，`data-block` 锚点 120 个），滚动位置没有被甩飞，帧间隔 6.9/7.2ms。
 
