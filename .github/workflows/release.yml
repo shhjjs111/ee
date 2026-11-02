@@ -56,6 +56,10 @@ jobs:
             *) echo "tag 必须是 vX.Y.Z 形式，实际：$TAG"; exit 1 ;;
           esac
           VER="${TAG#v}"
+          # 预发布后缀（-rc.1 / -beta.2）不算在版本号里：package.json 里的 version 是
+          # "0.1.0"，pre-release 只是 tag 上的标记。否则为了发一个 rc 就得改产品版本号，
+          # 而那个版本号会进入安装包和更新器，那才是真错。
+          BASE="${VER%%-*}"
           PKG=$(node -p "require('./desktop/package.json').version")
           PYW=$(python3 - <<'PY'
           import re, pathlib
@@ -64,12 +68,12 @@ jobs:
           print(m.group(1) if m else '')
           PY
           )
-          echo "tag=$TAG version=$VER package.json=$PKG pyproject=$PYW"
+          echo "tag=$TAG version=$VER base=$BASE package.json=$PKG pyproject=$PYW"
           # 三者不一致时，更新器会永远重复下载同一个版本（latest.yml 声明的版本与
           # 已安装二进制上报的版本对不上），所以这必须硬失败而不是警告。
-          [ "$VER" = "$PKG" ] || { echo "tag($VER) 与 desktop/package.json($PKG) 不一致"; exit 1; }
-          [ "$VER" = "$PYW" ] || { echo "tag($VER) 与 ee/pyproject.toml($PYW) 不一致"; exit 1; }
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          [ "$BASE" = "$PKG" ] || { echo "tag 基础版本($BASE) 与 desktop/package.json($PKG) 不一致（tag=$TAG）"; exit 1; }
+          [ "$BASE" = "$PYW" ] || { echo "tag 基础版本($BASE) 与 ee/pyproject.toml($PYW) 不一致（tag=$TAG）"; exit 1; }
+          echo "version=$BASE" >> "$GITHUB_OUTPUT"
 
   build:
     name: build
@@ -115,17 +119,34 @@ jobs:
       - name: Build release notes
         shell: pwsh
         env:
-          VER: ${{ needs.check.outputs.version }}
+          TAG: ${{ github.ref_name }}
         run: |
           $sums = (Get-Content dist-out/SHA256SUMS.txt -Raw).Trim()
-          # 代码围栏不能用字面量 ``` 写在可伸展 here-string 里：PowerShell 把 ` 当转义符，
-          # `` 会渲染成单个 `，Markdown 代码块就碎了（实测过）。用字符拼出来绕开转义。
+          # 安装包文件名从实际产物读，不拼：预发布时它带 -v0.1.0-rc.1 后缀，
+          # 硬拼成 ee-Setup-0.1.0.exe 会让用户找不到文件、没法校验。
+          $exe = @(Get-ChildItem dist-out -Filter *.exe | Select-Object -First 1)
+          if (-not $exe) { throw "没有找到安装包，无法生成正文" }
+          $exeName = $exe[0].Name
+          $exeVer = ($exeName -replace '^ee-Setup-', '') -replace '\.exe$', ''
+          # 预发布时安装包名里是基础版本号（0.1.0），tag 后缀只存在于发布标记上，
+          # 不说清楚会让人以为下错了。不改名是因为 latest.yml/.blockmap 内部引用的
+          # 就是这个文件名，单改 exe 会把更新源指空。
+          # 用单引号字符串 + 双重单引号拼：here-string 内不用反引号，免得又被转义坑。
+          $verNote = ''
+          if ($env:TAG -match '-') {
+            $verNote = '（文件名里的版本是 ' + $exeVer + '，' + $env:TAG + ' 只是发布标记）'
+          }
+          # here-string 内不能直接写反引号包变量（`$x）：反引号是 PS 转义符，
+          # 会把 $x 变成字面量（实测下载行输出成 "下载 $exeName"）。预先拼好再用。
+          # 代码围栏同理：字面量 ``` 会被渲染成两个单反引号，用字符拼出来。
           $f = [string][char]96 * 3
+          $dlLine = '下载 ' + $exeName + '。'
+          $hashLine = 'Get-FileHash .\' + $exeName + ' -Algorithm SHA256'
           $body = @"
-          ee v$env:VER（Windows x64 安装包）
+          ee $env:TAG（Windows x64 安装包）$verNote
 
           ## 安装
-          1. 下载 `ee-Setup-$env:VER.exe`。
+          1. $dlLine
           2. 首次运行会出现蓝色的「Windows 已保护你的电脑」。点 **更多信息** → **仍要运行**。
              这是**未签名**程序的正常提示，不是病毒告警，原因见下。
           3. 安装完启动 ee，在设置页填 API key（默认 DeepSeek）。
@@ -141,7 +162,7 @@ jobs:
           在该文件所在目录运行：
 
           $f
-          Get-FileHash .\ee-Setup-$env:VER.exe -Algorithm SHA256
+          $hashLine
           $f
 
           输出应与下面一致；不一致说明文件在传输中被改动过，不要运行：
@@ -162,8 +183,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ github.ref_name }}"
-          # 带 - 的 tag（v0.2.0-beta.1）标 pre-release，避免测试版被当成稳定版
-          $pre = if ($tag -match '-') { @("--prerelease") } else { @() }
+          $isPre = $tag -match '-'
+          $pre = if ($isPre) { @("--prerelease") } else { @() }
           # 安装包 + latest.yml/.blockmap（更新源配套产物）+ 校验和
           $assets = @(Get-ChildItem dist-out -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object { $_.FullName })
           $assets += "dist-out/SHA256SUMS.txt"
