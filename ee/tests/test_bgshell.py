@@ -154,6 +154,33 @@ def test_kill_and_close(workspace, tmp_path):
     asyncio.run(go())
 
 
+def test_kill_all_sync_removes_temp_scripts(workspace, tmp_path):
+    """app 退出时（kill_all_sync）必须把 PowerShell 临时脚本删掉。
+
+    缺陷：正常结束时 _pump_output 末尾会调 _cleanup_files，但 app 被关掉时
+    事件循环已停，pump 永远走不到那里。于是 `ee-*.ps1` 永久留在 %TEMP%。
+    实测累计 188 个（10-27 到 11-02），其中 101 个是同一个 loop.py。
+    """
+    (workspace / "loop.py").write_text(LOOP, encoding="utf-8")
+    sh = resolve_shell("auto")
+
+    async def go():
+        mgr = BgManager(tmp_path / "logs")
+        ctx = _ctx(workspace, sh, mgr)
+        await ShellTool().run({"command": _py(sh, "loop.py"), "background": True}, ctx)
+        p = mgr.get("b1")
+        script = p._script
+        if script is None:                 # 非 Windows 的 posix shell 不写临时脚本
+            return
+        assert script.exists(), "启动后临时脚本就该在"
+
+        mgr.kill_all_sync()                # 模拟 app 退出
+
+        assert not script.exists(), "kill_all_sync 没删临时脚本，%TEMP% 会被永久占用"
+
+    asyncio.run(go())
+
+
 def test_permissions(workspace):
     for mode in ("read-only", "plan"):
         p = PermissionPolicy(mode=mode, workspace=workspace)

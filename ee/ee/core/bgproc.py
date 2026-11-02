@@ -313,10 +313,19 @@ class BgManager:
                     log.exception("结束后台命令 %s 失败", p.id)
 
     def kill_all_sync(self) -> None:
+        """进程退出时的同步收尾：杀进程 + 删临时脚本。
+
+        必须在这里删脚本：正常结束时 _pump_output 末尾会调 _cleanup_files，
+        但 app 被关掉时事件循环已经停了，pump 永远走不到那里，于是 PowerShell 的
+        `ee-*.ps1` 就留在 %TEMP% 里。实测累计了 188 个（从 10-27 到 11-02），
+        其中 101 个是同一个 loop.py——全是长跑后台命令留下的。
+        Windows 用户天天用着，不清就是永久垃圾。
+        """
         for p in list(self.procs.values()):
             if p.running and p.pid:
                 p.status = "killed"
                 _kill_pid(p.pid)
+            self._cleanup_files(p)
 
 
 def _kill_pid(pid: int | None) -> None:
