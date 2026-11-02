@@ -181,6 +181,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # **必须显式给仓库**：这个 job 不 checkout（只需下载产物），没有 .git。
+          # gh 找不到 -R/GH_REPO 时会去读 git remote 来推断仓库，直接死在
+          # `failed to run git: fatal: not a git repository`——这正是 v0.1.0-rc.1
+          # 那次 publish 的失败点（check/build/package 全绿，只挂在这一步）。
+          GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Continue'
           $tag = "${{ github.ref_name }}"
@@ -198,13 +203,12 @@ jobs:
           if ($missing.Count -gt 0) { throw "以下文件不存在，无法上传：$($missing -join ', ')" }
           Write-Host "gh 版本：$(& gh --version | Select-Object -First 1)"
 
-          # 不传 --target：tag 是推送时就已存在的，而 --target 只用于「自动建 tag 时
-          # 指定从哪个提交建」，对已存在的 tag 没意义。--verify-tag 要求 tag 必须已存在，
-          # 正是我们要的：万一发错分支会立即失败而不是默默在 main 上打 tag。
+          # 不用 --verify-tag：它同样要 shell out 到本地 git 去核对 tag，而这个 job
+          # 没有 checkout，必挂。tag 一定存在——本 workflow 就是由 tag 推送触发的
+          # （on: push: tags），check 步骤还校验过 tag 与 pyproject/package.json 一致。
           gh release create $tag `
             --title "ee $tag" `
             --notes-file dist-out/RELEASE_NOTES.md `
-            --verify-tag `
             @pre `
             @assets
           if ($LASTEXITCODE -ne 0) { throw "gh release create 退出码 $LASTEXITCODE" }
