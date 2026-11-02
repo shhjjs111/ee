@@ -4,6 +4,7 @@ import { ChevronRight, History, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatWhen } from "../lib/hunks";
 import { useApp } from "../lib/store";
+import { selectActiveDetail } from "../lib/selectors";
 import type { Checkpoint, CheckpointList, DiffFile } from "../types";
 import { DiffView, Stat } from "./DiffView";
 import { Button, Spinner } from "./ui";
@@ -45,7 +46,8 @@ function Row({
   idle: boolean;
   onRestored: () => void;
 }) {
-  const s = useApp();
+  const rpc = useApp((s) => s.rpc);
+  const showToast = useApp((s) => s.showToast);
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [err, setErr] = useState("");
@@ -55,22 +57,22 @@ function Row({
   useEffect(() => {
     if (!open || diff || !isTurn || cp.expired) return;
     let live = true;
-    s.rpc!
+    rpc!
       .call("checkpoint/diff", { thread_id: threadId, checkpoint_id: cp.id, mode: "turn" })
       .then((r: DiffResult) => live && setDiff(r))
       .catch((e: Error) => live && setErr(e.message));
     return () => {
       live = false;
     };
-  }, [open, diff, isTurn, cp.id, cp.expired, threadId, s.rpc]);
+  }, [open, diff, isTurn, cp.id, cp.expired, threadId, rpc]);
 
   const restore = async (side: "before" | "after") => {
     setBusy(true);
     try {
       const mode = isTurn ? side : "before";
-      const plan: DiffResult = await s.rpc!.call("checkpoint/diff", { thread_id: threadId, checkpoint_id: cp.id, mode });
+      const plan: DiffResult = await rpc!.call("checkpoint/diff", { thread_id: threadId, checkpoint_id: cp.id, mode });
       if (!plan.files.length) {
-        s.showToast("文件已经是这个状态了");
+        showToast("文件已经是这个状态了");
         return;
       }
       const names = plan.files.slice(0, 6).map((f) => "  " + f.path).join("\n") + (plan.files.length > 6 ? `\n  …等 ${plan.files.length} 个` : "");
@@ -80,12 +82,12 @@ function Row({
           "恢复前的文件会自动存成一个检查点，随时可以再恢复回来。\n只恢复文件，不改对话记录；被 .gitignore 忽略的文件和大于 2MB 的新文件不在快照里，不会变。",
       );
       if (!ok) return;
-      const r = await s.rpc!.call("checkpoint/restore", { thread_id: threadId, checkpoint_id: cp.id, side });
-      if (r.partial) s.showToast(partialToast(r.restored.length, r.failed ?? []), "error");
-      else s.showToast(r.restored.length ? `已恢复到${r.label}（${r.restored.length} 个文件）` : "文件已经是这个状态了");
+      const r = await rpc!.call("checkpoint/restore", { thread_id: threadId, checkpoint_id: cp.id, side });
+      if (r.partial) showToast(partialToast(r.restored.length, r.failed ?? []), "error");
+      else showToast(r.restored.length ? `已恢复到${r.label}（${r.restored.length} 个文件）` : "文件已经是这个状态了");
       onRestored();
     } catch (e) {
-      s.showToast((e as Error).message, "error");
+      showToast((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
@@ -159,8 +161,11 @@ function Row({
 }
 
 export function Timeline() {
-  const s = useApp();
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  // 窄订阅：只关心本会话详情（状态变化要重拉检查点）、reviewNonce 与 rpc/提示。
+  const d = useApp(selectActiveDetail);
+  const reviewNonce = useApp((s) => s.reviewNonce);
+  const rpc = useApp((s) => s.rpc);
+  const showToast = useApp((s) => s.showToast);
   const [data, setData] = useState<CheckpointList | null>(null);
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
@@ -168,28 +173,28 @@ export function Timeline() {
   const status = d?.status;
 
   const load = useCallback(async () => {
-    if (!threadId || !s.rpc) return;
+    if (!threadId || !rpc) return;
     const my = ++seq.current;
     setLoading(true);
     try {
-      const r: CheckpointList = await s.rpc.call("checkpoint/list", { thread_id: threadId });
+      const r: CheckpointList = await rpc.call("checkpoint/list", { thread_id: threadId });
       if (my === seq.current) setData(r);
     } catch (e) {
       if (my === seq.current) {
         setData(null);
-        s.showToast((e as Error).message, "error");
+        showToast((e as Error).message, "error");
       }
     } finally {
       if (my === seq.current) setLoading(false);
     }
-  }, [threadId, s.rpc]);
+  }, [threadId, rpc]);
 
   useEffect(() => {
     setData(null);
   }, [threadId]);
   useEffect(() => {
     load();
-  }, [load, s.reviewNonce, status]);
+  }, [load, reviewNonce, status]);
 
   if (!d) return <div className="px-6 py-10 text-center text-[12.5px] leading-relaxed text-faint">开始对话后，每一回合都会自动存一个检查点</div>;
   if (!data) return <div className="flex justify-center py-10">{loading && <Spinner />}</div>;

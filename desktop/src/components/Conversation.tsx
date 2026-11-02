@@ -1,13 +1,14 @@
 import { openPath } from "../lib/openPath";
 import clsx from "clsx";
 import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatDuration, groupBlocks, shortPath } from "../lib/reduce";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { formatDuration, groupBlocks, shortPath, type Block } from "../lib/reduce";
 import { splitQueued } from "../lib/queue";
 import { useApp } from "../lib/store";
 import { selectActiveDetail, selectActiveThreadId, selectActiveTurnStartedAt } from "../lib/selectors";
+import { useAppFields } from "../lib/useAppFields";
 import { TITLEBAR_H } from "./shell/Titlebar";
-import type { Item } from "../types";
+import type { Item, ToolItem } from "../types";
 import { SubagentGroup } from "./AgentItems";
 import { Composer } from "./Composer";
 import {
@@ -24,14 +25,14 @@ import {
 } from "./Items";
 import { Button, Select, Tip } from "./ui";
 
-function renderItem(it: Item, approvals: Map<string, string>) {
+function renderItem(it: Item, approval?: string) {
   switch (it.type) {
     case "user":
       return <UserMessage item={it} />;
     case "assistant":
       return <AssistantMessage item={it} />;
     case "tool":
-      return <ToolCard item={it} approval={approvals.get(it.call_id)} />;
+      return <ToolCard item={it} approval={approval} />;
     case "approval":
       // 批准过的不单独占一行（工具行上有小盾牌）；待批准和拒绝的显示
       if (it.status === "once" || it.status === "always" || it.status === "forever") return null;
@@ -48,6 +49,32 @@ function renderItem(it: Item, approvals: Map<string, string>) {
       return <TurnEnd item={it} />;
   }
 }
+
+/** 窗口化的渲染单元：条目对象引用不变就不重渲（流式 delta 只换一个条目）。 */
+const ItemBlock = memo(function ItemBlock({ item, approval }: { item: Item; approval?: string }) {
+  return (
+    <div className={item.type === "user" ? "mt-7 first:mt-0" : "mt-3 first:mt-0"}>{renderItem(item, approval)}</div>
+  );
+});
+
+const sameItems = (a: { items: Item[] }, b: { items: Item[] }) =>
+  a.items.length === b.items.length && a.items.every((x, i) => x === b.items[i]);
+
+const ExploreBlock = memo(function ExploreBlock({ items }: { items: Item[] }) {
+  return (
+    <div className="mt-3 first:mt-0">
+      <ExploreGroup items={items} />
+    </div>
+  );
+}, sameItems);
+
+const AgentsBlock = memo(function AgentsBlock({ items }: { items: Item[] }) {
+  return (
+    <div className="mt-3 first:mt-0">
+      <SubagentGroup items={items as ToolItem[]} />
+    </div>
+  );
+}, sameItems);
 
 function Working({ since, waiting, text }: { since: number; waiting: boolean; text?: string }) {
   const [now, setNow] = useState(Date.now());
@@ -67,13 +94,16 @@ function Working({ since, waiting, text }: { since: number; waiting: boolean; te
 }
 
 function Header() {
-  const s = useApp();
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
-  const cwd = d?.cwd ?? s.activeWorkspace;
+  // 窄订阅：标题栏只关心当前会话详情 / 项目路径 / 右侧面板开关。
+  const d = useApp(selectActiveDetail);
+  const activeWorkspace = useApp((s) => s.activeWorkspace);
+  const rightOpen = useApp((s) => s.rightOpen);
+  const set = useApp((s) => s.set);
+  const cwd = d?.cwd ?? activeWorkspace;
   return (
     <div
       className="drag flex shrink-0 items-center gap-2 border-b border-line pl-5"
-      style={{ height: TITLEBAR_H, paddingRight: s.rightOpen ? 12 : "calc(var(--overlay-w) + 12px)" }}
+      style={{ height: TITLEBAR_H, paddingRight: rightOpen ? 12 : "calc(var(--overlay-w) + 12px)" }}
     >
       <div className="min-w-0 truncate text-[13.5px] font-medium text-fg">{d ? d.title : "新对话"}</div>
       {cwd && (
@@ -114,15 +144,15 @@ function Header() {
         </Tip>
       )}
       <div className="flex-1" />
-      <Tip label={s.rightOpen ? "收起右侧面板" : "展开右侧面板"} side="bottom">
+      <Tip label={rightOpen ? "收起右侧面板" : "展开右侧面板"} side="bottom">
         <Button
           size="icon"
           onClick={() => {
-            localStorage.setItem("ee.right", s.rightOpen ? "0" : "1");
-            s.set({ rightOpen: !s.rightOpen });
+            localStorage.setItem("ee.right", rightOpen ? "0" : "1");
+            set({ rightOpen: !rightOpen });
           }}
         >
-          {s.rightOpen ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
+          {rightOpen ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
         </Button>
       </Tip>
     </div>
@@ -137,7 +167,8 @@ const SUGGESTIONS = [
 ];
 
 function EmptyState() {
-  const s = useApp();
+  // 窄订阅：空状态只在首次打开时显示，仍需避免另一会话每帧 delta 带着它重渲。
+  const s = useAppFields("workspaces", "activeWorkspace", "addWorkspace", "newThread", "send");
   const pickFolder = async () => {
     const p = window.ee ? await window.ee.openFolder() : window.prompt("项目文件夹路径");
     if (p) void s.addWorkspace(p);
@@ -189,6 +220,12 @@ function EmptyState() {
   );
 }
 
+const PAGE = 60;
+
+function blockKey(b: Block): string {
+  return b.kind === "item" ? b.item.id : b.id;
+}
+
 export function Conversation() {
   // 窄订阅（T22）：只订阅活动会话 id、其详情对象和计时起点。其他会话的 delta flush
   // 会重建 details Record，但本会话的 ThreadDetail 引用不变 → 本组件不重渲染。
@@ -205,12 +242,45 @@ export function Conversation() {
   }, [d?.items]);
   const running = !!d && d.status !== "idle";
 
+  // ---------------------------------------------------------------- 区块窗口化
+  // 大会话一次把上千个区块挂进 DOM：每个块都要跑一次 ReactMarkdown 解析、每个代码块
+  // 还要跑一次 Shiki 高亮，实测 1120 块时打开一次卡 4 秒（单个长任务 3.5 秒）。
+  // 而屏幕一屏只放得下几块 —— 其余全是白做工。这里只渲染「从锚点开始到末尾」的窗口，
+  // 往上翻时按批追加。锚点用块 id 记而不是下标：新的 delta 只会往尾部增长，
+  // 记住 id 才能保证用户正在看的历史不会被滑动窗口挤掉。
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+  const anchorIdx = anchorId ? blocks.findIndex((b) => blockKey(b) === anchorId) : -1;
+  // 锚点失效（切会话 / 撤回消息）时回到「尾部一屏」
+  const start = anchorIdx >= 0 ? anchorIdx : Math.max(0, blocks.length - PAGE);
+  const visible = start > 0 ? blocks.slice(start) : blocks;
+  const hidden = start;
+
+  // 展开更早的一批：先量旧高度，渲染后把滚动位置补回去，视觉上原地不动。
+  const restoreH = useRef<number | null>(null);
+  const loadEarlier = useCallback(() => {
+    if (start <= 0) return;
+    const next = Math.max(0, start - PAGE);
+    restoreH.current = scroller.current?.scrollHeight ?? null;
+    setAnchorId(blockKey(blocks[next]));
+  }, [blocks, start]);
+
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick) el.scrollTop = el.scrollHeight;
-  }, [d?.items, stick, running]);
+    if (!el) return;
+    if (restoreH.current !== null) {
+      el.scrollTop += el.scrollHeight - restoreH.current;
+      restoreH.current = null;
+    } else if (stick) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [d?.items, stick, running, start]);
 
   useEffect(() => setStick(true), [activeThreadId]);
+  // 切会话时丢掉锚点，回到新会话的尾部
+  useEffect(() => {
+    setAnchorId(null);
+    restoreH.current = null;
+  }, [activeThreadId]);
 
   if (!d) {
     return (
@@ -233,29 +303,36 @@ export function Conversation() {
         ref={scroller}
         onScroll={(e) => {
           const el = e.currentTarget;
-          setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          setStick(atBottom);
+          // 离开底部时把当前窗口起点钉住（否则新 delta 会让窗口滑动，正在看的内容被挤走）。
+          // 滚到接近顶部再自动补一批，往上翻不用一次次点按钮。
+          if (!atBottom && !anchorId && hidden > 0) setAnchorId(blockKey(blocks[start]));
+          if (!atBottom && el.scrollTop < 240 && hidden > 0) loadEarlier();
         }}
         className="relative flex-1 overflow-y-auto"
       >
         {/* 间距分两档：用户发问是"回合起点"，前面留更大空白；其余条目紧凑跟随。
             改版前统一 space-y-3，一问一答挤成一块，读不出回合边界。 */}
         <div className="mx-auto max-w-[780px] px-6 pb-6 pt-6">
-          {blocks.map((b) =>
-            b.kind === "explore" ? (
-              <div key={b.id} className="mt-3 first:mt-0">
-                <ExploreGroup items={b.items} />
-              </div>
-            ) : b.kind === "agents" ? (
-              <div key={b.id} className="mt-3 first:mt-0">
-                <SubagentGroup items={b.items} />
-              </div>
-            ) : (
-              <div
-                key={b.item.id}
-                className={b.item.type === "user" ? "mt-7 first:mt-0" : "mt-3 first:mt-0"}
+          {hidden > 0 && (
+            <div className="mb-3 flex justify-center">
+              <button
+                onClick={loadEarlier}
+                data-testid="load-earlier"
+                className="rounded-full border border-line bg-elev px-3 py-1 text-[12px] text-muted transition-colors hover:bg-hover hover:text-fg"
               >
-                {renderItem(b.item, approvals)}
-              </div>
+                显示更早的 {Math.min(PAGE, hidden)} 条（还有 {hidden} 条）
+              </button>
+            </div>
+          )}
+          {visible.map((b) =>
+            b.kind === "explore" ? (
+              <ExploreBlock key={b.id} items={b.items} />
+            ) : b.kind === "agents" ? (
+              <AgentsBlock key={b.id} items={b.items} />
+            ) : (
+              <ItemBlock key={b.item.id} item={b.item} approval={approvals.get((b.item as { call_id?: string }).call_id ?? "")} />
             ),
           )}
           {running && (

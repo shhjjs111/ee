@@ -139,19 +139,21 @@ function Approved({ how }: { how?: string }) {
 
 // ------------------------------------------------------------ 用户 / 助手
 export function UserMessage({ item }: { item: UserItem }) {
-  const s = useApp();
+  // 窄订阅：只需知道本会话是否空闲，以及几个动作。全局 state 变化（流的每帧）不再带动它重渲。
+  const status = useApp((s) => (s.activeThreadId ? s.details[s.activeThreadId]?.status : undefined));
+  const editResend = useApp((s) => s.editResend);
+  const forkFrom = useApp((s) => s.forkFrom);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.text);
   const [busy, setBusy] = useState(false);
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
-  const idle = !d || d.status === "idle";
+  const idle = !status || status === "idle";
   const canBranch = typeof item.hist === "number" && !item.queued && item.kind !== "review";
 
   if (editing) {
     const send = async () => {
       if (!draft.trim() || busy) return;
       setBusy(true);
-      const ok = await s.editResend(item.id, draft.trim());
+      const ok = await editResend(item.id, draft.trim());
       setBusy(false);
       if (ok) setEditing(false);
     };
@@ -224,7 +226,7 @@ export function UserMessage({ item }: { item: UserItem }) {
           </Tip>
           <Tip label="从这里分叉成新对话">
             <button
-              onClick={() => s.forkFrom(item.id)}
+              onClick={() => forkFrom(item.id)}
               className="flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-fg"
             >
               <GitFork size={12.5} />

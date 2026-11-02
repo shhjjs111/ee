@@ -15,6 +15,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Button, Spinner } from "./components/ui";
 import { RpcClient, rpcLog } from "./lib/rpc";
 import { applyTheme, useApp } from "./lib/store";
+import type { ThreadSummary } from "./types";
 import { useLayout } from "./lib/layoutStore";
 
 let autoOff: (() => void) | null = null;
@@ -121,7 +122,13 @@ export default function App() {
       else if (a === "settings") useApp.getState().openSettings("general");
     });
     let lastTray = "";
+    // 只在「会话列表」本身变了才算托盘状态：这个 subscribe 会在 **每次** store 变化时
+    // 触发（包括活动会话每个渲染帧的流式 delta），而 threads 里最多 300 条，
+    // 一帧两轮 filter 就是在主线程上白烧 CPU。引用比较一次就早退。
+    let lastThreads: ThreadSummary[] | null = null;
     const offStatus = useApp.subscribe((st) => {
+      if (st.threads === lastThreads) return;
+      lastThreads = st.threads;
       const running = st.threads.filter((t) => t.status === "running" || t.status === "compacting").length;
       const waiting = st.threads.filter((t) => t.status === "waiting_approval").length;
       const key = `${running}/${waiting}`;

@@ -20,6 +20,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { highlight, langFromPath } from "../lib/highlight";
 import { useApp } from "../lib/store";
+import { selectActiveDetail } from "../lib/selectors";
 import type { FileContent, TreeEntry } from "../types";
 import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
@@ -84,7 +85,7 @@ function fmtSize(n?: number | null): string {
 function Dir({ cwd, path, depth, selected }: { cwd: string; path: string; depth: number; selected: string | null }) {
   const node = useTree((s) => s.children[path]);
   const expanded = useTree((s) => s.expanded);
-  const s = useApp();
+  const openFile = useApp((s) => s.openFile);
   if (node === undefined || node === "loading") {
     return (
       <div className="flex h-7 items-center gap-2 text-[12px] text-faint" style={{ paddingLeft: 12 + depth * 14 }}>
@@ -125,7 +126,7 @@ function Dir({ cwd, path, depth, selected }: { cwd: string; path: string; depth:
                   useTree.setState((st) => ({ expanded: { ...st.expanded, [e.path]: !open } }));
                   if (!open && !useTree.getState().children[e.path]) loadDir(cwd, e.path);
                 } else {
-                  s.openFile(e.path);
+                  openFile(e.path);
                 }
               }}
             >
@@ -188,7 +189,9 @@ const CodeView = memo(function CodeView({ text, path }: { text: string; path: st
 });
 
 function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () => void }) {
-  const s = useApp();
+  const rpc = useApp((s) => s.rpc);
+  const reviewNonce = useApp((s) => s.reviewNonce);
+  const showToast = useApp((s) => s.showToast);
   const [data, setData] = useState<FileContent | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -196,12 +199,12 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
 
   const gen = useRef(0); // agent 改文件时会连续刷新：只认最后一次请求的结果
   const load = useCallback(async () => {
-    if (!s.rpc) return;
+    if (!rpc) return;
     const tok = ++gen.current;
     setLoading(true);
     setErr(null);
     try {
-      const r = await s.rpc.call("files/read", { cwd, path });
+      const r = await rpc.call("files/read", { cwd, path });
       if (tok === gen.current) setData(r);
     } catch (e) {
       if (tok !== gen.current) return;
@@ -210,7 +213,7 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
     } finally {
       if (tok === gen.current) setLoading(false);
     }
-  }, [cwd, path, s.rpc]);
+  }, [cwd, path, rpc]);
 
   useEffect(() => {
     setSource(false);
@@ -218,8 +221,8 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
   }, [load]);
   // agent 改了文件就刷新
   useEffect(() => {
-    if (s.reviewNonce) load();
-  }, [s.reviewNonce]);
+    if (reviewNonce) load();
+  }, [reviewNonce]);
 
   const rel = data?.path ?? path;
   const parts = rel.split("/").filter(Boolean);
@@ -253,7 +256,7 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
             size="icon-sm"
             onClick={() => {
               navigator.clipboard?.writeText(rel);
-              s.showToast("已复制路径");
+              showToast("已复制路径");
             }}
           >
             <Copy size={13} />
@@ -319,30 +322,37 @@ function Preview({ cwd, path, onBack }: { cwd: string; path: string; onBack: () 
 
 // ------------------------------------------------------------ 面板
 export function FilesPanel() {
-  const s = useApp();
-  const cwd = (s.activeThreadId ? s.details[s.activeThreadId]?.cwd : null) ?? s.activeWorkspace;
+  const d = useApp(selectActiveDetail);
+  const activeWorkspace = useApp((s) => s.activeWorkspace);
+  const rpc = useApp((s) => s.rpc);
+  const filePath = useApp((s) => s.filePath);
+  const fileNonce = useApp((s) => s.fileNonce);
+  const reviewNonce = useApp((s) => s.reviewNonce);
+  const set = useApp((s) => s.set);
+  const lastFilePath = useApp((s) => s.lastFilePath);
+  const cwd = d?.cwd ?? activeWorkspace;
   const treeCwd = useTree((t) => t.cwd);
   const root = useTree((t) => t.children[""]);
 
   useEffect(() => {
-    if (!cwd || !s.rpc) return;
+    if (!cwd || !rpc) return;
     if (treeCwd !== cwd) {
       useTree.setState({ cwd, children: {}, expanded: {} });
       loadDir(cwd, "");
     }
-  }, [cwd, s.rpc]);
+  }, [cwd, rpc]);
 
   // 工具卡片里点了路径：展开到那个文件
   useEffect(() => {
-    if (cwd && s.filePath && !/^([a-zA-Z]:)?[\\/]/.test(s.filePath)) revealPath(cwd, s.filePath);
-  }, [s.filePath, s.fileNonce, cwd]);
+    if (cwd && filePath && !/^([a-zA-Z]:)?[\\/]/.test(filePath)) revealPath(cwd, filePath);
+  }, [filePath, fileNonce, cwd]);
 
   useEffect(() => {
-    if (cwd && s.reviewNonce && useTree.getState().cwd === cwd) reloadAll(cwd);
-  }, [s.reviewNonce]);
+    if (cwd && reviewNonce && useTree.getState().cwd === cwd) reloadAll(cwd);
+  }, [reviewNonce]);
 
   if (!cwd) return <div className="p-6 text-center text-[13px] text-faint">先选择一个项目</div>;
-  if (s.filePath) return <Preview key={s.filePath + s.fileNonce} cwd={cwd} path={s.filePath} onBack={() => s.set({ filePath: null })} />;
+  if (filePath) return <Preview key={filePath + fileNonce} cwd={cwd} path={filePath} onBack={() => set({ filePath: null })} />;
 
   const name = cwd.split(/[\\/]/).filter(Boolean).pop() || cwd;
   return (
@@ -363,7 +373,7 @@ export function FilesPanel() {
         {Array.isArray(root) && root.length === 0 ? (
           <div className="px-6 py-14 text-center text-[12.5px] text-faint">这个文件夹是空的</div>
         ) : (
-          <Dir cwd={cwd} path="" depth={0} selected={s.lastFilePath} />
+          <Dir cwd={cwd} path="" depth={0} selected={lastFilePath} />
         )}
       </div>
     </div>

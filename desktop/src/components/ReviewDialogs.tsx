@@ -5,6 +5,7 @@ import { CheckCircle2, GitCommitHorizontal, ListChecks, Play, RefreshCw, SearchC
 import { useEffect, useMemo, useRef, useState } from "react";
 import { location, fixMessage, type ReviewResult } from "../lib/review";
 import { useApp, type ReviewParams } from "../lib/store";
+import { selectActiveDetail } from "../lib/selectors";
 import type { ToolItem } from "../types";
 import { PathLink } from "./Items";
 import { Markdown } from "./Markdown";
@@ -288,11 +289,12 @@ export function Dialogs() {
 const PRIO = ["bg-del-bg text-danger", "bg-del-bg text-danger", "bg-soft text-fg", "bg-soft text-muted"];
 
 export function ReviewCard({ result }: { result: ReviewResult }) {
-  const s = useApp();
+  // 窄订阅：审查卡在会话里反复出现，不能跟着每帧 delta 重渲。
+  const status = useApp((s) => (s.activeThreadId ? s.details[s.activeThreadId]?.status : undefined));
+  const send = useApp((s) => s.send);
   const [picked, setPicked] = useState<Set<number>>(() => new Set(result.findings.map((f, i) => (f.priority <= 2 ? i : -1)).filter((i) => i >= 0)));
   const [open, setOpen] = useState<Set<number>>(new Set());
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
-  const idle = !d || d.status === "idle";
+  const idle = !status || status === "idle";
   const chosen = useMemo(() => result.findings.filter((_, i) => picked.has(i)), [picked, result.findings]);
   const ok = result.overall === "correct";
 
@@ -343,7 +345,7 @@ export function ReviewCard({ result }: { result: ReviewResult }) {
       {result.findings.length > 0 && (
         <div className="flex items-center gap-2 border-t border-line px-3 py-2">
           <span className="flex-1 text-[11.5px] text-faint">选中要修的问题（默认 P0–P2），按当前权限模式修改</span>
-          <Button size="sm" variant="soft" disabled={!chosen.length || !idle} onClick={() => s.send(fixMessage(chosen))}>
+          <Button size="sm" variant="soft" disabled={!chosen.length || !idle} onClick={() => send(fixMessage(chosen))}>
             <Wrench size={13} />
             修复选中的 {chosen.length} 个
           </Button>
@@ -355,8 +357,10 @@ export function ReviewCard({ result }: { result: ReviewResult }) {
 
 /** 计划模式提交的方案（present_plan）：批准后切模式并让模型按方案执行。 */
 export function PlanProposalCard({ item }: { item: ToolItem }) {
-  const s = useApp();
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  // 窄订阅：只关心本会话详情（判断是否已过这一回合）和两个动作。
+  const d = useApp(selectActiveDetail);
+  const set = useApp((s) => s.set);
+  const send = useApp((s) => s.send);
   const idle = !d || d.status === "idle";
   const idx = d ? d.items.findIndex((x) => x.id === item.id) : -1;
   const later = d && idx >= 0 ? d.items.slice(idx + 1).some((x) => x.type === "user") : false;
@@ -365,8 +369,8 @@ export function PlanProposalCard({ item }: { item: ToolItem }) {
 
   const run = (mode: "default" | "auto") => {
     localStorage.setItem("ee.mode", mode);
-    s.set({ draftMode: mode });
-    s.send("方案已批准，请按上面的方案开始执行；每完成一步更新任务清单，最后跑验证并汇报结果。");
+    set({ draftMode: mode });
+    send("方案已批准，请按上面的方案开始执行；每完成一步更新任务清单，最后跑验证并汇报结果。");
   };
 
   return (

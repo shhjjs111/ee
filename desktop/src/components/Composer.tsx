@@ -21,6 +21,8 @@ import {
 } from "../lib/slash";
 import type { StyleInfo } from "../types";
 import { consumeReturned, useApp } from "../lib/store";
+import { selectActiveDetail } from "../lib/selectors";
+import { useAppFields } from "../lib/useAppFields";
 import { GoalMenu } from "./GoalMenu";
 import { SlashMenu } from "./SlashMenu";
 import { mergeDraft, queueKindForKey, splitQueued, type QueueKind } from "../lib/queue";
@@ -43,8 +45,38 @@ export function modeLabel(m: string) {
 }
 
 export function Composer({ autoFocus }: { autoFocus?: boolean }) {
-  const s = useApp();
-  const detail = s.activeThreadId ? s.details[s.activeThreadId] : null;
+  // 窄订阅：本组件是高频重渲的目标（用户正在打字），不能因为**别的会话**的 delta
+  // 重建 details 就跟着重渲。detail 单独用 selector 取（引用只在本文会话变化时变），
+  // 其余都是标量/函数，浅比较即可。
+  const detail = useApp(selectActiveDetail);
+  const s = useAppFields(
+    "rpc",
+    "activeThreadId",
+    "activeWorkspace",
+    "draftMode",
+    "draftModel",
+    "draftEffort",
+    "draftStyle",
+    "draftWorktree",
+    "defaultModel",
+    "defaultEffort",
+    "defaultStyle",
+    "models",
+    "composerDraft",
+    "returnedDraft",
+    "send",
+    "sendGoal",
+    "set",
+    "setOptions",
+    "showToast",
+    "newThread",
+    "ensureThread",
+    "compact",
+    "interrupt",
+    "undo",
+    "withdrawQueued",
+    "openSettings",
+  );
   const running = !!detail && detail.status !== "idle";
   const queued = useMemo(() => (detail ? splitQueued(detail.items).queued : []), [detail?.items]);
   const allLoops = useLoops((st) => st.loops);

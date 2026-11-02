@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { relTime } from "../lib/reduce";
 import { ChildThreadCard } from "./ChildThreadCard";
 import { useApp } from "../lib/store";
+import { useAppFields } from "../lib/useAppFields";
 import { useAutomations } from "../lib/automationStore";
 import type { ThreadSummary } from "../types";
 import { Button, Menu, Spinner, Tip } from "./ui";
@@ -34,7 +35,12 @@ function norm(p: string) {
 }
 
 function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
-  const s = useApp();
+  // 窄订阅：侧栏可能有上百行，每行都全量订阅的话，**任何** state 变化（包括别的
+  // 会话每帧的流式 delta）都会重渲整个列表。实际只用到 4 个稳定动作。
+  const openThread = useApp((s) => s.openThread);
+  const renameThread = useApp((s) => s.renameThread);
+  const deleteThread = useApp((s) => s.deleteThread);
+  const setState = useApp((s) => s.set);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(t.title);
   // 指挥会话派发的子任务缩进一级（D6-1 U8）。只认 orchestrator_parent_id：
@@ -47,7 +53,7 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
         isChild ? "pl-11" : "pl-7",
         active ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg",
       )}
-      onClick={() => !editing && s.openThread(t.id)}
+      onClick={() => !editing && openThread(t.id)}
       data-testid="thread-row"
       data-title={t.title}
     >
@@ -60,7 +66,7 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
           onBlur={() => setEditing(false)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-              void s.renameThread(t.id, title);
+              void renameThread(t.id, title);
               setEditing(false);
             } else if (e.key === "Escape") setEditing(false);
           }}
@@ -104,13 +110,13 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
           }
           items={[
             { label: "重命名", icon: <Pencil size={13} />, onSelect: () => { setTitle(t.title); setEditing(true); } },
-            { label: "导出…", icon: <Download size={13} />, onSelect: () => s.set({ exportDialog: t.id }) },
+            { label: "导出…", icon: <Download size={13} />, onSelect: () => setState({ exportDialog: t.id }) },
             {
               label: "删除对话",
               icon: <Trash2 size={13} />,
               danger: true,
               onSelect: () => {
-                if (confirm(`删除对话“${t.title}”？此操作不能撤销。`)) void s.deleteThread(t.id);
+                if (confirm(`删除对话“${t.title}”？此操作不能撤销。`)) void deleteThread(t.id);
               },
             },
           ]}
@@ -121,7 +127,23 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
 }
 
 export function Sidebar() {
-  const s = useApp();
+  // 窄订阅：列表本身只关心 threads/workspaces/search/view/conn。其他会话每帧的
+  // 流式 delta 会重建 `details`，但不会改动这几个字段 → 侧栏不再跟着每帧重渲。
+  const s = useAppFields(
+    "threads",
+    "workspaces",
+    "activeThreadId",
+    "activeWorkspace",
+    "search",
+    "view",
+    "conn",
+    "rpc",
+    "addWorkspace",
+    "removeWorkspace",
+    "newThread",
+    "openThread",
+    "set",
+  );
   const autoUnread = useAutomations((x) => x.unread);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // 每个项目默认显示 50 条，点"再显示"每次多 50（改版前是硬截断到 50，多出的静默消失）。

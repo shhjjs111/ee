@@ -3,6 +3,7 @@ import { Check, ChevronRight, FileCode2, FileDiff, GitBranch, GitCommitHorizonta
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatWhen, pendingCount } from "../lib/hunks";
 import { useApp, type RightTab } from "../lib/store";
+import { selectActiveDetail } from "../lib/selectors";
 import { CONTENT_MIN, INSPECTOR_DEFAULT, INSPECTOR_MAX, INSPECTOR_MIN } from "../lib/layout";
 import { useLayout } from "../lib/layoutStore";
 import type { DiffFile, GitReview, HunkInfo } from "../types";
@@ -23,7 +24,9 @@ function FileRow({ f, cwd, threadId, snapshot, onChanged }: { f: DiffFile; cwd: 
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [hunkBusy, setHunkBusy] = useState<string | null>(null);
-  const s = useApp();
+  // 窄订阅：改动文件列表可能几十行，每行都全量订阅的话任何 state 变化都重渲。
+  const rpc = useApp((s) => s.rpc);
+  const showToast = useApp((s) => s.showToast);
   const st = STATUS[f.status] ?? STATUS.modified;
   const name = f.path.split("/").pop();
   const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
@@ -33,11 +36,11 @@ function FileRow({ f, cwd, threadId, snapshot, onChanged }: { f: DiffFile; cwd: 
     if (action === "reject" && !confirm(`撤回这块改动（${h.header}）？文件里的这一块会改回原样。`)) return;
     setHunkBusy(h.id);
     try {
-      const r = await s.rpc!.call("review/hunk", { cwd, path: f.path, hunk_id: h.id, action, thread_id: threadId });
-      if (action === "reject") s.showToast(r.action === "deleted" ? `已删除新文件 ${f.path}` : "已撤回这块改动");
+      const r = await rpc!.call("review/hunk", { cwd, path: f.path, hunk_id: h.id, action, thread_id: threadId });
+      if (action === "reject") showToast(r.action === "deleted" ? `已删除新文件 ${f.path}` : "已撤回这块改动");
       onChanged();
     } catch (e) {
-      s.showToast((e as Error).message, "error");
+      showToast((e as Error).message, "error");
     } finally {
       setHunkBusy(null);
     }
@@ -52,11 +55,11 @@ function FileRow({ f, cwd, threadId, snapshot, onChanged }: { f: DiffFile; cwd: 
     if (!confirm(msg)) return;
     setBusy(true);
     try {
-      await s.rpc!.call("git/revert_file", { cwd, path: f.path, thread_id: threadId });
-      s.showToast(f.status === "added" ? `已删除 ${f.path}` : `已撤销 ${f.path} 的改动`);
+      await rpc!.call("git/revert_file", { cwd, path: f.path, thread_id: threadId });
+      showToast(f.status === "added" ? `已删除 ${f.path}` : `已撤销 ${f.path} 的改动`);
       onChanged();
     } catch (e) {
-      s.showToast((e as Error).message, "error");
+      showToast((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
@@ -106,9 +109,15 @@ function FileRow({ f, cwd, threadId, snapshot, onChanged }: { f: DiffFile; cwd: 
 type ReviewView = "changes" | "timeline";
 
 function Review() {
-  const s = useApp();
-  const d = s.activeThreadId ? s.details[s.activeThreadId] : null;
-  const cwd = d?.cwd ?? s.activeWorkspace;
+  // 窄订阅：只有本会话详情与 reviewNonce（改动计数）相关字段。
+  const d = useApp(selectActiveDetail);
+  const activeWorkspace = useApp((s) => s.activeWorkspace);
+  const reviewNonce = useApp((s) => s.reviewNonce);
+  const rpc = useApp((s) => s.rpc);
+  const set = useApp((s) => s.set);
+  const showToast = useApp((s) => s.showToast);
+  const undoAction = useApp((s) => s.undo);
+  const cwd = d?.cwd ?? activeWorkspace;
   const threadId = d?.id;
   const [data, setData] = useState<GitReview | null>(null);
   const [loading, setLoading] = useState(false);
@@ -117,24 +126,24 @@ function Review() {
   // 回合中改文件会频繁触发刷新、也可能切换项目：只认最后一次请求的结果
   const gen = useRef(0);
   const load = useCallback(async () => {
-    if (!cwd || !s.rpc) return;
+    if (!cwd || !rpc) return;
     const tok = ++gen.current;            // 切对话/项目后，迟到的旧结果不覆盖
     setLoading(true);
     try {
-      const r = await s.rpc.call("git/diff", { cwd, thread_id: threadId });
+      const r = await rpc.call("git/diff", { cwd, thread_id: threadId });
       if (tok === gen.current) setData(r);
     } catch (e) {
       if (tok !== gen.current) return;
       setData(null);
-      s.showToast((e as Error).message, "error");
+      showToast((e as Error).message, "error");
     } finally {
       if (tok === gen.current) setLoading(false);
     }
-  }, [cwd, threadId, s.rpc]);
+  }, [cwd, threadId, rpc]);
 
   useEffect(() => {
     if (view === "changes") load();
-  }, [load, s.reviewNonce, view]);
+  }, [load, reviewNonce, view]);
 
   const pick = (v: ReviewView) => {
     setView(v);
@@ -145,7 +154,7 @@ function Review() {
 
   const undo = async () => {
     if (!d) return;
-    await s.undo();       // 冲突确认、恢复点提示都在 store.undo 里
+    await undoAction();       // 冲突确认、恢复点提示都在 store.undo 里
     load();
   };
 
@@ -197,12 +206,12 @@ function Review() {
         {view === "changes" && data?.is_repo && data.files.length > 0 && (
           <>
             <Tip label="审查这些改动（/review）">
-              <Button size="icon-sm" onClick={() => s.set({ dialog: { kind: "review" } })}>
+              <Button size="icon-sm" onClick={() => set({ dialog: { kind: "review" } })}>
                 <SearchCheck size={14} />
               </Button>
             </Tip>
             <Tip label="提交（模型写提交信息，确认后 git commit）">
-              <Button size="icon-sm" onClick={() => s.set({ dialog: { kind: "commit" } })} disabled={!!d && d.status !== "idle"}>
+              <Button size="icon-sm" onClick={() => set({ dialog: { kind: "commit" } })} disabled={!!d && d.status !== "idle"}>
                 <GitCommitHorizontal size={14} />
               </Button>
             </Tip>
@@ -256,16 +265,20 @@ const MIN_W = INSPECTOR_MIN;
 const MAX_W = INSPECTOR_MAX;
 
 export function RightPanel() {
-  const s = useApp();
+  // 窄订阅：面板只关心开关/标签页/当前项目路径。
+  const rightOpen = useApp((s) => s.rightOpen);
+  const rightTab = useApp((s) => s.rightTab);
+  const view = useApp((s) => s.view);
+  const set = useApp((s) => s.set);
   // 宽度由 layoutStore 统一持有（外层 AppShell 决定实际占位/覆盖），这里只负责拖动改偏好。
   const width = useLayout((st) => st.prefs.inspector);
   const setInspectorWidth = useLayout((st) => st.setInspectorWidth);
   const [termMounted, setTermMounted] = useState(false);
   const drag = useRef<{ x: number; w: number } | null>(null);
   useEffect(() => {
-    if (s.rightTab === "terminal") setTermMounted(true);
-  }, [s.rightTab]);
-  if (!s.rightOpen || s.view !== "chat") return null;
+    if (rightTab === "terminal") setTermMounted(true);
+  }, [rightTab]);
+  if (!rightOpen || view !== "chat") return null;
 
   const onDown = (e: React.PointerEvent) => {
     drag.current = { x: e.clientX, w: width };
@@ -295,10 +308,10 @@ export function RightPanel() {
         {TABS.map((t) => (
           <button
             key={t.id}
-            onClick={() => s.set({ rightTab: t.id })}
+            onClick={() => set({ rightTab: t.id })}
             className={clsx(
               "no-drag flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors",
-              s.rightTab === t.id ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg",
+              rightTab === t.id ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg",
             )}
           >
             {t.icon}
@@ -306,13 +319,13 @@ export function RightPanel() {
           </button>
         ))}
       </div>
-      {s.rightTab === "review" && <Review />}
+      {rightTab === "review" && <Review />}
       {termMounted && (
-        <div className={clsx("min-h-0 flex-1 flex-col", s.rightTab === "terminal" ? "flex" : "hidden")}>
+        <div className={clsx("min-h-0 flex-1 flex-col", rightTab === "terminal" ? "flex" : "hidden")}>
           <TerminalPanel />
         </div>
       )}
-      {s.rightTab === "files" && <FilesPanel />}
+      {rightTab === "files" && <FilesPanel />}
     </aside>
   );
 }

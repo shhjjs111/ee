@@ -4,14 +4,17 @@ import clsx from "clsx";
 import { Eraser, Plus, SquareTerminal, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useApp } from "../lib/store";
+import { selectActiveDetail } from "../lib/selectors";
 import { attach, checkAvailable, clear, closeTab, fit, newTab, useTerms } from "../lib/terminals";
 import { Button, Spinner, Tip } from "./ui";
 
 export function TerminalPanel() {
-  const s = useApp();
+  // 窄订阅：终端的 cwd 只看当前会话/项目。其他会话的 delta 不应让 xterm 容器重渲。
+  const detail = useApp(selectActiveDetail);
+  const activeWorkspace = useApp((s) => s.activeWorkspace);
   const t = useTerms();
   const box = useRef<HTMLDivElement>(null);
-  const cwd = (s.activeThreadId ? s.details[s.activeThreadId]?.cwd : null) ?? s.activeWorkspace;
+  const cwd = detail?.cwd ?? activeWorkspace;
 
   useEffect(() => {
     checkAvailable().then((r) => {

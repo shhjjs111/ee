@@ -28,6 +28,26 @@
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下），更新器接口已配好但客户端未接 electron-updater | 首次真实发版与自动更新需单独确认 |
 
+## 执行记录（2026-11-02，改 .py 后删陈旧字节码）
+
+CI 上 `test_goal_acceptance::test_goal_closes_loop_red_then_green` 偶发失败，日志是
+`FAILED test_calc.py::test_add - assert -1 == 5` + `FakeClient 脚本用完了`，表面看像“模型没改对代码”，
+实际是 **CPython 字节码缓存失效判据太弱**：判断 `.pyc` 是否过期只看「源码 mtime 的**整秒**」
+和「**文件大小**」。`edit` 经常写出**等长**改动（`return a - b` → `return a + b`，34 字节不变），
+若它和上一次 import 落在同一秒内，两项都不变，Python 就把旧字节码当有效——紧接着跑的测试
+仍读到旧值。于是 agent 明明改对了、判据持续红、goal 循环跑满 3 轮把 FakeClient 的脚本耗光，
+退出码 3。同一份代码上一轮是绿的，属于时序敏感的偶发（本地连跑 10 次全过，所以长期没被发现）。
+
+这是**对所有用户都成立**的缺陷：用户让 ee 改任何 Python 文件都可能踩到，不只是 CI 测试。
+
+修法：`fileops.write_text`（`edit`/`write`/`apply_patch` 三个工具共用的唯一写入点）写完后
+删掉对应的 `.pyc`（含 `__pycache__` 里同 stem 的各版本）。不伪造 mtime、不指望“下次恰好
+落在下一秒”，是唯一与时序无关的手段；删不掉（被杀软/索引占着）也不连累写入本身。
+
+验证：探针把 mtime 强行拨回原值、大小不变（最坏情况），修复前 pytest 持续报旧结果，修复后
+`1 passed`；端到端 goal 闭环 5/5 通过；新增 4 条测试（将 `_drop_bytecode` 打成空操作确认它们是红的）；
+相关子集 184 passed。
+
 ## 执行记录（2026-11-02，上下文成本：关掉消息级修剪 + 历史大字段占位）
 
 长会话越来越慢的根因不是「历史长」，而是**历史里永久重发的冗余**。按 DeepSeek 官方价
@@ -261,6 +281,15 @@ write 400 行文件 → 连改两处 → 问值（4 轮/组）：
   - **签名：明确不做**。查微软文档后推翻了原先「自签名能缓解」的假设：自签名证书与不签名在 SmartScreen 上**表现完全相同**，而且 **EV 证书也已不再绕过** SmartScreen。花钱买房只买到「显示发布者名字」而不是「消除警告」。剩下真正能消警告的只有 Azure Artifact Signing（$9.99/月，首年仍要攒信誉）与 Microsoft Store（免费零警告，要过审）。现在采用「不签名 + 公开 SHA256 + 安装说明讲清原因」。
     来源：https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
   - **未验**：本地 `electron-builder` 在 `packaging` 阶段卡住（本机拉不到 Electron 45 二进制），所以 `latest.yml` 生成与 Release 上传脚本**只有代码审查，没有实跑证据**；待推一个 tag 验证。客户端尚未接 `electron-updater`（`build.publish` 已配好，随时可接）。
+  - **→ 2026-11-02 已实跑打通（`v0.1.0-rc.1`，run #4 起连挂四轮，第 5 轮全绿）**。发布链路现在有完整实证：`check`→`verify`（Backend tests 7min、E2E 真实 Electron 48s）→`package`→`publish` 全绿，Release 页上有 `ee-Setup-0.1.0.exe`（152,091,121 B）、`latest.yml`、`.blockmap`、`SHA256SUMS.txt`、`builder-debug.yml`。`latest.yml` 内容已核对：`version: 0.1.0`、`path: ee-Setup-0.1.0.exe`、sha512 与 size 均与实际上传的安装包一致。
+    - 四次失败各是一个独立的坑，都只在实跑时暴露，记下来免得重犯：
+      1. `--target` 对已存在的 tag 无意义（只在自动建 tag 时用），已移除。
+      2. 预发布 tag（`-rc.1`）不能拿去比 `package.json` 的完整版本号，只能比基础版本（`${VER%%-*}`）。
+      3. **publish job 不 checkout 就没有 `.git`**，`gh` 找不到 `-R`/`GH_REPO` 时会去读 git remote，死在 `failed to run git: fatal: not a git repository`。修法：加 `actions/checkout` + 显式 `GH_REPO` + `--repo`，并在 job 上显式声明 `permissions: contents: write`。
+      4. **PowerShell 的 `@pre` / `@assets` splat 在 `-File` 模式下被拆成单字符**，gh 报 ``no matches found for `-` ``（那个 `-` 就是 `--prerelease` 被拆出的第一段）。修法：先拼 `@argv` 数组再 `& gh @argv`。
+    - 附带修的一个真问题：`playwright.config.ts` 只有 per-test `timeout`（靠 JS 定时器，进程挂死时自己也停），实测 CI 上卡过 44 分钟不退、把 verify 拖过 45 分钟 job 上限而 cancelled。已加 `globalTimeout: 12 分钟` 兜底。
+    - **失败现场要自己留**：GitHub 工作流日志要仓库管理权限（API 403、页面要登录），所以 publish 失败时把 gh 输出 Tee 到 `dist-out/gh-release.log` 并上传 `release-publish-log` artifact。
+    - 仍未做：客户端未接 `electron-updater`（`build.publish` 已配好，随时可接）。
 - 仍成立的历史边界：`test_goal_acceptance` 与 `test_bgshell_guidance` 各失败过一次，但都在对应的针对性修复之前，此后连跑全绿（后者本地连跑 3 次）。
 
 ## 修订（2026-11-01）
