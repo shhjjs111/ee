@@ -182,15 +182,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $ErrorActionPreference = 'Continue'
           $tag = "${{ github.ref_name }}"
           $isPre = $tag -match '-'
           $pre = if ($isPre) { @("--prerelease") } else { @() }
           # 安装包 + latest.yml/.blockmap（更新源配套产物）+ 校验和
           $assets = @(Get-ChildItem dist-out -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object { $_.FullName })
           $assets += "dist-out/SHA256SUMS.txt"
+
+          # 先自检：失败一次已经白等半小时，宁可多打几行日志
+          Write-Host "tag=[$tag] pre_flag=[$($pre -join ' ')]"
+          Write-Host "assets($($assets.Count)):"
+          $assets | ForEach-Object { Write-Host "  $_  $(if (Test-Path $_) {'存在'} else {'【缺失】'})" }
+          $missing = @($assets | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) { throw "以下文件不存在，无法上传：$($missing -join ', ')" }
+          Write-Host "gh 版本：$(& gh --version | Select-Object -First 1)"
+
+          # 不传 --target：tag 是推送时就已存在的，而 --target 只用于「自动建 tag 时
+          # 指定从哪个提交建」，对已存在的 tag 没意义。--verify-tag 要求 tag 必须已存在，
+          # 正是我们要的：万一发错分支会立即失败而不是默默在 main 上打 tag。
           gh release create $tag `
             --title "ee $tag" `
             --notes-file dist-out/RELEASE_NOTES.md `
-            --target "${{ github.sha }}" `
+            --verify-tag `
             @pre `
             @assets
+          if ($LASTEXITCODE -ne 0) { throw "gh release create 退出码 $LASTEXITCODE" }
