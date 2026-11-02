@@ -53,24 +53,26 @@ function renderItem(it: Item, approval?: string) {
 /** 窗口化的渲染单元：条目对象引用不变就不重渲（流式 delta 只换一个条目）。 */
 const ItemBlock = memo(function ItemBlock({ item, approval }: { item: Item; approval?: string }) {
   return (
-    <div className={item.type === "user" ? "mt-7 first:mt-0" : "mt-3 first:mt-0"}>{renderItem(item, approval)}</div>
+    <div data-block={item.id} className={item.type === "user" ? "mt-7 first:mt-0" : "mt-3 first:mt-0"}>
+      {renderItem(item, approval)}
+    </div>
   );
 });
 
 const sameItems = (a: { items: Item[] }, b: { items: Item[] }) =>
   a.items.length === b.items.length && a.items.every((x, i) => x === b.items[i]);
 
-const ExploreBlock = memo(function ExploreBlock({ items }: { items: Item[] }) {
+const ExploreBlock = memo(function ExploreBlock({ id, items }: { id: string; items: Item[] }) {
   return (
-    <div className="mt-3 first:mt-0">
+    <div data-block={id} className="mt-3 first:mt-0">
       <ExploreGroup items={items} />
     </div>
   );
 }, sameItems);
 
-const AgentsBlock = memo(function AgentsBlock({ items }: { items: Item[] }) {
+const AgentsBlock = memo(function AgentsBlock({ id, items }: { id: string; items: Item[] }) {
   return (
-    <div className="mt-3 first:mt-0">
+    <div data-block={id} className="mt-3 first:mt-0">
       <SubagentGroup items={items as ToolItem[]} />
     </div>
   );
@@ -255,31 +257,39 @@ export function Conversation() {
   const visible = start > 0 ? blocks.slice(start) : blocks;
   const hidden = start;
 
-  // 展开更早的一批：先量旧高度，渲染后把滚动位置补回去，视觉上原地不动。
-  const restoreH = useRef<number | null>(null);
-  const loadEarlier = useCallback(() => {
-    if (start <= 0) return;
-    const next = Math.max(0, start - PAGE);
-    restoreH.current = scroller.current?.scrollHeight ?? null;
-    setAnchorId(blockKey(blocks[next]));
-  }, [blocks, start]);
+  // 展开更早的一批。滚动位置由浏览器原生的 overflow-anchor 保持（往上方插入内容时
+  // 不动视口）—— 实测它比自己算 scrollHeight 差量可靠得多：新一批里的 Markdown /
+  // 代码高亮是异步完成的，自己量高度那一刻还没长完，补得不够就会往上弹。
+  const loadEarlierFromStore = useApp((s) => s.loadEarlier);
+  // 本地窗口后面还有（hidden > 0）就纯前端展开；本地已到底但后端还有（items_has_more）
+  // 才去拉历史。首屏只拉了尾部一页（store.FIRST_PAGE），几千条的长会话不会一次全下。
+  const serverMore = !!d?.items_has_more;
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const loadEarlier = useCallback(async () => {
+    if (start > 0) {
+      const next = Math.max(0, start - PAGE);
+      setAnchorId(blockKey(blocks[next]));
+      return;
+    }
+    if (!serverMore || loadingEarlier || !activeThreadId) return;
+    setLoadingEarlier(true);
+    try {
+      await loadEarlierFromStore(activeThreadId);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [blocks, start, serverMore, loadingEarlier, activeThreadId, loadEarlierFromStore]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    if (restoreH.current !== null) {
-      el.scrollTop += el.scrollHeight - restoreH.current;
-      restoreH.current = null;
-    } else if (stick) {
-      el.scrollTop = el.scrollHeight;
-    }
+    if (stick) el.scrollTop = el.scrollHeight;
   }, [d?.items, stick, running, start]);
 
   useEffect(() => setStick(true), [activeThreadId]);
   // 切会话时丢掉锚点，回到新会话的尾部
   useEffect(() => {
     setAnchorId(null);
-    restoreH.current = null;
   }, [activeThreadId]);
 
   if (!d) {
@@ -308,29 +318,39 @@ export function Conversation() {
           // 离开底部时把当前窗口起点钉住（否则新 delta 会让窗口滑动，正在看的内容被挤走）。
           // 滚到接近顶部再自动补一批，往上翻不用一次次点按钮。
           if (!atBottom && !anchorId && hidden > 0) setAnchorId(blockKey(blocks[start]));
-          if (!atBottom && el.scrollTop < 240 && hidden > 0) loadEarlier();
+          if (!atBottom && el.scrollTop < 240 && (hidden > 0 || serverMore)) void loadEarlier();
         }}
         className="relative flex-1 overflow-y-auto"
       >
         {/* 间距分两档：用户发问是"回合起点"，前面留更大空白；其余条目紧凑跟随。
             改版前统一 space-y-3，一问一答挤成一块，读不出回合边界。 */}
         <div className="mx-auto max-w-[780px] px-6 pb-6 pt-6">
-          {hidden > 0 && (
+          {(hidden > 0 || serverMore) && (
             <div className="mb-3 flex justify-center">
               <button
-                onClick={loadEarlier}
+                onClick={() => {
+                  // 先回到顶部再从同一入口加载：两条路径（点按钮 / 滚到顶）行为一致，
+                  // 也都靠原生 scroll anchoring 保住视口位置。
+                  if (scroller.current) scroller.current.scrollTop = 0;
+                  void loadEarlier();
+                }}
+                disabled={loadingEarlier}
                 data-testid="load-earlier"
-                className="rounded-full border border-line bg-elev px-3 py-1 text-[12px] text-muted transition-colors hover:bg-hover hover:text-fg"
+                className="rounded-full border border-line bg-elev px-3 py-1 text-[12px] text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-60"
               >
-                显示更早的 {Math.min(PAGE, hidden)} 条（还有 {hidden} 条）
+                {loadingEarlier
+                  ? "正在加载更早的对话…"
+                  : hidden > 0
+                    ? `显示更早的 ${Math.min(PAGE, hidden)} 条（还有 ${hidden} 条）`
+                    : "加载更早的历史"}
               </button>
             </div>
           )}
           {visible.map((b) =>
             b.kind === "explore" ? (
-              <ExploreBlock key={b.id} items={b.items} />
+              <ExploreBlock key={b.id} id={b.id} items={b.items} />
             ) : b.kind === "agents" ? (
-              <AgentsBlock key={b.id} items={b.items} />
+              <AgentsBlock key={b.id} id={b.id} items={b.items} />
             ) : (
               <ItemBlock key={b.item.id} item={b.item} approval={approvals.get((b.item as { call_id?: string }).call_id ?? "")} />
             ),

@@ -10,6 +10,12 @@ import { RpcClient, type ConnState } from "./rpc";
 import { migratePrefs } from "./layout";
 
 
+/** 首屏拉多少条历史：大会话（实测 15MB / 5215 条）一次拉全部，光传输 + JSON.parse 就要 1 秒多，
+ *  界面会长时间空着。取尾部一页是「打开快到无感」的关键；更早的历史等用户往上翻时再补。 */
+const FIRST_PAGE = 120;
+/** 往上翻时每页补多少条。 */
+const EARLIER_PAGE = 120;
+
 /** 快照恢复只完成一部分（有文件被占用）：如实提示已恢复几个、哪些没恢复。 */
 export function partialToast(done: number, failed: { path: string; reason?: string }[]): string {
   const names = failed.slice(0, 5).map((f) => f.path).join("、");
@@ -95,6 +101,8 @@ type Actions = {
   refreshListsSafe(): Promise<void>;
   refreshModels(): Promise<void>;
   openThread(id: string): Promise<void>;
+  /** 往上翻加载更早的历史（后端分页）：首屏只拉尾部一页，这里补前面一页。 */
+  loadEarlier(threadId: string): Promise<void>;
   newThread(cwd?: string | null): void;
   /** 失败时提示错误并返回 false（不抛）。 */
   addWorkspace(path: string): Promise<boolean>;
@@ -219,7 +227,11 @@ export const useApp = create<State & Actions>((set, get) => ({
           const sentIds = new Set(
             (get().details[id]?.items ?? []).map((x: { id: string }) => x.id),
           );
-          rpc.call("thread/get", { thread_id: id })
+          // 断线期间用户可能已经往上翻了若干页：快照至少要盖住本地已有的全部条目，
+          // 否则「本地有、快照里没有」的旧条目会被当成新条目往尾部追加，顺序就乱了。
+          // 同时不要为此把整份 7MB 历史再拉一遍（本地已有的不用重传）。
+          const localCount = get().details[id]?.items?.length ?? 0;
+          rpc.call("thread/get", { thread_id: id, tail: Math.max(FIRST_PAGE, localCount + 40) })
             .then((r) => useApp.setState((st) => {
               const fresh = r.thread as ThreadDetail;
               const cur = st.details[id];
@@ -229,7 +241,9 @@ export const useApp = create<State & Actions>((set, get) => ({
                 (x: { id: string }) => !sentIds.has(x.id) && !fresh.items.some((f) => f.id === x.id),
               );
               const merged = keep.length ? { ...fresh, items: [...fresh.items, ...keep] } : fresh;
-              return { details: { ...st.details, [id]: merged } };
+              // 快照只带了尾部一页（本地已翻过更多页时照旧保留）：更新「后面还有历史」标记，
+              // 别让重新打开后误以为已经到头顶。
+              return { details: { ...st.details, [id]: { ...merged, items_has_more: fresh.items_has_more ?? false } } };
             }))
             .catch((e: Error) => get().showToast(`重连后刷新当前对话失败：${e.message}`, "error"));
         }
@@ -315,7 +329,9 @@ export const useApp = create<State & Actions>((set, get) => ({
     const rpc = get().rpc!;
     set({ activeThreadId: id, view: "chat" });
     try {
-      const r = await rpc.call("thread/get", { thread_id: id });
+      // 首屏只要尾部一页：长会话（实测 15MB / 5215 条）一次拉全部，传输 + JSON.parse
+      // 就要一秒以上、界面卡在空白上；上面的历史等用户真往上翻时再补（loadEarlier）。
+      const r = await rpc.call("thread/get", { thread_id: id, tail: FIRST_PAGE });
       const t = r.thread as ThreadDetail;
       // 迟到的响应（用户已经切到别的对话）只缓存详情，不改当前项目
       const still = get().activeThreadId === id;
@@ -334,6 +350,42 @@ export const useApp = create<State & Actions>((set, get) => ({
         .catch((e: Error) => get().activeThreadId === id && get().showToast(`读取后台命令失败：${e.message}`, "error"));
     } catch (e) {
       if (get().activeThreadId === id) get().showToast((e as Error).message, "error");
+    }
+  },
+
+  async loadEarlier(threadId) {
+    const rpc = get().rpc;
+    const cur = get().details[threadId];
+    // 只给「已经加载过，且确实还有更早历史」的会话补拉
+    if (!rpc || !cur?.items?.length || !cur.items_has_more) return;
+    const first = cur.items[0] as { seq?: number };
+    if (first?.seq === undefined) return;
+    // 用「当前最早 seq」当游标：期间到达的新条目都在尾部，不会影响这一页
+    const beforeSeq = Number(first.seq);
+    try {
+      const r = await rpc.call("thread/get", { thread_id: threadId, before_seq: beforeSeq, tail: EARLIER_PAGE });
+      const page = r.thread as ThreadDetail;
+      set((s) => {
+        const d = s.details[threadId];
+        // 期间切走 / 被重新打开（可能已经是新快照）：只合并不冲突的那份
+        if (!d) return {};
+        const have = new Set(d.items.map((x) => x.id));
+        const older = page.items.filter((x) => !have.has(x.id));
+        if (!older.length) return { details: { ...s.details, [threadId]: { ...d, items_has_more: page.items_has_more ?? false } } };
+        return {
+          details: {
+            ...s.details,
+            [threadId]: {
+              ...d,
+              items: [...older, ...d.items],
+              items_total: page.items_total ?? d.items_total,
+              items_has_more: page.items_has_more ?? false,
+            },
+          },
+        };
+      });
+    } catch (e) {
+      get().showToast(`加载更早的对话失败：${(e as Error).message}`, "error");
     }
   },
 

@@ -222,6 +222,65 @@ describe("发送失败", () => {
   });
 });
 
+describe("历史分页（大会话首屏只拉尾部一页）", () => {
+  it("打开会话只请求尾部一页，不把几千条历史全拉下来", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: null, details: {} });
+    const p = useApp.getState().openThread("big");
+    await Promise.resolve();
+    const get = f.calls.find((c) => c.method === "thread/get")!;
+    expect(get.params.tail, "openThread 应带 tail 限制，否则 15MB 大会话要卡几秒").toBeGreaterThan(0);
+    expect(get.params.tail).toBeLessThan(1000);
+    get.resolve({ thread: { ...detail("big", "/A"), items: [], items_total: 5000, items_has_more: true } });
+    await p;
+    expect(useApp.getState().details.big.items_has_more).toBe(true);
+  });
+
+  it("loadEarlier 用当前最早 seq 当游标，把更早的条目前置（不乱序、不重复）", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "big",
+      details: {
+        big: {
+          ...detail("big", "/A"),
+          items: [{ id: "m3", seq: 3, type: "assistant", text: "C" }, { id: "m4", seq: 4, type: "assistant", text: "D" }],
+          items_total: 4,
+          items_has_more: true,
+        } as any,
+      },
+    });
+    const p = useApp.getState().loadEarlier("big");
+    await Promise.resolve();
+    const get = f.calls.find((c) => c.method === "thread/get")!;
+    expect(get.params.before_seq, "应该用当前最早条目的 seq 当游标").toBe(3);
+    get.resolve({
+      thread: {
+        ...detail("big", "/A"),
+        // 故意把已经在本地的 m3 也带回来：不能重复插入
+        items: [{ id: "m1", seq: 1, type: "assistant", text: "A" }, { id: "m2", seq: 2, type: "assistant", text: "B" }, { id: "m3", seq: 3, type: "assistant", text: "C" }],
+        items_total: 4,
+        items_has_more: false,
+      } as any,
+    });
+    await p;
+    const d = useApp.getState().details.big;
+    expect(d.items.map((x) => x.id)).toEqual(["m1", "m2", "m3", "m4"]);
+    expect(d.items_has_more).toBe(false);
+  });
+
+  it("已经到头顶（items_has_more=false）时不再白跑一次请求", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "s",
+      details: { s: { ...detail("s", "/A"), items: [{ id: "m1", seq: 1, type: "assistant", text: "A" }], items_has_more: false } as any },
+    });
+    await useApp.getState().loadEarlier("s");
+    expect(f.calls.some((c) => c.method === "thread/get")).toBe(false);
+  });
+});
+
 describe("删除会话", () => {
   it("删掉之后详情、后台命令、计时缓存一起清掉（不留幽灵数据）", async () => {
     const f = fakeRpc();

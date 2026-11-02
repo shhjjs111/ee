@@ -160,6 +160,10 @@ export type ThreadDetail = ThreadSummary & {
   git: { is_repo: boolean; branch: string; changed: number; untracked: number } | null;
   instructions?: string[]; // 本会话加载的 AGENTS.md
   status_text?: string; // 临时状态：正在连接模型… 等（turn/status）
+  /** 分页信息（首屏只拉尾部一页时用）：本会话总条目数 */
+  items_total?: number;
+  /** 上面返回的 items 前面还有更早的历史（需要再拉） */
+  items_has_more?: boolean;
 };
 
 export type Workspace = { path: string; name: string; opened?: number; exists?: boolean };
