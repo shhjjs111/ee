@@ -322,4 +322,8 @@ def _items_from_messages(messages: list[dict]) -> list[dict]:
             it = tools.get(m.get("tool_call_id"))
             if it is not None:
                 it["output"] = m.get("content") or ""
+    # 补 seq（显示顺序）。没有它，`detail(tail=N)` 切出来的那一页条目都缺游标，
+    # 前端 `loadEarlier` 拿不到 `before_seq` 就只能停在原地——超过一页的老会话翻不上去。
+    for n, it in enumerate(items, 1):
+        it.setdefault("seq", n)
     return items

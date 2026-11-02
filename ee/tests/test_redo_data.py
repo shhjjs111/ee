@@ -543,3 +543,39 @@ def test_undo_without_end_snapshot_always_confirms(ee_home, workspace):
         r = await b.call("thread/undo", {"thread_id": tid})
         assert r.get("needs_confirm") is True, "这个权衡被改掉了，请先读 _conflicts 的注释"
     asyncio.run(go())
+
+
+def test_legacy_session_items_get_seq_so_paging_can_walk_back(ee_home):
+    """老会话（终端版）没有 item 记录，是从 messages 还原的，必须补上 seq。
+
+    缺陷：`_items_from_messages` 造出来的条目全都没有 `seq`，而 `detail(tail=N)`
+    分页要靠 `seq` 当游标。结果首屏只给一页、`items_has_more=True`，前端
+    `loadEarlier` 拿 `items[0].seq` 得到 undefined 就直接 return——用户永远翻不到
+    更早的内容（超过一页的老会话等于丢历史）。
+    """
+    import json
+
+    from ee.core.store import SessionStore
+    from ee.server.threads import Thread
+
+    d = ee_home / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    recs = [{"t": 1.0, "kind": "meta", "meta": {"cwd": str(ee_home), "title": "老会话"}}]
+    for i in range(80):          # 160 条 > 一页，才会触发分页
+        recs.append({"kind": "message", "message": {"role": "user", "content": f"问{i}"}})
+        recs.append({"kind": "message", "message": {"role": "assistant", "content": f"答{i}"}})
+    path = d / "20250101-000000-abcdef.jsonl"
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")
+
+    loaded = SessionStore.load(path)
+    assert all("seq" in it for it in loaded["items"]), "还原出来的条目缺 seq，分页游标就没有了"
+    t = Thread(path.stem, ee_home, lambda *a: None, loaded["meta"], items=loaded["items"], persist=False)
+
+    full = [it["id"] for it in t.detail()["items"]]
+    page = t.detail(tail=120)
+    assert page["items_has_more"] is True and len(page["items"]) == 120
+    got = [it["id"] for it in page["items"]]
+    while page["items_has_more"]:
+        page = t.detail(before_seq=page["items"][0]["seq"], tail=120)
+        got = [it["id"] for it in page["items"]] + got
+    assert got == full, "老会话逐页往前翻拼不回完整历史"
