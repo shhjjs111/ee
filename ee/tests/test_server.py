@@ -492,3 +492,46 @@ def test_withdrawn_queue_item_does_not_leak_pending_model(ee_home, workspace):
         after = b.threads[tid].session.spec.alias
         assert after == before, f"撤回的消息把 model 残留下来了：{before} → {after}"
     asyncio.run(go())
+
+
+def test_thread_get_pagination_reconstructs_full_history(ee_home, workspace):
+    """thread/get 的 tail / before_seq 必须能**拼回**完整历史。
+
+    长会话（实测 15MB / 5215 条）一次全量返回，光传输 + JSON.parse 就要一秒多，
+    桌面端首屏因此只拉尾部一页，往上翻再补。分页一旦漏条/重条，用户看到的历史
+    就是错的（比慢更糟），所以这里按「逐页往前翻」把整段历史拼回来逐条比对。
+    """
+    script = [text_chunks(f"第{i}段回答") + finish("stop") for i in range(1, 4)]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]["id"]
+        for i in range(1, 4):
+            ev.clear()
+            await b.call("turn/start", {"thread_id": tid, "text": f"第{i}问"})
+            await wait_for(ev, "turn/completed")
+
+        full = (await b.call("thread/get", {"thread_id": tid}))["thread"]
+        ids = [it["id"] for it in full["items"]]
+        assert len(ids) > 6, ids
+        # 不传分页参数时行为必须完全不变（脚本 / ee exec / 导出都靠这条路径）
+        assert full["items_total"] == len(ids) and full["items_has_more"] is False
+
+        # 首屏：只要尾部一页
+        page = (await b.call("thread/get", {"thread_id": tid, "tail": 3}))["thread"]
+        assert [it["id"] for it in page["items"]] == ids[-3:]
+        assert page["items_total"] == len(ids) and page["items_has_more"] is True
+
+        # 往上翻：用当前最早条目的 seq 当游标，逐页补到头顶
+        got: list[str] = [it["id"] for it in page["items"]]
+        cur = page
+        while cur["items_has_more"]:
+            before = cur["items"][0]["seq"]
+            cur = (await b.call("thread/get", {"thread_id": tid, "before_seq": before, "tail": 2}))["thread"]
+            got = [it["id"] for it in cur["items"]] + got
+        assert got == ids, f"分页拼不回完整历史：{got} != {ids}"
+
+        # 边界：tail=0 是「这一页空着」，不能退化成返回全部（否则又变成 7MB）
+        empty = (await b.call("thread/get", {"thread_id": tid, "tail": 0}))["thread"]
+        assert empty["items"] == [] and empty["items_has_more"] is True
+    asyncio.run(go())

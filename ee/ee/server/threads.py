@@ -336,15 +336,36 @@ class Thread:
                 "style": self.session.style if self.session else (self.meta.get("style") or "default"),
                 "workspace": (self.meta.get("worktree") or {}).get("repo") or self.meta.get("cwd", "")}
 
-    def detail(self) -> dict:
+    def detail(self, tail: int | None = None, before_seq: int | None = None) -> dict:
+        """会话详情。
+
+        `tail` / `before_seq` 用于**历史分页**（长会话一次 7MB 太重）：
+        - `tail=N`：只返回最后 N 条；
+        - `before_seq=S`：只返回 seq < S 的那一段（再取前 N 条），用于往上翻。
+        两个都不传时返回全部，保持老调用方（脚本 / `ee exec` / 导出）不变。
+        """
         s = self.session
         git = None
         if s is not None:
             git = {"is_repo": s.git.is_repo, "branch": s.git.branch, "changed": s.git.changed,
                    "untracked": s.git.untracked}
-        return {**self.summary(), "items": self.items, "usage": self.usage, "context_left": self.context_left,
+        items = self.items
+        total = len(items)
+        has_more = False
+        if tail is not None or before_seq is not None:
+            end = total
+            if before_seq is not None:
+                # seq 不连续（条目可能被撤回），按第一个 >= before_seq 的位置切
+                end = next((i for i, it in enumerate(items)
+                            if int(it.get("seq") or 0) >= int(before_seq)), total)
+            start = max(0, end - int(tail)) if tail is not None else 0
+            # tail <= 0 表示“这一页不要任何条目”，不能退化成“返回全部”
+            has_more = start > 0
+            items = items[start:end]
+        return {**self.summary(), "items": items, "usage": self.usage, "context_left": self.context_left,
                 "shell": (s.shell.display if s and s.shell else None), "git": git,
-                "instructions": self.instructions(), "status_text": self.status_text}
+                "instructions": self.instructions(), "status_text": self.status_text,
+                "items_total": total, "items_has_more": has_more}
 
     def instructions(self) -> list[str]:
         """本会话加载的 AGENTS.md（绝对路径）。"""

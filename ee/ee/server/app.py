@@ -341,13 +341,21 @@ class Backend:
         self.notify("thread/updated", {"thread": t.summary()})
         return {"thread": t.detail()}
 
-    async def thread_get(self, thread_id: str) -> dict:
+    async def thread_get(self, thread_id: str, tail: int | None = None, before_seq: int | None = None) -> dict:
+        """取会话详情。
+
+        `tail` / `before_seq` 是**历史分页**：几千条的长会话一次返回 7MB，渲染进程光传输 +
+        JSON.parse 就要一秒以上（实测 15MB 会话打开耗时 3 秒）。默认仍返回全部（脚本与
+        老调用方不受影响）；桌面端首屏只取尾部一页，往上翻时再补更早的。
+        """
         t = await self._athread(thread_id)
         try:
             await t.ensure_session_async()
         except ValueError as e:
             raise RpcError(f"配置错误：{e}")
-        return {"thread": t.detail()}
+        if tail is None and before_seq is None:
+            return {"thread": t.detail()}
+        return {"thread": t.detail(tail=tail, before_seq=before_seq)}
 
     # ------------------------------------------------------------ 导出（T10-a U2）
     async def thread_export(self, thread_id: str, format: str = "markdown",
