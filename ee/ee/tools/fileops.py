@@ -123,6 +123,33 @@ def unencodable(tf: TextFile, new_text: str) -> str | None:
     return None
 
 
+_PY_SUFFIXES = {".py", ".pyw"}
+
+
+def _drop_bytecode(path: Path) -> None:
+    """删掉这个源文件对应的 .pyc 缓存（失败不影响写入本身）。
+
+    **为什么必须显式删**：CPython 判定字节码是否过期，只比「源码 mtime 的整秒」和
+    「文件大小」两项。edit 经常写出**等长**改动（`return a - b` → `return a + b`，
+    34 字节不变），若它和上一次 import 落在同一秒内，两项都不变，Python 就把旧字节码
+    当有效——紧接着跑的测试仍然读到旧值。CI 上真出过：agent 明明改对了，判据却一直
+    红，goal 循环跑到把脚本耗光才退出 3（用户侧则是"改对了却说我改错"）。
+    删缓存是唯一不依赖时序的失效手段：不伪造 mtime，也不指望第二次恰好落在下一秒。
+    """
+    if path.suffix.lower() not in _PY_SUFFIXES:
+        return
+    cands = [path.parent / f"{path.stem}.pyc"]        # 老式同目录 .pyc
+    pycache = path.parent / "__pycache__"
+    if pycache.is_dir():
+        prefix = path.stem + "."                      # 只删 <stem>.*.pyc，不碰同目录别的模块
+        cands += [p for p in pycache.iterdir() if p.suffix == ".pyc" and p.name.startswith(prefix)]
+    for pyc in cands:
+        try:
+            pyc.unlink()
+        except OSError:                                # 被别的进程占着 / 已不存在：缓存失效失败不该让写入失败
+            pass
+
+
 def write_text(path: Path, tf: TextFile, new_text: str) -> None:
     """把 new_text 按原文件的编码/换行/BOM 写回 path。
 
@@ -137,6 +164,7 @@ def write_text(path: Path, tf: TextFile, new_text: str) -> None:
     except UnicodeEncodeError:
         data = out.encode("utf-8")   # 原编码表示不了（如 GBK 里写 emoji）：改存 UTF-8，不丢字
     atomic_write(path, data)
+    _drop_bytecode(path)
 
 
 # ------------------------------------------------------------------ 同一文件的写入排队
