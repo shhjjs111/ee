@@ -96,6 +96,24 @@ scroll anchoring，点按钮与滚到顶两条路径行为一致，问题消失�
 保留边界：`Conversation` 的 `PAGE=60` 与 `store` 的 `FIRST_PAGE=120` 目前各自定义、靠注释对齐（一个是块、一个是条目，量纲本就不同）；
 剩下 11 处 `useApp()` 都在按需挂载的对话框里，收益极低，未动。
 
+后续补齐（同一天，分页做完后回头查的）：
+
+**① 老会话还原的条目补 `seq`（`a58e196`）。** `_items_from_messages` 是给终端版老会话用的兜底
+（只有 message 记录、没有 item 记录），造出来的条目全无 `seq`，而分页正是拿 `seq` 当游标。
+后果比卡顿严重得多：首屏只给一页 + `items_has_more=True`，前端 `loadEarlier` 读 `items[0].seq`
+得到 undefined 直接 return，**超过一页的老会话永远翻不上去，等于丢历史**。
+修法是还原时 `enumerate` 补 `setdefault("seq", n)`。真实 30 个会话里目前 0 个走这条兜底路径（都有 item
+记录），所以是给老用户 / 导入旧会话留的防线，不是现网缺陷。
+
+**② `fork` / `edit_resend` 也只回尾部一页（`1ae5714`）。** 这两条路径一直 `detail()` 全量返回，
+长会话里点「编辑重发」或从很早的位置分叉，回包仍是全部条目（实测 35 回合会话 → fork 回 136 条），
+把分页收益抵掉一半。`threads.py` 新增 `PAGE_SIZE = 120` 作为这一层「一页」的唯一定义，
+两条路径改成 `detail(tail=PAGE_SIZE)`；前端本来就是整体替换 `details[id]`，换成「尾部一页 +
+`items_has_more=true`」自洽，往上翻由 `loadEarlier` 补。
+
+这两条各有回归用例：老会话 160 条逐页拼回全量；35 回合会话 fork 必须只回 120 条且
+`items_total` 为真实总数、`items_has_more` 为 True、最后一只是切点前一条。
+
 ## 执行记录（2026-11-02，上下文成本：关掉消息级修剪 + 历史大字段占位）
 
 长会话越来越慢的根因不是「历史长」，而是**历史里永久重发的冗余**。按 DeepSeek 官方价
