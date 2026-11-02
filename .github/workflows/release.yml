@@ -107,7 +107,9 @@ jobs:
             $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
             "$h  $($f.Name)"
           }
-          $lines | Out-File -Encoding utf8 dist-out/SHA256SUMS.txt
+          # 无 BOM 的 UTF-8 + LF：SHA256SUMS 是给用户 shasum -c 用的，BOM 会让第一行校验失败
+          $sumsText = ($lines -join "`n") + "`n"
+          [System.IO.File]::WriteAllText("$PWD/dist-out/SHA256SUMS.txt", $sumsText, [System.Text.UTF8Encoding]::new($false))
           Get-Content dist-out/SHA256SUMS.txt
 
       - name: Build release notes
@@ -116,11 +118,14 @@ jobs:
           VER: ${{ needs.check.outputs.version }}
         run: |
           $sums = (Get-Content dist-out/SHA256SUMS.txt -Raw).Trim()
+          # 代码围栏不能用字面量 ``` 写在可伸展 here-string 里：PowerShell 把 ` 当转义符，
+          # `` 会渲染成单个 `，Markdown 代码块就碎了（实测过）。用字符拼出来绕开转义。
+          $f = [string][char]96 * 3
           $body = @"
           ee v$env:VER（Windows x64 安装包）
 
           ## 安装
-          1. 下载 ``ee-Setup-$env:VER.exe``。
+          1. 下载 `ee-Setup-$env:VER.exe`。
           2. 首次运行会出现蓝色的「Windows 已保护你的电脑」。点 **更多信息** → **仍要运行**。
              这是**未签名**程序的正常提示，不是病毒告警，原因见下。
           3. 安装完启动 ee，在设置页填 API key（默认 DeepSeek）。
@@ -135,20 +140,21 @@ jobs:
           ## 校验下载（推荐）
           在该文件所在目录运行：
 
-          ````
+          $f
           Get-FileHash .\ee-Setup-$env:VER.exe -Algorithm SHA256
-          ````
+          $f
 
           输出应与下面一致；不一致说明文件在传输中被改动过，不要运行：
 
-          ````
+          $f
           $sums
-          ````
+          $f
 
           ## 系统要求
           Windows 10 / 11 x64，自备模型 API key（默认 DeepSeek，也支持 OpenAI 兼容中转站）。
           "@
-          Set-Content -Path dist-out/RELEASE_NOTES.md -Value $body -Encoding utf8
+          # 显式写无 BOM 的 UTF-8：GitHub 把以 BOM 开头的 Markdown 当正常文本，但无 BOM 更干净
+          [System.IO.File]::WriteAllText("$PWD/dist-out/RELEASE_NOTES.md", $body, [System.Text.UTF8Encoding]::new($false))
 
       - name: Create GitHub Release
         shell: pwsh

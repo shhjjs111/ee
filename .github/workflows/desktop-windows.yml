@@ -134,8 +134,8 @@ jobs:
   package:
     name: package
     # 手动勾选打包，或被 release.yml 以 workflow_call 叫起时打包；两种都要求同一提交的 verify 先绿。
-    # 不写成 `inputs.package` 裸布尔：workflow_call 与 workflow_dispatch 的 inputs 是两个来源，
-    # 显式比较 false 更不容易在只有一种事件时误判。
+    # 用 `== true` 而不是裸布尔 `inputs.package`：push/pull_request 触发时没有这个 input
+    # （undefined），显式比较能保证那两种情况下一定不打包。
     if: ${{ inputs.package == true }}
     needs: verify
     runs-on: windows-latest
