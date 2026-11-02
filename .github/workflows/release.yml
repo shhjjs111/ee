@@ -91,7 +91,19 @@ jobs:
     needs: [check, build]
     runs-on: windows-latest
     timeout-minutes: 15
+    # 显式写一遍：建 Release 必须 write。虽然顶层已有，但 publish 经过 reusable
+    # workflow 一层，别让继承链成为下一个“说不清”的变量。
+    permissions:
+      contents: write
     steps:
+      # **必须 checkout**：gh 解析仓库时如果既没有 -R 也没有可读的 git remote，
+      # 会死在 `failed to run git: fatal: not a git repository`。只传 GH_REPO
+      # 实测仍失败（v0.1.0-rc.1 第 4 轮，25 秒即挂），所以老老实实给个 .git。
+      # 放在下载产物之前：checkout 会清理工作目录，反过来会把 dist-out 删掉。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0        # 带上 tag/历史，避免 gh 再去远程补数据
+
       - uses: actions/download-artifact@v7
         with:
           name: ee-windows-installer
@@ -181,10 +193,10 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # **必须显式给仓库**：这个 job 不 checkout（只需下载产物），没有 .git。
-          # gh 找不到 -R/GH_REPO 时会去读 git remote 来推断仓库，直接死在
-          # `failed to run git: fatal: not a git repository`——这正是 v0.1.0-rc.1
-          # 那次 publish 的失败点（check/build/package 全绿，只挂在这一步）。
+          # **显式给仓库，不再靠推断**：gh 找不到 -R/GH_REPO 时会去读 git remote，
+          # 没有 .git 就死在 `failed to run git: fatal: not a git repository`
+          # （v0.1.0-rc.1 前两轮的失败点）。现在 checkout 与 GH_REPO 两手都上：
+          # 一个给 .git，一个让 gh 不必猜。
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Continue'
@@ -203,12 +215,25 @@ jobs:
           if ($missing.Count -gt 0) { throw "以下文件不存在，无法上传：$($missing -join ', ')" }
           Write-Host "gh 版本：$(& gh --version | Select-Object -First 1)"
 
-          # 不用 --verify-tag：它同样要 shell out 到本地 git 去核对 tag，而这个 job
-          # 没有 checkout，必挂。tag 一定存在——本 workflow 就是由 tag 推送触发的
-          # （on: push: tags），check 步骤还校验过 tag 与 pyproject/package.json 一致。
+          # 不用 --verify-tag：它同样要 shell out 到本地 git 去核对 tag。tag 一定存在
+          # （本 workflow 就是由 tag 推送触发的），check 步骤还校验过 tag 与
+          # pyproject/package.json 一致，这个校验是冗余的。
+          # 2>&1 + Tee-Object：日志只有仓库管理权限能看到，失败时必须自己留下现场。
           gh release create $tag `
+            --repo "$env:GH_REPO" `
             --title "ee $tag" `
             --notes-file dist-out/RELEASE_NOTES.md `
             @pre `
-            @assets
-          if ($LASTEXITCODE -ne 0) { throw "gh release create 退出码 $LASTEXITCODE" }
+            @assets 2>&1 | Tee-Object -FilePath dist-out/gh-release.log
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) { Get-Content dist-out/gh-release.log; throw "gh release create 退出码 $rc" }
+
+      # 失败时把 gh 的完整输出存成 artifact：工作流日志需要仓库管理权限，
+      # 失败现场只有跑在 CI 上的这一份，不留下来就只能靠猜（已因此白等两轮）。
+      - name: Save release log
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-publish-log
+          path: dist-out/gh-release.log
+          if-no-files-found: ignore
