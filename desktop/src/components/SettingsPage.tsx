@@ -11,6 +11,7 @@ import { AnswerSettings } from "./AnswerSettings";
 import { HooksSettings } from "./HooksSettings";
 import { McpSettings } from "./McpSettings";
 import { SystemPromptSettings } from "./SystemPromptSettings";
+import { UpdateCard } from "./UpdateCard";
 import { Button, Field, Input, Select, Spinner, Tip, Toggle } from "./ui";
 import { TITLEBAR_H } from "./shell/Titlebar";
 
@@ -649,6 +650,7 @@ export function SettingsPage() {
                     </SettingRow>
                   )}
                 </Card>
+                <UpdateCard />
               </>
             )}
           </div>

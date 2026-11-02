@@ -5,6 +5,7 @@ import { Backend } from "./backend";
 import { allowedRoots, guardedOpenPath } from "./openpath";
 import { killAll as killTerminals, registerTerminalIpc, setPtySearchPaths } from "./terminal";
 import { markQuitting, setupTray } from "./tray";
+import { UpdateController, releaseUrl, type UpdateState } from "./updater";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 let win: BrowserWindow | null = null;
@@ -134,6 +135,42 @@ ipcMain.on("log:write", (_e, line: string) => {
   if (typeof line === "string") backend.appendLog(line.slice(0, 4000));
 });
 ipcMain.handle("app:info", () => ({ version: app.getVersion(), logs: app.getPath("logs"), packaged: app.isPackaged }));
+
+// ---- 自动更新（electron-updater，源是 GitHub Releases）
+// `electron-updater` 必须延迟 require：它的 ElectronAppAdapter 在构造时就去读
+// `resources/app-update.yml`，开发态没有这个文件，顶层加载会在建窗口之前就抛。
+// `./updater` 本身只 `import type`，可以正常顶层静态导入。
+let updaterCtl: UpdateController | null = null;
+
+/** 推状态给界面。窗口可能已经关到托盘/正在退出，销毁的 webContents 上 send 会抛。 */
+function sendUpdate(s: UpdateState) {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  win.webContents.send("update:state", s);
+}
+
+function updater(): UpdateController | null {
+  if (updaterCtl) return updaterCtl;
+  if (!app.isPackaged) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { autoUpdater } = require("electron-updater") as typeof import("electron-updater");
+    updaterCtl = new UpdateController({
+      currentVersion: app.getVersion(),
+      packaged: app.isPackaged,
+      updater: autoUpdater,
+      emit: sendUpdate,
+      log: (line) => backend.appendLog(line),
+    });
+  } catch (e) {
+    backend.appendLog(`[更新] 初始化失败：${(e as Error).message}`);
+  }
+  return updaterCtl;
+}
+
+ipcMain.handle("update:state", () => updater()?.getState() ?? { phase: "idle", current: app.getVersion(), message: "开发版不支持自动更新" });
+ipcMain.handle("update:check", async () => (await updater()?.check()) ?? { phase: "error", current: app.getVersion(), message: "开发版不支持自动更新" });
+ipcMain.handle("update:install", () => updater()?.quitAndInstall() ?? false);
+ipcMain.handle("update:open", () => shell.openExternal(releaseUrl()));
 // 截图给模型看（后端 screenshot 工具 → notify ui/capture → 这里）：只截 ee 自己的窗口，
 // 截不到别的程序；返回 PNG data URL，由渲染进程回送 RPC ui/capture_result。
 ipcMain.handle("ui:capture", async () => {
@@ -164,6 +201,8 @@ if (!app.requestSingleInstanceLock()) {
     backend.info().catch(() => undefined); // 尽早启动，窗口加载时并行
     createWindow();
     trayCtl = setupTray({ appRoot: path.resolve(__dirname, ".."), getWin: () => win, createWindow });
+    // 开机静默查一次：失败不弹窗，只在日志留一行（见 updater.ts 文件头）
+    setTimeout(() => updater()?.start(), 8000);
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

@@ -476,6 +476,14 @@ export interface EeBridge {
   openExternal(url: string): Promise<void>;
   setTheme(t: string): Promise<boolean>;
   appInfo(): Promise<{ version: string; logs: string; packaged: boolean }>;
+  // 自动更新（electron/updater.ts）。可选：老版本 bridge 或浏览器调试时没有。
+  update?: {
+    state(): Promise<UpdateState>;
+    check(): Promise<UpdateState>;
+    install(): Promise<boolean>;
+    openRelease(): Promise<void>;
+    onState(cb: (s: UpdateState) => void): () => void;
+  };
   captureWindow?(): Promise<{ data_url?: string; error?: string }>;
   onBackendExit(cb: (info: { code: number | null; tail: string }) => void): () => void;
   log?(line: string): void; // 写进 logs/backend.log
@@ -493,6 +501,16 @@ declare global {
     ee?: EeBridge;
   }
 }
+
+/** 自动更新状态（与 desktop/electron/updater.ts 的 UpdateState 一致）。
+ *  改动字段时两边一起改：主进程负责发，这里是渲染进程的接收端。 */
+export type UpdateState = {
+  phase: "idle" | "checking" | "available" | "downloading" | "downloaded" | "up-to-date" | "error";
+  version?: string;
+  percent?: number;
+  message?: string;
+  current: string;
+};
 
 // 后台命令（D4-6，后端 ee/core/bgproc.py BgProc.info()）
 /** 子会话阻塞在审批或提问上（D6-1 U8，通知 `thread/child_approval`）。

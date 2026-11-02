@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-11-02（切会话卡顿：大会话分页 + 区块窗口化 + 窄订阅；补 e2e 隔离、CI 接入 e2e 与 lint、发布链路首跑；缓存命中率回归排查与零断点清推理；上下文成本：关掉消息级修剪、历史大字段占位、工具输出阈值 16KB。见「执行记录（2026-11-02）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-02（桌面端接上 `electron-updater`：只后台下载、重启权在用户；切会话卡顿：大会话分页 + 区块窗口化 + 窄订阅；补 e2e 隔离、CI 接入 e2e 与 lint、发布链路首跑；缓存命中率回归排查与零断点清推理；上下文成本：关掉消息级修剪、历史大字段占位、工具输出阈值 16KB。见「执行记录（2026-11-02）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -26,7 +26,21 @@
 | T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证**（建议态 + 落库 + 审批卡片显示）；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`、`server\threads.py` 的 `_on_event` 落 `ApprovalItem`、`desktop\src\components\Items.tsx` 的建议区；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5）、`test_autoapprove_persist.py`（3）、`ApprovalSuggestion.test.tsx`（4） |
 | T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 判据编排 + 桌面端） | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`server\bestof_verify.py` 的 `bestof/verify`（每候选单轮判据）、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`test_bestof_verify.py`（5）、`BestofDialog.test.tsx`（7） |
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
-| 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下），更新器接口已配好但客户端未接 electron-updater | 首次真实发版与自动更新需单独确认 |
+| 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下）；**客户端已接 `electron-updater`（2026-11-02，只后台下载、绝不自动重启）** | 正式发版后才有可更新的 Release（只剩预发布时 `/releases/latest` 是 404，检查必然失败） |
+
+## 执行记录（2026-11-02，客户端接上自动更新）
+
+`desktop/electron/updater.ts`（新）+ `UpdateCard.tsx`（新，设置→关于）。原则：**只下载，装不装由用户点**——`quitAndInstall()` 会掐掉正在跑的会话和后台命令，不拿用户手上的活换更新。
+
+- **`build.files` 里不能写 `!node_modules/**`**：`app-builder-lib` 的 `getNodeModuleFileMatcher` 把任何 `!` 开头的规则塞进 `nodeModuleFilePatterns`，配合 `computeNodeModuleFileSets` 的相对路径计算会把依赖集整个过滤空。原配置正是被这条规则排除掉了全部 node_modules（打包版根本没有 `electron-updater`，运行到 `require` 才炸）。默认排除已覆盖 `test`/`*.d.ts`/`CHANGELOG.md` 等。改完 asar 8884 条，`electron-updater` 及 13 个运行时依赖全部在包内。
+- **`--dir` 打包不生成 `app-update.yml`**：`PublishManager.onAfterPack` 的 `isSuitableWindowsTarget` 只认 `nsis`/`nsis-*`/`appx`。所以不能用 `dist:dir` 的产物验自动更新。
+- **两个只在实跑时暴露的缺陷**：
+  1. `getFeedURL()` 在 6.8.11 已被废弃成 `return "Deprecated. Do not use it."`（`out/AppUpdater.js:227`）。原先拿它校验「更新源是否可信」，会让线上每一次检查都被拒（单测因 FakeUpdater 覆写该方法而假绿）。改为 `setFeedURL({provider,owner,repo})` 把源钉死在代码里：安装目录的 yml 被换也改不了下载地址，只剩 `updaterCacheDirName` 生效。
+  2. 错误消息里带着整份 Atom feed + 完整 release notes（实测几 KB），`text-danger` 那行没截断会把「关于」页撑爆。补 `friendlyError()`（剥标签 + 只留第一行 + 三类映射：只有预发布 / 网络不通 / 其余限 200 字）与日志 `cap(..., 800)`。
+- **兼容性**：`electron-updater@6.8.11` 无 `engines`/`peerDependencies`；运行时只碰 Electron 三处（`net.request` + `session.fromPartition`、`app`、`autoUpdater.emit("before-quit-for-update")`），Electron 45 的 breaking changes（sandboxed preload 的 shim 移除、`ipcRenderer` 改原生 EventEmitter 等）均不涉及。
+- **验证**：`updater.test.ts` 19 例 + `UpdateCard.test.tsx` 11 例；`verify.sh --quick` 前端 60 文件/327 例 + typecheck 全绿；`npm run build` 后重打 NSIS（160,571,324 B），`latest.yml` 与 `app-update.yml` 均由构建生成（`owner: shhjjs111` / `repo: ee`）；真实 Electron e2e 27 passed / 1 skipped。
+- **仍存在的边界**：GitHub 上只有 `v0.1.0-rc.1`（Pre-release）时 `releases/latest` 返回 404，检查更新**必然失败**并显示「还没有正式发布版本」。这与「暂不发正式版」的现状一致，不是缺陷；发正式版后才会真正走到下载路径。
+- **打包注意**：本机 `electron-builder` 会卡在下载 Electron 发行包（TLS 下到 4 MB 就不动），必须 `-c.electronDist=<本地缓存目录>`。这是本机网络问题，不要把绝对路径写进 `package.json`。
 
 ## 执行记录（2026-11-02，改 .py 后删陈旧字节码）
 

@@ -10,6 +10,18 @@ contextBridge.exposeInMainWorld("ee", {
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   setTheme: (t: string) => ipcRenderer.invoke("app:setTheme", t),
   appInfo: () => ipcRenderer.invoke("app:info"),
+  // 自动更新：拉当前快照 + 收增量 + 手动检查 + 重启安装
+  update: {
+    state: () => ipcRenderer.invoke("update:state"),
+    check: () => ipcRenderer.invoke("update:check"),
+    install: () => ipcRenderer.invoke("update:install"),
+    openRelease: () => ipcRenderer.invoke("update:open"),
+    onState: (cb: (s: unknown) => void) => {
+      const h = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on("update:state", h);
+      return () => ipcRenderer.removeListener("update:state", h);
+    },
+  },
   captureWindow: () => ipcRenderer.invoke("ui:capture"),
   log: (line: string) => ipcRenderer.send("log:write", line),
   term: {
