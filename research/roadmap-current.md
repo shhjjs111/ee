@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-11-02（补 e2e 隔离、CI 接入 e2e 与 lint、发布链路首跑；缓存命中率回归排查与零断点清推理；上下文成本：关掉消息级修剪、历史大字段占位、工具输出阈值 16KB。见「执行记录（2026-11-02）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-02（切会话卡顿：大会话分页 + 区块窗口化 + 窄订阅；补 e2e 隔离、CI 接入 e2e 与 lint、发布链路首跑；缓存命中率回归排查与零断点清推理；上下文成本：关掉消息级修剪、历史大字段占位、工具输出阈值 16KB。见「执行记录（2026-11-02）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -47,6 +47,54 @@ CI 上 `test_goal_acceptance::test_goal_closes_loop_red_then_green` 偶发失败
 验证：探针把 mtime 强行拨回原值、大小不变（最坏情况），修复前 pytest 持续报旧结果，修复后
 `1 passed`；端到端 goal 闭环 5/5 通过；新增 4 条测试（将 `_drop_bytecode` 打成空操作确认它们是红的）；
 相关子集 184 passed。
+
+## 执行记录（2026-11-02，切会话卡顿：全量渲染 + 全量订阅）
+
+用户报「另一个会话跑了很久，切过去界面掉帧」。实测根因是两条独立的放大路径，**都跟“会话在跑”本身关系不大**：
+
+**① 大会话一次全量搬进渲染进程 + 全量挂 DOM。** 真实样本 `20261101-201905-43ca2f.jsonl` 15MB / 5215 条（payload 7.2MB），
+`thread/get` 一次全返回，`Conversation` 又用 `blocks.map` 把 1120 块全量 `ReactMarkdown` + Shiki 高亮。
+结果是打开一次 4.4 秒、单个长任务 3.5 秒、打开后帧间隔 48.5/62.5ms（约 1fps 的观感）、DOM 节点 51559 个。
+
+**② 全仓 30 处 `const s = useApp()` 全量订阅。** 后台会话每帧 delta flush 都会 `useApp.setState` 重建 `details`，
+Composer、每个 `ThreadRow`、`Items`、`RightPanel`、`Timeline`、`FilesPanel` 等全部重渲——**跟当前看的是哪个会话无关**，
+所以「后台在跑」会让前台一切操作都变卡。已收窄到只剩 11 处，且都在按需挂载的对话框/设置页里（`useAppFields` + 选择器）。
+另外 `App.tsx` 托盘订阅每次 store 变化都两遍 `threads.filter`（上限 300 条），已加引用比较早退。
+
+修法（四层）：
+
+| 层 | 改动 |
+|---|---|
+| 传输 | `thread/get` 新增 `tail` / `before_seq` 分页（`threads.py:detail`、`app.py:thread_get`），不传参时行为不变，脚本/`ee exec`/导出不受影响 |
+| 首屏 | `store.openThread` 只拉尾部 120 条（`FIRST_PAGE`）；重连快照按本地已有条数要 `max(FIRST_PAGE, localCount+40)`，避免把 7MB 再拉一遍 |
+| 渲染 | `Conversation` 窗口化：默认只渲染尾部 60 块（`PAGE`），锚点用**块 id** 而非下标（delta 只往尾部长）；块级 `memo` + `sameItems` |
+| 往上翻 | 本地窗口没展开完就纯前端展开；本地到底但 `items_has_more` 才 `loadEarlier` 补一页 120 条，按 id 去重前置 |
+
+滚动补偿踩了两个坑，最后**不自己算**：`scrollHeight` 差量补偿与「DOM 锚点 + `overflow-anchor: none`」都会把视口甩到 `top: 0`，
+因为新插入块的 Markdown / Shiki 高亮是异步完成的，量高度那一刻还没长完。改成「点按钮先 `scrollTop = 0` 归一化」+ 浏览器原生
+scroll anchoring，点按钮与滚到顶两条路径行为一致，问题消失。
+
+实测（合成样本 80 回合 = 1120 条 / 真实 15MB 会话）：
+
+| 指标 | 优化前 | 优化后 |
+|---|---|---|
+| 冷启打开大会话 | 4390 ms | **507 ms** |
+| 单个最长任务 | 3511 ms | **331 ms** |
+| 打开后帧间隔 avg/p95 | 48.5 / 62.5 ms | **6.9 / 7.2 ms** |
+| 后台流式时切大会话 | 4239 ms | **360–425 ms** |
+| 后台流式时大会话帧间隔 | 51.5 / 83.4 ms | **7.1–7.7 / 7.1–7.3 ms** |
+| 活动会话流式帧间隔 | 60.5 / 76.3 ms | **6.9–7.0 / 7.1–7.2 ms** |
+| DOM 节点数 | 51559 | **2822** |
+| 真实 15MB 会话打开 | 3013 ms | **1120 ms** |
+
+验证：`vitest` 297 passed（58 文件，新增 3 条分页用例）；`playwright test` 全量 27 passed / 1 skipped（58.2s，`conversation-scroll.spec.ts` 4 条全绿）；
+后端 `test_server.py` 14 passed（含新增的分页往返用例：`tail` 逐页往前翻能逐条拼回完整历史、不传参行为不变、`tail=0` 不退化成全量）、
+`test_details.py`/`test_branch.py` 等合计 24 passed、`test_queue.py`/`test_plan.py`/`test_redo_data.py` 47 passed；
+`ruff check ee/` 通过；`npm run typecheck` 通过。真实大会话探针实跑：打开时 61 块、在底部（`top: 1911`、`atBottom: true`、按钮「显示更早的 60 条（还有 60 条）」），
+滚到顶自动补拉到 121 块（`top: 0`、按钮变「加载更早的历史」，`data-block` 锚点 120 个），滚动位置没有被甩飞，帧间隔 6.9/7.2ms。
+
+保留边界：`Conversation` 的 `PAGE=60` 与 `store` 的 `FIRST_PAGE=120` 目前各自定义、靠注释对齐（一个是块、一个是条目，量纲本就不同）；
+剩下 11 处 `useApp()` 都在按需挂载的对话框里，收益极低，未动。
 
 ## 执行记录（2026-11-02，上下文成本：关掉消息级修剪 + 历史大字段占位）
 
