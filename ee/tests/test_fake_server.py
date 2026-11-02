@@ -72,6 +72,8 @@ def test_real_sdk_against_fake_server(server, ee_home, workspace, monkeypatch):
     cfg = load_config(workspace)
     cfg.data["providers"]["fake"] = {"base_url": server, "api_key_env": "FAKE_KEY"}
     cfg.data["models"]["fake-ds"] = {"provider": "fake", "model": "deepseek-flash"}
+    # 本用例验的是 SDK ↔ 假服务端的协议对接（流式、tools、tool_calls 回传），不验清推理策略
+    cfg.data["prune"] = {**cfg.data["prune"], "strip_reasoning": False}
     s = Session(cfg, model="fake-ds", cwd=workspace, persist=False)
     ev = run(collect(s, "有哪些 md 文件"))
     assert [e for e in ev if isinstance(e, TurnDone)][-1].reason == "completed"

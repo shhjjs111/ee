@@ -185,6 +185,9 @@ class UsageStats:
     by_model: dict = field(default_factory=dict)
     pruned_tokens: int = 0         # 修剪旧工具输出累计省下的 token（估计，D5-10）
     prunes: int = 0
+    # 推理从一开始就不回传（D5-11）：后续被清掉的推理量。与 pruned_tokens 分开计，
+    # 界面上一个是「修剪工具输出」一个是「旧推理不回传」，合计才是总节省量。
+    reasoning_tokens: int = 0
     compacted_tokens: int = 0      # 压缩累计省下的 token（估计：压缩前 − 压缩后）
 
     def add(self, usage: dict | None, price, model: str = "", discount: float = 1.0, turn: int | None = None) -> float | None:
@@ -274,6 +277,8 @@ class UsageStats:
             out["reasoning"] = self.reasoning
         if self.pruned_tokens:
             out["pruned"] = self.pruned_tokens
+        if self.reasoning_tokens:
+            out["reasoning_cut"] = self.reasoning_tokens
         if self.compacted_tokens:
             out["compacted"] = self.compacted_tokens
         if self.by_model:

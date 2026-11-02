@@ -1,8 +1,8 @@
-"""D5-10 修剪旧工具输出：触发、保护范围、缓存稳定、恢复会话。"""
-import asyncio
+"""D5-10 修剪旧工具输出 + D5-11 零断点清推理：触发、保护范围、缓存稳定、恢复会话。"""
 import json
 
-from conftest import FakeClient, collect, finish, run, text_chunks, tool_chunks
+from conftest import (FakeClient, collect, finish, make_session, reasoning_chunk, run, text_chunks,
+                      tool_chunks)
 
 from ee.core import prune as P
 from ee.core.store import SessionStore
@@ -262,7 +262,7 @@ def test_wire_messages_strip_old_reasoning():
 
 
 def test_maybe_prune_strips_old_reasoning(ee_home, workspace):
-    """到水位时：旧回合的推理不再回传，最近回合完整保留，历史本身不动。"""
+    """sync_reasoning 与水位无关：每次请求前都把游标推到最新，第一条 assistant 就清空。"""
     from types import SimpleNamespace
     from ee.config import load_config
     from ee.core.context import UsageStats
@@ -287,20 +287,79 @@ def test_maybe_prune_strips_old_reasoning(ee_home, workspace):
                         compactions=0, store=SimpleNamespace(append=lambda k, p: store_appends.append((k, p))),
                         state=SimpleNamespace(files={}),
                         _prune_mark=None, _prune_floor=None, _prune_comp=0, _reasoning_strip_to=-1)
-    saved = asyncio.run(P.maybe_prune(s, lambda ev: None))
+    saved = P.sync_reasoning(s, P.settings(cfg.data))
     assert saved > 0
-    assert s._reasoning_strip_to == 13
-    # 每回合 5 条（user + 2 组 assistant/tool），保留最近 2 个用户回合（下标 15 起）→ 清到下标 13
-    assert history[15]["role"] == "user" and history[15]["content"] == "第3件事"
-    assert any(k == "reasoning_strip" and p["to"] == 13 for k, p in store_appends)
-    # 游标之后（回合 4、5）的推理保留，之前清空——但历史里一律原样，裁剪只发生在发送时
+    assert s._reasoning_strip_to == 23
+    # 默认 keep_reasoning_turns=0：最后一条 assistant（下标 23）也在游标之内
+    assert P.settings(cfg.data)["keep_reasoning_turns"] == 0
+    # 换个配置保留最近 2 个用户回合：游标只到下标 13，更早的才清
+    s2 = SimpleNamespace(**{**vars(s), "_reasoning_strip_to": -1})
+    s2.store = SimpleNamespace(append=lambda k, p: None)
+    keep2 = P.settings({**cfg.data, "prune": {**cfg.data["prune"], "keep_reasoning_turns": 2}})
+    P.sync_reasoning(s2, keep2)
+    assert s2._reasoning_strip_to == 13 and history[15]["content"] == "第3件事"
+    assert any(k == "reasoning_strip" and p["to"] == 23 for k, p in store_appends)
+    # 历史一律原样，裁剪只发生在发送时
     assert all(m.get("reasoning") == "推" * 400 for m in history if m.get("role") == "assistant")
     from ee.core.providers import transforms as T
     wired = T.wire_messages(history, s.spec.profile, s._reasoning_strip_to)
-    for i, (w, m) in enumerate(zip(wired, history)):
-        if m.get("role") != "assistant":
-            continue
-        assert w["reasoning_content"] == ("推" * 400 if i >= 15 else "")
+    assert all(w["reasoning_content"] == "" for w, m in zip(wired, history) if m.get("role") == "assistant")
+    # 幂等：再调一次不再推进、也不再写记录
+    assert P.sync_reasoning(s, P.settings(cfg.data)) == 0
+    assert len(store_appends) == 1
+
+
+def test_every_request_is_prefix_of_next(ee_home, workspace):
+    """零断点的硬保证：每次真实请求的消息列表，都是下一次请求的逐字节前缀。
+
+    前缀缓存只在「已发过的字节不再变」时命中。这个用例跑三回合、每回合多步带推理，
+    把每次实际发给模型的消息序列化为 JSON 逐条比对：一旦某条消息发生过变化（清推理
+    晚一步、占位不安全、tool_call_id 随机化…），就会在两次请求中间出现第一个不等的位置。
+    """
+    import json as _json
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    (workspace / "b.txt").write_text("y\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        [reasoning_chunk("想一")] + tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        [reasoning_chunk("想二")] + tool_chunks(0, "c2", "read", {"path": "b.txt"}) + finish("tool_calls"),
+        [reasoning_chunk("想三")] + text_chunks("好了") + finish("stop"),
+        [reasoning_chunk("想四")] + tool_chunks(0, "c3", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        [reasoning_chunk("想五")] + text_chunks("行") + finish("stop"),
+    ])
+    run(collect(s, "第一个问题"))
+    run(collect(s, "第二个问题"))
+    assert any(m.get("role") == "assistant" for c in fake.calls for m in c["messages"])
+    # 推理必须真的被清了（否则「从不清理」也满足「字节不变」，测试就失去意义）
+    for c in fake.calls:
+        for m in c["messages"]:
+            if m.get("role") == "assistant":
+                assert m.get("reasoning_content") == "", "旧推理又被带上去了：prompt 白多一截"
+    reqs = [[_json.dumps(m, ensure_ascii=False, sort_keys=True) for m in c["messages"]] for c in fake.calls]
+    assert len(reqs) >= 5
+    for prev, cur in zip(reqs, reqs[1:]):
+        assert cur[:len(prev)] == prev, "上一次请求的消息被改写了：前缀缓存从改动处起全部失效"
+
+
+def test_reasoning_zero_break_after_each_step(ee_home, workspace):
+    """零断点：同一条 assistant 从它第一次被发送起，字节就再不变化（断点后不再重算）。"""
+    from ee.core.providers import transforms as T
+    from ee.core.providers.profiles import profile_for
+    prof = profile_for("deepseek-flash")
+    hist = []
+    seen = {}
+    for i in range(6):
+        hist.append({"role": "user", "content": f"问{i}"})
+        hist.append({"role": "assistant", "content": f"答{i}", "reasoning": "想" * 100})
+        # 模拟每一步发送前调用 sync_reasoning（游标推到最新）
+        cur = P.reasoning_target(hist, 0)
+        for j, w in enumerate(T.wire_messages(hist, prof, cur)):
+            if w.get("role") != "assistant":
+                continue
+            key = (i, j)
+            if key in seen:
+                assert seen[key] == w["reasoning_content"], "同一条消息的字节变了（缓存断点）"
+            seen[key] = w["reasoning_content"]
+    assert set(seen.values()) == {""}          # 全都是空串：首次发送即固定
 
 
 def test_due_hysteresis():

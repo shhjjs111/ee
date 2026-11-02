@@ -176,9 +176,11 @@ class Session:
         self._skills_cat = None
         self.guard = LoopGuard()
         self._fresh_usage = False                   # 上次压缩后是否拿到过新的用量（防止反复压缩）
-        # 旧轮次推理的发送游标（-1 = 全带）：实测 reasoning 占长会话 prompt 的 26%，
-        # 到水位时往前推，只推不回退（每条消息的字节最多变一次，不反复冲掉前缀缓存）。
+        # 旧轮次推理的发送游标（-1 = 全带）：它每条 assistant 在首次发送前就往前推，
+        # 所以每条消息的字节只定一次、此后不变 → 前缀缓存零断点（见 prune.sync_reasoning）。
         self._reasoning_strip_to = -1
+        # 模型报 400「必须回传推理」时置 True：本次会话不再清，避免每轮白跑一次 400。
+        self._reasoning_strip_disabled = False
         self.compactions = 0
         # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
         self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data, self.home, self.spec.alias))
@@ -514,6 +516,7 @@ class Session:
         self._skills_cat = None
         self._fresh_usage = False
         self._reasoning_strip_to = -1
+        self._reasoning_strip_disabled = False     # /new 后重新允许清推理（否则一次 400 会永久生效）
         self.store = SessionStore(self.home, enabled=self.store.enabled)
 
     def _invalidate_read_refs(self, why: str) -> None:
@@ -1315,6 +1318,11 @@ class Session:
     async def _sample(self, emit) -> Completion:
         prefix = self._ensure_prefix(emit)
         spec = self.role_spec(self.active_role())     # 计划模式 / 审查回合可配不同模型（D5-9）
+        # 每次发送前同步推理游标：每条 assistant 在它第一次发出去之前就清好，字节此后不
+        # 再变化 → 前缀缓存零断点。放这里而不是 _maybe_auto_compact：压缩重建历史、400
+        # 回退重试、overflow 重试都绕过那里，只有这里能保证“每一次真实发送”都同步过。
+        from ee.core import prune as _prune
+        _prune.sync_reasoning(self, profile=spec.profile)
         messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to)
         comp: Completion | None = None
         text, reasoning = [], []
@@ -1723,6 +1731,8 @@ class Session:
         同模型时照发当前历史保住缓存，指令改成在旧摘要上合并新内容；换了模型（缓存不共享）时只发固定消息 + 旧摘要起的部分。"""
         prefix = self._ensure_prefix(emit)
         spec = self.role_spec("compact")
+        from ee.core import prune as _prune
+        _prune.sync_reasoning(self, profile=spec.profile)   # 压缩请求也不该把旧推理体重带上
         hist = self.history
         if prev is not None and spec.alias != self.spec.alias:
             hist = [m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] + self.history[prev[0]:]

@@ -48,9 +48,10 @@ DEFAULTS: dict = {
     # max_tokens 是绝对水位：触发线取 min(threshold × 窗口, max_tokens)。百分比项对 1M 窗口永远够不着，
     # 而实测首包几乎只跟 prompt 的绝对 token 数挂勾（32k→5.2s / 96k→13.9s / 160k→19.8s）。
     # 代价是修剪那一次前缀缓存失效；只在 10 万 token 以上才动手，短会话无影响。
+    # keep_reasoning_turns=0：推理从一开始就不回传（每条消息字节首次发送即固定，前缀零断点；prompt 少 26%）。
     "prune": {"enabled": True, "threshold": 0.6, "max_tokens": 100000, "keep_turns": 2, "keep_tokens": 16000,
               "min_tokens": 20000, "min_output_tokens": 300,
-              "strip_reasoning": True, "keep_reasoning_turns": 2},
+              "strip_reasoning": True, "keep_reasoning_turns": 0},
     # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限
     "agents_md": {"enabled": True, "max_bytes": 32768},
     # 防死循环：同调用连续 repeat_limit 次不执行并纠正，repeat_hard 次停止回合；无进展步数提醒/停止

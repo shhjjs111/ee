@@ -32,6 +32,15 @@ describe("context", () => {
     );
     expect(thresholdLine(bd({ thresholds: { compact: null, prune: null } }))).toBeNull();
   });
+  it("旧推理节省单独计，不与工具修剪合并", () => {
+    // 旧实现把清推理的节省量写进 pruned，开着清推理时界面会把工具修剪的数字说大
+    expect(savingsLine(bd({ savings: { pruned: 0, prunes: 0, pruned_outputs: 0, compacted: 0, reasoning_cut: 12_000 } }))).toBe(
+      "旧推理不再回传省 ~12k",
+    );
+    expect(
+      savingsLine(bd({ savings: { pruned: 2000, prunes: 1, pruned_outputs: 3, compacted: 0, reasoning_cut: 12_000 } })),
+    ).toBe("旧推理不再回传省 ~12k · 修剪旧工具输出省 ~2.0k");
+  });
 
   it("缓存命中带覆盖率，未知不显示 0", () => {
     // 有命中字段：显示命中率 + 覆盖率

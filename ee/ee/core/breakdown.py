@@ -89,6 +89,8 @@ def compute(system: str, tools: list[dict], history: list[dict], profile, window
                "prunes": int(getattr(stats, "prunes", 0) or 0),
                "pruned_outputs": pruned_now,
                "compacted": int(getattr(stats, "compacted_tokens", 0) or 0),
+               # 已清掉的旧推理；reasoning_cut 是当前历史里因游标而不被发送的推理（实时状态）
+               "reasoning_cut": int(getattr(stats, "reasoning_tokens", 0) or 0),
                "reasoning": reasoning_cut}
     return {"items": items, "tools": per_tool, "total": total, "window": int(window or 0),
             "used": int(used if used is not None else total), "actual": bool(actual),

@@ -14,10 +14,13 @@ export function usageLine(d: ContextBreakdown): string {
   return `已用 ${fmtTokens(d.used)} / ${fmtTokens(d.window)}（${pct}%）${d.actual ? "" : " · 估算"}`;
 }
 
-/** 修剪 / 压缩节省说明；都没有返回 null。 */
+/** 修剪 / 压缩节省说明；都没有返回 null。
+ * reasoning_cut 是「不再回传的旧推理」累计节省量，跟 pruning 分开说——原来两边写进同一个
+ * pruned 字段，开了清推理后会把工具修剪的数字虚高。 */
 export function savingsLine(d: ContextBreakdown): string | null {
   const parts: string[] = [];
-  if (d.savings.reasoning) parts.push(`旧推理不再回传省 ~${fmtTokens(d.savings.reasoning)}`);
+  const reasoning = d.savings.reasoning_cut ?? 0;
+  if (reasoning > 0) parts.push(`旧推理不再回传省 ~${fmtTokens(reasoning)}`);
   if (d.savings.pruned > 0) parts.push(`修剪旧工具输出省 ~${fmtTokens(d.savings.pruned)}`);
   if (d.savings.compacted > 0) parts.push(`压缩 ${d.compactions || 1} 次省 ~${fmtTokens(d.savings.compacted)}`);
   return parts.length ? parts.join(" · ") : null;

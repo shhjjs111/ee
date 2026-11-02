@@ -23,6 +23,7 @@ def test_deepseek_passback_all_assistant_turns_when_tools(ee_home, workspace):
         [reasoning_chunk("完成")] + text_chunks("好了") + finish("stop"),
         text_chunks("再见") + finish("stop"),
     ])
+    s.config.data["prune"] = {**s.config.data["prune"], "strip_reasoning": False}   # 本用例只验回传机制
     run(collect(s, "a"))
     run(collect(s, "b"))
     call = fake.calls[2]
@@ -31,6 +32,25 @@ def test_deepseek_passback_all_assistant_turns_when_tools(ee_home, workspace):
     assert asst[0]["reasoning_content"] == "先读文件"
     assert asst[1]["reasoning_content"] == "完成"         # 纯文本轮也要回传（文档：even for turns without tool call）
     assert all("reasoning" not in m for m in asst)
+
+
+def test_deepseek_reasoning_stripped_by_default(ee_home, workspace):
+    """默认配置（keep_reasoning_turns=0）：推理从头就不回传，字节首次发送即固定，前缀零断点。"""
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        [reasoning_chunk("先读文件")] + tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        [reasoning_chunk("完成")] + text_chunks("好了") + finish("stop"),
+        [reasoning_chunk("第三个")] + text_chunks("再见") + finish("stop"),
+    ])
+    run(collect(s, "a"))
+    run(collect(s, "b"))
+    # 同一回合的第二步：第一条 assistant 的推理已经为空（不是等到水位才清）
+    second = [m for m in fake.calls[1]["messages"] if m["role"] == "assistant"]
+    assert second[0]["reasoning_content"] == ""
+    # 下一回合：前面两条 assistant 仍是空，与上一步字节逐字相同（零断点）
+    later = [m for m in fake.calls[2]["messages"] if m["role"] == "assistant"]
+    assert later[0]["reasoning_content"] == second[0]["reasoning_content"]
+    assert all(m["reasoning_content"] == "" for m in later)
 
 
 def test_deepseek_passback_missing_reasoning_is_empty_string():

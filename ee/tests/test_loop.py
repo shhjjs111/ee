@@ -128,6 +128,7 @@ def test_reasoning_passback_deepseek(ee_home, workspace):
         [reasoning_chunk("完成")] + text_chunks("好了") + finish("stop"),
         text_chunks("再见") + finish("stop"),
     ])
+    s.config.data["prune"] = {**s.config.data["prune"], "strip_reasoning": False}   # 本用例只验回传机制
     run(collect(s, "a"))
     run(collect(s, "b"))
     msgs = fake.calls[2]["messages"]

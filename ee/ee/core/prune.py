@@ -40,7 +40,9 @@ DEFAULTS = {
     "min_tokens": 20000,       # 一批至少能省这么多才修剪（太少不值得让缓存失效一次）
     "min_output_tokens": 300,  # 单个输出小于这个不修剪
     "strip_reasoning": True,   # 旧轮次推理不发给服务端（实测占长会话 prompt 的 26%）
-    "keep_reasoning_turns": 2,  # 最近几个带推理的助手轮次保留（再往前清空）
+    # 0 = 推理从一开始就不回传：每条 assistant 在它第一次被发送之前就清好，字节此后永不变化 = 零断点。
+    # 大于 0 = 保留最近 N 个用户回合的推理，代价是每推进一步就有一段前缀缓存失效。
+    "keep_reasoning_turns": 0,
     "tools": ["read", "shell", "shell_output", "grep", "glob", "web_fetch", "web_search", "repo_map", "mcp__*"],
 }
 MARK = "[已修剪的旧工具输出]"
@@ -227,6 +229,43 @@ def _limit(cfg: dict, window: int) -> float:
     return limit
 
 
+def sync_reasoning(session, cfg: dict | None = None, profile=None) -> int:
+    """把「旧推理不再回传」的游标推到该到的位置，返回省下的 token 估算。
+
+    与水位解耦：每次请求前都调一次，而不是等 due() 到阈值才清。为什么这很重要：只
+    要游标在前进，从断点起的整段前缀缓存就失效。挂在 due() 上会攒一批旧推理、到
+    水位时一次清掉一大段（断点后几万 token 要重算）；改成「每条 assistant 在它第一次
+    被发送之前就清好」后，这条消息发出去的字节从此永不变化，断点是零。
+
+    实测（真实会话 1214 条消息离线复算，2026-11-02）：每请求未命中 1715 -> 1163 token，
+    命中率 99.21% -> 99.42%；同时 prompt 少 26%（推理不再进上下文），首包同步变快。
+    上游接受空串（同一用户回合内也接受，已用真实网关验证，见 roadmap）。
+    """
+    cfg = cfg or settings(session.config.data)
+    if not cfg["strip_reasoning"] or getattr(session, "_reasoning_strip_disabled", False):
+        return 0
+    # 看的是**本次要发的那个模型**的档案：计划模式 / 压缩可配另一个模型，
+    # 它可能根本不回传推理（那就无需清，游标也不用动）。
+    if profile is None:
+        profile = getattr(getattr(session, "spec", None), "profile", None)
+    if getattr(profile, "reasoning_passback", "none") == "none":
+        return 0                      # 这个模型本来就不回传推理
+    adv = reasoning_target(session.history, cfg["keep_reasoning_turns"])
+    old = getattr(session, "_reasoning_strip_to", -1)
+    if adv <= old:
+        return 0
+    session._reasoning_strip_to = adv
+    cut = sum(len(session.history[i].get("reasoning") or "") for i in range(old + 1, adv + 1))
+    if not cut:
+        return 0
+    saved = C.estimate_tokens("x" * cut)
+    session.store.append("reasoning_strip", {"to": adv})
+    # 不改 stats.last_prompt：那是上一次服务端实测的用量，而它本来就没包含已清的推理
+    # （发送时就清了）。扣它会重复计算，把 due() 的水位判断带偏。只记节省量供界面展示。
+    session.stats.reasoning_tokens = getattr(session.stats, "reasoning_tokens", 0) + saved
+    return saved
+
+
 def reasoning_target(history: list[dict], keep: int) -> int:
     """该把推理游标推到哪：返回最后一个要清空的 assistant 下标，-1 = 不用清。
 
@@ -250,7 +289,10 @@ def reasoning_target(history: list[dict], keep: int) -> int:
 
 
 async def maybe_prune(session, emit) -> int:
-    """达到水位时做一次：清旧推理（发送时裁）+ 修剪旧工具输出。返回省下的 token 估计。"""
+    """达到水位时做一次：修剪旧工具输出。返回省下的 token 估计。
+
+    旧推理不在这里清（见 sync_reasoning）：那是每次请求前都要做的游标推进，与水位无关。
+    """
     cfg = settings(session.config.data)
     if not due(session, cfg):
         return 0
@@ -258,19 +300,6 @@ async def maybe_prune(session, emit) -> int:
     session._prune_mark = session.stats.requests
     session._prune_floor = None
     session._prune_comp = getattr(session, "compactions", 0)
-    # 旧轮次推理：实测占长会话 prompt 的 26%，清掉后首包 25.6s→12.8s。上游接受空串。
-    if cfg["strip_reasoning"] and not getattr(session, "_reasoning_strip_disabled", False) \
-            and getattr(session.spec.profile, "reasoning_passback", "none") != "none":
-        adv = reasoning_target(session.history, cfg["keep_reasoning_turns"])
-        if adv > getattr(session, "_reasoning_strip_to", -1):
-            old = getattr(session, "_reasoning_strip_to", -1)
-            session._reasoning_strip_to = adv
-            cut = sum(len(session.history[i].get("reasoning") or "") for i in range(old + 1, adv + 1))
-            if cut:
-                saved += C.estimate_tokens("x" * cut)
-                session.store.append("reasoning_strip", {"to": adv})
-                emit(Pruned(f"较早轮次的推理不再回传（约省 {C.estimate_tokens('x' * cut):,} tokens）。"
-                            f"会话内容本身没有改动。", "info"))
     items = plan(session.history, cfg)
     if items:
         apply(session.history, items)

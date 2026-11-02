@@ -42,7 +42,8 @@ def test_compute_categories_and_percent():
     assert d["total"] == sum(x["tokens"] for x in d["items"])
     assert abs(sum(x["percent"] for x in d["items"]) - 100) < 1
     assert d["tools"][0]["name"] == "shell"                                  # 按大小排序
-    assert d["savings"] == {"pruned": 123, "prunes": 1, "pruned_outputs": 0, "compacted": 456, "reasoning": 0}
+    assert d["savings"] == {"pruned": 123, "prunes": 1, "pruned_outputs": 0, "compacted": 456,
+                            "reasoning_cut": 0, "reasoning": 0}
     # 不看图的模型：图片降级成文字说明，不计图片 token
     d2 = B.compute("s", [], hist, SimpleNamespace(vision=False, reasoning_passback="none",
                                                  empty_assistant_content=""), 1000)
