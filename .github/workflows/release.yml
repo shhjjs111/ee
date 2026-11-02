@@ -218,13 +218,17 @@ jobs:
           # 不用 --verify-tag：它同样要 shell out 到本地 git 去核对 tag。tag 一定存在
           # （本 workflow 就是由 tag 推送触发的），check 步骤还校验过 tag 与
           # pyproject/package.json 一致，这个校验是冗余的。
+          #
+          # **不能用 @pre / @assets（splat）**：实测 PowerShell 5.1 在 -File 模式下
+          # 把 @pre 当成字面参数，而 @assets 会被逐字拆开传给 gh——gh 于是报
+          # "no matches found for `-`"（那个 `-` 就是 `--prerelease` 被拆出来的第一段）。
+          # 表现就是 check/verify/package 全绿、只挂在建 Release 这一步。
+          # 改用数组拼接，参数边界清楚，不依赖 shell 的 splat 语义。
+          $argv = @('release', 'create', $tag, '--repo', $env:GH_REPO,
+                    '--title', "ee $tag", '--notes-file', 'dist-out/RELEASE_NOTES.md') + $pre + $assets
+          Write-Host "gh 参数($($argv.Count))：$($argv -join ' ')"
           # 2>&1 + Tee-Object：日志只有仓库管理权限能看到，失败时必须自己留下现场。
-          gh release create $tag `
-            --repo "$env:GH_REPO" `
-            --title "ee $tag" `
-            --notes-file dist-out/RELEASE_NOTES.md `
-            @pre `
-            @assets 2>&1 | Tee-Object -FilePath dist-out/gh-release.log
+          & gh @argv 2>&1 | Tee-Object -FilePath dist-out/gh-release.log
           $rc = $LASTEXITCODE
           if ($rc -ne 0) { Get-Content dist-out/gh-release.log; throw "gh release create 退出码 $rc" }
 
