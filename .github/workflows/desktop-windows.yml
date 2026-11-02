@@ -138,6 +138,11 @@ jobs:
       # 必须放在 build 后面：Electron 加载的是 dist/，不重建就测的是旧代码。
       # 这一步长期缺席（只在本地手动跑），于是「所有 spec 没隔离用户目录」这种
       # 会改用户真实配置的缺陷在仓库里静默活了很久——没人跑，就没人发现。
+      #
+      # 15 分钟不够兜底：实测有过卡 44 分钟不退（playwright 的 timeout 靠 JS 定时器，
+      # 进程挂死时它自己也停了），把整个 verify 拖过 45 分钟 job 上限而 cancelled，
+      # 连带 package/publish 全部 skipped。playwright.config.ts 里的 globalTimeout
+      # 是第一道锁，这里把它夹得比 job 上限更紧，保证失败能快速报出来。
       - name: E2E with real Electron (Playwright)
         if: ${{ !cancelled() }}
         working-directory: desktop

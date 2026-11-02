@@ -14,7 +14,15 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  // 单个用例的上限。注意它靠 JS 定时器实现，遇到 Electron 进程挂死、
+  // 或者 page.evaluate 卡在不可中断的原生调用时，定时器自己也不会被调度——
+  // 用例超时救不了。所以下面还要一条真正的全局底线。
   timeout: 120_000,
+  // 全局硬上限（含所有用例与重试）。实测发生过一次 CI 上
+  // 「E2E with real Electron」卡了 44 分钟不退，把整个 verify 拖过 45 分钟
+  // 的 job 上限而被取消，连带 package / publish 全 skipped。
+  // 卡住就是卡住，到点就判失败，不要拖死发布。
+  globalTimeout: 12 * 60_000,
   expect: { timeout: 15_000 },
   reporter: [["list"]],
   use: {
