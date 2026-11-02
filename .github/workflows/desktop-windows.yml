@@ -83,9 +83,22 @@ jobs:
         run: ruff check .
 
       - name: Backend tests
+        id: backend-tests
         working-directory: ee
         timeout-minutes: 25
-        run: python -m pytest -q -o faulthandler_timeout=150
+        # -rf 让尾部列出失败用例名；--tb=short 保留足够定位的栈
+        # （以前失败只看到 "1 failed"，具体哪个用例得靠猜，日志又因权限拉不到）
+        run: python -m pytest -q -o faulthandler_timeout=150 -rf --tb=short
+
+      # 失败时把结果入 artifact：工作流日志需仓库管理权限才能下载，
+      # 失败现场只有跑在 CI 上的这一份，不留下来就查不了。
+      - name: Save test report
+        if: ${{ failure() && steps.backend-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-report
+          path: ee/.pytest_cache/v/cache/lastfailed
+          if-no-files-found: ignore
 
       - name: E2E with source backend (python -m ee serve)
         if: ${{ !cancelled() }}
