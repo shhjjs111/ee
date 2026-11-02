@@ -143,3 +143,45 @@ def test_branch_errors(ee_home, workspace):
         with pytest.raises(RpcError, match="压缩"):
             await b.call("thread/fork", {"thread_id": tid, "item_id": u["id"]})
     asyncio.run(go())
+
+
+def test_fork_and_edit_resend_only_return_one_page(ee_home, workspace):
+    """fork / edit_resend 也只回尾部一页，不能绕过分页把几 MB 一次塞给渲染进程。
+
+    桌面端首屏（thread/get）已经分页了，但这两条路径一直 `detail()` 全量返回：
+    长会话里编辑重发一条早期消息，回包仍是全部条目，刚做好的分页收益当场抵掉一半。
+    """
+    from ee.server.threads import PAGE_SIZE
+
+    N = 35                       # 每回合 4 条左右，35 回合 > 一页（120）
+    script = [text_chunks(f"答{i}") + finish("stop") for i in range(1, N + 2)]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]["id"]
+        for i in range(1, N + 1):
+            ev.clear()
+            await b.call("turn/start", {"thread_id": tid, "text": f"问{i}"})
+            await wait_for(ev, "turn/completed")
+        full = (await b.call("thread/get", {"thread_id": tid}))["thread"]
+        assert full["items_total"] > PAGE_SIZE, "样本不够长，一页装得下就测不出分页"
+
+        # fork：切到最后一条用户消息之前，那里的条目本来就超过一页（>=120），
+        # 所以应当只回尾部一页 + has_more=True（而不是 136 条全部）
+        u = _users(full["items"])[-1]
+        nt = (await b.call("thread/fork", {"thread_id": tid, "item_id": u["id"]}))["thread"]
+        assert len(nt["items"]) <= PAGE_SIZE, f"fork 回了 {len(nt['items'])} 条，没有分页"
+        assert nt["items_total"] > PAGE_SIZE and nt["items_has_more"] is True
+        # 回的是**尾部**一页：最后一条应当就是切点前最近的那条
+        assert nt["items"][-1]["id"] == full["items"][next(
+            i for i, x in enumerate(full["items"]) if x["id"] == u["id"]) - 1]["id"]
+
+        # edit_resend：从第一条消息重发，只剩 1 回合的历史，但仍必须是「一页 + has_more 正确」
+        first = _users(full["items"])[0]
+        ev.clear()
+        r = await b.call("thread/edit_resend", {"thread_id": tid, "item_id": first["id"], "text": "重来"})
+        got = r["thread"]
+        assert len(got["items"]) <= PAGE_SIZE and got["items_total"] == len(got["items"])
+        assert got["items_has_more"] is False
+        await wait_for(ev, "turn/completed")
+    asyncio.run(go())

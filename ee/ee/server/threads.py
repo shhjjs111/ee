@@ -37,6 +37,9 @@ log = logging.getLogger("ee.thread")
 
 UI_OUTPUT_LIMIT = 30_000          # 发给界面的单个工具输出上限（模型侧另有截断规则）
 RUNS_KEEP = 5                     # meta 里只留最近几次派发（防止会话元数据无限长）
+# 首屏/局部回包只给尾部这么多条。桌面端 store.ts 的 FIRST_PAGE 与它对齐：
+# 一次全量返回 5215 条是 7MB，传输 + JSON.parse 就要一秒以上（实测 15MB 会话 3 秒）。
+PAGE_SIZE = 120
 
 
 def _clip(s: str, n: int = UI_OUTPUT_LIMIT) -> str:

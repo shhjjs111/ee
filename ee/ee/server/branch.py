@@ -20,6 +20,7 @@ import copy
 import time
 
 from ee.core.store import SessionStore, _title, strip_context
+from ee.server.threads import PAGE_SIZE
 
 
 class BranchError(ValueError):
@@ -102,7 +103,9 @@ def register(methods: dict, backend) -> None:
         nt = await asyncio.to_thread(build)
         backend.threads[nt.id] = nt
         backend.notify("thread/updated", {"thread": nt.summary()})
-        return {"thread": nt.detail(), "draft": it.get("text") or ""}
+        # 分叉出的会话可能很长（从长会话的第 N 条切出来，切点之前全是历史）：
+        # 跟首屏一样只回尾部一页，剩下的由前端 loadEarlier 往上翻。
+        return {"thread": nt.detail(tail=PAGE_SIZE), "draft": it.get("text") or ""}
 
     async def edit_resend(thread_id: str, item_id: str, text: str, revert_files: bool = True,
                           model: str | None = None, mode: str | None = None, force: bool = False) -> dict:
@@ -163,7 +166,9 @@ def register(methods: dict, backend) -> None:
         elif restored:
             t._add({"type": "notice", "level": "info", "text": "编辑重发：已恢复这些文件：\n" + "\n".join(restored)})
         t.start_turn(text, model=model, mode=mode)
-        return {"thread": t.detail(), "restored": restored, "files_reverted": reverted,
+        # 编辑重发会把切点之后的历史删掉，剩下的条数不变（可能仍有几千条）：
+        # 同样只回尾部一页，跟首屏 / loadEarlier 一套规则。
+        return {"thread": t.detail(tail=PAGE_SIZE), "restored": restored, "files_reverted": reverted,
                 "failed": [{"path": p, "reason": why} for p, why in failed],
                 "restore_point": restore_point_view(box.get("rp"))}
 
