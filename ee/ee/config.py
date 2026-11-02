@@ -42,18 +42,33 @@ DEFAULTS: dict = {
     "snapshot": {"disk": True, "keep_days": 14, "keep_turns": 100},
     # 工具输出归档（~/.ee/tool-output：超长输出全文 + 后台命令日志）：保留天数，0 = 不清理
     "tool_output": {"keep_days": 30},
-    "compact": {"auto": True, "threshold": 0.8, "max_tokens": 140000, "keep_user_messages": 3,
+    "compact": {"auto": True, "threshold": 0.8, "max_tokens": 100000, "keep_user_messages": 3,
                 "keep_user_tokens": 20000},
-    # 修剪旧工具输出（D5-10）：上下文到水位时把较早的大块工具结果换成占位，成批做一次。
-    # max_tokens 是绝对水位：触发线取 min(threshold × 窗口, max_tokens)。百分比项对 1M 窗口永远够不着，
-    # 而实测首包几乎只跟 prompt 的绝对 token 数挂勾（32k→5.2s / 96k→13.9s / 160k→19.8s）。
-    # 代价是修剪那一次前缀缓存失效；只在 10 万 token 以上才动手，短会话无影响。
+    # 修剪旧工具输出（D5-10）：把较早的大块工具结果换成占位。
+    # max_tokens=0 表示关掉消息级修剪（见下），保留清推理部分。
     # keep_reasoning_turns=0：推理从一开始就不回传（每条消息字节首次发送即固定，前缀零断点；prompt 少 26%）。
-    "prune": {"enabled": True, "threshold": 0.6, "max_tokens": 100000, "keep_turns": 2, "keep_tokens": 16000,
+    #
+    # **为什么消息级修剪默认关**：5 个真实会话全量重放（成本按 DeepSeek 官方价、首包按
+    # 1317 + 0.0072×prompt 拟合）显示它每种配置下都更贵——现状（prune@100k + compact@140k）
+    # ¥13.37 / 2,919s，只压缩不修剪 ¥11.96 / 2,856s，省 10.5%。机制：修剪改的是历史中段，
+    # 其后**所有**内容都要重算（一次修剪的未命中量≈整个 prompt，实测 ¥0.10/次），而它只省下
+    # 修剪掉的那部分本身，回本要几十次请求。真正省钱的减法必须在**追加时**做完（工具输出截断、
+    # 大字段占位），让内容从未以完整形态发过，不产生断点。
+    "prune": {"enabled": True, "threshold": 0.6, "max_tokens": 0, "keep_turns": 2, "keep_tokens": 16000,
               "min_tokens": 20000, "min_output_tokens": 300,
               "strip_reasoning": True, "keep_reasoning_turns": 0},
     # AGENTS.md / CLAUDE.md：用户级 ~/.ee/ + 项目根→cwd 分层加载，总大小上限
     "agents_md": {"enabled": True, "max_bytes": 32768},
+    # 历史里 edit/write 的大字段（old_string/new_string/content）发送时换成占位，默认开启。
+    # 这些字段含整份文件内容，一旦进历史就永久随每次请求重发：实测首次压缩前的 249k token 里
+    # 21.9% 是工具调用参数（edit 占其中 46%），裁掉后 prompt 少 30%。
+    # 规则与位置无关（同样的调用总是同样的占位）→ 每条消息字节首次发送即固定，零缓存断点。
+    # min_chars：小于这个长度的字段原样保留（小改动本身就是要逐字复用的上下文）。
+    # 150 是实测拐点（43ca2f 全历史 2,467 条，按 wire_messages 真发出去的量算）：
+    #   不裁 1,311,485 / 80→1,170,373(10.8%) / **150→1,171,278(10.7%)** / 300→1,178,008(10.2%)
+    #   / 600→1,192,112(9.1%) / 2000→1,216,127(7.3%)。占位自身也要花 token，阈值调低会多裁大量
+    # 几乎不省 token 的短字段（阈值 80/100 时分别有 88/30 个字段净亏），丢的信息反而更多。
+    "elide_args": {"enabled": True, "min_chars": 150},
     # 防死循环：同调用连续 repeat_limit 次不执行并纠正，repeat_hard 次停止回合；无进展步数提醒/停止
     "loop_guard": {"repeat_limit": 3, "repeat_hard": 5, "no_progress_steps": 8, "no_progress_hard": 16},
     "permissions": {"mode": "default", "allow": [], "ask": [], "deny": []},

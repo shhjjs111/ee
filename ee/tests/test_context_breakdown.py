@@ -76,7 +76,9 @@ def test_session_breakdown_is_read_only(ee_home, workspace):
     assert d["frozen"] is True and d["actual"] is True and d["used"] == 4120
     assert d["window"] == s.profile.context_window and d["thresholds"]["compact"] == 0.8
     assert d["thresholds"]["prune"] == 0.6        # 修剪默认开启，但只在绝对水位以上才动手
-    assert d["thresholds"]["prune_tokens"] == 100000
+    # 消息级修剪默认关（max_tokens=0）：全量重放显示它在每种配置下都更贵，
+    # 所以 prune_tokens 默认上报 0（None 也不会出现在这里，界面拿不到就按不开处理）。
+    assert not d["thresholds"].get("prune_tokens")
     assert {t["name"] for t in d["tools"]} >= {"read", "shell"}
     # 系统提示用的就是冻结的那份
     assert it["system"]["tokens"] == C.estimate_tokens(s.prefix.system["content"])

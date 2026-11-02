@@ -105,6 +105,91 @@ def test_wire_messages_copy_and_rules():
     assert T.wire_messages(hist, ds) == w                                   # 确定性
 
 
+# ---------------------------------------------------------------- 大字段省略（elide）
+
+def _edit_call(path, old, new, cid="c1"):
+    import json as _j
+    return {"id": cid, "type": "function", "function": {
+        "name": "edit", "arguments": _j.dumps({"path": path, "edits": [
+            {"old_string": old, "new_string": new}]}, ensure_ascii=False)}}
+
+
+def test_elide_big_args_keeps_small_fields():
+    """小改动本身就是要逐字复用的上下文，不能裁。"""
+    tc = _edit_call("a.py", "x = 1", "x = 2")
+    out = T.elide_big_args([tc], 150)
+    assert out[0]["function"]["arguments"] == tc["function"]["arguments"]
+
+
+def test_elide_big_args_replaces_large_fields_with_pointer():
+    import json as _j
+    old, new = "a" * 300, "b" * 300
+    out = T.elide_big_args([_edit_call("src/a.py", old, new)], 150)
+    args = _j.loads(out[0]["function"]["arguments"])
+    ed = args["edits"][0]
+    assert old not in ed["old_string"] and new not in ed["new_string"]
+    assert "src/a.py" in ed["old_string"] and "read" in ed["old_string"]   # 必须指向文件与 read
+    assert "1 行已省略" in ed["old_string"]                              # 单行也是 1 行，占位带行数
+    assert args["path"] == "src/a.py"                                      # 路径本身保留
+
+
+def test_elide_big_args_is_deterministic_and_non_destructive():
+    """位置无关、同样输入同样输出 → 每条消息首次发送即终态，缓存零断点。"""
+    import json as _j
+    tc = _edit_call("a.py", "x" * 400, "y" * 400)
+    before = _j.dumps(tc, ensure_ascii=False, sort_keys=True)
+    a = T.elide_big_args([tc], 150)
+    b = T.elide_big_args([tc], 150)
+    assert _j.dumps(a, ensure_ascii=False, sort_keys=True) == _j.dumps(b, ensure_ascii=False, sort_keys=True)
+    assert _j.dumps(tc, ensure_ascii=False, sort_keys=True) == before      # 原调用没被改
+
+
+def test_elide_big_args_write_content_and_bad_json():
+    import json as _j
+    big = "w" * 500
+    write = {"id": "w1", "type": "function", "function": {
+        "name": "write", "arguments": _j.dumps({"path": "b.py", "content": big}, ensure_ascii=False)}}
+    out = T.elide_big_args([write], 150)
+    assert big not in out[0]["function"]["arguments"]
+    # 解析不了的 arguments 原样返回：宁可多发也不能弄坏请求
+    bad = {"id": "x", "type": "function", "function": {"name": "edit", "arguments": "{not json"}}
+    assert T.elide_big_args([bad], 150)[0] is bad
+    # 非 edit/write 的工具不碰
+    read = {"id": "r", "type": "function", "function": {
+        "name": "read", "arguments": _j.dumps({"path": "c" * 500})}}
+    assert T.elide_big_args([read], 150)[0] is read
+
+
+def test_wire_messages_elide_only_when_enabled():
+    """elide_min_chars=0（默认关）时一个字节都不动。"""
+    ds = profile_for("deepseek-flash")
+    hist = [{"role": "assistant", "content": "", "tool_calls": [
+        _edit_call("a.py", "x" * 400, "y" * 400)]}]
+    assert T.wire_messages(hist, ds)[0]["tool_calls"] == hist[0]["tool_calls"]
+    cut = T.wire_messages(hist, ds, -1, 150)[0]["tool_calls"]
+    assert "x" * 400 not in json.dumps(cut, ensure_ascii=False)
+    assert hist[0]["tool_calls"][0]["function"]["arguments"].count("x") == 400   # 历史未动
+
+
+def test_elide_min_chars_reads_config():
+    assert T.elide_min_chars(None) == 150                 # 默认值
+    assert T.elide_min_chars({"elide_args": {"enabled": False}}) == 0
+    assert T.elide_min_chars({"elide_args": {"min_chars": 40}}) == 40
+    assert T.elide_min_chars({"elide_args": {"min_chars": "x"}}) == 150   # 坏值回退
+
+
+def test_elided_placeholder_always_shorter_than_source():
+    """占位自己也要花 token。阈值边界上原文只比阈值多一个字符时，占位必须仍然更短，
+    否则这条裁剪就是纯亏（换来的是丢信息 + 多花钱）。实测旧的长占位在 150~200 字符档就吃过亏。"""
+    path = "some/dir/file.py"
+    for n in (150, 151, 200, 1500):
+        text = "x" * n
+        assert len(T._elided(text, path)) < n
+    # 占位里必须有路径和行数（否则模型不知道去哪找）
+    ph = T._elided("a\nb\nc", path)
+    assert path in ph and "3" in ph
+
+
 def test_unsupported_param_detection():
     assert T.unsupported_param("Unrecognized request argument supplied: parallel_tool_calls") == "parallel_tool_calls"
     assert T.unsupported_param('{"error": "stream_options is not supported"}') == "stream_options"

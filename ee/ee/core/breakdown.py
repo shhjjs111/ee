@@ -52,7 +52,7 @@ def _msg_tokens(m: dict, wire: dict) -> int:
 
 def compute(system: str, tools: list[dict], history: list[dict], profile, window: int,
             used: int | None = None, actual: bool = False, stats=None,
-            strip_reasoning_to: int = -1) -> dict:
+            strip_reasoning_to: int = -1, elide_min_chars: int = 0) -> dict:
     from ee.core.providers import transforms as T
     counts = {k: 0 for k in LABELS}
     counts["system"] = C.estimate_tokens(system)
@@ -62,7 +62,7 @@ def compute(system: str, tools: list[dict], history: list[dict], profile, window
         per_tool.append({"name": (t.get("function") or {}).get("name", ""), "tokens": n})
     counts["tools"] = sum(x["tokens"] for x in per_tool)
     wires = T.wire_messages([{k: v for k, v in m.items() if k != "_images"} for m in history], profile,
-                            strip_reasoning_to)
+                            strip_reasoning_to, elide_min_chars)
     images = 0
     pruned_now = 0
     reasoning_cut = 0
@@ -97,6 +97,14 @@ def compute(system: str, tools: list[dict], history: list[dict], profile, window
             "images": images, "messages": len(history), "savings": savings, "estimated": True}
 
 
+def _prune_on(pcfg: dict) -> bool:
+    """消息级修剪是否真的会动手（max_tokens=0 = 默认关，见 prune.DEFAULTS）。
+
+    关掉时不要在界面上报阈值：否则会显示「60% 时修剪」，而实际永远不修剪。
+    """
+    return bool(pcfg.get("enabled", True)) and int(pcfg.get("max_tokens", 0) or 0) > 0
+
+
 def for_session(s) -> dict:
     """会话当前的上下文构成。前缀已冻结就用冻结的那份（真正发出去的），否则用将要冻结的那份（不冻结）。"""
     if s.prefix is not None:
@@ -108,9 +116,11 @@ def for_session(s) -> dict:
             s._sys_src = None
     history = list(s.history)
     actual_used = s.stats.last_prompt + s.stats.last_completion
+    from ee.core.providers import transforms as T
     d = compute(prefix.system["content"], prefix.tools, history, s.profile, s.profile.context_window,
                 used=actual_used or None, actual=actual_used > 0, stats=s.stats,
-                strip_reasoning_to=getattr(s, "_reasoning_strip_to", -1))
+                strip_reasoning_to=getattr(s, "_reasoning_strip_to", -1),
+                elide_min_chars=T.elide_min_chars(s.config.data))
     d["compactions"] = int(getattr(s, "compactions", 0) or 0)
     d["frozen"] = s.prefix is not None
     # T19：缓存命中要带覆盖率。hit_rate 的分母只含"返回了 hit 字段的请求"，
@@ -132,7 +142,9 @@ def for_session(s) -> dict:
                        "compact_tokens": int(cfg.get("max_tokens", 0) or 0)
                        if cfg.get("auto", True) and int(cfg.get("max_tokens", 0) or 0) > 0 else None,
                        "prune": float(pcfg["threshold"]) if pcfg.get("enabled", True) else None,
-                       # 绝对上限：1M 窗口下百分比永远到不了，界面要按 token 数说真话
-                       "prune_tokens": int(pcfg["max_tokens"]) if pcfg.get("enabled", True) and pcfg.get("max_tokens", 0) > 0 else None}
+                       # 绝对上限：1M 窗口下百分比永远到不了，界面要按 token 数说真话。
+                       # 消息级修剪默认关（max_tokens=0）时报 None，否则界面会写「60% 时修剪」
+                       # 而实际永远不修剪。
+                       "prune_tokens": int(pcfg["max_tokens"]) if _prune_on(pcfg) else None}
     d["model"] = s.spec.alias
     return d

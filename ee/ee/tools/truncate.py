@@ -1,4 +1,4 @@
-"""输出截断：超 2000 行或 50KB → 全文存 ~/.ee/tool-output/，返回头尾预览 + 路径。
+"""输出截断：超 800 行或 16KB → 全文存 ~/.ee/tool-output/，返回头尾预览 + 路径。
 
 **为什么按工具调阈值**（对齐天枢 src/tools/artifact-threshold.ts 的思路）：
 
@@ -21,11 +21,19 @@ import uuid
 from pathlib import Path
 from typing import NamedTuple
 
-MAX_LINES = 2000
-MAX_BYTES = 50 * 1024
+MAX_LINES = 800
+MAX_BYTES = 16 * 1024
 HEAD_LINES = 200
 TAIL_LINES = 100
 PREVIEW_BYTES = 24 * 1024
+
+# 阈值定成 16KB/800 行的依据（5 个真实会话全量重放，2026-11-02）：
+# 工具输出占首次压缩前历史的 41%，其中 read 48.8% / shell 37.7%，中位仅 129 token，
+# 但 >1000 token 的尾部贡献了 30% 的体积。按真实截断语义扫描：
+#   50KB→11.480 元 / 32KB→11.422 / 16KB→11.004 / 12KB→10.934 / 8KB→10.877 / 4KB→10.614
+# 收益在 16KB 之后开始放缓，再往下则预览小到看不清（read 一个大文件只剩开头）。
+# 关键：这是**写入时**的截断——历史里存的就是预览，字节从此不变，不产生缓存断点。
+# 完整输出仍归档到 ~/.ee/tool-output/，模型可带 offset 重读。
 
 # 按工具缩小/放大的阈值（行数、字节）。键是工具名，未列出的用默认值。
 # 只影响「多大才归档」，不影响归档后的格式。

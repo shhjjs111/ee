@@ -185,7 +185,8 @@ def test_truncate_output_respects_per_tool_limit(tmp_path):
 
 
 def test_truncate_output_unknown_tool_unaffected(tmp_path):
-    """未配置的工具仍走默认 50KB：不能顺手把所有工具都改严。"""
-    text = "y" * (20 * 1024)          # 低于默认 50KB
+    """未配置的工具仍走默认阈值：不能顺手把所有工具都改严。"""
+    from ee.tools.truncate import MAX_BYTES
+    text = "y" * (MAX_BYTES // 2)          # 明显低于默认阈值
     out, cut = truncate_output(text, tmp_path, "read")
     assert not cut and out == text

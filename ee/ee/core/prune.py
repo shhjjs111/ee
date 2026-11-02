@@ -30,11 +30,12 @@ from ee.core import compaction as C
 from ee.core.events import Notice
 
 DEFAULTS = {
-    # 默认开启：实测 prompt 越大首包越慢（32k→5.2s / 96k→13.9s / 160k→19.8s，缓存命中 99% 也救不回来），
-    # 而 1M 窗口按 percentages 算永远够不着。只在 max_tokens 水位以上才会真动手，短会话零影响。
+    # 消息级修剪默认关（max_tokens=0）：全量重放显示它让成本高 10.5%，因为修剪改历史中段会让其后
+    # 所有内容重算（一次≈整个 prompt），而只省下修剪量本身。清推理（strip_reasoning）不受影响。
+    # 需要时可显式配 max_tokens: 100000 重新开启。
     "enabled": True,
     "threshold": 0.6,          # 小窗口模型用：上下文用量 ≥ threshold × 窗口时修剪
-    "max_tokens": 100000,      # 绝对水位（总 prompt token）：取 min(threshold × 窗口, max_tokens)，0 = 只看百分比
+    "max_tokens": 0,           # 绝对水位（总 prompt token）：取 min(threshold × 窗口, max_tokens)，0 = 不修剪
     "keep_turns": 2,           # 最近几个用户回合完全不碰
     "keep_tokens": 16000,      # 再往前最近这么多 token 的工具输出也保留
     "min_tokens": 20000,       # 一批至少能省这么多才修剪（太少不值得让缓存失效一次）
@@ -202,6 +203,8 @@ def due(session, cfg: dict) -> bool:
     之后要比它再涨 min_tokens 才会再修剪（避免占用仍高于阈值时每一步都修剪、每一步都让缓存失效）。"""
     if not cfg["enabled"]:
         return False
+    if cfg["max_tokens"] <= 0:
+        return False          # 消息级修剪已关（默认）：改历史中段会让其后全部重算，回不了本
     window = session.profile.context_window
     used = session.stats.last_prompt + session.stats.last_completion
     if window <= 0 or used <= 0:

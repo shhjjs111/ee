@@ -30,6 +30,9 @@ describe("context", () => {
     expect(thresholdLine(bd({ thresholds: { compact: 0.8, prune: 0.6, prune_tokens: 150_000 } }))).toBe(
       "150k token 时修剪旧工具输出，80% 时自动压缩",
     );
+    // 消息级修剪默认关（prune_tokens=null）：不能再说“60% 时修剪”，否则用户会以为它还会动手
+    expect(thresholdLine(bd({ thresholds: { compact: 0.8, prune: 0.6, prune_tokens: null } }))).toBe("80% 时自动压缩");
+    expect(thresholdLine(bd({ thresholds: { compact: 0.8, prune: 0.6, prune_tokens: 0 } }))).toBe("80% 时自动压缩");
     expect(thresholdLine(bd({ thresholds: { compact: null, prune: null } }))).toBeNull();
   });
   it("旧推理节省单独计，不与工具修剪合并", () => {

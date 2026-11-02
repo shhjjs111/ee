@@ -1323,7 +1323,9 @@ class Session:
         # 回退重试、overflow 重试都绕过那里，只有这里能保证“每一次真实发送”都同步过。
         from ee.core import prune as _prune
         _prune.sync_reasoning(self, profile=spec.profile)
-        messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to)
+        elide = T.elide_min_chars(self.config.data)
+        messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to,
+                                                    elide)
         comp: Completion | None = None
         text, reasoning = [], []
         emit(Status(f"正在准备请求 {spec.alias}…"))
@@ -1737,7 +1739,8 @@ class Session:
         if prev is not None and spec.alias != self.spec.alias:
             hist = [m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] + self.history[prev[0]:]
         instr = C.compact_update_prompt() if prev is not None else C.compact_prompt()
-        messages = ([prefix.system] + T.wire_messages(hist, spec.profile, self._reasoning_strip_to) +
+        messages = ([prefix.system] + T.wire_messages(hist, spec.profile, self._reasoning_strip_to,
+                                                      T.elide_min_chars(self.config.data)) +
                     [{"role": "user", "content": instr}])
         if spec.alias != self.spec.alias and C.estimate_messages(messages) > 0.85 * spec.profile.context_window:
             raise RuntimeError(f"历史放不进压缩模型 {spec.alias} 的上下文窗口")

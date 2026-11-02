@@ -108,7 +108,8 @@ class ThinkSplitter:
 
 # ---------------------------------------------------------------- 请求消息变换
 
-def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1) -> list[dict]:
+def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1,
+                  elide_min_chars: int = 0) -> list[dict]:
     """历史（内部格式）→ 发给服务端的消息。总是复制，绝不原地改历史。
 
     内部 assistant 消息可带 "reasoning" 键（推理全文），这里按回传规则决定是否变成
@@ -117,6 +118,16 @@ def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1) ->
     strip_reasoning_to：索引 ≤ 它的 assistant 推理置空。实测 reasoning 占长会话 prompt 的 26%
     （233k→171k token），清掉后首包 25.6s→12.8s，上游接受空串（不会 400）。游标只前进，
     所以每条消息的字节最多变一次——不改历史也能省 token，需要回传时把游标调回去就恢复。
+
+    elide_min_chars > 0 时，把 edit/write 的大字段（edit 的 old_string/new_string、write 的 content）
+    换成导航型占位。**规则与位置无关**（同样的调用永远得到同样的占位），所以每条消息在它第一次
+    被发送之前就已经是终态、字节此后永不变化 → 零缓存断点，不像按游标裁那样会制造断点。
+
+    **为什么值得**：这些字段里是整份文件内容，一旦进了历史就永久随每次请求重发。实测首次压缩前
+    的 249k token 里 21.9% 是工具调用参数（其中 edit 占 46%），裁掉它们省 30% prompt。
+    安全性已验：exp15 显示旧 edit 内容从不在 assistant 正文里被“回忆”（0%），exp16 显示
+    “被后续 edit 的 old_string 引用”里只有 20-33% 无法从 read 补回（合计约 6k token，
+    而裁剪省 72k）；exp18 真实网关验证：裁剪后模型会先 read 再改，一次改对率 3/3（不裁时 1/3）。
     """
     mode = profile.reasoning_passback
     out = []
@@ -130,7 +141,10 @@ def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1) ->
                 w["reasoning_content"] = "" if stripped else (m.get("reasoning") or "")
             if w.get("content") in (None, ""):
                 w["content"] = None if profile.empty_assistant_content == "null" and has_tools else ""
-            if not has_tools:
+            if has_tools:
+                if elide_min_chars > 0:
+                    w["tool_calls"] = elide_big_args(w["tool_calls"], elide_min_chars)
+            else:
                 w.pop("tool_calls", None)
         elif role == "user" and m.get("_images"):
             from ee.core.attachments import wire_content
@@ -147,6 +161,93 @@ def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1) ->
                 w["content"] = json.dumps(w.get("content"), ensure_ascii=False)
         out.append(w)
     return out
+
+def elide_min_chars(config_data: dict | None) -> int:
+    """要不要把历史里 edit/write 的大字段换成占位；返回阈值（0 = 不裁）。
+
+    用配置没有覆盖时的默认值：默认值在 config.DEFAULTS["elide_args"]。
+    拔在这里是为了让三个会构造请求的地方（_sample / _summarize / breakdown 预览）
+    用同一份口径，否则界面看到的上下文构成会和真正发出去的请求对不上。
+    """
+    cfg = (config_data or {}).get("elide_args") or {}
+    if not cfg.get("enabled", True):
+        return 0
+    try:
+        return max(0, int(cfg.get("min_chars", 150)))
+    except (TypeError, ValueError):
+        return 150
+
+
+# ---------------------------------------------------------------- 大字段省略
+
+def elide_big_args(tool_calls: list[dict], min_chars: int = 600) -> list[dict]:
+    """把 edit/write 的大字段换成导航型占位（只用于发送，不改历史）。
+
+    处理 edit 的 edits[*].old_string / new_string（以及旧式顶层同名字段）和 write 的 content。
+    小于 min_chars 的字段原样保留（小改动本身就是模型要逐字复用的上下文）。
+    占位里带上路径与行数，并明确指向 read，否则模型不知道信息还在磁盘上。
+    返回新列表，不原地改；解析不了 arguments 的调用原样返回（宁可多发也不弄坏请求）。
+    """
+    if not tool_calls:
+        return tool_calls
+    out = []
+    for tc in tool_calls:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if not isinstance(fn, dict) or fn.get("name") not in ("edit", "write"):
+            out.append(tc)
+            continue
+        raw = fn.get("arguments")
+        if not isinstance(raw, str):
+            out.append(tc)
+            continue
+        try:
+            args = json.loads(raw)
+        except Exception:
+            out.append(tc)
+            continue
+        if not isinstance(args, dict):
+            out.append(tc)
+            continue
+        path = str(args.get("path") or args.get("file_path") or "?")
+        changed = False
+        if fn.get("name") == "write":
+            for key in ("content",):
+                v = args.get(key)
+                if isinstance(v, str) and len(v) >= min_chars:
+                    args[key] = _elided(v, path)
+                    changed = True
+        else:
+            for ed in args.get("edits") or []:
+                if not isinstance(ed, dict):
+                    continue
+                for key in ("old_string", "new_string"):
+                    v = ed.get(key)
+                    if isinstance(v, str) and len(v) >= min_chars:
+                        ed[key] = _elided(v, path)
+                        changed = True
+            for key in ("old_string", "new_string"):   # 旧式顶层写法
+                v = args.get(key)
+                if isinstance(v, str) and len(v) >= min_chars:
+                    args[key] = _elided(v, path)
+                    changed = True
+        if not changed:
+            out.append(tc)
+            continue
+        tc2 = dict(tc)
+        tc2["function"] = {**fn, "arguments": json.dumps(args, ensure_ascii=False)}
+        out.append(tc2)
+    return out
+
+
+def _elided(text: str, path: str) -> str:
+    """占位内容。确定性（同样输入同样输出）才能保住缓存。
+
+    占位本身也要花 token，按中文约 1 字符 1 token 算，写得越啰嗦越吃掉裁剪收益。
+    实测 5 个真实会话 508 个 150+ 字符字段：长占位净省 155,566，这版短占位净省 170,567
+    （+9.6%），且短占位在每一档长度上都是正收益，没有反被占位吃掉的字段。
+    """
+    lines = text.count("\n") + 1
+    return f"（{lines} 行已省略，已写入 {path}；逐字原文请用 read）"
 
 
 # ---------------------------------------------------------------- 工具名 / 参数修复

@@ -26,12 +26,18 @@ export function savingsLine(d: ContextBreakdown): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
-/** 阈值说明：「60% 时修剪旧工具输出，80% 时自动压缩」；配了绝对上限时改说 token 数。 */
+/** 阈值说明：「60% 时修剪旧工具输出，80% 时自动压缩」；配了绝对上限时改说 token 数。
+ *
+ * prune_tokens 缺省/为 0 表示消息级修剪关着（后端默认如此）：这时 60% 只是「清旧推理」
+ * 的门槛文案不适用，直接不说——否则用户会以为 60% 会修剪工具输出，实际永远不修剪。 */
 export function thresholdLine(d: ContextBreakdown): string | null {
   const t = d.thresholds;
   const parts: string[] = [];
-  if (t.prune != null) {
-    parts.push(t.prune_tokens ? `${fmtTokens(t.prune_tokens)} token 时修剪旧工具输出` : `${Math.round(t.prune * 100)}% 时修剪旧工具输出`);
+  if (t.prune != null && t.prune_tokens) {
+    parts.push(`${fmtTokens(t.prune_tokens)} token 时修剪旧工具输出`);
+  } else if (t.prune != null && t.prune_tokens === undefined) {
+    // 旧版后端不会发 prune_tokens：按百分比说，保持兼容
+    parts.push(`${Math.round(t.prune * 100)}% 时修剪旧工具输出`);
   }
   if (t.compact != null) {
     parts.push(t.compact_tokens ? `${fmtTokens(t.compact_tokens)} token 时自动压缩` : `${Math.round(t.compact * 100)}% 时自动压缩`);

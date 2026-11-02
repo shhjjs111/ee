@@ -15,7 +15,10 @@ def make(workspace, script, persist=False, window=10000, prune=None):
     from ee.core.session import Session
     cfg = load_config(workspace)
     cfg.data["models"]["deepseek-flash"]["context_window"] = window
-    cfg.data["prune"] = {"enabled": True, "threshold": 0.5, "keep_turns": 1, "keep_tokens": 0, "min_tokens": 500,
+    # 消息级修剪默认已关（max_tokens=0，理由见 prune.DEFAULTS）：这组测试要验证修剪本身，
+    # 所以把绝对水位抬得很高（1e9），让它退化成 threshold × 窗口 的百分比判定。
+    cfg.data["prune"] = {"enabled": True, "threshold": 0.5, "keep_turns": 1, "keep_tokens": 0,
+                         "min_tokens": 500, "max_tokens": 10**9,
                          "min_output_tokens": 100, **(prune or {})}
     fake = FakeClient(script)
     return Session(cfg, cwd=workspace, client=fake, persist=persist), fake
@@ -230,17 +233,34 @@ def test_due_absolute_ceiling_never_raises_percent_threshold():
     assert not P.due(s, cfg)                      # 40% < 50%：绝对上限没有把它放低
 
 
-def test_default_config_prunes_at_absolute_waterline():
-    """默认配置：1M 窗口下百分比永远够不着，靠 10 万 token 的绝对水位动手。"""
+def test_default_config_does_not_prune_messages():
+    """默认配置：消息级修剪已关（max_tokens=0）。
+
+    全量重放证据（5 个真实会话，成本按官方价、首包按 1317 + 0.0072×prompt）：
+    现状（prune@100k + compact@140k）¥13.37 / 2,919s，只压缩不修剪 ¥11.96 / 2,856s。
+    机制：修剪改历史中段 → 其后全部内容重算，一次未命中≈整个 prompt，而只省下修剪量本身。
+    """
     from types import SimpleNamespace
     from ee.core.context import UsageStats
     st = UsageStats()
     s = SimpleNamespace(profile=SimpleNamespace(context_window=1_000_000), stats=st, compactions=0)
     cfg = P.settings({})
-    st.requests, st.last_prompt = 3, 90_000
-    assert not P.due(s, cfg)                     # 9 万还快（实测首包 5–7 秒）
+    assert cfg["max_tokens"] == 0
+    st.requests, st.last_prompt = 3, 10_000_000     # 就算上下文大到离谱也不修剪
+    assert not P.due(s, cfg)
+
+
+def test_due_honours_explicit_waterline():
+    """显式配了绝对水位时仍按水位修剪（功能本体没被删）。"""
+    from types import SimpleNamespace
+    from ee.core.context import UsageStats
+    st = UsageStats()
+    s = SimpleNamespace(profile=SimpleNamespace(context_window=1_000_000), stats=st, compactions=0)
+    cfg = P.settings({"prune": {"max_tokens": 100_000}})
+    st.requests, st.last_prompt = 3, 99_000
+    assert not P.due(s, cfg)
     st.last_prompt = 100_000
-    assert P.due(s, cfg)                         # 10 万以上开始拖慢，修一次
+    assert P.due(s, cfg)
 
 
 def test_prune_waterline_stays_below_compaction():
@@ -367,7 +387,7 @@ def test_due_hysteresis():
     from ee.core.context import UsageStats
     st = UsageStats()
     s = SimpleNamespace(profile=SimpleNamespace(context_window=10000), stats=st, compactions=0)
-    cfg = P.settings({"prune": {"enabled": True, "threshold": 0.5, "min_tokens": 1000}})
+    cfg = P.settings({"prune": {"enabled": True, "threshold": 0.5, "max_tokens": 10**9, "min_tokens": 1000}})
     st.requests, st.last_prompt = 3, 6000
     assert P.due(s, cfg)
     s._prune_mark, s._prune_floor, s._prune_comp = 3, None, 0       # 刚修剪过
