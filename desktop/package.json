@@ -97,6 +97,14 @@
       }
     ],
     "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "shhjjs111",
+        "repo": "ee",
+        "releaseType": "release"
+      }
+    ],
     "win": {
       "target": [
         {

@@ -248,8 +248,9 @@ def test_prune_enabled_by_default_but_configurable(workspace):
     from ee.core import prune as P
     data = load_config(workspace).data
     assert P.settings(data)["enabled"] is True
-    assert P.settings({})["enabled"] is True                       # 默认开：prompt 越大首包越慢，短会话不动手
-    assert P.settings({})["max_tokens"] == 100000                  # 绝对水位，1M 窗口也够得着
+    assert P.settings({})["enabled"] is True                       # 开关仍默认开（清推理部分要用）
+    # max_tokens=0 = 消息级修剪默认关：它改历史中段，其后所有内容重算，实测每种配置都更贵
+    assert P.settings({})["max_tokens"] == 0
     assert P.settings({"prune": {"enabled": False}})["enabled"] is False
     assert "缓存" in (P.__doc__ or "") and "首包" in (P.__doc__ or "")
 

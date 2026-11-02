@@ -26,7 +26,7 @@
 | T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证**（建议态 + 落库 + 审批卡片显示）；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`、`server\threads.py` 的 `_on_event` 落 `ApprovalItem`、`desktop\src\components\Items.tsx` 的建议区；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5）、`test_autoapprove_persist.py`（3）、`ApprovalSuggestion.test.tsx`（4） |
 | T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 判据编排 + 桌面端） | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`server\bestof_verify.py` 的 `bestof/verify`（每候选单轮判据）、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`test_bestof_verify.py`（5）、`BestofDialog.test.tsx`（7） |
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
-| 后置 | 发布 | **打包链路已验证（2026-11-02，run #152）**；更新渠道/签名/版本策略未定，分别立项 | 自动记忆、真实模型费用、公开更新渠道需单独确认 |
+| 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下），更新器接口已配好但客户端未接 electron-updater | 首次真实发版与自动更新需单独确认 |
 
 ## 执行记录（2026-11-02，上下文成本：关掉消息级修剪 + 历史大字段占位）
 
@@ -256,7 +256,11 @@ write 400 行文件 → 连改两处 → 问值（4 轮/组）：
 - **e2e 隔离（`eb3edf1`）**：7 个 Playwright spec 里只有1个隔离了 `EE_HOME`、0 个隔离 `userData`。两个后果都实测到了：日常开着 ee 时 `test:ui` 必然报 `Target page closed`（单实例锁 + disk cache 被锁）；`interaction.spec.ts` 的 `settings/set` 直接写用户真实的 `~/.ee/config.toml`（把 `default_model` 改成了指向本地假服务的 fake-gpt），`workspace/remove` 还会隐藏真实项目。现在统一走 `desktop/e2e/launch.ts`（临时 home + 临时 userData），跑完即删。结果：27 passed / 1 skipped、57 秒（改前 8 分钟 4 failed），跑前跑后配置 sha256 一致。
 - **e2e 进 CI（`8457ad5`）**：这个套件长期只靠本地手动跑，所以上面的缺陷能静默存活。现已接在 `npm run build` 之后，远端实测 27 passed / 1 skipped、47 秒。
 - **后端静态检查（`b7968c6`、`a8903dc`）**：`ruff` 只启用「代码有误」那组（`E9/F63/F7/F82/F401/F811/F841`），不做风格强制；清掉产品代码 4 处未用导入、测试 51 处未用导入与 10 处未用变量（其中 1 处补了漏掉的断言）。依赖补了主版本上界，避免上游发大版本把 CI 打红。
-- **发布链路首跑（run #152，手动触发 `package=true`）**：验证与打包全绿——PyInstaller onedir 后端、打包后端 `selftest --secrets`、假模型 E2E、黑洞超时 E2E、NSIS 安装包、node-pty 在 asar 外、两份 artifact 上传。**仍未做**：代码签名（`CSC_IDENTITY_AUTO_DISCOVERY=false` 是现成值）、版本号策略（仍 0.1.0）、更新渠道、安装包的真人安装验证。
+- **发布链路首跑（run #152，手动触发 `package=true`）**：验证与打包全绿——PyInstaller onedir 后端、打包后端 `selftest --secrets`、假模型 E2E、黑洞超时 E2E、NSIS 安装包、node-pty 在 asar 外、两份 artifact 上传。（当时记的「仍未做：代码签名 / 版本号策略 / 更新渠道」已于 2026-11-02 逐项给出结论，见下条。）
+- **tag 发布与签名结论（2026-11-02）**：新增 `.github/workflows/release.yml`，推 `v*` tag 自动发版；`desktop-windows.yml` 加 `workflow_call` 让发布复用同一份 verify+package（不写第二套打包逻辑），产物补上 `latest.yml`/`.blockmap`。版本号由 `check` job 硬校验 tag 与 `desktop/package.json`、`ee/pyproject.toml` 三处一致——不一致会导致更新器永远重复下载同一版。
+  - **签名：明确不做**。查微软文档后推翻了原先「自签名能缓解」的假设：自签名证书与不签名在 SmartScreen 上**表现完全相同**，而且 **EV 证书也已不再绕过** SmartScreen。花钱买房只买到「显示发布者名字」而不是「消除警告」。剩下真正能消警告的只有 Azure Artifact Signing（$9.99/月，首年仍要攒信誉）与 Microsoft Store（免费零警告，要过审）。现在采用「不签名 + 公开 SHA256 + 安装说明讲清原因」。
+    来源：https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
+  - **未验**：本地 `electron-builder` 在 `packaging` 阶段卡住（本机拉不到 Electron 45 二进制），所以 `latest.yml` 生成与 Release 上传脚本**只有代码审查，没有实跑证据**；待推一个 tag 验证。客户端尚未接 `electron-updater`（`build.publish` 已配好，随时可接）。
 - 仍成立的历史边界：`test_goal_acceptance` 与 `test_bgshell_guidance` 各失败过一次，但都在对应的针对性修复之前，此后连跑全绿（后者本地连跑 3 次）。
 
 ## 修订（2026-11-01）

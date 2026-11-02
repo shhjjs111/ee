@@ -2,13 +2,26 @@
 
 ee 的个人 AI 编程 Agent 桌面端（Windows 优先）。只走 OpenAI Chat Completions 协议，默认 DeepSeek，Qwen、Kimi、GLM、MiniMax、豆包、中转站 GPT 等都能接。
 
-> **许可**：本仓库保留所有权利（All Rights Reserved）。源码公开仅供查看，未经许可不得复制、修改、分发或商用。详见 `LICENSE`。
+> **许可**：MIT（见 `LICENSE`）。可自由使用、修改、分发和商用，保留版权与许可声明即可。
 
 ## 目录
 - `ee/`：Python 内核和本地服务 `ee serve`（工具循环、多模型适配、权限审批、会话存储、git）
 - `desktop/`：Electron + React 桌面界面（对话优先：项目/会话栏 + 对话区，改动/文件/终端按需在右侧展开；设置页）
 - `research/`：设计文档和对 Codex、Claude Code、OpenCode、天枢的研究笔记
-- `agent/`：最早的单文件原型（已不用）
+
+## 安装（给普通用户）
+
+从 [Releases](https://github.com/shhjjs111/ee/releases) 下载 `ee-Setup-<版本>.exe` 直接安装即可，无需 Python 或 Node。
+
+**首次运行会出现蓝色的「Windows 已保护你的电脑」**，点「更多信息」→「仍要运行」。
+这不是病毒告警，是因为安装包没有代码签名证书。按微软文档，自签名证书与不签名在
+SmartScreen 上表现**完全相同**，EV 证书也已不再绕过警告（[来源](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)），
+所以要彻底消掉提示只有「买 OV / Azure Artifact Signing 并攒信誉」或「上架 Microsoft Store」两条路。
+
+下载后建议核对 SHA256（Release 正文里附了官方值）：
+```powershell
+Get-FileHash .\ee-Setup-<版本>.exe -Algorithm SHA256
+```
 
 ## 开发运行（Windows）
 ```powershell

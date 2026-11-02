@@ -1,0 +1,169 @@
+name: release
+
+# 推 tag（v0.1.0 之类）→ 校验版本号一致 → 复用 desktop-windows.yml 的 verify + package →
+# 生成 SHA256 → 建 GitHub Release 并附上安装包与校验值。
+#
+# **只认 tag 推送，不做 workflow_dispatch**：手动触发时 checkout 的是 main 的代码，
+# 而发布必须发「那个 tag 的代码」。两者一混，就会出现「tag 标 v0.2.0、装出来是 main 上
+# 未发布的改动」这种最难发现的错误。要重跑某次发布，直接 Rerun 那个 tag 的 workflow。
+#
+# **为什么发布单独一个文件**：desktop-windows.yml 是「验证门槛」，每次 push 都跑；
+# 发布是低频、有副作用（建 Release、留下永久产物）的动作，混在一起会让
+# 「CI 有没有坏」和「有没有发版」互相干扰。这里只做发布特有的三件事：
+# 版本号校验、校验和、Release 正文。
+#
+# **签名现状（2026-11-02 决定：不签名）**：这不是省事，是权衡后的结论——
+#   - 自签名证书对 SmartScreen **完全无效**。微软文档原话："Self-signed Certificate
+#     ⚠️ Warning — Same behavior as no signature"。
+#     来源：https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
+#   - **EV 证书也已不再绕过** SmartScreen（同一文档："EV certificates no longer bypass
+#     SmartScreen"），所以「买贵证书换干净安装」这条路已经不存在了。
+#   - 剩下的只有 OV / Azure Artifact Signing（$9.99/月起，且首年仍要攒信誉）
+#     或上架 Microsoft Store（免费零警告，但要过审）。
+# 所以现在是：不签名 + 公开 SHA256 + 在 Release 正文里讲清楚会发生什么。
+# 真有人问「为什么有警告」时，再按上面的选项决定要不要花钱。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # 建 Release 需要写
+
+concurrency:
+  group: release-${{ github.ref }}
+  # 发布不做「新推送取消上一轮」：发包到一半被掐会留下残缺 Release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match package.json and pyproject.toml
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag 必须是 vX.Y.Z 形式，实际：$TAG"; exit 1 ;;
+          esac
+          VER="${TAG#v}"
+          PKG=$(node -p "require('./desktop/package.json').version")
+          PYW=$(python3 - <<'PY'
+          import re, pathlib
+          t = pathlib.Path('ee/pyproject.toml').read_text(encoding='utf-8')
+          m = re.search(r'^version\s*=\s*"([^"]+)"', t, re.M)
+          print(m.group(1) if m else '')
+          PY
+          )
+          echo "tag=$TAG version=$VER package.json=$PKG pyproject=$PYW"
+          # 三者不一致时，更新器会永远重复下载同一个版本（latest.yml 声明的版本与
+          # 已安装二进制上报的版本对不上），所以这必须硬失败而不是警告。
+          [ "$VER" = "$PKG" ] || { echo "tag($VER) 与 desktop/package.json($PKG) 不一致"; exit 1; }
+          [ "$VER" = "$PYW" ] || { echo "tag($VER) 与 ee/pyproject.toml($PYW) 不一致"; exit 1; }
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build
+    needs: check
+    # 复用验证门槛：不在这里重写一套打包步骤。先 verify 再 package，
+    # 与「手动勾选打包」走的是同一份逻辑，避免两条路径悄悄漂移。
+    uses: ./.github/workflows/desktop-windows.yml
+    with:
+      package: true
+    permissions:
+      contents: read
+
+  publish:
+    name: publish
+    needs: [check, build]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ee-windows-installer
+          path: dist-out
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ee-release-manifest
+          path: dist-out/build-info
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist-out -Filter *.exe
+          if (-not $files) { throw "没有找到安装包（上游 package 步骤失败？）" }
+          $lines = foreach ($f in $files) {
+            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($f.Name)"
+          }
+          $lines | Out-File -Encoding utf8 dist-out/SHA256SUMS.txt
+          Get-Content dist-out/SHA256SUMS.txt
+
+      - name: Build release notes
+        shell: pwsh
+        env:
+          VER: ${{ needs.check.outputs.version }}
+        run: |
+          $sums = (Get-Content dist-out/SHA256SUMS.txt -Raw).Trim()
+          $body = @"
+          ee v$env:VER（Windows x64 安装包）
+
+          ## 安装
+          1. 下载 ``ee-Setup-$env:VER.exe``。
+          2. 首次运行会出现蓝色的「Windows 已保护你的电脑」。点 **更多信息** → **仍要运行**。
+             这是**未签名**程序的正常提示，不是病毒告警，原因见下。
+          3. 安装完启动 ee，在设置页填 API key（默认 DeepSeek）。
+
+          ## 为什么会有 SmartScreen 提示
+          本安装包**没有代码签名证书**。按微软文档，自签名证书与不签名在 SmartScreen 上
+          表现**完全相同**，EV 证书也已不再绕过警告，所以「买个证书消掉提示」并不成立。
+          要彻底消掉只有两条路：购买 OV / Azure Artifact Signing 并积累信誉（有年费、
+          首年仍有提示），或上架 Microsoft Store（免费但需过审）。在积累起用户量之前，
+          提示会一直在。
+
+          ## 校验下载（推荐）
+          在该文件所在目录运行：
+
+          ````
+          Get-FileHash .\ee-Setup-$env:VER.exe -Algorithm SHA256
+          ````
+
+          输出应与下面一致；不一致说明文件在传输中被改动过，不要运行：
+
+          ````
+          $sums
+          ````
+
+          ## 系统要求
+          Windows 10 / 11 x64，自备模型 API key（默认 DeepSeek，也支持 OpenAI 兼容中转站）。
+          "@
+          Set-Content -Path dist-out/RELEASE_NOTES.md -Value $body -Encoding utf8
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          # 带 - 的 tag（v0.2.0-beta.1）标 pre-release，避免测试版被当成稳定版
+          $pre = if ($tag -match '-') { @("--prerelease") } else { @() }
+          # 安装包 + latest.yml/.blockmap（更新源配套产物）+ 校验和
+          $assets = @(Get-ChildItem dist-out -File | Where-Object { $_.Name -match '\.(exe|yml|blockmap)$' } | ForEach-Object { $_.FullName })
+          $assets += "dist-out/SHA256SUMS.txt"
+          gh release create $tag `
+            --title "ee $tag" `
+            --notes-file dist-out/RELEASE_NOTES.md `
+            --target "${{ github.sha }}" `
+            @pre `
+            @assets
