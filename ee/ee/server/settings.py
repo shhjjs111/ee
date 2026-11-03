@@ -77,6 +77,7 @@ def get_settings(project_sources: list[str] | None = None) -> dict:
             "default_model": data.get("default_model"),
             "shell": data.get("shell", "auto"),
             "max_steps": int(data.get("max_steps", 50)),
+            "max_steps_segments": int(data.get("max_steps_segments", 3)),
             "bash_timeout": int(data.get("bash_timeout", 120)),
             "permissions": {"mode": (data.get("permissions") or {}).get("mode", "default")},
             "ui": _ui_out(data.get("ui") or {}),
@@ -473,6 +474,14 @@ def set_settings(new: dict) -> dict:
             if v <= 0:
                 raise ValueError(f"{k} 必须大于 0")
             out[k] = v
+    # 段数：一个回合最多 max_steps × 段数 步。1 = 到 max_steps 就停。
+    # 上限 10 防止「无限跑」被当作配置项顺手拨到很大：10 段 × 50 步 = 500 步已经远超实测
+    # 最长任务链（209 步）。花费上限（[budget]）仍然是更前面的一道硬闸。
+    if new.get("max_steps_segments") is not None:
+        v = int(new["max_steps_segments"])
+        if not 1 <= v <= 10:
+            raise ValueError("每回合最多段数必须在 1～10 之间")
+        out["max_steps_segments"] = v
     if (new.get("permissions") or {}).get("mode"):
         mode = new["permissions"]["mode"]
         if mode not in MODES:

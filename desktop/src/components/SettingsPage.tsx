@@ -489,6 +489,9 @@ export function SettingsPage() {
                   <SettingRow label="每回合最大步数" desc="一个请求里模型最多连续调用工具的轮数">
                     <Input className="w-24 text-right" inputMode="numeric" value={draft.max_steps} onChange={(e) => up({ max_steps: Number(e.target.value) || 0 })} />
                   </SettingRow>
+                  <SettingRow label="每回合最多续跑段数" desc="步数用完但任务没收尾时自动接着做几段；总上限 = 步数 × 段数，1 = 到步数上限就停">
+                    <Input className="w-24 text-right" inputMode="numeric" value={draft.max_steps_segments ?? 3} onChange={(e) => up({ max_steps_segments: Number(e.target.value) || 0 })} />
+                  </SettingRow>
                   <SettingRow label="命令超时（秒）" desc="单条命令的默认超时">
                     <Input className="w-24 text-right" inputMode="numeric" value={draft.bash_timeout} onChange={(e) => up({ bash_timeout: Number(e.target.value) || 0 })} />
                   </SettingRow>

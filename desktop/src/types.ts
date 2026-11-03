@@ -228,6 +228,8 @@ export type Settings = {
   default_model: string;
   shell: string;
   max_steps: number;
+  /** 一个回合最多续跑几段（1 = 到 max_steps 就停）；总步数上限 = max_steps × 段数 */
+  max_steps_segments?: number;
   bash_timeout: number;
   permissions: { mode: string };
   ui: { theme: "system" | "dark" | "light"; notify?: "never" | "unfocused" | "always"; notify_approval?: boolean; close_to_tray?: boolean };

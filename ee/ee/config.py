@@ -23,6 +23,10 @@ log = logging.getLogger("ee.config")
 DEFAULTS: dict = {
     "default_model": "deepseek-flash",
     "max_steps": 50,
+    # 分段续跑：一个回合最多 max_steps × max_steps_segments 步。1 = 到 max_steps 就停（旧行为）。
+    # 实测（~/.ee/sessions 里 5 个真实会话）达到上限的任务链中位 100+ 步，绝大多数被切成
+    # 2–3 个「继续」回合；分段把这段跑完，请求序列与手动继续等价（见 session.py 主循环注释）。
+    "max_steps_segments": 3,
     "shell": "auto",                 # auto | pwsh | powershell | cmd | bash | gitbash
     "bash_timeout": 120,
     # 单次命令的硬上限（秒），0 = 不额外限制（仍受工具自身 600 秒上限约束）。

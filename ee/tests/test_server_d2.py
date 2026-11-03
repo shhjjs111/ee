@@ -45,3 +45,19 @@ def test_d2_settings_roundtrip(ee_home, monkeypatch):
         run(b.call("settings/set", {"settings": {"web": {"search_backend": "google"}}}))
     with pytest.raises(Exception, match="."):
         run(b.call("settings/set", {"settings": {"subagent": {"max_steps": 0}}}))
+
+
+def test_max_steps_segments_roundtrip_and_bounds(ee_home, workspace):
+    """分段续跑段数：默认 3，能读能写，1～10 之外必须被拒。"""
+    b = Backend(home=ee_home, persist=False)
+    assert run(b.call("settings/get", {}))["settings"]["max_steps_segments"] == 3
+    st = run(b.call("settings/set", {"settings": {"max_steps_segments": 5}}))["settings"]
+    assert st["max_steps_segments"] == 5
+    assert run(b.call("settings/get", {}))["settings"]["max_steps_segments"] == 5
+    # 1 是合法的（退回旧的“到步数上限就停”），0 和 11 必须拒绝
+    assert run(b.call("settings/set", {"settings": {"max_steps_segments": 1}}))["settings"]["max_steps_segments"] == 1
+    for bad in (0, -1, 11):
+        with pytest.raises(Exception, match="段数"):
+            run(b.call("settings/set", {"settings": {"max_steps_segments": bad}}))
+    # 被拒后旧值保持不变
+    assert run(b.call("settings/get", {}))["settings"]["max_steps_segments"] == 1

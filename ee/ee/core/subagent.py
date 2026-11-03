@@ -345,6 +345,9 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
 
     data = copy.deepcopy(parent.config.data)
     data["max_steps"] = steps
+    # 子代理的 max_steps 是调用方给的**显式预算**（30/60 这类按类型分档的值），语义就是
+    # "总共给多少步"。再按段数翻倍会让这个预算名不副实，也会突破 [subagent].max_steps_limit。
+    data["max_steps_segments"] = 1
     data.setdefault("subagent", {})["enabled"] = False      # 不嵌套
     data["ask_user"] = False                                 # 子代理不向用户提问
     cfg = copy.copy(parent.config)

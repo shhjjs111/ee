@@ -196,6 +196,10 @@ def unattended_configure(max_steps: int | None = None, allow=(), deny=(), profil
         d["budget"] = {**(d.get("budget") or {}), "unattended": True}   # 花费到上限直接停（没人能点“继续”）
         if max_steps:
             d["max_steps"] = max(1, int(max_steps))
+        # 无人值守默认不续跑：调用方按「--max-steps」定好了预算与退出码（3 = 到达步数上限），
+        # 悄悄跑 3 倍步数会破坏这个契约，也可能让 CI 里的单条命令超时。要续跑就显式传更大的
+        # --max-steps，或在自己的配置里打开 max_steps_segments。
+        d["max_steps_segments"] = 1
         if profile:
             d["profile"] = profile
         if max_tool_timeout:
