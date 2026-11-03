@@ -1387,7 +1387,7 @@ class Session:
         # 断点归因：记下这次要发的输入规模。下一次主对话请求的新增量 = 本次 wire − 上次 wire，
         # 未命中远超新增量就说明中间有东西被改写（压缩 / 换模型 / 修剪），由 UsageStats 判定。
         self.stats.note_wire(C.estimate_tokens(prefix.system["content"]) +
-                             C.estimate_tokens(json.dumps(prefix.tools)) + C.estimate_messages(messages))
+                             C.estimate_tokens(json.dumps(prefix.tools, ensure_ascii=False)) + C.estimate_messages(messages))
         comp: Completion | None = None
         text, reasoning = [], []
         emit(Status(f"正在准备请求 {spec.alias}…"))
@@ -1743,7 +1743,7 @@ class Session:
         if used > 0:
             return used
         prefix = self.prefix or self.current_prefix()
-        return (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools)) +
+        return (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools, ensure_ascii=False)) +
                 C.estimate_messages(self.history))
 
     def needs_compaction(self) -> bool:
@@ -1955,7 +1955,7 @@ class Session:
         self.turn_starts = []          # 压缩前的回合无法再回退
         self._invalidate_read_refs("compact")
         prefix = self.prefix or self.current_prefix()
-        after = (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools)) +
+        after = (C.estimate_tokens(prefix.system["content"]) + C.estimate_tokens(json.dumps(prefix.tools, ensure_ascii=False)) +
                  C.estimate_messages(new))
         self.stats.last_prompt, self.stats.last_completion = after, 0
         self.stats.compacted_tokens += max(0, before - after)

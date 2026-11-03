@@ -15,12 +15,52 @@ CTX_MARK = "\n\n<context-update"
 META_KINDS = ("agents", "summary", "note")
 
 
+# 按字符类别估 token 的系数（每字符约合多少 token）。用真实 DeepSeek API 标定得出，
+# 见 research/2026-11-03-cache-hit-rate.md §2.7。原来一刀切「ASCII 4 字符 1 token」
+# 在 JSON / 路径 / ls / diff 这类工具输出上会低估 1.7–2.1 倍——而工具输出正是长对话里
+# 占比最大的内容，所以整体系统性低估约 10–16%。
+#
+# 为什么按类别而不是按内容类型猜：同一个文件里代码、路径、JSON 混在一起，只有逐字符
+# 分类才能既不过拟合又不失真。标定集覆盖中英散文、代码、JSON、路径、diff、表格、日志，
+# 训练集与测试集分开，平均相对误差从 0.340 降到 0.193。
+# 系数用「纯样本」单独标定，每类只含有该类字符：
+#   纯中文 1000 字 -> 562 token（1.78 字符/token）
+#   纯字母 1000 字 -> 300 token（3.33）
+#   纯空格 1000 个 -> 9 token（111，空白几乎不单独成 token，只跟着词）
+#   纯标点  870 字 -> 600 token（1.45）
+#   纯数字 1000 字 -> 334 token（2.99）
+# **不能拿混合语料一起做最小二乘**：各类字符在不同文本里共线，拟合会把空格系数拉到
+# 0.245（实际 0.009）、中文拉到 0.786（实际 0.562）——看似能拟合总量，单类却错得离谱。
+_TK_WORD = 1 / 3.33    # 英文等字母
+_TK_SPACE = 1 / 111.0  # 空白（几乎不占 token）
+_TK_PUNCT = 1 / 1.45   # 标点符号：JSON、路径全是符号，token 消耗大
+_TK_DIGIT = 1 / 2.99   # 数字
+_TK_CJK = 1 / 1.78     # 中日韩
+
+
 def estimate_tokens(text: str) -> int:
-    """粗估 token：ASCII 约 4 字符 1 token，其他（中文等）约 1 字符 1 token。"""
+    """估 token：按字符类别加权（系数见上，真实 API 标定）。
+
+    比「ASCII/4 + 其余/1」准得多的地方：JSON、文件路径、ls 输出、git diff、表格——
+    这些都是工具输出里最常见的内容，它们的标点密度极高，旧公式会低估近一倍。
+    """
     if not text:
         return 0
-    ascii_n = sum(1 for ch in text if ord(ch) < 128)
-    return ascii_n // 4 + (len(text) - ascii_n) + 1
+    word = space = punct = digit = cjk = 0
+    for ch in text:
+        o = ord(ch)
+        if o >= 0x2E80:                 # CJK 统一表意文字及更宽的字符集
+            cjk += 1
+        elif ch.isdigit():
+            digit += 1
+        elif ch.isspace():
+            space += 1
+        elif ch.isalpha():
+            word += 1
+        else:
+            punct += 1                  # 含 ASCII 标点与非 ASCII 标点/符号
+    return int(word * _TK_WORD + space * _TK_SPACE + punct * _TK_PUNCT
+               + digit * _TK_DIGIT + cjk * _TK_CJK) + 1
 
 
 def message_text(m: dict) -> str:

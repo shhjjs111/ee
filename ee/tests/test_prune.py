@@ -4,6 +4,7 @@ import json
 from conftest import (FakeClient, collect, finish, make_session, reasoning_chunk, run, text_chunks,
                       tool_chunks)
 
+from ee.core import compaction as C
 from ee.core import prune as P
 from ee.core.store import SessionStore
 
@@ -218,8 +219,12 @@ def test_skip_non_prunable_tools(ee_home, workspace):
     items = P.plan(hist, P.settings({"prune": {"keep_turns": 1, "keep_tokens": 0, "min_tokens": 100}}))
     assert [x["id"] for x in items] == ["t2", "t3"]
     assert "shell(command=ls -R)" in items[0]["content"]
-    # keep_tokens 保护最近的工具输出（从新到旧数）
-    items = P.plan(hist, P.settings({"prune": {"keep_turns": 1, "keep_tokens": 5000, "min_tokens": 100}}))
+    # keep_tokens 保护最近的工具输出（从新到旧数）：只留最近那一条不剪。
+    # 阈值按实际体量取（new 大约 4300 token），别写成和估算实现绑死的魔法数——
+    # 换估算系数就会假红。
+    t2_tokens = C.estimate_tokens("f" * 20000)
+    items = P.plan(hist, P.settings({"prune": {"keep_turns": 1, "keep_tokens": t2_tokens - 100,
+                                              "min_tokens": 100}}))
     assert [x["id"] for x in items] == ["t2"]
 
 
