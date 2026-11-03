@@ -233,11 +233,11 @@ def test_other_providers_levels_unchanged():
 def test_session_set_effort_deepseek_max(ee_home, workspace):
     s, fake = make_session(workspace, [text_chunks("a") + finish("stop")])
     assert s.spec.profile.family == "deepseek"
-    msg = s.set_effort("最高", remember=False)
+    msg = s.set_effort("最高")
     assert s.effort == "max" and "最高" in msg and "不支持" not in msg
     run(collect(s, "x"))
     assert fake.calls[0]["reasoning_effort"] == "max"
-    s.set_effort("高", remember=False)                 # 旧写法：DeepSeek 上规整成 最高
+    s.set_effort("高")                 # 旧写法：DeepSeek 上规整成 最高
     assert s.effort == "max"
 
 
