@@ -24,6 +24,17 @@ if [ ! -x "$PY" ]; then
   exit 2
 fi
 
+# 并行跑 pytest（pytest-xdist）。本机全量 1064s → ~150s（实测两轮 2132 passed）。
+# 不写死 -n 8 而按 CPU 算：测试里有 PowerShell 5.1 子进程（单次约 5s），
+# 并发太高会把 10s 级的 wait_for 等超时——本机 -n auto（16 worker）实测红 2 条
+# （test_server 的 websocket 闭环、test_bgshell_guidance），-n 8 两轮全绿。
+# 取 min(8, CPU-1)，留一个核给脚本自己与前端 npm；CI 上 2 核就只用 1 个 worker。
+CPUS=$($PY -c "import os; print(os.cpu_count() or 1)" 2>/dev/null || echo 1)
+WORKERS=$(( CPUS > 8 ? 8 : (CPUS > 1 ? CPUS - 1 : 1) ))
+XDIST="-n $WORKERS"
+$PY -c "import xdist" 2>/dev/null || XDIST=""
+[ -n "$XDIST" ] || echo "（没装 pytest-xdist，串行跑；uv pip install --python .venv/Scripts/python.exe 'ee[test]' 装上可快 6 倍）"
+
 QUICK=0
 E2E=0
 for a in "$@"; do
@@ -63,12 +74,12 @@ if [ $QUICK -eq 1 ]; then
   done
   # shellcheck disable=SC2086
   if [ -n "${TESTS// /}" ]; then
-    $PY -m pytest -c ee/pyproject.toml $TESTS -q || FAILED+=("后端 pytest（定向）")
+    $PY -m pytest -c ee/pyproject.toml $TESTS -q $XDIST || FAILED+=("后端 pytest（定向）")
   else
     echo "（没有相关的后端改动，跳过；用全量模式可强制跑）"
   fi
 else
-  $PY -m pytest -c ee/pyproject.toml -q || FAILED+=("后端 pytest（全量）")
+  $PY -m pytest -c ee/pyproject.toml -q $XDIST || FAILED+=("后端 pytest（全量）")
 fi
 
 # ---------------------------------------------------------------- 前端

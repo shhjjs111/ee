@@ -2,11 +2,15 @@
 
 Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 WebSocket JSON-RPC）+ Electron/React 桌面端（`desktop/`）。只支持 OpenAI Chat Completions 协议，中文界面与交流。详细路线见 `research/roadmap-current.md`。
 
-## 跑测试（重要：全量很慢）
+## 跑测试（重要：串行很慢，默认加 -n）
 
-**全量 pytest 约 17 分钟（135 个测试文件，实测 1064 秒）**，单次 shell 命令有超时上限，跑全量会超时白等。
+**全量串行约 17 分钟（135 个测试文件，实测 1064 秒）**，单次 shell 命令有超时上限，跑全量会超时白等。
+**加上 `-n 8` 并行后全量约 150–165 秒（实测两轮 2132 passed / 0 failed）。**
 
-一律跑相关子集：
+`-n` 是 pytest-xdist 的进程数，装不装它都行（没装就串行，行为不变）。本机 16 核用 **8** 而不是 `auto`：
+测试里有 PowerShell 5.1 子进程（单次约 5s），16 路并发会把 10s 级的 `wait_for` 等超时——
+实测 `-n auto` 会红 2 条（`test_server` 的 websocket 闭环、`test_bgshell_guidance`），`-n 8` 两轮全绿。
+再少核的机器上 xdist 自己会封顶到 CPU 数，不会反而变慢。
 
 ```bash
 # 单个测试文件（最常用）
@@ -15,12 +19,18 @@ Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 We
 # 按关键字过滤
 ./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -k truncate -q
 
-# 多个相关文件
-./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml ee/tests/test_a.py ee/tests/test_b.py -q
+# 多个相关文件（文件多时值得加 -n：8 个文件的 130 例 121s → 23s）
+./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml ee/tests/test_a.py ee/tests/test_b.py -q -n 8
+
+# 全量（务必带 -n）
+./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml -q -n 8
 
 # 只看收集到的用例，不执行
 ./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml --co -q
 ```
+
+小批量（单个文件、12 例这种）加 `-n` 收益很小（17.8s → 14.5s，启动 worker 有开销），
+文件多了才有意义。`./scripts/verify.sh` 已按 CPU 自动选 worker 数，直接用即可。
 
 先改哪个模块，就跑它对应的 `ee/tests/test_<模块>.py`；不确定测试文件叫什么时，先用 glob/grep 找 `**/*<关键词>*.test.py`。
 
