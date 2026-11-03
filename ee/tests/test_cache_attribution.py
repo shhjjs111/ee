@@ -116,6 +116,66 @@ def test_many_breaks_do_not_starve_the_watermark_sample():
     assert s.recent_main_hit_rate() is None
 
 
+def test_unknown_break_records_how_much_prefix_matched():
+    """断点归因不到具体原因时，至少要留下「命中到多深」，否则没法区分是哪一类。
+
+    真实会话里踩过：prompt 只比上一条多 224，hit 却从 128,384 掉到 2,560——痕迹只有这个
+    数字。不带 `prefix_hit` 时账本上只剩一个 "unknown"，和「压根不知道自己干了什么」
+    长得一模一样。
+    """
+    s = UsageStats()
+    s.note_wire(129_172)
+    s.add({"prompt": 129_172, "completion": 50, "hit": 128_384}, _price(), model="m", role="main")
+    s.note_wire(129_396)                      # 只多了 224
+    s.add({"prompt": 129_396, "completion": 50, "hit": 2_560}, _price(), model="m", role="main")
+    r = s.records[-1]
+    assert r["break"] == "unknown"
+    assert r["prefix_hit"] == 2_560, "命中只有最前面一小块，是这条断点唯一可用的证据"
+
+
+def test_known_break_reason_does_not_add_prefix_hit():
+    """原因已知（compact / model_switch）时不必重复记：那几个原因本身就够解释。"""
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 50, "hit": 99_000}, _price(), model="m", role="main")
+    s.note_wire(30_000)
+    s.add({"prompt": 30_000, "completion": 50, "hit": 3_000}, _price(), model="m", role="main",
+          break_reason="compact")
+    assert s.records[-1]["break"] == "compact"
+    assert "prefix_hit" not in s.records[-1]
+
+
+def test_switching_model_marks_the_next_request_as_a_break(workspace, ee_home):
+    """换模型会 reset 环境附录 → 前缀整体变化 → 必然断点，原因必须写进账本。
+
+    修这条之前，set_model 不设 `_break_reason`，换模型造成的断点在账上只能显示
+    "unknown"，跟真正说不清的断点混在一起（真实会话里就是这么误判的）。
+    """
+    from ee.config import load_config
+    from ee.core.session import Session
+
+    cfg = load_config(workspace)
+    names = list(cfg.data.get("models", {}))
+    if len(names) < 2:
+        pytest.skip("只有一个模型，无法验证切换")
+    s = Session(cfg, model=names[0], cwd=workspace, persist=False, user_home=workspace)
+    s.set_model(names[1])
+    assert s._take_break() == "model_switch"
+    assert s._take_break() is None, "断点原因只能被取走一次"
+
+
+def test_reloading_the_same_model_is_not_a_switch(workspace, ee_home):
+    """原地重设同一个模型不该被记成断点（否则每次打开设置页都会污染账本）。"""
+    from ee.config import load_config
+    from ee.core.session import Session
+
+    cfg = load_config(workspace)
+    name = list(cfg.data.get("models", {}))[0]
+    s = Session(cfg, model=name, cwd=workspace, persist=False, user_home=workspace)
+    s.set_model(name)
+    assert s._take_break() is None
+
+
 # ---------------------------------------------------------------- 断点判定（wire / gap）
 
 def test_gap_within_normal_growth_is_not_a_break():

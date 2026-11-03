@@ -273,6 +273,7 @@ class Session:
         spec = self.config.resolve_model(name)
         same_prefix = (spec.profile.prompt_patch == self.spec.profile.prompt_patch and
                        spec.profile.edit_style == self.spec.profile.edit_style)
+        switched = spec.alias != self.spec.alias or spec.model != self.spec.model
         self.spec = spec
         self.tools = build_tools(spec.profile, self.config, agent=self.agent_profile,
                                  orchestrator_role=self.orchestrator_role)
@@ -282,6 +283,12 @@ class Session:
         self._client = None
         if not same_prefix:
             self.prefix = None
+        # 换模型必然作废服务端缓存：updates.reset() 会让下一条请求重新带上全量环境附录，
+        # 前缀字节整体变了。把原因记下来，账本里才能把「换模型」和真正说不清的断点分开——
+        # 修这条之前，换模型造成的断点在账上只会显示 "unknown"，和「不知道自己干了什么」
+        # 长得一模一样（真实会话里就这么误判过一次）。
+        if switched:
+            self._break_reason = "model_switch"
         self.updates.reset()
         self.effort = RZ.canonical(spec.profile, RZ.resolve(self.config.data, self.home, spec.alias))
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"

@@ -221,6 +221,11 @@ class UsageStats:
             extra["gap"] = gap
             if gap > new * 1.5 + 1000:
                 extra["break"] = break_reason or "unknown"
+                if not break_reason:
+                    # 归因未命中原因时最需要的一项：hit 只有很小一块，说明服务端在最前面
+                    # 就匹配不上了（不是「尾巴改了」）。真实会话实测到的孤立断点就是这个形态：
+                    # prompt 只比上一条多 224，hit 却从 128,384 掉到 2,560。
+                    extra["prefix_hit"] = int(hit)
         elif break_reason:
             extra["break"] = break_reason
         return extra
