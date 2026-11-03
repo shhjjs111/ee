@@ -103,7 +103,10 @@ def test_style_switch_back_to_default_and_compaction_baseline(ee_home, workspace
     run(turn(s, "b"))
     assert "回答风格已切换为：默认" in fake.calls[1]["messages"][-1]["content"]
     run(s.compact())
-    summary = s.history[-1]["content"]
+    # 压缩后历史是「摘要 + 保留的近期往来」，摘要不在末尾：按 _kind 定位，
+    # 不能假定 history[-1] 还是摘要（保留段会把原样的用户消息接在后面）。
+    kinds = [m.get("_kind") for m in s.history]
+    summary = s.history[kinds.index("summary")]["content"]
     assert "回答风格已切换为：默认" in summary                              # 压缩后的全量附录里仍说明当前风格
     run(turn(s, "c"))
     assert fake.calls[3]["messages"][0]["content"] == fake.calls[0]["messages"][0]["content"]

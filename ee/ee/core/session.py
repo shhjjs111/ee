@@ -1917,8 +1917,11 @@ class Session:
             return {"ok": False, "message": msg, "tokens_before": before, "tokens_after": before}
         cfg = self.config.data.get("compact", {}) or {}
         await asyncio.to_thread(self.refresh_git)
-        # 不调 updates.reset()：system/tools 与 env 各块都没变，压缩只是把历史换成摘要，
-        # 补发一次全量环境块是纯白送（几百 token）且会把摘要消息的字节推后，反而更贵。
+        # 必须 reset：`updates.last` 记的是「上一次真正发给模型的基线」，而压缩会把
+        # 带着基线附录的那些消息整段换掉（只留摘要 + 保留段）。此时再发 delta，模型就
+        # 永远收不到全量环境（风格 / cwd / 平台），等于静默丢掉信息——test_style_budget
+        # 的「压缩后摘要里仍说明当前风格」守的正是这条。
+        self.updates.reset()
         appendix = self.updates.build(self._env_parts())
         new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
                               int(cfg.get("keep_user_tokens", 20000)),

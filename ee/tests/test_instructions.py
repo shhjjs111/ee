@@ -67,7 +67,14 @@ def test_agents_message_survives_compaction(ee_home, workspace):
     agents = dict(s.history[0])
     assert run(s.compact())["ok"]
     assert s.history[0] == agents
-    assert [m.get("_kind") for m in s.history] == ["agents", None, "summary"]
+    # 压缩后：agents → 较早的用户原话 → 摘要 → 保留的近期往来（P1-1）。
+    # 顺序是硬要求：摘要概括的是「保留段之前」的内容，排在后面会让模型先读最新、
+    # 再读对更早内容的概括。保留段本身不在本用例的验证范围，但不能出现在摘要之前。
+    kinds = [m.get("_kind") for m in s.history]
+    i = kinds.index("summary")
+    assert kinds[0] == "agents" and i > 0
+    assert all(m.get("_kind") == "agents" or m.get("role") == "user" for m in s.history[:i])
+    assert all(m.get("_kind") is None for m in s.history[i + 1:]), "摘要之后只能是保留段原文"
 
 
 def test_disabled(ee_home, workspace):
