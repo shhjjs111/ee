@@ -80,6 +80,42 @@ def test_subagent_records_do_not_pollute_main_hit_rate():
     assert parent.stats.recent_main_hit_rate() == pytest.approx(0.99)
 
 
+def test_recent_main_hit_rate_ignores_break_requests():
+    """断点请求不能进水位自适应的样本，否则会变成正反馈。
+
+    真实 DeepSeek 会话实测（temp/ee-live 复现）：同一段历史含断点时 93.01%、排除断点
+    99.48%，对应压缩水位 126k 与 168k，差一整次压缩。断点的未命中是压缩本身造成的既定
+    成本，不是「前缀稳不稳」的证据；拿它调水位就成了「压缩造成断点 → 命中率看起来低 →
+    水位下调 → 压缩更频繁 → 更多断点」。
+    """
+    s = UsageStats()
+    for _ in range(10):
+        s.note_wire(100_000)
+        s.add({"prompt": 100_000, "completion": 50, "hit": 99_500}, _price(), model="m", role="main")
+    # 一次压缩后的断点：历史从 100k 缩到 30k，整段未命中
+    s.note_wire(30_000)
+    s.add({"prompt": 30_000, "completion": 50, "hit": 3_000}, _price(), model="m", role="main",
+          break_reason="compact")
+    assert s.records[-1]["break"] == "compact"
+    # 命中率只看正常回合；断点不进样本
+    assert s.recent_main_hit_rate() == pytest.approx(0.995)
+    # 但总口径（用户看到的数）仍然老实包含那次断点
+    assert s.totals()["main_hit_rate"] < 0.98
+
+
+def test_many_breaks_do_not_starve_the_watermark_sample():
+    """断点多到把最近窗口占满时，样本不足应返回 None（不动水位），而不是给出 0%。"""
+    s = UsageStats()
+    s.note_wire(200_000)
+    s.add({"prompt": 200_000, "completion": 50, "hit": 199_000}, _price(), model="m", role="main")
+    for _ in range(8):
+        s.note_wire(30_000)
+        s.add({"prompt": 30_000, "completion": 50, "hit": 1_000}, _price(), model="m", role="main",
+              break_reason="compact")
+    assert all(r.get("break") for r in s.records[1:]), "构造前提：这 8 条必须真的被标成断点"
+    assert s.recent_main_hit_rate() is None
+
+
 # ---------------------------------------------------------------- 断点判定（wire / gap）
 
 def test_gap_within_normal_growth_is_not_a_break():

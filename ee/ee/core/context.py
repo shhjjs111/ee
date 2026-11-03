@@ -298,12 +298,17 @@ class UsageStats:
         return self.hit / self.hit_known_prompt
 
     def recent_main_hit_rate(self, window: int = 10) -> float | None:
-        """最近 window 次主对话请求的命中率（压缩水位自适应用）。
+        """最近 window 次**正常**主对话请求的命中率（压缩水位自适应用）。
 
         只算 role=main：侧路请求命中恒 0，混进来会把水位往错误方向推。
+        还要排除断点请求（带 `break` 那些）：断点的未命中是压缩 / 换模型本身造成的既定成本，
+        不是「前缀稳不稳」的证据。把它算进来会让水位调节变成正反馈——压缩造成断点 → 命中率
+        看起来低 → 水位下调 → 压缩更频繁 → 更多断点。实测真实 DeepSeek 会话的同一段历史：
+        含断点 93.01%、排除断点 99.48%，对应水位 126k 与 168k，差一整次压缩。
         样本不足时返回 None，调用方据此「不动」。
         """
-        recs = [r for r in reversed(self.records) if (r.get("role") or "main") == "main"][:max(1, window)]
+        recs = [r for r in reversed(self.records)
+                if (r.get("role") or "main") == "main" and not r.get("break")][:max(1, window)]
         known = [r for r in recs if r.get("hit") is not None]
         if len(known) < 5:
             return None
