@@ -231,7 +231,9 @@ def audit(messages: list[dict], usage_rows: list[dict] | None = None,
     `records` 是 `SessionStore._records()` 的原始行；给了就能读落盘的摘要覆盖率
     （压缩前的原文已经被替换掉，事后算不出来，只能靠压缩当时记下的那两个整数）。
     """
-    digests = [rec.get("reads") for rec in (records or [])
+    # 只遍历一次：调用方可能传的是 SessionStore._records() 生成器（一次即尽）。
+    records = list(records) if records else []
+    digests = [rec.get("reads") for rec in records
                if rec.get("kind") == "compact" and rec.get("reads") is not None]
     out = {"reread": reread_after_compaction(
         messages, before_reads=digests[-1] if digests else None)}

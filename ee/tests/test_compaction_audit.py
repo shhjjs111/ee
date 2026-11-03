@@ -149,31 +149,41 @@ def test_step_overhead_median_and_over_threshold():
 # ---------------- 端到端：压缩时把覆盖率落盘 ----------------
 
 def test_compact_persists_coverage_digest(ee_home, workspace):
-    """压缩会把原文整段换掉，覆盖率只能在这一刻算并落盘，否则事后永久算不出。"""
+    """压缩会把原文整段换掉，覆盖率只能在这一刻算并落盘，否则事后永久算不出。
+
+    FakeClient 按调用顺序出脚本：两轮对话各一步，第三步才是压缩请求的回复。
+    写成两轮就放摘要会喂错——我第一版就是这么写的，结果 coverage 恒为 0，
+    看着像「摘要把细节吃光了」，其实是摘要根本没用上。
+    """
     from ee.config import load_config
     from ee.core.session import Session
 
-    (workspace / "a.txt").write_text("hello\n", encoding="utf-8")
+    (workspace / "a.txt").write_text("hello", encoding="utf-8")
     cfg = load_config(workspace)
     fake = FakeClient([
         tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
         text_chunks("读完了") + finish("stop"),
-        text_chunks("## 用户目标\n改 ee/core/session.py 的 _retain_budget 与 test_prune.py")
-        + finish("stop", prompt=500, completion=50),
-        text_chunks("继续") + finish("stop"),
+        text_chunks("收到") + finish("stop"),                 # 第二回合的回复
+        text_chunks("## 用户目标 改 ee/core/session.py 的 _retain_budget")
+        + finish("stop", prompt=500, completion=50),          # 压缩请求的回复
     ])
     s = Session(cfg, cwd=workspace, client=fake, persist=True)
     run(collect(s, "读 a.txt，然后改 ee/core/session.py"))
     run(collect(s, "再看 test_prune.py"))
     assert run(s.compact())["ok"]
 
-    recs = SessionStore._records(s.store.path)
+    recs = list(SessionStore._records(s.store.path))   # 生成器：先落实，后面还要用
     cov = A.from_store(recs)
     assert cov["count"] == 1
     item = cov["items"][0]
     assert item["total"] > 0, "压缩前确实有可比的标识符"
-    assert item["kept"] == 0, "摘要里一个标识符都没提起 —— 正是这个指标要暴露的问题"
-    assert item["rate"] == 0.0
+    # 摘要提了 ee/core/session.py 与 _retain_budget，至少有一个能对上
+    assert item["kept"] >= 1, f"摘要明明提到了改哪里，不该一个都没保住：{item}"
+    assert item["rate"] is not None
+    # 压缩前读过的区间也要落盘，否则重读指标无从比较
+    comp = [r for r in recs if r.get("kind") == "compact"]
+    assert comp, "压缩记录应当落盘"
+    assert comp[-1]["reads"] == [["a.txt", None, None]], comp[-1]["reads"]
 
 
 def test_from_store_tolerates_records_without_coverage():

@@ -252,7 +252,7 @@ def _cmd_usage(args) -> int:
 
     try:
         d["compaction_audit"] = A.audit(SessionStore.load_messages(targets[0]),
-                                        records=SessionStore._records(targets[0]))
+                                        records=list(SessionStore._records(targets[0])))
     except Exception:  # noqa: BLE001  诊断不该让主命令失败
         d["compaction_audit"] = None
     if args.json:
