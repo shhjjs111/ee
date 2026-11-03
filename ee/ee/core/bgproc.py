@@ -317,9 +317,9 @@ class BgManager:
 
         必须在这里删脚本：正常结束时 _pump_output 末尾会调 _cleanup_files，
         但 app 被关掉时事件循环已经停了，pump 永远走不到那里，于是 PowerShell 的
-        `ee-*.ps1` 就留在 %TEMP% 里。实测累计了 188 个（从 10-27 到 11-02），
-        其中 101 个是同一个 loop.py——全是长跑后台命令留下的。
-        Windows 用户天天用着，不清就是永久垃圾。
+        `ee-*.ps1` 就留在临时目录里。这里是同步的 `atexit` 路径，能兜住正常退出；
+        被强杀 / 崩溃时连 atexit 都轮不到，由 tools/shellenv 的 sweep_leftovers
+        在下次启动时按 pid 扫掉残留（见该处说明）。
         """
         for p in list(self.procs.values()):
             if p.running and p.pid:

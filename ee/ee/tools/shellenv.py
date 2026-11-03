@@ -10,11 +10,22 @@ import re
 import tempfile
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 SHELL_CHOICES = ["auto", "pwsh", "powershell", "git-bash", "cmd", "bash"]
 IS_WINDOWS = sys.platform.startswith("win")
+
+# 临时脚本目录（%TEMP%/ee-shell）。不直接扔 %TEMP% 根目录是为了能整目录清扫：
+# 根目录里混着别人的文件，只能靠文件名猜，猜错就删错。
+SCRIPT_DIR_NAME = "ee-shell"
+# 自己写的：ee-<pid>-<mkstemp 的 8 个随机字符>.ps1。带 pid 才能在下次启动时判断是不是早就不在了。
+_OWN_SCRIPT = re.compile(r"^ee-(\d+)-[a-z0-9_]{8}\.ps1$")
+# 旧版（本改动之前）直接写在 %TEMP% 根目录的名字，mkstemp(prefix="ee-") 生成，没有 pid。
+_LEGACY_SCRIPT = re.compile(r"^ee-[a-z0-9_]{8}\.ps1$")
+LEGACY_MAX_AGE = 7 * 86400      # 旧名无法判断 pid，只能按年龄兜底；取 7 天是为了不误删还在跑的长命令
+_swept = False
 
 
 class ShellNotFound(RuntimeError):
@@ -48,7 +59,7 @@ class ShellInfo:
             # 把最后一条命令的失败带成进程退出码（原生命令看 $LASTEXITCODE，cmdlet 看 $?）
             epilogue = ("\n$__ee_ok=$?\n"
                         "if ($LASTEXITCODE) { exit $LASTEXITCODE } elseif (-not $__ee_ok) { exit 1 }\n")
-            fd, name = tempfile.mkstemp(prefix="ee-", suffix=".ps1")
+            fd, name = tempfile.mkstemp(prefix=f"ee-{os.getpid()}-", suffix=".ps1", dir=str(_script_dir()))
             with os.fdopen(fd, "w", encoding="utf-8-sig", newline="\r\n") as f:  # 5.1 需要 BOM 才按 UTF-8 读
                 f.write(prelude + command + epilogue)
             path = Path(name)
@@ -63,6 +74,68 @@ class ShellInfo:
         if self.syntax == "cmd":
             return [self.exe, "/d", "/s", "/c", "chcp 65001>nul & " + command]
         return [self.exe, "-c", command]
+
+
+def _pid_alive(pid: int) -> bool:
+    """pid 是否还活着。复用 server/lifeline 的实现（Windows 用 ctypes 探退出码，不会误杀目标进程）。"""
+    from ee.server.lifeline import pid_alive
+    return pid_alive(pid)
+
+
+def sweep_leftovers(script_dir: Path, legacy_dir: Path | None = None, now: float | None = None) -> int:
+    """删掉上次异常退出留下的临时脚本，返回删了几个。
+
+    为什么会留下：脚本的删除在 shell.run_command / bgproc / hooks 的 finally 里，正常返回、超时、
+    取消都能删；但进程被 taskkill / 崩溃 / 事件循环没来得及收尾时就轮不到 finally 执行。
+    本机实测一天攒几个，一年上千个。所以每次进程头一回跑 PowerShell 命令时顺手扫一遍。
+
+    判据是 pid 而不是年龄：后台命令可以跑好几天，按年龄删会把正在用的脚本删掉。
+    """
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        entries = list(script_dir.iterdir())
+    except OSError:
+        entries = []
+    for p in entries:
+        m = _OWN_SCRIPT.match(p.name)
+        try:
+            if m:
+                if not _pid_alive(int(m.group(1))):
+                    p.unlink()
+                    removed += 1
+            elif _LEGACY_SCRIPT.match(p.name) and now - p.stat().st_mtime > LEGACY_MAX_AGE:
+                p.unlink()
+                removed += 1
+        except OSError:
+            pass
+    if legacy_dir is not None:                            # 旧版直接写在 %TEMP% 根目录里的那批
+        try:
+            for p in legacy_dir.iterdir():
+                if _LEGACY_SCRIPT.match(p.name) and now - p.stat().st_mtime > LEGACY_MAX_AGE:
+                    p.unlink()
+                    removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _script_dir() -> Path:
+    """临时脚本目录；建不出来就退回系统临时目录（功能优先，清扫能省则省）。"""
+    global _swept
+    base = Path(tempfile.gettempdir())
+    d = base / SCRIPT_DIR_NAME
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return base
+    if not _swept:
+        _swept = True
+        try:
+            sweep_leftovers(d, legacy_dir=base)
+        except Exception:  # noqa: BLE001  清扫只是收拾垃圾，出事不能让调用的 shell 命令失败
+            pass
+    return d
 
 
 _CLIXML_S = re.compile(r'<S S="Error">(.*?)</S>', re.S)
