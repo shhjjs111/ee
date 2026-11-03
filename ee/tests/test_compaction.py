@@ -216,3 +216,52 @@ def test_recent_user_messages_budget():
     assert C.recent_user_messages(hist, 1, 10000) == ["新消息"]
     clipped = C.recent_user_messages([{"role": "user", "content": "长" * 5000}], 3, 300)
     assert len(clipped) == 1 and "省略" in clipped[0] and len(clipped[0]) < 5000
+
+def test_retain_budget_follows_watermark(ee_home, workspace):
+    """压缩后历史必须明显低于水位，否则压完还超阈 -> 每回合都压。
+
+    实测（2026-11-03，隔离 EE_HOME + 真 API，水位 40k）：保留段固定 64k 时，压缩后
+    34,456 token（摘要 + AGENTS + 用户原话 16,257 + 保留段 16,497）仍超 40k 水位，
+    24 回合压 9 次、命中率 53%。预算挂到水位上之后压缩次数降到 4、命中率 79%。
+    """
+    s, _ = make(workspace, [], window=200_000, compact={"max_tokens": 40_000})
+    assert s._compact_limit() == 40_000
+    # 0.4 × 40k = 16k，远低于 64k 常量
+    assert s._retain_budget() == 16_000
+    # 水位抬到默认 140k：0.4 × 140k = 56k 略低于 64k 常量，收窄幅度很小
+    s.config.data["compact"]["max_tokens"] = 140_000
+    assert s._compact_limit() == 140_000
+    assert s._retain_budget() == 56_000
+    # 水位再大，64k 常量成为上界
+    s.config.data["compact"]["max_tokens"] = 400_000
+    assert s._retain_budget() == C.RETENTION_TOKENS
+
+
+def test_user_quote_budget_follows_watermark(ee_home, workspace):
+    """较早用户原话也要挂到水位上：水位 40k 时 20k 原话就占了一半。"""
+    s, _ = make(workspace, [], window=200_000, compact={"max_tokens": 40_000})
+    assert s._user_quote_budget(20_000) == 6_000
+    s.config.data["compact"]["max_tokens"] = 140_000
+    assert s._user_quote_budget(20_000) == 20_000
+
+
+def test_retain_budget_zero_when_auto_compact_off(ee_home, workspace):
+    """关掉自动压缩时水位为 0，预算退回常量，不能算成 0（否则压缩后一条往来都不留）。"""
+    s, _ = make(workspace, [], window=200_000, compact={"auto": False, "max_tokens": 40_000})
+    assert s._compact_limit() == 0
+    assert s._retain_budget() == C.RETENTION_TOKENS
+    assert s._user_quote_budget(20_000) == 20_000
+
+
+def test_compact_result_stays_below_watermark(ee_home, workspace):
+    """压缩后重建的历史必须真的低于水位，否则下一回合立刻又压。"""
+    from ee.core import compaction as C
+    hist = []
+    for i in range(40):
+        hist.append({"role": "user", "content": f"消息 {i} " + "内容" * 400})
+        hist.append({"role": "assistant", "content": "好的" + "回复" * 400})
+    before = C.estimate_messages(hist)
+    summary = "## 用户目标" + "摘要" * 200
+    new = C.build_history(hist, summary, "", 3, 6_000, keep_tools=0, keep_tokens=16_000)
+    after = C.estimate_messages(new)
+    assert after < 40_000, f"压缩后 {after:,} 仍超 40k 水位（压缩前 {before:,}）"

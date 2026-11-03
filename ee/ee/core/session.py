@@ -1750,18 +1750,26 @@ class Session:
         cfg = self.config.data.get("compact", {}) or {}
         if not cfg.get("auto", True) or not self._fresh_usage:
             return False
+        limit = self._compact_limit()
+        if limit <= 0:
+            return False
+        return self.context_tokens() >= limit
+
+    def _compact_limit(self) -> int:
+        """当前生效的压缩水位（token）。与 needs_compaction 用同一套算法，含自适应因子。"""
+        cfg = self.config.data.get("compact", {}) or {}
+        if not cfg.get("auto", True):
+            return 0
         window = self.profile.context_window
         if window <= 0:
-            return False
+            return 0
         limit = float(cfg.get("threshold", 0.8)) * window
         # 绝对上限：1M 窗口按百分比要等 80 万，而实测 15 万 token 首包就到 20 秒了
         cap = int(cfg.get("max_tokens", 0) or 0)
         if cap > 0:
-            cap = int(cap * self._watermark_factor(cfg))
-            limit = min(limit, cap)
+            limit = min(limit, int(cap * self._watermark_factor(cfg)))
         # 安全边界：自适应可能把水位抬到配置值以上，但任何情况下都不能逼近窗口上限。
-        limit = min(limit, 0.9 * window)
-        return self.context_tokens() >= limit
+        return int(min(limit, 0.9 * window))
 
     def _watermark_factor(self, cfg: dict) -> float:
         """根据最近主对话命中率微调压缩水位。
@@ -1880,7 +1888,29 @@ class Session:
         caps = [C.RETENTION_TOKENS]
         if window > 0:
             caps.append(int(window * 0.5))
+        limit = self._compact_limit()
+        if limit > 0:
+            # 整份「压缩后历史」必须明显小于水位，否则压完还是超阈 -> 下一次请求立刻
+            # 再压 -> 死循环。实测（2026-11-03，隔离 EE_HOME + 真 API，水位 40k）：
+            # 压缩后 34,456 = 摘要 1,384 + AGENTS 318 + 用户原话 16,257 + 保留段 16,497，
+            # 24 回合压了 9 次、命中率 53%，其中 78.6% 的 miss 是断点。
+            # 默认水位 140k 时这条给出 56k（略低于 64k 常量），收窄幅度很小；真正起作用的是
+            # 「用户把水位调低」和「小窗口模型」这两类。实测水位 40k 下 0.25 比 0.4 更差
+            # （74.67% vs 79.51%）：保留段越小，压完离水位越远，但压缩次数没减少。
+            caps.append(int(limit * 0.4))
         return max(0, min(caps))
+
+    def _user_quote_budget(self, configured: int) -> int:
+        """压缩后「较早用户原话」的 token 预算。
+
+        配置里的 keep_user_tokens 是绝对上限，但它必须和压缩水位挂钩：独立给 20k
+        在水位 140k 时只占 14%，水位 40k 时就占了 50%，和保留段一起把压缩后历史顶满。
+        实测把水位调到 40k 时，这两块加起来 32,754，压完立刻又超阈。
+        """
+        limit = self._compact_limit()
+        if limit <= 0:
+            return configured
+        return min(configured, int(limit * 0.15))
 
     async def _compact(self, emit, reason: str) -> dict:
         real = [m for m in self.history if m.get("_kind") != "agents"]
@@ -1931,7 +1961,7 @@ class Session:
         self.updates.reset()
         appendix = self.updates.build(self._env_parts())
         new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
-                              int(cfg.get("keep_user_tokens", 20000)),
+                              self._user_quote_budget(int(cfg.get("keep_user_tokens", 20000))),
                               keep_tools=int(cfg.get("keep_tools", 0) or 0),
                               keep_tokens=self._retain_budget(before),
                               # 增量压缩：上次摘要之前的内容已经被概括过，保留段不能越过它，

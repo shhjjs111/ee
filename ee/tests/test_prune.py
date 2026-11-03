@@ -171,6 +171,8 @@ def test_resume_replays_prune_and_keeps_original(ee_home, workspace):
 
 def test_prune_then_rewind_and_compact(ee_home, workspace):
     files(workspace)
+    # 窗口用真实的 32k（最小一档）：保留段预算 = min(64k, 32k/2, 0.4x25.6k) = 10.2k，
+    # 正好装得下两轮 BIG 读取。用 10k 假窗口时预算只剩 3.2k，一条都留不住。
     s, _ = make(workspace, three_turns() + [
         text_chunks("## 目标\n修") + finish("stop", prompt=500)], persist=True)
     run(collect(s, "读 big")); run(collect(s, "读 big2")); run(collect(s, "第三件事"))
@@ -194,7 +196,7 @@ def test_prune_still_works_on_retained_tail(ee_home, workspace):
     """
     files(workspace)
     s, _ = make(workspace, three_turns() + [
-        text_chunks("## 目标\n修") + finish("stop", prompt=500)])
+        text_chunks("## 目标\n修") + finish("stop", prompt=500)], window=32_000)
     run(collect(s, "读 big")); run(collect(s, "读 big2")); run(collect(s, "第三件事"))
     s.config.data["compact"]["keep_tools"] = 16      # 默认：保留最近往来
     assert run(s.compact())["ok"]
