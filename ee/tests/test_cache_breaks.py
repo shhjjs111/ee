@@ -35,8 +35,9 @@ def test_plain_turn_reports_growth_not_a_break(ee_home, workspace):
     recs = main_records(s)
     assert len(recs) == 2
     first, second = recs
-    # 首条：服务端什么都没命中（冷启动），wire 只被记下，没有上一次可比
-    assert first["wire"] > 0 and first["new"] == first["wire"]
+    # 首条：本进程第一个主对话请求，没有上一次 wire 可比，new 记 0（不是整条 wire）。
+    # 把整条 wire 当新增会让 new 虚高到几万，还会让断点判定永不成立（见 context.py）。
+    assert first["wire"] > 0 and first["new"] == 0
     assert "break" not in first
     assert second["new"] > 0
     assert second["gap"] == 2400 - 1700
@@ -82,3 +83,32 @@ def test_compact_request_is_not_counted_as_main(ee_home, workspace):
     assert totals["main_requests"] == 1
     assert totals["main_hit_rate"] == pytest.approx(0.99)
     assert totals["hit_rate"] < totals["main_hit_rate"]
+
+
+def test_first_request_after_resume_has_no_baseline(ee_home, workspace):
+    """续跑会话重启后的第一条请求：new 记 0，且不因为「gap 很大」被误判成断点。
+
+    真实病例：会话 20261102-231208 重启后首发 wire=82,190、hit=16,384、gap=78,158，
+    new 被算成 82,190（实际只增加了 1,738）。基线不存在时既不能拿整条 wire 当新增，
+    也不能断言「未命中远超新增」——进程刚起，这与服务端缓存是否还热无法区分。
+    """
+    s = make(workspace, [
+        text_chunks("答一") + finish("stop", prompt=90_000, completion=50, hit=16_000),
+    ])
+    run(collect(s, "问一"))
+    rec = main_records(s)[0]
+    assert rec["wire"] > 0
+    assert rec["new"] == 0, "没有上一次 wire 可比时，新增必须是 0 而不是整条 wire"
+    assert rec["gap"] == 90_000 - 16_000, "gap 照实记，方便看出服务端命中多少"
+    assert "break" not in rec, "进程刚起、无基线，不该把这种情况算成 ee 自己造的断点"
+
+    # 有了基线之后恢复正常判定：第二条服务端几乎全命中，gap 只比新增多一点
+    s2 = make(workspace, [
+        text_chunks("答一") + finish("stop", prompt=90_000, completion=50, hit=16_000),
+        text_chunks("答二") + finish("stop", prompt=90_200, completion=50, hit=90_000),
+    ])
+    run(collect(s2, "问一"))
+    run(collect(s2, "问二"))
+    second = main_records(s2)[1]
+    assert second["new"] > 0
+    assert "break" not in second, "正常追加：gap 约等于 new，不该标断点"

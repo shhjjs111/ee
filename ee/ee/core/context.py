@@ -213,13 +213,20 @@ class UsageStats:
         wire, self._wire_pending = self._wire_pending, 0
         if role != "main" or not wire:
             return {}
-        new = max(0, wire - self.last_wire_tokens)
+        # 没有基线（last_wire_tokens == 0）说明这是本进程里第一次主对话请求，或者刚 /new、
+        # 刚从磁盘恢复会话。此时「上次发了多少」根本不知道，把整条 wire 当成新增会让 new
+        # 虚高到几万，还会让断点判定 gap > new*1.5+1000 永不成立（漏报）。
+        # 真实病例：会话续跑重启后第一请求 wire=82190 -> new=82190，而实际只增加了 1738。
+        baseline = self.last_wire_tokens
+        new = max(0, wire - baseline) if baseline > 0 else 0
         self.last_wire_tokens = wire
         extra: dict = {"wire": wire, "new": new}
         if hit is not None and prompt:
             gap = max(0, int(prompt) - int(hit))
             extra["gap"] = gap
-            if gap > new * 1.5 + 1000:
+            # 没有基线时不断点：续跑/重启后的首请求与服务端缓存是否还热无关己，
+            # 两者无法区分，此时硬判会把“进程刚起”记成 ee 自己造的断点。
+            if baseline > 0 and gap > new * 1.5 + 1000:
                 extra["break"] = break_reason or "unknown"
                 if not break_reason:
                     # 归因未命中原因时最需要的一项：hit 只有很小一块，说明服务端在最前面
