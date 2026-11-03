@@ -598,9 +598,19 @@ def _merge_usage(parent, child, merged: list | None = None) -> None:
     但不动主会话的“上次上下文大小”（压缩判断用）。"""
     merged = merged if merged is not None else [0, 0]
     st, cs = parent.stats, child.stats
+    store = getattr(parent, "store", None)
     lp, lc = st.last_prompt, st.last_completion
     for r in cs.records[merged[0]:]:
-        st.add_record(r)            # 按条复制：花费是子代理当时按它实际用的模型单价算好的
+        # 按条复制：花费是子代理当时按它实际用的模型单价算好的。
+        # role 必须改写成 "subagent"：子代理的前缀和历史都与主对话无关（fork 除外），
+        # 它们命中率天然低（冷启动 0%），原样并进主会话会把用户的 main_hit_rate 拉低，
+        # 也会让 needs_compaction() 的缓存水位判断误以为主对话在断点。
+        rec = {**r, "role": "subagent"} if r.get("role") == "main" else r
+        st.add_record(rec)
+        # 子代理 persist=False，它自己那一笔落不了盘；不在这里补，用户看到的逐请求账本
+        # 就少了子代理的请求（而它的花费已经算进了会话总额，对不上账）。
+        if store is not None:
+            store.usage(rec)
     merged[0] = len(cs.records)
     miss = cs.usage_missing - merged[1]
     if miss > 0:

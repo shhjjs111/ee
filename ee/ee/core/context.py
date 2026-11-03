@@ -180,7 +180,12 @@ class UsageStats:
     last_completion: int = 0
     usage_missing: int = 0
     currency: str = "¥"
-    # 每次请求一条：{prompt, completion, hit, reasoning, cost, currency, model}（子代理并入主会话时按条复制，花费不重算）
+    # 断点归因（P0-1）：上一次主对话请求估算的输入 token 数，以及本次请求待消费的那份。
+    # 「本次比上次多出来的量」约等于「本该未命中的量」；实测未命中远超它，说明有人在中间改了历史。
+    last_wire_tokens: int = 0
+    _wire_pending: int = 0
+    # 每次请求一条：{prompt, completion, hit, reasoning, cost, currency, model, turn, role}
+    # （子代理并入主会话时按条复制，花费不重算）
     records: list = field(default_factory=list)
     by_model: dict = field(default_factory=dict)
     pruned_tokens: int = 0         # 修剪旧工具输出累计省下的 token（估计，D5-10）
@@ -190,27 +195,63 @@ class UsageStats:
     reasoning_tokens: int = 0
     compacted_tokens: int = 0      # 压缩累计省下的 token（估计：压缩前 − 压缩后）
 
-    def add(self, usage: dict | None, price, model: str = "", discount: float = 1.0, turn: int | None = None) -> float | None:
+    def note_wire(self, tokens: int) -> None:
+        """记下本次主对话请求估算的输入 token 数，供 add() 判断未命中是不是「正常新增」。
+
+        侧路请求（标题 / commit / 压缩）不调它：它们的消息和主对话没有公共前缀，
+        拿它们的 wire 大小去比主对话，会把主对话的断点全部算错。
+        """
+        self._wire_pending = max(0, int(tokens or 0))
+
+    def _wire_extra(self, role: str, prompt: int | None, hit: int | None, break_reason: str | None) -> dict:
+        """把「本次新增了多少 / 实际未命中多少 / 是不是断点」写进 record。
+
+        判定规则：gap（服务端报的未命中）如果远超这次真正追加的量，说明中间有东西被改写了——
+        压缩重建历史、换模型换了前缀、修剪改了历史中段都会这样。1000 token 的余量是给
+        tokenizer 抖动和服务端块对齐留的：正常追加时实测 gap 只比新增多几十到几百。
+        """
+        wire, self._wire_pending = self._wire_pending, 0
+        if role != "main" or not wire:
+            return {}
+        new = max(0, wire - self.last_wire_tokens)
+        self.last_wire_tokens = wire
+        extra: dict = {"wire": wire, "new": new}
+        if hit is not None and prompt:
+            gap = max(0, int(prompt) - int(hit))
+            extra["gap"] = gap
+            if gap > new * 1.5 + 1000:
+                extra["break"] = break_reason or "unknown"
+        elif break_reason:
+            extra["break"] = break_reason
+        return extra
+
+    def add(self, usage: dict | None, price, model: str = "", discount: float = 1.0, turn: int | None = None,
+            role: str = "main", break_reason: str | None = None) -> float | None:
         """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。
         discount 是错峰折扣（0<d<=1），只作用于输入+输出，缓存读取价不打折。
         turn 是第几回合（缓存未命中归因用：首回合必然冷启动）。
+        role 区分请求来自哪条路（main / side / title / commit / compact）：侧路请求每次都是两条
+        全新消息、命中恒 0，混进主对话会把用户看到的命中率无端拉低几个百分点。
+        break_reason：调用方知道「这次请求前面刚发生了会作废缓存的事」时给出（compact / model_switch / prune）。
 
         缺 usage 时也要落一条记录（cost=None）：否则这次请求会从账里彻底消失，
         用户看到的总额就成了「看起来完整、其实漏了若干次」的假精确。
         """
         if not usage:
+            extra = self._wire_extra(role, None, None, break_reason)
             self.requests += 1
             self.usage_missing += 1
             self.records.append({"prompt": 0, "completion": 0, "hit": None, "reasoning": None,
                                  "cost": None, "currency": getattr(price, "currency", "¥") if price is not None else "¥",
-                                 "model": model, "usage_missing": True, "turn": turn})
+                                 "model": model, "usage_missing": True, "turn": turn, "role": role, **extra})
             self.cost_known = False
             return None
         cost = price.cost(usage["prompt"], usage["completion"], usage.get("hit"), discount) if price is not None else None
+        extra = self._wire_extra(role, usage.get("prompt"), usage.get("hit"), break_reason)
         self.add_record({"prompt": usage["prompt"], "completion": usage["completion"], "hit": usage.get("hit"),
                          "reasoning": usage.get("reasoning"), "cost": cost,
                          "currency": getattr(price, "currency", "¥") if price is not None else "¥", "model": model,
-                         "turn": turn})
+                         "turn": turn, "role": role, **extra})
         return cost
 
     def add_record(self, r: dict) -> None:
@@ -256,6 +297,21 @@ class UsageStats:
             return None
         return self.hit / self.hit_known_prompt
 
+    def recent_main_hit_rate(self, window: int = 10) -> float | None:
+        """最近 window 次主对话请求的命中率（压缩水位自适应用）。
+
+        只算 role=main：侧路请求命中恒 0，混进来会把水位往错误方向推。
+        样本不足时返回 None，调用方据此「不动」。
+        """
+        recs = [r for r in reversed(self.records) if (r.get("role") or "main") == "main"][:max(1, window)]
+        known = [r for r in recs if r.get("hit") is not None]
+        if len(known) < 5:
+            return None
+        total = sum(int(r.get("prompt") or 0) for r in known)
+        if total <= 0:
+            return None
+        return sum(int(r["hit"]) for r in known) / total
+
     def context_used(self, window: int) -> float:
         if window <= 0:
             return 0.0
@@ -272,7 +328,7 @@ class UsageStats:
         roll = U.UsageRollup(self.records)
         out = roll.totals_v2(requests=self.requests, prompt=self.prompt, completion=self.completion,
                              hit=self.hit, hit_known_prompt=self.hit_known_prompt,
-                             usage_missing=self.usage_missing)
+                             usage_missing=self.usage_missing, by_role=roll.roles())
         if self.reasoning_known:
             out["reasoning"] = self.reasoning
         if self.pruned_tokens:

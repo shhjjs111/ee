@@ -181,6 +181,11 @@ class Session:
         self._reasoning_strip_to = -1
         # 模型报 400「必须回传推理」时置 True：本次会话不再清，避免每轮白跑一次 400。
         self._reasoning_strip_disabled = False
+        # 断点归因：下一次主对话请求前若发生了作废缓存的事（压缩 / 换模型 / 修剪），记下原因
+        self._break_reason: str | None = None
+        # 本回合是否已经发出过请求。压缩只在它为 False（回合开始）时执行：回合中途压缩会把
+        # 本回合已发出去的历史整段作废，下一次请求必然整段未命中。
+        self._turn_running = False
         self.compactions = 0
         # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
         self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data, self.home, self.spec.alias))
@@ -231,19 +236,31 @@ class Session:
             out[k] = v.replace("{session_id}", sid) if isinstance(v, str) and "{session_id}" in v else v
         return out
 
+    def cache_key(self, session_id: str | None = None) -> str:
+        """prompt_cache_key 的值：会话 id（fork 子代理用父会话的）。
+
+        和 request_headers 的 `{session_id}` 同源：两者都是「一条对话一个稳定 ID」。
+        服务端据此把同一对话的多轮请求归到一条缓存线；不同对话必须不同，
+        否则两边的缓存会互相挤占。
+        """
+        sid = session_id or getattr(getattr(self, "store", None), "id", "") or ""
+        return sid
+
     def client(self):
         if self._client is None:
             # fork 子代理继承主会话的前缀与历史 → 用父会话的 session id，
             # 否则前缀对得上、session id 对不上，服务端缓存照样用不上。
             sid = getattr(self, "_fork_session_id", None) or None
             headers = self.request_headers(session_id=sid)
+            cache_key = self.cache_key(session_id=sid)
             if self._client_override is not None:
                 self._client = ChatClient(self.spec, client=self._client_override, headers=headers or None)
             elif self._client_factory is not None:
                 self._client = self._client_factory(self.spec)
             else:
                 self._client = ChatClient(self.spec, state_path=self.home / "state" / "quirks.json",
-                                          network=self.config.data.get("network"), headers=headers or None)
+                                          network=self.config.data.get("network"), headers=headers or None,
+                                          session_id=cache_key)
         return self._client
 
     async def ensure_client(self):
@@ -385,17 +402,27 @@ class Session:
             return self.spec
 
     def role_client(self, spec):
+        """按用途取模型客户端（压缩 / 标题 / 审查）。同模型直接复用主客户端。
+
+        侧路也要带上会话级缓存键：把 roles.compact 配成别的模型时，压缩请求仍然是
+        「同一前缀 + 同一历史」，能不能复用缓存完全取决于服务端认不认为它们是同一对话。
+        """
         if spec.alias == self.spec.alias:
             return self.client()
         c = self._role_clients.get(spec.alias)
         if c is None:
+            sid = getattr(self, "_fork_session_id", None) or None
+            headers = self.request_headers(session_id=sid)
+            cache_key = self.cache_key(session_id=sid)
             if self._client_override is not None:
-                c = ChatClient(spec, client=self._client_override)
+                c = ChatClient(spec, client=self._client_override, headers=headers or None,
+                               session_id=cache_key)
             elif self._client_factory is not None:
                 c = self._client_factory(spec)
             else:
                 c = ChatClient(spec, state_path=self.home / "state" / "quirks.json",
-                               network=self.config.data.get("network"))
+                               network=self.config.data.get("network"), headers=headers or None,
+                               session_id=cache_key)
             self._role_clients[spec.alias] = c
         return c
 
@@ -416,14 +443,28 @@ class Session:
         from datetime import datetime
         return _discount_for(self.config.data.get("pricing") or {}, datetime.now(), family=family)
 
-    async def _charge(self, usage: dict | None, spec) -> float | None:
+    async def _charge(self, usage: dict | None, spec, role: str = "main") -> float | None:
         """记一次请求的用量：按这次实际用的模型的单价计价，计入会话统计和每日/每月账本。
 
         同时标记「已花金额是否可信」：有请求缺 usage、或模型没配单价时金额不可知，
         当前累加值只是已知部分。预算检查必须知道这一点，否则会把未知当 0、
         让用户设的上限形同虚设（见 budget.BudgetGuard.accounting_complete）。
+
+        role：请求来源。只有 "main" 计入主对话命中率；侧路请求（title / commit / compact）
+        每次都是两三条全新消息、命中恒 0，混进分母会无端拉低用户看到的那个数字。
+
+        每笔同时写进会话账本（store.usage）：turn_end 的累计快照回答不了「哪一次请求
+        漏了多少」，而命中率优化只能从逐请求的 wire/new/gap/break 里看出问题。
         """
-        cost = self.stats.add(usage, spec.profile.price, spec.alias, discount=self._current_discount(spec.profile.family), turn=self.turns)
+        why = self._take_break() if role == "main" else None
+        before = len(self.stats.records)
+        cost = self.stats.add(usage, spec.profile.price, spec.alias,
+                              discount=self._current_discount(spec.profile.family),
+                              turn=self.turns, role=role, break_reason=why)
+        # add() 一定至少落一条（缺 usage 也落 usage_missing 记录），逐条写出，不漏不重。
+        # 子代理 persist=False，append() 自己 no-op，不会另开文件。
+        for rec in self.stats.records[before:]:
+            self.store.usage(rec)
         if cost is None:
             # 未知金额：不能当成免费。
             for g in self._budget_guards():
@@ -431,6 +472,14 @@ class Session:
         elif cost:
             await asyncio.to_thread(self.budget.record, cost, spec.profile.price.currency)
         return cost
+
+    def _take_break(self) -> str | None:
+        """取走待归因的断点原因（一次性）：下一次主对话请求记上后清空。
+
+        只给主对话用：侧路请求本来就不共享主对话前缀，给它标断点没有意义。
+        """
+        why, self._break_reason = self._break_reason, None
+        return why
 
     def _budget_guards(self) -> list:
         """需要同步「金额是否可信」的预算守卫（子代理与父会话共用同一个守卫）。"""
@@ -1224,6 +1273,7 @@ class Session:
             emit(TurnStart(self.turns, tree))
             step = 0
             max_steps = max(1, self.config.max_steps)
+            self._turn_running = True      # 从这里开始是回合中途：压缩推迟到下一回合开始
             while True:
                 step += 1
                 last = step >= max_steps
@@ -1289,6 +1339,7 @@ class Session:
             # 上面两个 except 都接不住；不补的话它们同样会留下孤儿 tool_calls（会话永久 400）。
             # _fill_missing 幂等（_open_calls 已空时什么也不做），正常路径下这里是空操作。
             self._fill_missing(INTERRUPTED)
+            self._turn_running = False    # 回合结束：下一次 _maybe_auto_compact 可以真的压缩了
 
 
     async def _sample_or_compact(self, emit) -> Completion:
@@ -1326,6 +1377,10 @@ class Session:
         elide = T.elide_min_chars(self.config.data)
         messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to,
                                                     elide)
+        # 断点归因：记下这次要发的输入规模。下一次主对话请求的新增量 = 本次 wire − 上次 wire，
+        # 未命中远超新增量就说明中间有东西被改写（压缩 / 换模型 / 修剪），由 UsageStats 判定。
+        self.stats.note_wire(C.estimate_tokens(prefix.system["content"]) +
+                             C.estimate_tokens(json.dumps(prefix.tools)) + C.estimate_messages(messages))
         comp: Completion | None = None
         text, reasoning = [], []
         emit(Status(f"正在准备请求 {spec.alias}…"))
@@ -1659,7 +1714,7 @@ class Session:
             elif kind == "done":
                 comp = val
         if comp is not None:
-            await self._charge(comp.usage, spec)
+            await self._charge(comp.usage, spec, role=role or "side")
             return comp.content.strip()
         return "".join(out).strip()
 
@@ -1695,8 +1750,33 @@ class Session:
         # 绝对上限：1M 窗口按百分比要等 80 万，而实测 15 万 token 首包就到 20 秒了
         cap = int(cfg.get("max_tokens", 0) or 0)
         if cap > 0:
+            cap = int(cap * self._watermark_factor(cfg))
             limit = min(limit, cap)
+        # 安全边界：自适应可能把水位抬到配置值以上，但任何情况下都不能逼近窗口上限。
+        limit = min(limit, 0.9 * window)
         return self.context_tokens() >= limit
+
+    def _watermark_factor(self, cfg: dict) -> float:
+        """根据最近主对话命中率微调压缩水位。
+
+        命中率高时说明前缀稳，压缩带来的断点在账上仍然划算，可以把水位往上抬（压得更少，
+        少付几次整段未命中）；命中率低时说明断点太频繁，把水位往下压让每次压缩后的增量
+        区间更短。返回 1.0 表示不动。
+
+        封顶 [0.8, 1.35]：上限挡住「为了命中率无限推迟压缩」导致首包超时；
+        下限挡住「命中率一抖动就疯狂压缩」。样本不足时不动。
+        """
+        rate = self.stats.recent_main_hit_rate()
+        if rate is None:
+            return 1.0
+        if rate >= 0.99:
+            factor = 1.2
+        elif rate < 0.98:
+            factor = 0.9
+        else:
+            factor = 1.0
+        lo, hi = float(cfg.get("watermark_min", 0.8)), float(cfg.get("watermark_max", 1.35))
+        return max(lo, min(hi, factor))
 
     async def _maybe_auto_compact(self, emit) -> None:
         from ee.core import prune as _prune
@@ -1708,8 +1788,17 @@ class Session:
         except Exception:  # noqa: BLE001  影子记录失败绝不能影响真实回合
             pass
         await _prune.maybe_prune(self, emit)      # D5-10：先成批修剪旧工具输出（阈值低于压缩）
-        if self.needs_compaction() and any(m.get("_kind") != "agents" for m in self.history):
-            await self._compact(emit, "auto")
+        if not self.needs_compaction() or not any(m.get("_kind") != "agents" for m in self.history):
+            return
+        # 回合中途压缩会把「本回合已经发出去的历史」整段作废：下一次请求整段未命中（实测
+        # 3k–7k token，是正常追加的 6–12 倍）。而放到下一回合开始时再压，代价一样落在
+        # 那个回合的第一条请求上——那条请求本来就要带上新增的用户消息，多付一次是不可避免的。
+        # 所以回合中途一律不压；只有真的快撑爆窗口（>0.95×window）才立刻压，那时不压就会 400。
+        window = self.profile.context_window
+        urgent = window > 0 and self.context_tokens() > 0.95 * window
+        if self._turn_running and not urgent:
+            return
+        await self._compact(emit, "auto")
 
     async def compact(self, emit=None) -> dict:
         """手动压缩（/compact，供 server 调用）。不能在回合运行中调用。
@@ -1737,7 +1826,10 @@ class Session:
         _prune.sync_reasoning(self, profile=spec.profile)   # 压缩请求也不该把旧推理体重带上
         hist = self.history
         if prev is not None and spec.alias != self.spec.alias:
-            hist = [m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] + self.history[prev[0]:]
+            # 换模型时缓存本来就不共享：只发固定消息 + 旧摘要 + 之后没被概括的部分。
+            cut = C.after_summary(self.history, prev[0])
+            hist = ([m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] +
+                    [self.history[prev[0]]] + self.history[cut:])
         instr = C.compact_update_prompt() if prev is not None else C.compact_prompt()
         messages = ([prefix.system] + T.wire_messages(hist, spec.profile, self._reasoning_strip_to,
                                                       T.elide_min_chars(self.config.data)) +
@@ -1747,7 +1839,7 @@ class Session:
         text: list[str] = []
         comp = None
         client = await self.ensure_role_client(spec)
-        async for kind, val in client.stream(messages, prefix.tools):
+        async for kind, val in client.stream(messages, prefix.tools, effort=self.effort_for(spec)):
             if kind == "text":
                 text.append(val)
             elif kind == "notice":
@@ -1761,11 +1853,27 @@ class Session:
         """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。有上次摘要时只渲染之后的新内容 + <previous-summary>。"""
         budget = max(4000, int(min(self.profile.context_window, self.role_spec("compact").profile.context_window) * 0.5))
         if prev is not None:
-            body = C.incremental_side_request(prev[1], self.history[prev[0] + 1:], budget)
+            body = C.incremental_side_request(prev[1], self.history[C.after_summary(self.history, prev[0]):], budget)
             return await self.side_complete(C.compact_update_prompt(), body, role="compact")
         transcript = C.render_transcript(self.history, budget)
         return await self.side_complete(C.compact_prompt(), "以下是需要压缩的对话记录：\n\n" + transcript,
                                         role="compact")
+
+    def _retain_budget(self, before: int = 0) -> int:
+        """压缩后最多保留多少 token 的近期往来。
+
+        两个上限取最小：
+        - 64k：照 Codex 的 RETAINED_MESSAGE_TOKEN_BUDGET。压缩水位 140k 时，压缩前 ~140k、
+          保留 64k + 摘要，压缩后约 70k，离水位还有一半空间——不会因此变成每回合都压。
+        - 窗口的一半：小窗口模型（32k/64k）上 64k 的保留段会直接把新历史顶出窗口。
+        before 只是为日志/调用方对齐保留（不再按比例收窄：按比例收窄会让小会话压缩后
+        连一条往来都不剩，模型被迫立刻重读刚看过的文件）。
+        """
+        window = self.profile.context_window
+        caps = [C.RETENTION_TOKENS]
+        if window > 0:
+            caps.append(int(window * 0.5))
+        return max(0, min(caps))
 
     async def _compact(self, emit, reason: str) -> dict:
         real = [m for m in self.history if m.get("_kind") != "agents"]
@@ -1785,17 +1893,23 @@ class Session:
         except Exception as e:  # noqa: BLE001
             emit(Notice(f"压缩请求失败（{_friendly_error(e)}），改用精简记录重试。", "warn"))
         if usage is not None:
-            await self._charge(usage, used_spec)
+            await self._charge(usage, used_spec, role="compact")
         if not summary:
-            try:
-                summary = await self._summarize_side(prev)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                msg = f"压缩失败：{_friendly_error(e)}。上下文没有改动。"
-                emit(Notice(msg, "warn"))
-                self._fresh_usage = False   # 不要每一步都重试
-                return {"ok": False, "message": msg, "tokens_before": before, "tokens_after": before}
+            # 兜底重试一次：空摘要多半是这一次生成被截断 / 模型直接收尾，重发通常就有了。
+            # 只重试一次——真拿不到摘要时应该老实地不做压缩，而不是每一步都重跑一遍。
+            for attempt in (1, 2):
+                try:
+                    summary = await self._summarize_side(prev)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    msg = f"压缩失败：{_friendly_error(e)}。上下文没有改动。"
+                    emit(Notice(msg, "warn"))
+                    summary = ""
+                if summary:
+                    break
+                if attempt == 1:
+                    emit(Notice("压缩摘要为空，重试一次。", "warn"))
         if not summary:
             msg = "压缩失败：模型没有返回摘要。上下文没有改动。"
             emit(Notice(msg, "warn"))
@@ -1803,12 +1917,27 @@ class Session:
             return {"ok": False, "message": msg, "tokens_before": before, "tokens_after": before}
         cfg = self.config.data.get("compact", {}) or {}
         await asyncio.to_thread(self.refresh_git)
-        self.updates.reset()     # 摘要消息里补发全量环境信息
+        # 不调 updates.reset()：system/tools 与 env 各块都没变，压缩只是把历史换成摘要，
+        # 补发一次全量环境块是纯白送（几百 token）且会把摘要消息的字节推后，反而更贵。
         appendix = self.updates.build(self._env_parts())
         new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
-                              int(cfg.get("keep_user_tokens", 20000)))
+                              int(cfg.get("keep_user_tokens", 20000)),
+                              keep_tools=int(cfg.get("keep_tools", 0) or 0),
+                              keep_tokens=self._retain_budget(before),
+                              # 增量压缩：上次摘要之前的内容已经被概括过，保留段不能越过它，
+                              # 否则等于把旧原文原样捞回来，压缩完历史反而更长。
+                              # 上一次的保留段是原文、还没进摘要：这次把它连同之后的新内容一起
+                              # 重新概括，保留段从它之后重新截——否则旧原文每轮都被带回来，
+                              # 压了等于没压。
+                              floor=(C.after_summary(self.history, prev[0]) if prev is not None else 0))
+        # 记下这次压缩后历史有多长：下次压缩据此判断「摘要之后到底有没有新内容」，
+        # 否则保留段（它们本来就排在摘要后面）会被误判成新内容。
+        for m in new:
+            if m.get("_kind") == "summary":
+                m["_retained_to"] = len(new)
         self.history = new
         self._reasoning_strip_to = -1      # 历史重建了：旧游标指向的消息已经不在，重新算
+        self._break_reason = "compact"
         self.store.append("reset", {"why": "compact"})
         for m in new:
             self.store.message(m)

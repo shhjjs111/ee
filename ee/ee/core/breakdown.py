@@ -134,6 +134,11 @@ def for_session(s) -> dict:
         "hit": int(totals.get("hit", 0) or 0),
         "hit_rate": totals.get("hit_rate"),
         "hit_coverage": totals.get("hit_coverage"),
+        # 主对话口径（P0-1）：侧路请求（标题 / commit / 压缩 / 子代理）命中恒 0 或前缀独立，
+        # 混进分母会把用户看到的数字无端拉低。界面优先读 main_*，旧字段保留给老版本前端。
+        "main_hit_rate": totals.get("main_hit_rate"),
+        "main_hit_coverage": totals.get("main_hit_coverage"),
+        "main_requests": totals.get("main_requests"),
     }
     cfg = s.config.data.get("compact", {}) or {}
     from ee.core import prune as P

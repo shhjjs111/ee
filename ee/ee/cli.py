@@ -3,6 +3,7 @@
   ee serve [--port N] [--host 127.0.0.1] [--exit-on-stdin-eof]   桌面端后端（token 从环境变量 EE_SERVE_TOKEN 读）
   ee exec [提示词|-] [--json] [-C 目录] [--mode …] [--resume id|--last] …  无界面跑一个回合（见 ee/headless.py）
   ee doctor [模型]                                               自检某个模型的兼容性（会真实调用 API）
+  ee usage [会话id] [--all] [--json]                             看缓存的命中率诊断（逐请求账本：命中率 / 断点 / 压缩）
 """
 from __future__ import annotations
 
@@ -65,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("-o", "--output", help="写入这个文件（必须能给绝对路径或相对当前目录的路径）")
     e.add_argument("--force", action="store_true", help="目标文件已存在时覆盖")
     e.add_argument("--list", action="store_true", help="列出现有会话 id 与标题后就退出")
+    u = sub.add_parser("usage", help="看会话的缓存命中率诊断（逐请求账本：命中率 / 断点 / 压缩）",
+                       description="从会话 JSONL 里的逐请求 usage 行算命中率与断点归因。"
+                                   "不给 id 时看最近的会话；--all 汇总全部会话。")
+    u.add_argument("thread_id", nargs="?", help="会话 id（用 `ee export --list` 看有哪些）")
+    u.add_argument("--all", action="store_true", help="汇总全部会话，不只看一个")
+    u.add_argument("--json", action="store_true", help="输出 JSON（给脚本 / CI 用）")
+    u.add_argument("--limit", type=int, default=20, help="--all 时最多看最近多少个会话（默认 20）")
     return p
 
 
@@ -102,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         return _selftest(secrets_check=args.secrets)
     if args.cmd == "export":
         return _cmd_export(args)
+    if args.cmd == "usage":
+        return _cmd_usage(args)
     if args.cmd == "doctor":
         from ee.config import load_config
         from ee.doctor import run_doctor
@@ -180,6 +190,96 @@ def _cmd_export(args) -> int:
         return 1
     print(f"已导出 {len(content)} 字符到 {target}", file=sys.stderr)
     return 0
+
+
+def _cmd_usage(args) -> int:
+    """`ee usage`：从会话 JSONL 的逐请求账本算命中率与断点归因。
+
+    这是 §8 验收断言的可执行入口。**没有这份账本就做不了验收**：turn_end 的
+    累计快照只有「到现在花了多少」，看不出哪一次请求漏了、漏之前刚发生了什么。
+
+    只读会话文件，不碰运行中的后端，所以随时可以跑（包括对话进行中）。
+    """
+    import json
+
+    from ee.config import ee_home
+    from ee.core.cache_report import summarize
+    from ee.core.store import SessionStore
+
+    home = ee_home()
+    sessions = home / "sessions"
+
+    def rows_of(path: Path) -> list[dict]:
+        try:
+            return SessionStore.usage_records(path)
+        except Exception:  # noqa: BLE001  单个坏文件不该让整条命令失败
+            return []
+
+    if args.thread_id:
+        path = sessions / f"{args.thread_id}.jsonl"
+        if not path.is_file():
+            print(f"会话不存在：{args.thread_id}（用 `ee export --list` 看有哪些）", file=sys.stderr)
+            return 1
+        targets = [path]
+    else:
+        targets = SessionStore.list_sessions(home)[:max(1, args.limit)]
+
+    if not targets:
+        print("还没有任何会话。", file=sys.stderr)
+        return 1
+
+    if args.all or not args.thread_id:
+        rows = [r for p in targets for r in rows_of(p)]
+        if not rows:
+            print("这些会话里没有逐请求账本（老会话，或账本落盘上线前录的）。", file=sys.stderr)
+            return 1
+        d = summarize(rows)
+        d["sessions"] = len(targets)
+        if args.json:
+            print(json.dumps(d, ensure_ascii=False, indent=2))
+        else:
+            _print_usage(d, title=f"最近 {len(targets)} 个会话")
+        return 0
+
+    rows = rows_of(targets[0])
+    if not rows:
+        print("这个会话没有逐请求账本（老会话，或账本落盘上线前录的）。", file=sys.stderr)
+        return 1
+    d = summarize(rows)
+    d["sessions"] = 1
+    if args.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+    else:
+        _print_usage(d, title=targets[0].stem)
+    return 0
+
+
+def _pct(v) -> str:
+    return "未知" if v is None else f"{v * 100:.2f}%"
+
+
+def _print_usage(d: dict, *, title: str) -> None:
+    """人读摘要：先回答「到没到 99%」，再给断点与压缩的对照。"""
+    m = d["main"]
+    print(f"{title}")
+    print(f"  请求 {d['requests']} 次（缺用量 {d['usage_missing']} 次）")
+    print(f"  主对话缓存命中 {_pct(m['hit_rate'])} · 覆盖 {_pct(m['hit_coverage'])} 输入"
+          f" · {m['requests']} 次请求")
+    br = d["breaks"]
+    print(f"  断点 {br['count']} 次 / 压缩 {d['compactions']} 次", end="")
+    if br["count"] > d["compactions"]:
+        print("  ← 断点比压缩还多，说明有别的东西在改写前缀（换模型 / 修剪 / 老版本白压）")
+    else:
+        print()
+    g = d["normal_gap"]
+    if g["count"]:
+        print(f"  正常回合未命中：中位 {g['median']} · p90 {g['p90']} · 最大 {g['max']} token")
+    for b in d["buckets"]:
+        if b["requests"]:
+            print(f"    {b['label']:<9} {_pct(b['hit_rate']):>7} · {b['requests']} 次")
+    others = {k: v for k, v in d["by_role"].items() if k != "main" and v["requests"]}
+    if others:
+        print("  其它请求：" + "，".join(f"{k} {v['requests']} 次" for k, v in sorted(others.items())))
 
 
 def _migrate_secrets() -> None:

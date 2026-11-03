@@ -20,9 +20,14 @@ NEW = "NEW_FILE_CONTENT_77"
 
 
 def _two_rounds(workspace, third):
+    """keep_tools 关着：这组用例守的是「增量摘要不重读旧内容」，与保留段正交。
+
+    开着保留段时，上一次压缩留下的原文本来就在当前历史里（那是重新概括的输入），
+    再断言「旧内容不出现」就变成在断言保留段关着。所以这里显式关掉。
+    """
     (workspace / "old.txt").write_text(OLD + "\n", encoding="utf-8")
     (workspace / "new.txt").write_text(NEW + "\n", encoding="utf-8")
-    return make(workspace, [
+    s, fake = make(workspace, [
         tool_chunks(0, "c1", "read", {"path": "old.txt"}) + finish("tool_calls"),
         text_chunks("读完旧文件") + finish("stop"),
         summary_chunks("## 用户目标\n第一版摘要 S1\n## 下一步\n读新文件"),
@@ -30,6 +35,8 @@ def _two_rounds(workspace, third):
         text_chunks("读完新文件") + finish("stop"),
         *third,
     ])
+    s.config.data["compact"]["keep_tools"] = 0
+    return s, fake
 
 
 def test_last_summary_extracts_text():

@@ -100,7 +100,7 @@ class ChatClient:
     """注意：不传 client 时构造会解析代理（可能有 DNS 查询）并建 TLS 上下文，别在事件循环上直接构造。"""
 
     def __init__(self, spec, client: Any = None, state_path: Path | None = None, retries: int | None = None,
-                 network: dict | None = None, headers: dict | None = None):
+                 network: dict | None = None, headers: dict | None = None, session_id: str = ""):
         """headers：调用方算好的请求头（见 Session.request_headers）。
 
         为什么不用 spec.headers 直接发：那里面可能带 `{session_id}` 这类需要按会话替换的
@@ -111,6 +111,8 @@ class ChatClient:
         self.profile = spec.profile
         self.state = QuirkState(state_path)
         self.key = f"{spec.base_url}|{spec.model}"
+        # 会话级缓存键（prompt_cache_key）：fork 子代理传父会话 id，其它情况传自己的。
+        self.session_id = session_id or ""
         self.np: net.NetPlan | None = None
         send_headers = headers if headers is not None else (getattr(spec, "headers", None) or None)
         if client is None:
@@ -184,7 +186,30 @@ class ChatClient:
         p.update(top)
         if body:
             p["extra_body"] = {**p.get("extra_body", {}), **body}
+        self._apply_cache_key(p)
         return p
+
+    def _apply_cache_key(self, p: dict) -> None:
+        """按档案开关加上会话级缓存键。
+
+        为什么值得发：服务端把「同一个 key 的多条请求」认作同一条对话，缓存亲和性与
+        过期时间都按这个粒度算。不发时服务端只能靠前缀猜测，长对话里一旦路由换了节点
+        就会整段未命中。
+
+        为什么默认不发：严格网关对未知 body 字段直接 400（opencode 的
+        compatibility.supportsPromptCacheKey 就是这个原因）。所以只在对该 provider
+        确认支持时打开，且被 400 拒绝后由既有降级机制记住不再发。
+        """
+        st = self.state.get(self.key)
+        if not self.profile.supports_prompt_cache_key or st.get("no_prompt_cache_key"):
+            return
+        key = self.session_id
+        if not key:
+            return
+        p["prompt_cache_key"] = key
+        ttl = (self.profile.prompt_cache_ttl or "").strip()
+        if ttl and not st.get("no_prompt_ttl"):
+            p["prompt_cache_retention"] = ttl
 
     @staticmethod
     def has_reasoning_params(p: dict) -> bool:
@@ -257,7 +282,9 @@ class ChatClient:
                         degrade_budget -= 1
                         flag = {"stream_options": "no_stream_options", "parallel_tool_calls": "no_parallel_tool_calls",
                                 "max_tokens": "no_max_tokens", "temperature": "no_temperature",
-                                "enable_thinking": "no_thinking"}.get(bad, f"no_{bad}")
+                                "enable_thinking": "no_thinking",
+                                "prompt_cache_key": "no_prompt_cache_key",
+                                "prompt_cache_retention": "no_prompt_cache_ttl"}.get(bad, f"no_{bad}")
                         self.state.get(self.key)[flag] = True
                         self.state.save()
                         yield ("notice", f"服务端不支持参数 {bad}，已自动降级并记住")

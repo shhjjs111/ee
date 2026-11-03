@@ -36,14 +36,18 @@ DEFAULTS: dict = {
     "present_plan": True,          # 计划模式的 present_plan 工具（关掉时计划模式用文字给方案）
     "ask_user": True,              # ask_user 提问工具（D4-8）      # shell 工具可后台运行 + shell_output/shell_write/shell_kill（D4-6）
     # 上下文压缩：上下文用量 ≥ threshold × 模型窗口，或达到绝对上限 max_tokens 时自动压缩
-    # （回合开始时和回合内每步之前检查）。max_tokens 是给 1M 窗口模型的：按百分比算要等 80 万才开始，
+    # （回合开始时检查；回合内只在逼近窗口上限时才压，见 Session._maybe_auto_compact）。
+    # max_tokens 是给 1M 窗口模型的：按百分比算要等 80 万才开始，
     # 而实测 prompt 超过 15 万 token 首包就到 20 秒级，所以用绝对值提前压。
+    # 水位越高压得越少：每次压缩都会重建历史，那一次请求必然整段未命中（实测 3k–7k）。
+    # 140k 是实测的成本最优点（research/roadmap-current.md L215-237：140k→¥12.68 / 100k→¥14.52）。
+    # keep_tools：压缩后保留最近几条工具往来的条数预算（0 = 旧行为，只留用户原话 + 摘要）。
     # 磁盘快照（影子 git 仓库）：disk=false 回退内存快照；清理时每个会话保留最近 keep_days 天、最近 keep_turns 个回合
     "snapshot": {"disk": True, "keep_days": 14, "keep_turns": 100},
     # 工具输出归档（~/.ee/tool-output：超长输出全文 + 后台命令日志）：保留天数，0 = 不清理
     "tool_output": {"keep_days": 30},
-    "compact": {"auto": True, "threshold": 0.8, "max_tokens": 100000, "keep_user_messages": 3,
-                "keep_user_tokens": 20000},
+    "compact": {"auto": True, "threshold": 0.8, "max_tokens": 140000, "keep_user_messages": 3,
+                "keep_user_tokens": 20000, "keep_tools": 16},
     # 修剪旧工具输出（D5-10）：把较早的大块工具结果换成占位。
     # max_tokens=0 表示关掉消息级修剪（见下），保留清推理部分。
     # keep_reasoning_turns=0：推理从一开始就不回传（每条消息字节首次发送即固定，前缀零断点；prompt 少 26%）。

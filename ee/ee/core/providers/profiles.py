@@ -63,6 +63,13 @@ class Profile:
     effort_levels: list = field(default_factory=list)
     effort_aliases: dict = field(default_factory=dict)
     effort_labels: dict = field(default_factory=dict)
+    # prompt_cache_key：会话级缓存键。只在服务端明确支持时打开——有些严格网关遇到不认识的
+    # body 字段直接 400（opencode 也是「compatibility.supportsPromptCacheKey 显式允许才发」）。
+    # 打开后同一会话的每条请求带同一个 key，服务端据此把多轮请求归到同一条缓存线上；
+    # 关掉时一个字节都不发，行为与以前完全一致。
+    supports_prompt_cache_key: bool = False
+    # prompt_cache_ttl：缓存保留时长（"5m" / "1h" / "" = 不发）。只有少数服务端支持。
+    prompt_cache_ttl: str = ""
     # 同家族内按模型名细分的覆盖项（[[variants]] match=[...] + 任意档案字段，price 按键合并）
     variants: list = field(default_factory=list)
 

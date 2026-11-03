@@ -8,6 +8,8 @@
   rewind / reset  内核内部记录
   prune    修剪旧工具输出（D5-10）：把这些下标的 tool 消息换成占位（原 message 记录不动，界面条目另存完整输出）
   truncate 编辑重发（D3-E）：丢掉 seq ≥ from_seq 的已有条目（之后新写的条目照常保留）
+  usage    一次模型请求的用量（prompt / 命中 / 未命中归因 / 花费）。只追加、不参与历史重建，
+           用于事后算真实的缓存命中率——turn_end 的累计快照看不出「哪一次请求漏了多少」
 """
 from __future__ import annotations
 
@@ -74,6 +76,16 @@ class SessionStore:
     def item(self, item: dict) -> None:
         self.append("item", {"item": item})
 
+    def usage(self, record: dict) -> None:
+        """记一次模型请求的用量（逐请求账本）。
+
+        与 turn_end 的累计快照互补：快照只告诉你「到现在一共花了多少」，回答不了
+        「哪一次请求没命中、那一次前面刚发生了什么」。命中率能不能优化，全靠这些原始行。
+        只在主会话写：子代理 persist=False，append() 自己就 no-op，它的那一笔由
+        subagent._merge_usage 改写成 role=subagent 后随父会话落盘。
+        """
+        self.append("usage", {"usage": record})
+
     # ---- 读取
     @staticmethod
     def list_sessions(root: Path) -> list[Path]:
@@ -108,6 +120,19 @@ class SessionStore:
             yield rec
         if bad > 5:
             log.warning("会话文件 %s 共跳过 %d 行坏记录", path.name, bad)
+
+    @staticmethod
+    def usage_records(path: Path) -> list[dict]:
+        """逐请求用量账本，按写入顺序。老会话没有这类记录时返回空列表（不报错）。
+
+        不做成 `load()` 的字段：`load()` 是恢复会话的热路径（每次打开会话都走），
+        而账本只有诊断才会读——诊断时按需扫一遍，比让每次恢复都多解析一整批记录划算。
+        """
+        out = []
+        for rec in SessionStore._records(path):
+            if rec.get("kind") == "usage" and isinstance(rec.get("usage"), dict):
+                out.append(rec["usage"])
+        return out
 
     @staticmethod
     def load_messages(path: Path) -> list[dict]:

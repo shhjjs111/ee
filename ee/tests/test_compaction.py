@@ -69,19 +69,25 @@ def test_manual_compact_rebuilds_history(ee_home, workspace):
     assert req["messages"][len(prev)]["role"] == "assistant"
     assert "上下文检查点压缩" in req["messages"][-1]["content"]
     assert req["tools"] == fake.calls[1]["tools"]
-    # 新历史：最近用户原话（去掉附录） + 摘要（带全量环境附录）
-    assert [m["role"] for m in s.history] == ["user", "user"]
-    assert s.history[0]["content"] == "第一件事"
-    assert s.history[1]["_kind"] == "summary"
-    assert "<summary>" in s.history[1]["content"] and "修 bug" in s.history[1]["content"]
-    assert "<context-update" in s.history[1]["content"] and 'mode="delta"' not in s.history[1]["content"]
-    assert not any(m["role"] == "tool" for m in s.history)
+    # 新历史 = AGENTS + 摘要（带全量环境附录） + 保留的最近往来（keep_tools 默认 16）
+    roles = [m["role"] for m in s.history]
+    kinds = [m.get("_kind") for m in s.history]
+    si = kinds.index("summary")
+    assert "<summary>" in s.history[si]["content"] and "修 bug" in s.history[si]["content"]
+    assert "<context-update" in s.history[si]["content"] and 'mode="delta"' not in s.history[si]["content"]
+    # 保留段排在摘要之后，且刚才读到的文件内容还在（这是「不变傻」的关键）
+    assert si < len(s.history) - 1
+    assert "hello" in "".join(str(m.get("content")) for m in s.history[si:])
+    assert s.history[si + 1]["content"].startswith("第一件事")    # 本回合的用户原话
+    assert roles[si + 2:] == ["assistant", "tool", "assistant"]   # 工具往来的原始顺序
     # 下一回合：system 不变，历史接在新历史后面，只追加
     run(collect(s, "第二件事"))
     nxt = fake.calls[3]["messages"]
     assert nxt[0] == fake.calls[1]["messages"][0]
-    assert [m["role"] for m in nxt] == ["system", "user", "user", "user"]
-    assert "_kind" not in json.dumps(nxt)
+    # 只追加：压缩后的历史原样打头，末尾多一条本回合的用户消息
+    assert [m["role"] for m in nxt] == ["system"] + roles + ["user"]
+    assert nxt[-1]["content"].startswith("第二件事")
+    assert "_kind" not in json.dumps(nxt)          # 内部标记不发给模型
     assert nxt[-1]["content"].startswith("第二件事")
 
 
@@ -112,28 +118,43 @@ def test_auto_compact_at_turn_start(ee_home, workspace):
     comp = [e for e in ev if isinstance(e, Compacted)]
     assert len(comp) == 1 and comp[0].reason == "auto" and comp[0].tokens_before == 860
     assert len(fake.calls) == 3
-    roles = [m["role"] for m in fake.calls[2]["messages"]]
-    assert roles == ["system", "user", "user", "user"]
-    assert fake.calls[2]["messages"][2]["content"].startswith("[上下文已压缩]")
-    assert fake.calls[2]["messages"][3]["content"].startswith("问二")
+    msgs = fake.calls[2]["messages"]
+    assert msgs[0]["role"] == "system"
+    assert msgs[-1]["content"].startswith("问二")
+    summary = [m for m in msgs if str(m.get("content", "")).startswith("[上下文已压缩]")]
+    assert len(summary) == 1
+    assert [m["role"] for m in msgs[3:-1]] == ["assistant"]   # 保留段：上一回合的回答
     assert done(ev).reason == "completed"
 
 
-def test_auto_compact_mid_turn(ee_home, workspace):
-    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+def test_no_compact_mid_turn(ee_home, workspace):
+    """回合中途达到水位也不压：压缩会把本回合已发出的历史整段作废，代价远大于推迟。
+
+    实测：回合内压缩后下一次请求整段未命中 3k–7k token，是正常追加（~500）的 6–12 倍。
+    所以推迟到下一回合开始——那时本来就要发一条带新消息的请求。
+    """
+    (workspace / "a.txt").write_text("x" + chr(10), encoding="utf-8")
     s, fake = make(workspace, [
         tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls", prompt=900),
+        text_chunks("完成") + finish("stop", prompt=200),
+    ], window=1000)
+    ev = run(collect(s, "做事"))
+    assert done(ev).reason == "completed"
+    assert not any(isinstance(e, Compacted) for e in ev)
+    assert len(fake.calls) == 2
+
+
+def test_compact_when_urgent_mid_turn(ee_home, workspace):
+    """逼近窗口上限（>0.95×window）时回合内也必须压，否则下一次请求直接 400。"""
+    (workspace / "a.txt").write_text("x" + chr(10), encoding="utf-8")
+    s, fake = make(workspace, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls", prompt=980),
         summary_chunks(),
         text_chunks("完成") + finish("stop", prompt=200),
     ], window=1000)
     ev = run(collect(s, "做事"))
     assert done(ev).reason == "completed"
     assert any(isinstance(e, Compacted) for e in ev)
-    # 压缩后历史仍然配对完整：没有孤立的 tool 消息
-    assert [m["role"] for m in s.history] == ["user", "user", "assistant"]
-    last_req = fake.calls[2]["messages"]
-    assert [m["role"] for m in last_req] == ["system", "user", "user"]
-    assert last_req[1]["content"] == "做事"
 
 
 def test_no_repeated_compaction_without_new_usage(ee_home, workspace):
@@ -163,7 +184,7 @@ def test_compact_fallback_to_side_request(ee_home, workspace):
     side = fake.calls[2]
     assert [m["role"] for m in side["messages"]] == ["system", "user"]
     assert "【用户】一" in side["messages"][1]["content"]
-    assert "兜底摘要" in s.history[-1]["content"]
+    assert any("兜底摘要" in str(m.get("content")) for m in s.history)
     assert any(isinstance(e, Notice) and "失败" in e.text for e in events)
 
 

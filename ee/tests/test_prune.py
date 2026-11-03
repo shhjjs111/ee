@@ -177,11 +177,30 @@ def test_prune_then_rewind_and_compact(ee_home, workspace):
     s.rewind_last_turn()
     assert SessionStore.load_messages(s.store.path) == s.history
     assert tool_msg(s, "c1").get("_pruned")
-    # 压缩后历史里不再有工具消息，修剪不越过摘要
+    # 压缩后关掉保留段：历史里不再有工具消息，修剪不越过摘要
+    s.config.data["compact"]["keep_tools"] = 0
     res = run(s.compact())
     assert res["ok"]
     assert SessionStore.load_messages(s.store.path) == s.history
     assert P.plan(s.history, P.settings({"prune": {"keep_turns": 0, "keep_tokens": 0, "min_tokens": 1}})) == []
+
+
+def test_prune_still_works_on_retained_tail(ee_home, workspace):
+    """保留段是真实历史的一部分：压缩后它里面的旧工具输出照样该被修剪。
+
+    反过来（保留段一律免疫修剪）会让压缩后的历史再也压不下去——保留 64k 的大输出
+    反复占着位置，压缩越来越频繁，正是命中率掉下来的那条路。
+    """
+    files(workspace)
+    s, _ = make(workspace, three_turns() + [
+        text_chunks("## 目标\n修") + finish("stop", prompt=500)])
+    run(collect(s, "读 big")); run(collect(s, "读 big2")); run(collect(s, "第三件事"))
+    s.config.data["compact"]["keep_tools"] = 16      # 默认：保留最近往来
+    assert run(s.compact())["ok"]
+    tools = [m for m in s.history if m.get("role") == "tool"]
+    assert tools, "保留段里应当有原始工具往来（这是「压缩后不用重读」的关键）"
+    items = P.plan(s.history, P.settings({"prune": {"keep_turns": 0, "keep_tokens": 0, "min_tokens": 1}}))
+    assert items and all(s.history[x["i"]].get("role") == "tool" for x in items)
 
 
 def test_skip_non_prunable_tools(ee_home, workspace):

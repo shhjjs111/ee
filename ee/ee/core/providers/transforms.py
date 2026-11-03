@@ -491,7 +491,7 @@ def unsupported_param(err_text: str) -> str | None:
     """从 400 错误文本判断哪个可选参数不被支持。"""
     t = (err_text or "").lower()
     for p in ("stream_options", "parallel_tool_calls", "reasoning_effort", "max_tokens", "temperature",
-              "enable_thinking", "thinking"):
+              "enable_thinking", "thinking", "prompt_cache_key", "prompt_cache_retention"):
         if p == "thinking" and ("reasoning_content" in t or "thinking mode" in t):
             continue                         # 思考模式下的回传要求，不是参数不支持
         if p in t and any(w in t for w in ("unsupported", "not support", "unknown", "unrecognized",
