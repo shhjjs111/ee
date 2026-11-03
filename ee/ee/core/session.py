@@ -192,8 +192,8 @@ class Session:
         # 本回合已发出去的历史整段作废，下一次请求必然整段未命中。
         self._turn_running = False
         self.compactions = 0
-        # D5-9：推理强度（会话级，初始取按模型记住的 / 配置）、回答风格、按用途分模型、花费上限
-        self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data, self.home, self.spec.alias))
+        # D5-9：推理强度（会话级，初始取全局 [reasoning] effort）、回答风格、按用途分模型、花费上限
+        self.effort = RZ.canonical(self.spec.profile, RZ.resolve(config.data))
         sdef = str((config.data.get("style") or {}).get("default") or "default")
         self.style = sdef if ST.exists(self.home, sdef) else "default"
         self._prefix_style: str | None = None      # 冻结进 system 的风格
@@ -295,7 +295,8 @@ class Session:
         if switched:
             self._break_reason = "model_switch"
         self.updates.reset()
-        self.effort = RZ.canonical(spec.profile, RZ.resolve(self.config.data, self.home, spec.alias))
+        # 换模型只按新模型的支持范围规整当前档位（会话里选的始终生效），不回落到全局默认
+        self.effort = RZ.canonical(spec.profile, self.effort)
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"
                 "换模型后服务端缓存会从零开始。")
 
@@ -353,19 +354,14 @@ class Session:
         self.policy.set_mode(mode)
 
     # ------------------------------------------------------------ D5-9：推理强度 / 回答风格 / 按用途分模型
-    def set_effort(self, level, remember: bool = True) -> str:
-        """切换本会话的推理强度；remember 时同时按模型记住（下次用这个模型默认就是它）。"""
+    def set_effort(self, level) -> str:
+        """切换本会话的推理强度（不落盘；新会话的初始档位看全局 [reasoning] effort）。"""
         lv = RZ.normalize(level)
         if lv is None:
             opts = " / ".join(RZ.labels(self.profile)[x] for x in ["", *RZ.levels(self.profile), "off"])
             raise ValueError(f"未知推理强度：{level}（可选 {opts}）")
         lv = RZ.canonical(self.profile, lv)       # DeepSeek：旧写法 中/高 → 默认/最高
         self.effort = lv
-        if remember:
-            try:
-                RZ.remember(self.home, self.spec.alias, lv)
-            except OSError:
-                pass
         eff = RZ.effective(self.profile, lv)
         note = "" if eff == lv else "（当前模型不支持这个档位，请求里不会发送）"
         return f"推理强度：{RZ.labels(self.profile)[lv]}{note}"
@@ -448,7 +444,7 @@ class Session:
     def effort_for(self, spec) -> str:
         if spec.alias == self.spec.alias:
             return self.effort
-        return RZ.resolve(self.config.data, self.home, spec.alias)
+        return RZ.resolve(self.config.data)
 
     def _current_discount(self, family: str | None = None) -> float:
         """当前时刻的错峰折扣；见 pricing.discount_for。family 决定用哪个厂商的官方峰谷规则。"""

@@ -3,8 +3,6 @@
   thread/options     {thread_id, effort?, style?}   → {effort, style, effort_support, messages}
   styles/list        {}                              → {styles: [{id, label, description, source, path}], dir}
   budget/status      {thread_id?}                    → {currency, action, warn_ratio, scopes: {session|daily|monthly: {spent, limit}}}
-  reasoning/prefs    {}                              → {remembered: {模型: 档位}}
-  reasoning/forget   {model}                         → {ok}
 """
 from __future__ import annotations
 
@@ -45,12 +43,4 @@ def register(methods: dict, backend) -> None:
             return BudgetGuard(effective(), backend.home).status(0.0)
         return await asyncio.to_thread(run)
 
-    async def prefs() -> dict:
-        return {"remembered": await asyncio.to_thread(RZ.remembered, backend.home)}
-
-    async def forget(model: str) -> dict:
-        await asyncio.to_thread(RZ.remember, backend.home, str(model or ""), "")
-        return {"ok": True}
-
-    methods.update({"thread/options": options, "styles/list": styles_list, "budget/status": budget_status,
-                    "reasoning/prefs": prefs, "reasoning/forget": forget})
+    methods.update({"thread/options": options, "styles/list": styles_list, "budget/status": budget_status})

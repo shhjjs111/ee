@@ -266,7 +266,7 @@ class Thread:
         # D5-9：会话级推理强度 / 回答风格（存在 meta 里，重启后照旧）；重启前已花的钱计入会话上限
         if "effort" in self.meta:
             try:
-                s.set_effort(self.meta.get("effort") or "", remember=False)
+                s.set_effort(self.meta.get("effort") or "")
             except ValueError:
                 pass
         if self.meta.get("style"):
@@ -419,7 +419,7 @@ class Thread:
 
     # ------------------------------------------------------------ 回合
     def set_options(self, effort=None, style: str | None = None) -> dict:
-        """会话级选项（D5-9）：推理强度（同时按模型记住）、回答风格。None = 不变。"""
+        """会话级选项（D5-9）：推理强度（只改本会话，不落盘）、回答风格。None = 不变。"""
         s = self.ensure_session()
         msgs = []
         if effort is not None and effort != s.effort:

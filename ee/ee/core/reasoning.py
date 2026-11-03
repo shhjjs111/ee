@@ -4,8 +4,9 @@
 每个模型能选哪些强度档看档案 effort_levels（缺省 低/中/高）：DeepSeek 只有 默认（high）/ 低 / 最高（max）/ 关闭思考
 （官方 Thinking Mode 文档：reasoning_effort = low | high | max，思考默认开启、默认 high；
 关闭用 extra_body {"thinking": {"type": "disabled"}}）。其它 provider 仍是 默认 / 低 / 中 / 高 / 关闭思考。
-三层取值（越前越优先）：会话里选的 → 按模型记住的（~/.ee/state/model_prefs.json）→ [models.<名>] reasoning_effort
-→ 全局 [reasoning] effort。
+三层取值（越前越优先）：会话里选的 → 全局 [reasoning] effort（设置页/输入框改的就是它）。
+档位是全局一个值，不按模型分别记：换模型时只按新模型支持的档位规整（见 canonical），
+不支持的档位不发参数。[models.<名>] reasoning_effort 会盖掉面板的选择，已不再读取。
 
 模型支不支持看档案：effort_param（强度参数名）决定强度档能不能用，thinking_param 决定能不能关闭思考。
 不支持的档位不发任何参数（界面置灰）。服务端返回 400 时由 openai_chat 去掉参数重试并记住。
@@ -109,54 +110,14 @@ def request_params(profile, level: str, strip_effort: bool = False, strip_thinki
     return top, body
 
 
-# ------------------------------------------------------------------ 按模型记住
-
-def _prefs_path(home: Path) -> Path:
-    return Path(home) / "state" / "model_prefs.json"
+# ------------------------------------------------------------------ 取值
 
 
-def _load(home: Path) -> dict:
-    p = _prefs_path(home)
-    try:
-        d = json.loads(p.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def remembered(home: Path) -> dict[str, str]:
-    eff = _load(home).get("effort") or {}
-    return {str(k): str(v) for k, v in eff.items() if normalize(v) is not None}
-
-
-def remember(home: Path, alias: str, level: str) -> None:
-    """记住某个模型的档位；level="" 表示忘掉（跟随全局默认）。原子写。"""
-    with _LOCK:
-        d = _load(home)
-        eff = dict(d.get("effort") or {})
-        if level:
-            eff[alias] = level
-        else:
-            eff.pop(alias, None)
-        d["effort"] = eff
-        p = _prefs_path(home)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        from ee.core.atomic import write_text as atomic_write
-        atomic_write(p, json.dumps(d, ensure_ascii=False, indent=2))
-
-
-def configured(data: dict, alias: str) -> str:
-    """配置里给这个模型的档位：[models.<名>] reasoning_effort，否则全局 [reasoning] effort。"""
-    m = (data.get("models") or {}).get(alias) or {}
-    v = normalize(m.get("reasoning_effort")) if isinstance(m, dict) and m.get("reasoning_effort") is not None else None
-    if v:
-        return v
+def configured(data: dict) -> str:
+    """全局默认档位：[reasoning] effort。"""
     return normalize((data.get("reasoning") or {}).get("effort")) or ""
 
 
-def resolve(data: dict, home: Path, alias: str) -> str:
-    """新会话 / 换模型时的初始档位：按模型记住的 → 配置。"""
-    r = remembered(home).get(alias)
-    if r is not None:
-        return normalize(r) or ""
-    return configured(data, alias)
+def resolve(data: dict) -> str:
+    """新会话 / 换模型时的初始档位：全局一个值，不按模型分。"""
+    return configured(data)

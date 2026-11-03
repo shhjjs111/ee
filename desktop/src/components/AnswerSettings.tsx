@@ -1,6 +1,5 @@
-// 设置页「回答与花费」（D5-9）：推理强度默认值与按模型记住的档位、回答风格、按用途分模型、花费上限。
+// 设置页「回答与花费」（D5-9）：推理强度全局默认、回答风格、按用途分模型、花费上限。
 import { reportError } from "../lib/errors";
-import { Trash2 } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { effortLabel, effortOptionsFor } from "../lib/slash";
 import { useApp } from "../lib/store";
@@ -53,11 +52,9 @@ export function money(cur: string, v: number): string {
 
 export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: SettingsResponse; up: (p: Partial<Settings>) => void }) {
   const s = useApp();
-  const [remembered, setRemembered] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<BudgetStatus | null>(null);
   useEffect(() => {
     if (!s.rpc) return;
-    s.rpc.call("reasoning/prefs").then((r) => setRemembered(r.remembered ?? {})).catch(reportError("读取思考强度记忆失败"));
     s.rpc.call("budget/status", { thread_id: s.activeThreadId ?? undefined }).then(setStatus).catch(reportError("读取预算状态失败"));
   }, [s.rpc, resp]);
 
@@ -81,8 +78,8 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
     <>
       <h2 className="mb-5 text-[20px] font-semibold tracking-tight text-fg">回答与花费</h2>
 
-      <Card title="推理强度" desc="新对话的默认档位。输入框旁的“推理”或 /effort 可以只改当前会话，并会按模型记住。">
-        <Row label="全局默认" desc="“默认”= 不指定，用模型自己的默认；模型不支持的档位不会发送（输入框里置灰）">
+      <Card title="推理强度" desc="一个档位管所有模型。输入框旁的“推理”或 /effort 可以只改当前会话，新会话用这里的默认。">
+        <Row label="全局默认" desc="“默认”= 不指定，用模型自己的默认；模型不支持的档位会自动降级或按默认处理（输入框里置灰）">
           <Select
             value={effort}
             options={effortOptions}
@@ -91,30 +88,6 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
             align="end"
             className="border border-line"
           />
-        </Row>
-        <Row
-          label="按模型记住的档位"
-          desc={Object.keys(remembered).length ? "这些模型的新会话会用记住的档位（优先于全局默认）" : "还没有。在对话里切换过推理强度的模型会出现在这里"}
-        >
-          <div className="flex max-w-[360px] flex-wrap justify-end gap-1.5">
-            {Object.entries(remembered).map(([m, v]) => (
-              <span key={m} className="inline-flex items-center gap-1 rounded-md bg-soft px-2 py-0.5 text-[12px] text-muted">
-                {m} · {effortLabel(v, supportOf(m))}
-                <button
-                  title="忘掉，跟随全局默认"
-                  className="text-faint hover:text-danger"
-                  onClick={() =>
-                    s.rpc
-                      ?.call("reasoning/forget", { model: m })
-                      .then(() => setRemembered((cur) => Object.fromEntries(Object.entries(cur).filter(([k]) => k !== m))))
-                      .catch(reportError("忘记该模型的思考强度失败"))
-                  }
-                >
-                  <Trash2 size={11} />
-                </button>
-              </span>
-            ))}
-          </div>
         </Row>
       </Card>
 

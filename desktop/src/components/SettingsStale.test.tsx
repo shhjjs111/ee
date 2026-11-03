@@ -91,7 +91,6 @@ describe("设置页迟到响应", () => {
     let calls = 0;
     const rpc = {
       call: (method: string) => {
-        if (method === "reasoning/prefs") return Promise.resolve({ remembered: {} });
         if (method === "budget/status") {
           calls++;
           return calls === 1

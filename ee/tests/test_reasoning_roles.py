@@ -131,41 +131,46 @@ def test_thinking_mode_passback_error_is_not_unsupported_param():
     assert unsupported_param("enable_thinking is not supported") == "enable_thinking"
 
 
-# ------------------------------------------------------------------ 三层取值 + 会话
+# ------------------------------------------------------------------ 取值：全局一个档位 + 会话
 
-def test_effort_layers_session_model_global(ee_home, workspace):
+def test_effort_global_default_and_session_override(ee_home, workspace):
     s, fake = make_session(workspace, [text_chunks("ok") + finish("stop")])
     assert s.effort == ""
     s.config.data["reasoning"]["effort"] = "low"
     s2, _ = make_session(workspace, [])
-    assert s2.effort == ""                     # make_session 重新读配置：全局默认仍是空
-    s.set_effort("高")                          # 会话里选 → 同时按模型记住（DeepSeek 上旧写法 高 规整成 最高）
+    assert s2.effort == ""                     # 已经建好的配置对象，改内存不影响它
+    s.set_effort("高")                          # 会话里选：DeepSeek 上旧写法 高 → 最高
     run(collect(s, "hi"))
     assert fake.calls[0]["reasoning_effort"] == "max"
-    assert RZ.remembered(ee_home) == {"deepseek-flash": "max"}
+    # 会话里选的只管本会话，不落盘
+    assert not (ee_home / "state" / "model_prefs.json").exists()
     s3, _ = make_session(workspace, [])
-    assert s3.effort == "max"                  # 新会话同模型 → 记住的
+    assert s3.effort == ""                     # 新会话回到全局默认
     s4, _ = make_session(workspace, [], model="deepseek-pro")
-    assert s4.effort == ""                     # 另一个模型 → 全局
-    (ee_home / "config.toml").write_text('[reasoning]\neffort = "low"\n[models.deepseek-pro]\nprovider = "deepseek"\n'
-                                         'model = "deepseek-v4-pro"\nreasoning_effort = "off"\n', encoding="utf-8")
+    assert s4.effort == ""                     # 换模型不影响：档位不按模型分
+    (ee_home / "config.toml").write_text('[reasoning]\neffort = "max"\n', encoding="utf-8")
     s5, _ = make_session(workspace, [], model="deepseek-pro")
-    assert s5.effort == "off"                  # [models.X] reasoning_effort 优先于全局
+    assert s5.effort == "max"                  # 全局一个值，对所有模型生效
     s6, _ = make_session(workspace, [])
-    assert s6.effort == "max"                  # 记住的优先于配置
+    assert s6.effort == "max"
     s6.set_effort("默认")
-    assert RZ.remembered(ee_home) == {}
+    assert s6.effort == ""
     with pytest.raises(ValueError):
         s6.set_effort("超级高")
 
 
-def test_switch_model_picks_that_models_effort(ee_home, workspace):
-    RZ.remember(ee_home, "deepseek-pro", "low")
+def test_model_reasoning_effort_key_is_ignored(ee_home, workspace):
+    (ee_home / "config.toml").write_text('[reasoning]\neffort = "low"\n[models.deepseek-pro]\nprovider = "deepseek"\n'
+                                         'model = "deepseek-v4-pro"\nreasoning_effort = "off"\n', encoding="utf-8")
+    s, _ = make_session(workspace, [], model="deepseek-pro")
+    assert s.effort == "low"                  # [models.X] reasoning_effort 不再盖掉面板上的选择
+
+
+def test_switch_model_keeps_session_effort(ee_home, workspace):
     s, _ = make_session(workspace, [])
-    s.set_effort("high", remember=False)
+    s.set_effort("max")
     s.set_model("deepseek-pro")
-    assert s.effort == "low"
-    assert RZ.remembered(ee_home) == {"deepseek-pro": "low"}
+    assert s.effort == "max"                   # 换模型后会话里选的档位照旧生效
 
 
 def test_unsupported_level_reported_and_not_sent(ee_home, workspace):
@@ -199,7 +204,7 @@ def test_reasoning_tokens_parsed_and_totaled(ee_home, workspace):
 
 def test_side_requests_do_not_carry_session_effort(ee_home, workspace):
     s, fake = make_session(workspace, [text_chunks("feat: x") + finish("stop")])
-    s.set_effort("off", remember=False)
+    s.set_effort("off")
     out = run(s.side_complete("写提交信息", "diff", role="commit"))
     assert out == "feat: x"
     assert "extra_body" not in fake.calls[0] and "reasoning_effort" not in fake.calls[0]

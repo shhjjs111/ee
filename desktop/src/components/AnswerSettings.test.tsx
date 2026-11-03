@@ -48,7 +48,6 @@ describe("回答与花费设置（D5-9）", () => {
       activeThreadId: null,
       rpc: {
         call: (method: string) => {
-          if (method === "reasoning/prefs") return Promise.resolve({ remembered: { "deepseek-flash": "high" } });
           if (method === "budget/status")
             return Promise.resolve({ currency: "¥", action: "warn", warn_ratio: 0.8, scopes: { session: { spent: 0, limit: 0 }, daily: { spent: 1.25, limit: 5 }, monthly: { spent: 3, limit: 0 } } });
           return Promise.resolve({});
@@ -63,7 +62,6 @@ describe("回答与花费设置（D5-9）", () => {
     expect(text).toContain("上下文压缩");
     expect(text).toContain("deepseek-pro");
     expect(text).toContain("今天已花 ¥1.25");
-    expect(text).toContain("deepseek-flash · 高");
     const inputs = [...host.querySelectorAll("input")] as HTMLInputElement[];
     await act(async () => typeInto(inputs[1], "8"));          // 每天
     expect(latest?.budget?.daily).toBe("8");

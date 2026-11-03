@@ -97,19 +97,17 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const cwd = detail?.cwd ?? s.activeWorkspace;
   const model = s.draftModel ?? detail?.model ?? s.defaultModel;
   const mode = s.draftMode;
-  // D5-9：推理强度 / 回答风格（有对话时取会话的；新对话取草稿，否则取按模型记住的 / 设置里的默认）
+  // D5-9：推理强度 / 回答风格（有对话时取会话的；新对话取草稿，否则取设置里的默认）
   const [styles, setStyles] = useState<StyleInfo[]>([]);
-  const [remembered, setRemembered] = useState<Record<string, string>>({});
   useEffect(() => {
     if (!s.rpc) return;
     let alive = true;
     s.rpc.call("styles/list").then((r) => alive && setStyles(r.styles ?? [])).catch(reportError("读取回答风格列表失败"));
-    s.rpc.call("reasoning/prefs").then((r) => alive && setRemembered(r.remembered ?? {})).catch(() => undefined);
     return () => {
       alive = false;
     };
-  }, [s.rpc, s.activeThreadId, detail?.effort]);
-  const effort = (detail ? detail.effort : s.draftEffort) ?? remembered[model] ?? s.defaultEffort ?? "";
+  }, [s.rpc, s.activeThreadId]);
+  const effort = (detail ? detail.effort : s.draftEffort) ?? s.defaultEffort ?? "";
   const style = (detail ? detail.style : s.draftStyle) ?? s.defaultStyle ?? "default";
   // 草稿里换了模型时按草稿模型的能力显示（DeepSeek：默认（high）/ 低 / 最高（max）/ 关闭思考）
   const support =
