@@ -1981,7 +1981,12 @@ class Session:
         self.store.append("reset", {"why": "compact"})
         for m in new:
             self.store.message(m)
-        self.store.append("compact", {"reason": reason, "tokens_before": before, "incremental": incremental})
+        # 顺手记下摘要的标识符覆盖率与「压缩前读过哪些区间」：压缩把原文整段换掉，
+        # 这是唯一能事后复盘「压缩有没有把细节吃掉 / 压完要不要重读」的时刻。
+        # 见 core/compaction_audit.py 与 roadmap §7。
+        cov = _compact_coverage(real, summary)
+        self.store.append("compact", {"reason": reason, "tokens_before": before, "incremental": incremental,
+                                      "coverage": cov, "reads": _compact_reads(real)})
         self.turn_starts = []          # 压缩前的回合无法再回退
         self._invalidate_read_refs("compact")
         prefix = self.prefix or self.current_prefix()
@@ -1995,6 +2000,25 @@ class Session:
         emit(Compacted(text, "info", reason=reason, tokens_before=before, tokens_after=after, summary=summary,
                        incremental=incremental))
         return {"ok": True, "message": text, "tokens_before": before, "tokens_after": after, "incremental": incremental}
+
+
+def _compact_reads(real: list[dict]) -> list[list]:
+    """压缩前最后几轮读过的区间，落盘供「压缩后有没有重读」用（原文随后就被替换掉了）。"""
+    try:
+        from ee.core import compaction_audit as A
+        return A.read_digest(real)
+    except Exception:  # noqa: BLE001  诊断数据不值得让压缩失败
+        return []
+
+
+def _compact_coverage(real: list[dict], summary: str) -> dict:
+    """压缩前原文 → 摘要的标识符覆盖率（只留两个整数，原文不落盘）。"""
+    try:
+        from ee.core import compaction_audit as A
+        text = C.render_transcript(real, 200_000, 4000)
+        return A.ident_digest(text, summary or "")
+    except Exception:  # noqa: BLE001  诊断数据不值得让压缩失败
+        return {}
 
 
 def _friendly_error(e: Exception) -> str:

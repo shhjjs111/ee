@@ -247,10 +247,19 @@ def _cmd_usage(args) -> int:
         return 1
     d = summarize(rows)
     d["sessions"] = 1
+    # 压缩审计：压缩会不会把细节吃掉 / 压完要不要重读（roadmap §7）
+    from ee.core import compaction_audit as A
+
+    try:
+        d["compaction_audit"] = A.audit(SessionStore.load_messages(targets[0]),
+                                        records=SessionStore._records(targets[0]))
+    except Exception:  # noqa: BLE001  诊断不该让主命令失败
+        d["compaction_audit"] = None
     if args.json:
         print(json.dumps(d, ensure_ascii=False, indent=2))
     else:
         _print_usage(d, title=targets[0].stem)
+        _print_audit(d.get("compaction_audit"))
     return 0
 
 
@@ -280,6 +289,28 @@ def _print_usage(d: dict, *, title: str) -> None:
     others = {k: v for k, v in d["by_role"].items() if k != "main" and v["requests"]}
     if others:
         print("  其它请求：" + "，".join(f"{k} {v['requests']} 次" for k, v in sorted(others.items())))
+
+
+def _print_audit(a: dict | None) -> None:
+    """压缩审计两行：摘要把细节吃掉多少、压完有没有被迫重读。"""
+    if not a:
+        return
+    cov = a.get("identifier_coverage")
+    rr = a.get("reread") or {}
+    if cov and cov.get("count"):
+        mean = cov.get("mean_rate")
+        if mean is None:
+            print(f"  摘要标识符覆盖率：这次压缩没留记录（{cov['count']} 次压缩，字段是本版新加的）")
+        else:
+            worst = min((x["rate"] for x in cov["items"] if x["rate"] is not None), default=None)
+            print(f"  摘要标识符覆盖率：均值 {_pct(mean)} · 最差 {_pct(worst)} · {cov['count']} 次压缩")
+    if rr.get("compactions"):
+        line = f"  压缩后 3 轮内重读：{rr['rereads']} 次 / {rr['compactions']} 次压缩"
+        if rr["rereads"]:
+            line += "  ← 保留段没盖住刚看过的内容（keep_tools / keep_tokens 被调小了？）"
+        else:
+            line += "  ← 0 是健康值"
+        print(line)
 
 
 def _migrate_secrets() -> None:
