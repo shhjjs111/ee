@@ -57,4 +57,24 @@ describe("context", () => {
       "服务端缓存命中 30%",
     );
   });
+
+  it("有主对话口径时优先用它", () => {
+    // 侧路请求（标题 / commit / 压缩 / 子代理）命中恒 0，总口径会被拉低；
+    // 用户关心的是主对话到底命中多少。
+    expect(
+      cacheLine(
+        bd({
+          cache: { hit: 900, hit_rate: 0.9, hit_coverage: 1, main_hit_rate: 0.99, main_hit_coverage: 1, main_requests: 8 },
+        }),
+      ),
+    ).toBe("主对话缓存命中 99% · 覆盖 100% 输入");
+    // 主对话还没有样本（main_hit_rate=null）：回落到总口径，不要显示 0%
+    expect(cacheLine(bd({ cache: { hit: 500, hit_rate: 0.5, hit_coverage: 0.8, main_hit_rate: null } }))).toBe(
+      "服务端缓存命中 50% · 覆盖 80% 输入",
+    );
+    // 主对话覆盖率未知：只说命中率
+    expect(cacheLine(bd({ cache: { hit: 0, hit_rate: null, hit_coverage: null, main_hit_rate: 0.97 } }))).toBe(
+      "主对话缓存命中 97%",
+    );
+  });
 });

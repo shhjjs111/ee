@@ -100,6 +100,11 @@ export type Usage = {
   hit?: number;
   hit_rate?: number | null;
   hit_coverage?: number | null;
+  /** 主对话口径（P0-1）：不含标题 / commit / 压缩 / 子代理这些命中恒 0 的侧路请求。
+   *  旧后端没有这些字段，界面读不到时回落到 hit_rate。 */
+  main_hit_rate?: number | null;
+  main_hit_coverage?: number | null;
+  main_requests?: number;
   cost?: number | null;
   currency?: string;
   reasoning?: number; // 推理 token（服务端给了才有，D5-9）
@@ -591,8 +596,17 @@ export type ContextBreakdown = {
   images: number;
   messages: number;
   savings: { pruned: number; prunes: number; pruned_outputs: number; compacted: number; reasoning?: number; reasoning_cut?: number };
-  /** 缓存命中（T19）：hit_rate/hit_coverage 未知时是 null（不是 0）。 */
-  cache: { hit: number; hit_rate: number | null; hit_coverage: number | null };
+  /** 缓存命中（T19）：hit_rate/hit_coverage 未知时是 null（不是 0）。
+   *  main_* 是主对话口径（P0-1），不含标题 / commit / 压缩 / 子代理这些命中恒 0 的侧路请求；
+   *  旧后端没有这几个字段，界面读不到时回落到 hit_*。 */
+  cache: {
+    hit: number;
+    hit_rate: number | null;
+    hit_coverage: number | null;
+    main_hit_rate?: number | null;
+    main_hit_coverage?: number | null;
+    main_requests?: number;
+  };
   compactions: number;
   frozen: boolean;
   thresholds: { compact: number | null; prune: number | null; prune_tokens?: number | null; compact_tokens?: number | null };

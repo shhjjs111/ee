@@ -45,11 +45,20 @@ export function thresholdLine(d: ContextBreakdown): string | null {
   return parts.length ? parts.join("，") : null;
 }
 
-/** 服务端缓存命中（T19）：命中率 + 覆盖率。未知（hit_rate 为 null）时不显示，绝不编造成 0。 */
+/** 服务端缓存命中（T19）：命中率 + 覆盖率。未知（hit_rate 为 null）时不显示，绝不编造成 0。
+ *
+ * 优先用主对话口径（main_*，P0-1）：标题 / commit / 压缩 / 子代理这些侧路请求前缀独立、
+ * 命中恒 0 或很低，混进分母会把用户看到的数字无端拉低几个百分点。旧后端没有 main_*
+ * 时回落到 hit_*，行为与之前一致。 */
 export function cacheLine(d: ContextBreakdown): string | null {
   const c = d.cache;
-  if (!c || c.hit_rate == null) return null;
-  const rate = `${Math.round(c.hit_rate * 100)}%`;
-  if (c.hit_coverage == null) return `服务端缓存命中 ${rate}`;
-  return `服务端缓存命中 ${rate} · 覆盖 ${Math.round(c.hit_coverage * 100)}% 输入`;
+  if (!c) return null;
+  const main = c.main_hit_rate != null;
+  const rate = main ? c.main_hit_rate : c.hit_rate;
+  if (rate == null) return null;
+  const cov = main ? c.main_hit_coverage : c.hit_coverage;
+  const label = main ? "主对话缓存命中" : "服务端缓存命中";
+  const pct = `${Math.round(rate * 100)}%`;
+  if (cov == null) return `${label} ${pct}`;
+  return `${label} ${pct} · 覆盖 ${Math.round(cov * 100)}% 输入`;
 }

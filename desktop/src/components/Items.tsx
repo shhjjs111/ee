@@ -798,10 +798,14 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
                 ? "达到花费上限，已停止"
                 : "完成";
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
-  if (u.hit_rate !== undefined && u.hit_rate !== null) {
+  // 主对话口径（P0-1）：侧路请求（标题 / commit / 压缩 / 子代理）命中恒 0 或很低，
+  // 混进分母会把用户看到的数字无端拉低。旧后端没有 main_*，回落到 hit_rate。
+  const cacheRate = u.main_hit_rate ?? u.hit_rate;
+  if (cacheRate !== undefined && cacheRate !== null) {
     // T19：命中率带覆盖率，未知（hit_coverage=null）不显示 0
-    const cov = u.hit_coverage != null ? ` · 覆盖 ${Math.round(u.hit_coverage * 100)}%` : "";
-    bits.push(`缓存命中 ${Math.round(u.hit_rate * 100)}%${cov}`);
+    const cov = (u.main_hit_rate != null ? u.main_hit_coverage : u.hit_coverage);
+    const covText = cov != null ? ` · 覆盖 ${Math.round(cov * 100)}%` : "";
+    bits.push(`缓存命中 ${Math.round(cacheRate * 100)}%${covText}`);
   }
   if (u.reasoning) bits.push(`推理 ${u.reasoning.toLocaleString()} tokens`);
   if (u.pruned) bits.push(`修剪省 ~${u.pruned.toLocaleString()} tokens`);
