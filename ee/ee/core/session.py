@@ -49,6 +49,11 @@ log = logging.getLogger("ee.session")
 
 LAST_STEP_NOTE = ("[系统提示] 已达到本回合允许的最大步数。请不要再调用任何工具，"
                   "只用文字总结目前的进展、结果、尚未完成的部分和建议的下一步。")
+# 分段续跑（段边界）：一段步数用完、还有余段时，不写“只总结”，而是让模型接着做。
+# 为什么不写“继续上次”：模型手里的历史一条没少（压缩后仍有保留段），它自己知道做到哪。
+# 短到几乎不占 token，也不重复上一条回复的内容。
+SEGMENT_NOTE = ("[系统提示] 本段步数已用完，任务还没收尾。接着做，不要重复已经完成的部分；"
+                "如果确实需要用户决定什么，就直接用文字问。")
 INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执行）。"
 MIDTURN_IMAGE_NOTE = ("[系统提示] 下面是刚读到的图片，用来继续当前任务（不是新的用户要求）。")
 # 审批等待上限（秒）。无人值守 / 窗口关掉 / 前端断线时，ApprovalRequest 的 future
@@ -1280,13 +1285,36 @@ class Session:
             emit(TurnStart(self.turns, tree))
             step = 0
             max_steps = max(1, self.config.max_steps)
+            # 分段续跑：单段 max_steps 步，最多 max_steps_segments 段（1 = 原来的硬停行为）。
+            # 段边界只做「原本发生在下回合开始」的那次自动压缩，然后接着跑。请求序列与
+            # 「触顶 → 用户手打继续 → 下回合开始压缩」逐条等价（实测 43ca2f：20 次触顶后的
+            # 下一回合 20/20 都是先 compact），所以不新增未命中，净省掉触顶那次被迫总结的请求。
+            segments = max(1, int(self.config.data.get("max_steps_segments") or 1))
+            total = max_steps * segments
             self._turn_running = True      # 从这里开始是回合中途：压缩推迟到下一回合开始
             while True:
                 step += 1
-                last = step >= max_steps
+                last = step >= total
+                segment_end = step >= max_steps and step % max_steps == 0 and not last
                 if step > 1:
-                    await self._maybe_auto_compact(emit)
-                if last and step > 1:
+                    if segment_end:
+                        # 段边界 = 原本次回合开始的那个位置：临时放开「回合中途不压缩」的守卫，
+                        # 压完再恢复。不压的话下一段从水位起跑，一路顶到 400。
+                        # 只有真的压缩了才需要重建回合起点：_compact 会清空 turn_starts，
+                        # 没压时重建会把更早回合的回退点一起丢掉。
+                        had_turn_starts = list(self.turn_starts)
+                        self._turn_running = False
+                        try:
+                            await self._maybe_auto_compact(emit)
+                        finally:
+                            self._turn_running = True
+                        if self.turn_starts != had_turn_starts:
+                            self._retrack_turn_start()
+                    else:
+                        await self._maybe_auto_compact(emit)
+                if segment_end:
+                    self._append({"role": "user", "content": SEGMENT_NOTE, "_kind": "note"})
+                elif last and step > 1:
                     self._append({"role": "user", "content": LAST_STEP_NOTE, "_kind": "note"})
                 stop = await self._budget_check(emit)        # D5-9：花费上限
                 if stop:
@@ -1310,7 +1338,7 @@ class Session:
                         self._append({"role": "tool", "tool_call_id": tc["id"],
                                       "content": "已达到最大步数，此调用未执行。"})
                     self._open_calls.clear()
-                    emit(Notice(f"已达到最大步数 {max_steps}，本回合结束。", "warn"))
+                    emit(Notice(f"已达到本回合的步数上限 {total}（{segments} 段 × {max_steps}），本回合结束。", "warn"))
                     emit(TurnDone("max_steps", final))
                     return
                 self._end_turn = False
@@ -1911,6 +1939,21 @@ class Session:
         if limit <= 0:
             return configured
         return min(configured, int(limit * 0.15))
+
+    def _retrack_turn_start(self) -> None:
+        """压缩重建历史后，把「本回合的起点」重新登记到新历史里。
+
+        `_compact` 会清空 `turn_starts`（压缩前的下标在新历史里已无意义），而段边界压缩发生在
+        回合**还没结束时**：不补这一条，本回合就再也不能回退（`rewind_last_turn` 要求下标存在）。
+        找的是**本回合那条用户消息**：带 _kind 的（AGENTS / 摘要 / 备注 / 图片）不是。
+        找不到（原话没被保留）就不登记——宁可不能回退，也不能指向一条错的消息。
+        """
+        for i in range(len(self.history) - 1, -1, -1):
+            m = self.history[i]
+            if m.get("role") == "user" and not m.get("_kind"):
+                self.turn_starts = [i]
+                return
+        self.turn_starts = []
 
     async def _compact(self, emit, reason: str) -> dict:
         real = [m for m in self.history if m.get("_kind") != "agents"]

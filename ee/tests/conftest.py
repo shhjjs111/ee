@@ -135,12 +135,15 @@ def workspace(tmp_path):
     return ws
 
 
-def make_session(workspace, script, mode="default", delay=0.0, max_steps=None, model=None):
+def make_session(workspace, script, mode="default", delay=0.0, max_steps=None, model=None,
+                 max_steps_segments=None):
     from ee.config import load_config
     from ee.core.session import Session
     cfg = load_config(workspace)
     if max_steps:
         cfg.data["max_steps"] = max_steps
+    if max_steps_segments is not None:
+        cfg.data["max_steps_segments"] = max_steps_segments
     fake = FakeClient(script, delay=delay)
     s = Session(cfg, model=model, cwd=workspace, mode=mode, client=fake, persist=False)
     return s, fake

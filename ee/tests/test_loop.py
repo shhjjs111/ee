@@ -54,7 +54,7 @@ def test_max_steps(ee_home, workspace):
     (workspace / "a.txt").write_text("x\n", encoding="utf-8")
     script = [tool_chunks(0, f"c{i}", "read", {"path": "a.txt", "offset": 1, "limit": i + 1}) + finish("tool_calls")
               for i in range(3)]
-    s, fake = make_session(workspace, script, max_steps=3)
+    s, fake = make_session(workspace, script, max_steps=3, max_steps_segments=1)
     ev = run(collect(s, "loop"))
     assert done(ev).reason == "max_steps"
     assert len(fake.calls) == 3
@@ -62,6 +62,167 @@ def test_max_steps(ee_home, workspace):
     assert any("最大步数" in (m.get("content") or "") for m in fake.calls[2]["messages"] if m["role"] == "user")
     ids = [tc["id"] for m in s.history if m["role"] == "assistant" for tc in m.get("tool_calls", [])]
     assert sorted(ids) == sorted(m["tool_call_id"] for m in tool_msgs(s))
+
+
+def test_segments_continue_past_step_limit(ee_home, workspace):
+    """max_steps_segments=2：步数上限翻倍，段边界不写“只总结”而是接着做。
+
+    关键 1：段边界**不**注入“只总结”——模型因此继续调工具（旧行为下它会收尾）。
+    关键 2：最终仍受总预算约束，到最后一格才停。
+    """
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    script = [tool_chunks(0, f"c{i}", "read", {"path": "a.txt", "offset": 1, "limit": i + 1}) + finish("tool_calls")
+              for i in range(6)]
+    s, fake = make_session(workspace, script[:4], max_steps=2, max_steps_segments=2)
+    ev = run(collect(s, "loop"))
+    assert len(fake.calls) == 4, "2 段 × 2 步应该跑满 4 步"
+    assert done(ev).reason == "max_steps"
+    # 第 3 步（第二段第一步）本应带“只总结”，分段模式下改成“接着做”
+    third = [m.get("content") or "" for m in fake.calls[2]["messages"] if m["role"] == "user"][-1]
+    assert "接着做" in third and "不要再调用任何工具" not in third
+    # 每一格 tool_call 都有配对的输出（否则会话永久 400）
+    ids = [tc["id"] for m in s.history if m["role"] == "assistant" for tc in m.get("tool_calls", [])]
+    assert sorted(ids) == sorted(m["tool_call_id"] for m in tool_msgs(s))
+
+
+def test_segments_one_is_old_behavior(ee_home, workspace):
+    """显式 1 段 == 旧行为：到 max_steps 就停，不续跑。"""
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c2", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        text_chunks("收尾") + finish("stop"),
+    ], max_steps=2, max_steps_segments=1)
+    ev = run(collect(s, "go"))
+    assert len(fake.calls) == 2 and done(ev).reason == "max_steps"
+
+
+def test_segment_boundary_also_compacts(ee_home, workspace, monkeypatch):
+    """段边界要顺手压缩：否则第二段从水位起跑，一路顶到窗口 400。
+
+    现状把这次压缩发生在「下一回合开始」，这里只把它挪到同一回合的段边界——次数不变。
+    """
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c2", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c3", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c4", "read", {"path": "a.txt"}) + finish("tool_calls"),
+    ], max_steps=2, max_steps_segments=2)
+    calls = []
+    orig = type(s)._maybe_auto_compact
+
+    async def spy(self, emit):
+        calls.append(self._turn_running)      # 压缩那一刻守卫必须是 False（已临时放开）
+        await orig(self, emit)
+
+    monkeypatch.setattr(type(s), "_maybe_auto_compact", spy)
+    run(collect(s, "go"))
+    # 第 2 步（段边界）之前那次调用必须发生在守卫放开之后
+    assert calls, "段边界没有触发 _maybe_auto_compact"
+    assert calls[0] is False, "段边界压缩时 _turn_running 应当临时放开为 False"
+
+
+def test_segment_boundary_retracks_turn_start(ee_home, workspace):
+    """压缩会清空 turn_starts；段边界压缩后必须重新登记，否则本回合再也不能回退。"""
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c2", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c3", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c4", "read", {"path": "a.txt"}) + finish("tool_calls"),
+    ], max_steps=2, max_steps_segments=2)
+    run(collect(s, "go"))
+    # 直接调用重建函数，验证它在新历史里能找到本回合的用户消息
+    s._retrack_turn_start()
+    assert s.turn_starts, "压缩后必须重新登记回合起点，否则本回合无法回退"
+    i = s.turn_starts[-1]
+    assert 0 <= i < len(s.history)
+    assert s.history[i]["role"] == "user" and not s.history[i].get("_kind")
+
+
+def test_last_step_text_summary_is_max_steps(ee_home, workspace):
+    """最后一格给出纯文字收尾，仍然标 max_steps。
+
+    这**不是**误报：最后一步之前 ee 注入了 LAST_STEP_NOTE（"不要再调用任何工具，只用文字
+    总结"），模型正是被它逼着收尾的。实测 31 个触顶回合最后一步全是纯文字——那恰恰说明
+    它们都是被步数上限截断的，任务本身还没跑完。
+    """
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        text_chunks("做完了") + finish("stop"),
+    ], max_steps=2, max_steps_segments=1)
+    ev = run(collect(s, "go"))
+    assert done(ev).reason == "max_steps"
+    # 最后一步前确实注入了「只总结」提示，这才是标 max_steps 的依据
+    assert any("不要再调用任何工具" in (m.get("content") or "")
+               for m in fake.calls[1]["messages"] if m["role"] == "user")
+
+
+def test_segment_boundary_real_compact_keeps_pairs(ee_home, workspace, monkeypatch):
+    """段边界真的压缩了以后，历史里 tool_calls / tool 必须仍然一一配对。
+
+    前面两条段边界测试用的是小对话，压缩根本没触发（needs_compaction 依赖 fresh_usage
+    且要过水位），所以「压完历史还能发出去」这件事实际上没被测到。这里用大 prompt_tokens
+    把水位顶穿，让 _compact 真的重建历史，再验证：
+    1. 确实压缩了（历史条数变少 / 出现摘要）
+    2. 配对没坏——破坏配对会让下一格请求永久 400
+    3. 压缩后仍能跑完第二段
+    """
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    big = 200_000                       # 远超 0.9 × 128k 窗口
+    # 按请求内容分流：压缩请求返回纯文本摘要，其余才是真实采样。
+    # 之前数格子写死脚本的做法不可靠——压缩自己就要占 1~3 次请求（主路 + 侧路重试）。
+    n = {"samples": 0}
+
+    def script(params):
+        if "需要压缩" in str(params.get("messages")) or "上下文检查点压缩" in str(params.get("messages")):
+            return text_chunks("【摘要】已读过 a.txt") + finish("stop")
+        n["samples"] += 1
+        return (tool_chunks(0, f"c{n['samples']}", "read", {"path": "a.txt"})
+                + finish("tool_calls", prompt=big))
+
+    s, fake = make_session(workspace, [script] * 20,
+                           max_steps=2, max_steps_segments=2)
+
+    results = []
+    orig = type(s)._compact
+
+    async def spy(self, emit, reason="auto"):
+        r = await orig(self, emit, reason)
+        results.append((r.get("ok"), r.get("tokens_before", 0), r.get("tokens_after", 0)))
+        return r
+
+    monkeypatch.setattr(type(s), "_compact", spy)
+
+    ev = run(collect(s, "go"))
+    assert results, "水位已顶穿，段边界必须真的压缩了一次"
+    assert done(ev).reason == "max_steps"
+    # 配对完整：破坏它会让下一格请求永久 400
+    ids = [tc["id"] for m in s.history if m["role"] == "assistant" for tc in m.get("tool_calls", [])]
+    assert sorted(ids) == sorted(m["tool_call_id"] for m in tool_msgs(s))
+    # 压缩必须真的成功并把历史变短：这是「续跑不会一路顶到窗口 400」的证据。
+    # 只看 _compact 被调用过是不够的——早期版本就是这么写的，实际上压缩返回了
+    # ok=False（「模型没有返回摘要」），测试却仍然是绿的。
+    assert results and all(r[0] for r in results), f"压缩没成功：{results}"
+    before_tok, after_tok = results[0][1], results[0][2]
+    assert after_tok < before_tok, f"压缩后 token 没变小：{before_tok} → {after_tok}"
+    # 历史里必须真的出现了摘要（_kind=summary），而不是原地没动
+    assert any(m.get("_kind") == "summary" for m in s.history), "压缩后历史里没有摘要"
+    # 回合起点重建到本回合那句用户话上（否则压缩后本回合无法回退）
+    assert s.turn_starts and s.history[s.turn_starts[-1]]["role"] == "user"
+
+
+def test_last_step_tool_calls_still_hard_stops(ee_home, workspace):
+    """最后一格还在调工具：那才是真的被步数逼停，仍然标 max_steps。"""
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    s, fake = make_session(workspace, [
+        tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
+        tool_chunks(0, "c2", "read", {"path": "a.txt"}) + finish("tool_calls"),
+    ], max_steps=2, max_steps_segments=1)
+    ev = run(collect(s, "go"))
+    assert done(ev).reason == "max_steps"
 
 
 def test_errors_fed_back(ee_home, workspace):

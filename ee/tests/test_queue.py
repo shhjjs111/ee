@@ -213,7 +213,7 @@ def test_max_steps_returns_unsent(ee_home, workspace):
     s, fake = make_session(workspace, [
         tool_chunks(0, "c1", "read", {"path": "a.txt"}) + finish("tool_calls"),
         text_chunks("最后总结", n=1) + finish("stop"),
-    ], max_steps=2, delay=0.005)
+    ], max_steps=2, max_steps_segments=1, delay=0.005)   # 1 段：显式测「触顶即停」的旧行为
 
     def on(ev, events):
         if isinstance(ev, TextDelta) and not hasattr(on, "done"):     # 最后一步（只许总结）里排进来的
