@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 
 from ee.config import load_config
-from ee.core import reasoning as RZ
 from ee.core import styles as ST
 from ee.core.budget import BudgetGuard
 

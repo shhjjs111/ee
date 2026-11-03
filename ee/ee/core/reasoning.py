@@ -13,17 +13,12 @@
 """
 from __future__ import annotations
 
-import json
-import threading
-from pathlib import Path
-
 LEVELS = ("", "low", "medium", "high", "max", "off")
 LABEL = {"": "默认", "low": "低", "medium": "中", "high": "高", "max": "最高", "off": "关闭思考"}
 DEFAULT_EFFORT_LEVELS = ("low", "medium", "high")
 _ALIASES = {"默认": "", "default": "", "auto": "", "低": "low", "中": "medium", "高": "high", "最高": "max",
             "关": "off", "关闭": "off", "关闭思考": "off", "none": "off", "minimal": "low", "xhigh": "high",
             "ultra": "max"}
-_LOCK = threading.Lock()
 
 
 def normalize(level) -> str | None:
