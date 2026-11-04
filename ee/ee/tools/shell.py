@@ -343,10 +343,13 @@ def long_wait_reason(command: str, timeout: float | None = None) -> str | None:
     短 sleep 不转：转后台要多一次 shell_output 往返（一次模型往返中位 4.5s、p90 20s），
     前台等完反而更快。
     """
-    m = _SLEEP_HEAD.match(command)
+    # 先剥掉 `cd x &&` / `export PATH=... &&` 这类前缀：实测慢命令绝大多数都带前缀，
+    # 只匹配行首的 sleep 会把 `cd x && sleep 540; gh run list` 全漏掉（10 条 / 40 分钟）。
+    body = _strip_prefix_chain(command)
+    m = _SLEEP_HEAD.match(body)
     if m:
         secs = float(m.group(1))
-        chained = bool(re.search(r"[;&|]|\n", command[m.end():]))
+        chained = bool(re.search(r"[;&|]|\n", body[m.end():]))
         if secs >= SLEEP_BG_THRESHOLD and chained:
             return f"先 sleep {m.group(1)} 秒再继续"
         if timeout is not None and secs >= float(timeout) and not chained:
@@ -382,7 +385,7 @@ def _strip_prefix_chain(command: str) -> str:
     while True:
         m = re.match(r"\s*(?:cd|pushd|set-location)\s+[^;&|]+\s*(?:&&|;|\|\||\n)\s*", body, re.I)
         if not m:
-            m = re.match(r"\s*[\w.]+=[^\s;&|]*\s*(?:&&|;)\s*", body)
+            m = re.match(r"\s*(?:export[ \t]+)?[\w.]+=[^\s;&|]*\s*(?:&&|;)\s*", body)
         if not m:
             return body
         body = body[m.end():]

@@ -29,6 +29,18 @@ def test_detects_sleep_then_poll():
     assert long_wait_reason("sleep 300 && curl -s http://x") is not None
 
 
+def test_detects_sleep_behind_prefix_chain():
+    """`cd x && sleep 540; ...` 这种带前缀的写法占实测慢命令的绝大多数。
+
+    原先只匹配行首的 sleep，带 `cd`/`export` 前缀的一律漏掉：实测 10 条、约 40 分钟。
+    """
+    assert long_wait_reason('cd "E:/repo" && sleep 540; gh run list') is not None
+    assert long_wait_reason('export PATH=/x:$PATH && cd repo && sleep 420; gh run view 1') is not None
+    assert long_wait_reason("cd repo && sleep 300", timeout=300) is not None
+    # 前缀后面的 sleep 同样适用短等待规则
+    assert long_wait_reason("cd repo && sleep 30; gh run list") is None
+
+
 def test_ignores_short_sleep():
     """短 sleep 和「单纯睡一会儿」不算：前台等完比转后台再查更简单。
 
