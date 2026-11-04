@@ -217,12 +217,13 @@ class ShellTool(Tool):
         # 必然久等的命令（`sleep N; ...`、`gh run watch`）直接转后台：
         # 实测模型把它们写在前台，一条就能霍掉 600s 超时（新代码 91 回合里
         # 这类纯阻塞等 45 分钟）。显式传 background=false 的尊重模型。
-        if args.get("background") is not False and long_wait_reason(command):
-            sess = ctx.extra.get("session")
-            if getattr(sess, "bg", None) is not None:
-                ctx.emit(Notice(f"这条命令会阻塞很久（{long_wait_reason(command)}），已改走后台："
-                                f"用 shell_output 等待结果", "info"))
-                return await run_background(command, shell, cwd, ctx)
+        if args.get("background") is not False:
+            why = long_wait_reason(command, timeout)
+            if why:
+                sess = ctx.extra.get("session")
+                if getattr(sess, "bg", None) is not None:
+                    ctx.emit(Notice(f"这条命令会阻塞很久（{why}），已改走后台：用 shell_output 等待结果", "info"))
+                    return await run_background(command, shell, cwd, ctx)
         t0 = time.monotonic()
         try:
             code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit, sandbox=sb)
@@ -235,11 +236,17 @@ class ShellTool(Tool):
         hint = full_pytest_hint(command)
         if hint:
             body = (body or "") + "\n" + hint
-        # 超时也把已捕获的输出交回去：原先文案只说「已终止」，模型看不出还能接着用
-        # （新代码 91 个回合里有 6 次撞 600s 超时，共 44 分钟，输出里其实已有进度）。
-        # 输出里往往已有「跑到哪了」，能直接判断该换子集还是转后台。
-        tail = (f"\n[超时：{timeout}s 后已终止，上面的输出是终止前已捕获的部分，可据此判断进度]"
-                if timed_out else "")
+        # 超时就把已捕获的输出交回去，并在回执里说清「到底有没有留下东西」：
+        # 原先不管有没有输出都写「上面的输出……可据此判断进度」，一条不打印的
+        # `sleep 120` 超时后那行字就和上面那个「（无输出）」自相矛盾。
+        if timed_out:
+            saved = (body or "").strip()
+            tail = (f"\n[超时：{timeout}s 后已终止。上面的输出是终止前已捕获的部分，可据此判断进度]"
+                    if saved and saved != "（无输出）" else
+                    f"\n[超时：{timeout}s 后已终止，这条命令在等待中没产生任何输出。"
+                    f"下一步要么把它放后台（background=true），要么拆成小步骤]")
+        else:
+            tail = ""
         footer = f"\n[exit {code if code is not None else '?'} · {dur:.1f}s]" + _sb_note(sb)
         ok = (code == 0) and not timed_out
         return ToolResult((body or "（无输出）") + tail + footer, ok=ok, summary=f"Ran {command}",
@@ -259,17 +266,24 @@ SLEEP_BG_THRESHOLD = 90          # 只把「真的等很久」的转后台：历
                                  # 模型还得再发一次 shell_output，反而多一轮往返。
 
 
-def long_wait_reason(command: str) -> str | None:
+def long_wait_reason(command: str, timeout: float | None = None) -> str | None:
     """命令是不是「必然阻塞很久」，是则返回原因。检测不到返回 None。
 
-    只看两类实测写法（新代码 91 回合里占了 45 分钟的纯阻塞）：
-    - `sleep N; ...` / `sleep N && ...`（N>=10）：等完再查的轮询，本该走后台；
+    三类实测写法（新代码 91 回合里占了 45 分钟的纯阻塞）：
+    - `sleep N; ...` / `sleep N && ...`（N≥90）：等完再查的轮询，本该走后台；
+    - 单独的 `sleep N` 但 N ≥ 本次超时：放前台必然被掐掉，等于白白等满 timeout；
     - `gh run watch` / `gh pr checks --watch`：一直挂到 CI 结束，实测单次 600s。
-    单独的 `sleep N` 不算（模型就是想等一下，前台让它等完更简单）。
+    短 sleep 不转：转后台要多一次 shell_output 往返（一次模型往返中位 4.5s、p90 20s），
+    前台等完反而更快。
     """
     m = _SLEEP_HEAD.match(command)
-    if m and float(m.group(1)) >= SLEEP_BG_THRESHOLD and re.search(r"[;&|]|\n", command[m.end():]):
-        return f"先 sleep {m.group(1)} 秒再继续"
+    if m:
+        secs = float(m.group(1))
+        chained = bool(re.search(r"[;&|]|\n", command[m.end():]))
+        if secs >= SLEEP_BG_THRESHOLD and chained:
+            return f"先 sleep {m.group(1)} 秒再继续"
+        if timeout is not None and secs >= float(timeout) and not chained:
+            return f"单次 sleep {m.group(1)} 秒已经达到本次超时 {int(timeout)} 秒"
     for pat, why in _WATCH_PATTERNS:
         if pat.search(command):
             return why

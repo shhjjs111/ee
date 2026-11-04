@@ -42,6 +42,19 @@ def test_ignores_short_sleep():
     assert long_wait_reason("echo hi") is None
 
 
+def test_single_long_sleep_over_timeout_goes_background():
+    """单独的 sleep 也不能一律留前台：超过本次超时就会被掐断，什么都拿不到。
+
+    默认 bash_timeout 就是 120，`sleep 120` 正好卡在边界上——实测前台跑会
+    timed_out=True 且没有任何输出。超过超时的单独 sleep 必须转后台。
+    """
+    assert long_wait_reason("sleep 120", timeout=120) is not None
+    assert long_wait_reason("sleep 300", timeout=120) is not None
+    # 本次超时足够长、或 sleep 比超时短：前台等完更简单，不必多一轮往返
+    assert long_wait_reason("sleep 120", timeout=600) is None
+    assert long_wait_reason("sleep 30", timeout=120) is None
+
+
 def test_detects_ci_watch():
     assert long_wait_reason("gh run watch 12345 --exit-status") is not None
     assert long_wait_reason("cd repo && gh pr checks 7 --watch") is not None
@@ -92,6 +105,43 @@ def test_no_background_manager_falls_back_to_foreground(tmp_path):
 
     r = asyncio.run(go())
     assert r.meta.get("background") is not True
+
+
+# ---------------------------------------------------------------- 超时回执
+
+def test_timeout_without_output_does_not_claim_output_is_above(tmp_path):
+    """没产生输出的超时不能说「上面的输出可据此判断进度」——上面是「（无输出）」。
+
+    回归：原先不管有没有输出都写这句，一条不打印的 `sleep 120` 超时后
+    回执与正文自相矛盾，还顺带把模型往「看一眼再决定」上带。
+    """
+    from ee.tools.shellenv import resolve_shell
+
+    async def go():
+        ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
+                          shell=resolve_shell("auto"), timeout_default=2, max_timeout=2)
+        return await ShellTool().run({"command": "sleep 5", "background": False}, ctx)
+
+    r = asyncio.run(go())
+    assert r.meta.get("timed_out") is True
+    assert "上面的输出" not in r.output, f"没有输出时不该这么写：{r.output[:300]}"
+    assert "没产生任何输出" in r.output
+    assert "background=true" in r.output, "应给出下一步做法"
+
+
+def test_timeout_with_output_keeps_it_and_says_so(tmp_path):
+    """有输出的超时要把已捕获的部分交回去，并说明它是终止前的进度。"""
+    from ee.tools.shellenv import resolve_shell
+
+    async def go():
+        ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
+                          shell=resolve_shell("auto"), timeout_default=2, max_timeout=2)
+        return await ShellTool().run({"command": "echo 进度行; sleep 5", "background": False}, ctx)
+
+    r = asyncio.run(go())
+    assert r.meta.get("timed_out") is True
+    assert "进度行" in r.output, f"已捕获的输出必须保留：{r.output[:300]}"
+    assert "终止前已捕获" in r.output
 
 
 # ---------------------------------------------------------------- wait 上限
