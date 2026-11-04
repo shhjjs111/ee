@@ -254,7 +254,9 @@ _WATCH_PATTERNS = (
     (re.compile(r"\bgh\s+run\s+watch\b"), "等 CI 的 gh run watch"),
     (re.compile(r"\bgh\s+pr\s+checks\b[^;&|]*--watch\b"), "等 CI 的 gh pr checks --watch"),
 )
-SLEEP_BG_THRESHOLD = 10          # 睡 10 秒以上且后面还串了命令，就是「先等再查」的轮询写法
+SLEEP_BG_THRESHOLD = 90          # 只把「真的等很久」的转后台：历史实测 63 条 sleep 里 54 条 ≥90s，
+                                 # 而 10～59s 的只有 9 条。阈值太低会把本该前台等完的短等待也转后台，
+                                 # 模型还得再发一次 shell_output，反而多一轮往返。
 
 
 def long_wait_reason(command: str) -> str | None:
@@ -302,15 +304,19 @@ def _strip_prefix_chain(command: str) -> str:
         body = body[m.end():]
 
 
-# 这些参数说明「范围已缩小」或「根本没在执行」
+# 这些参数说明「范围已缩小」或「根本没在执行」。
+# `-m` 是 marker 表达式（`-m slow`），和 `-k` 一样是筛选，必须算缩小范围；
+# 但不能写成 "-m "——那会误中 `python -m pytest` 里的 ` -m `，把带路径的写法全判成有范围。
+# `--markers` 只是列出可用 marker，根本没跑测试。
 _SCOPING_FLAGS = ("-k", "--deselect", "--ignore", "--lf", "--last-failed", "--co", "--collect-only",
-                  "--sw", "--stepwise")
+                  "--sw", "--stepwise", "--markers")
+_MARKER_FLAG = re.compile(r"(?:^|\s)-m\s+\S")
 
 # 带值的选项：它们的值是配置/路径，不是「测试范围」。
 # 漏掉这个时 `-c ee/pyproject.toml` 的 `ee/pyproject.toml` 会被当成选择器，
 # 于是本机标准写法 `-c ee/pyproject.toml -q -n 8`（全量）全部漏检。
 _VALUE_FLAGS = ("-c", "--config-file", "-p", "--rootdir", "-o", "--override-ini", "--basetemp",
-                "--junitxml", "--timeout", "-W", "-m", "--numprocesses", "-n", "--tb", "--capture",
+                "--junitxml", "--timeout", "-W", "--numprocesses", "-n", "--tb", "--capture",
                 "--maxfail", "-x", "--durations", "--log-level")
 
 
@@ -351,6 +357,9 @@ def full_pytest_hint(command: str) -> str | None:
     # 去掉 pytest 本身与常见无害参数，看还剩不剩「路径/节点选择器」
     body = re.split(r"[|;&]", _strip_prefix_chain(command))[0]   # 只看管道/串联前的部分
     body = re.sub(rf"^\s*(?:{_PY}\s+-m\s+)?(?:pytest|py\.test)\b", "", body)
+    # 到这里 `python -m pytest` 的 `-m` 已经被剥掉了，剩下的 `-m` 只可能是 marker 表达式
+    if _MARKER_FLAG.search(body):
+        return None
     body = re.sub(r"\d*>&?\d*|\d*>|\d*<|\d*<<?&?\d*", " ", body)   # 剥掉重定向（2>&1、>/dev/null 等）
     body = _drop_option_values(body)
     for tok in body.split():

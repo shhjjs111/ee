@@ -30,8 +30,14 @@ def test_detects_sleep_then_poll():
 
 
 def test_ignores_short_sleep():
-    """短 sleep 和「单纯睡一会儿」不算：前台等完比转后台再查更简单。"""
+    """短 sleep 和「单纯睡一会儿」不算：前台等完比转后台再查更简单。
+
+    阈值是 90s：历史实测 63 条 sleep 里 54 条 ≥90s，10～59s 的只有 9 条。
+    阈值太低（比如 10s）会把本该前台等完的短等待也转后台，模型还得再发一次
+    shell_output，反而多一轮模型往返。
+    """
     assert long_wait_reason("sleep 3; echo hi") is None
+    assert long_wait_reason("sleep 60; echo hi") is None
     assert long_wait_reason("sleep 30") is None
     assert long_wait_reason("echo hi") is None
 
@@ -47,8 +53,8 @@ def test_long_wait_runs_in_background(tmp_path):
 
     sh = resolve_shell("auto")
     written = []
-    # `sleep 30; echo done`：检测会命中，但这里不想真等——shell 一进后台就立刻返回
-    cmd = "sleep 30; echo done"
+    # `sleep 120; echo done`：检测会命中，但这里不想真等——shell 一进后台就立刻返回
+    cmd = "sleep 120; echo done"
 
     async def go():
         mgr = BgManager(tmp_path / "logs", owner="t")
@@ -71,7 +77,7 @@ def test_explicit_background_false_is_respected(tmp_path):
     async def go():
         ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
                           timeout_default=5, max_timeout=5)
-        return await ShellTool().run({"command": "sleep 12; echo hi", "background": False}, ctx)
+        return await ShellTool().run({"command": "sleep 120; echo hi", "background": False}, ctx)
 
     r = asyncio.run(go())
     assert r.meta.get("background") is not True, "显式 background=false 时不该转后台"
@@ -82,7 +88,7 @@ def test_no_background_manager_falls_back_to_foreground(tmp_path):
     async def go():
         ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
                           timeout_default=5, max_timeout=5)
-        return await ShellTool().run({"command": "sleep 12; echo hi"}, ctx)
+        return await ShellTool().run({"command": "sleep 120; echo hi"}, ctx)
 
     r = asyncio.run(go())
     assert r.meta.get("background") is not True
@@ -128,3 +134,15 @@ def test_hint_ignores_option_values():
     """端正 `-c ee/pyproject.toml` 的值不是测试范围。"""
     assert full_pytest_hint("pytest -c ee/pyproject.toml") is not None
     assert full_pytest_hint("pytest -c ee/pyproject.toml ee/tests/test_x.py") is None
+
+
+def test_hint_treats_marker_filter_as_scoped():
+    """`-m slow` / `-m "not network"` 是 marker 筛选，和 `-k` 一样缩小了范围。
+
+    回归：把 `-m` 当成带值选项后，它的值被当成路径剩余参数，于是这两种写法
+    都会误报「全量」。`--markers` 只是列出可用 marker，根本没跑测试。
+    """
+    assert full_pytest_hint("pytest -m slow") is None
+    assert full_pytest_hint('pytest -m "not network"') is None
+    assert full_pytest_hint("pytest --markers") is None
+    assert full_pytest_hint("python -m pytest -m slow") is None
