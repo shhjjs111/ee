@@ -16,9 +16,12 @@ from conftest import make_session
 
 APPROX_CHARS_PER_TOKEN = 2.2
 LEAN_LIMIT = 1250        # 近似 token（2026-10-30 read 加 as_image 参数 +26，预算随之放宽；仍是防 schema 膨胀的守卫）
-FULL_LIMIT = 4650        # 近似 token（2026-11-01 由 4500 抬到 4650：新增桌面端 screenshot 工具，
-#                         实测 +113 近似 ≈ +98 真实；真实 tokenizer 口径约 4,010，仍低于当初实测线
-#                         （3,822 真实 / 4,398 近似）。抬高部分正好等于这个工具，不是留新余量）
+FULL_LIMIT = 4763        # 近似 token。口径每次抬高都是「实测值 + 不留新余量」：
+#   4500（2026-10-26 真实 tokenizer 实测 3,822 反推）
+# → 4650（2026-11-01 + 桌面端 screenshot，+113 近似 ≈ +98 真实）
+# → 4763（2026-11-04 + recall，+113 近似 / +110 真实；它堵的是压缩后摘要覆盖率
+#   只有 8.6% 的信息黑洞，见 ee/tools/recall.py 开头）。
+# 桌面端表（多了 screenshot）抬高后余量正好归零：再加任何工具都必须重新论证。
 
 
 def _prefix(workspace, **data):

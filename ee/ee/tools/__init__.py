@@ -56,6 +56,13 @@ def build_tools(profile, config=None, agent: str | None = None,
     if data0.get("screenshot", True) and os.environ.get("EE_DESKTOP") == "1":
         from ee.tools.screenshot import ScreenshotTool
         tools.append(ScreenshotTool())
+    # recall（2026-11-04）：检索被压缩掉的旧对话原文。必须放在 config is None 的
+    # 早退**之前**——不然 CLI / 单跑（config=None）拿不到它，而那正是最需要它的场景。
+    # 只读、无外部副作用，所以只读/计划模式也允许。
+    rec = data0.get("recall")
+    if not isinstance(rec, dict) or rec.get("enabled", True):
+        from ee.tools.recall import RecallTool
+        tools.append(RecallTool())
     if config is None:
         return tools
     from ee.tools.web import WebFetchTool, WebSearchTool, fetch_mode, web_config

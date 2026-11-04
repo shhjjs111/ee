@@ -28,6 +28,20 @@
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下）；**客户端已接 `electron-updater`（2026-11-02，只后台下载、绝不自动重启）** | 正式发版后才有可更新的 Release（只剩预发布时 `/releases/latest` 是 404，检查必然失败） |
 
+## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）
+
+压缩是目前唯一真实的损失面（摘要的标识符覆盖率实测 8.6%，目标是 35%），但**本轮否掉了两个错误假设**，也找到了一个更省的做法：
+
+- **重读损失不存在**。按 `compaction_audit` 的严格口径跑两个真实会话：压缩后 3 轮内重读 **0 次**；放宽到「整份读压缩前整份读过的文件」也只有 2 次 / 1002 token。`retained_suffix` 的 64k 保留段确实生效了，不需要再动。
+- **原文根本没丢**。`reset` 只清 `messages`，**不动 `items`**——被压缩掉的工具输出、命令、报错一直留在 JSONL 里，也早进了 `~/.ee/index/search.db`（FTS5 trigram，中文可用）。所以不需要新建存档文件、不需要新索引，只缺一个腿。
+- **发现一个真 bug**：`SearchIndex.search()` 把 `limit` 当 SQL 上限再聚合，是**全局截断**——`wait_for` 一个词命中 62 条/11 个会话，取 5 个会话后就把用户正待着的那个会话挤掉了（实测该会话自己有 6 条命中，`limit=5` 时整条查不到）。改成「先取够 MAX_ROWS 再聚合」，并新增 `session_id` 参数做会话内检索。
+
+改动：`core/search_index.py`（截断修复 + `session_id`）、`tools/recall.py`（新）、`prompts/tools/recall.md`（新）、`core/permissions.py` 的 `READ_TOOLS` 加 `recall`（不列会走「未知工具」分支：只读模式直接拒）、`prompts/compact.md` 末尾告知模型「原文没丢、关键词写准更重要」。
+
+**预算**：`full` 表从 4637/4763，`FULL_LIMIT` 4650 → **4763**（口径同历次：实测值 + 不留新余量）。recall 实测 schema 110 真实 token + 规则 20。schema 只留 `query` 一个参数（`limit`/`scope` 内定），因为桌面端表抬高后余量正好归零——**再加任何工具都必须重新论证**。
+
+验证：`test_recall.py`（8）、`test_search.py`（3）、`test_prefix_budget.py`（10）；相关回归 134 passed；全量 `-n 8` **2174 passed / 16 skipped**（唯一 1 红是 `test_robustness::test_http_status_error_message` 在 8 并行下的本地假服务器争用，单独跑即过）；`ruff check ee/` 全绿；`npm run typecheck` exit 0。真实会话端到端：`_flush_pending_images` 1 段、`并发` 5 段，9–599ms。
+
 ## 执行记录（2026-11-02，客户端接上自动更新）
 
 `desktop/electron/updater.ts`（新）+ `UpdateCard.tsx`（新，设置→关于）。原则：**只下载，装不装由用户点**——`quitAndInstall()` 会掐掉正在跑的会话和后台命令，不拿用户手上的活换更新。

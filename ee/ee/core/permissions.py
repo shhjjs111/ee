@@ -27,7 +27,11 @@ READ_TOOLS = {"read", "grep", "glob", "todo", "present_plan", "ask_user", "skill
               "screenshot",
               # 指挥会话的查询工具（D6-1）：只读、不改索引、不建会话。不列在这里会走"未知工具"
               # 分支——默认模式每次都问，只读模式直接拒，查询工具等于用不了。
-              "threads_list", "thread_status", "thread_wait"}
+              "threads_list", "thread_status", "thread_wait",
+              # recall（2026-11-04）：只读会话索引，不碰工作区文件、不跑命令。
+              # 不列在这里会走“未知工具”分支：默认模式每次问、只读模式直接拒——
+              # 而它恰恰在最需要它的场景（长会话压缩后）才有用。
+              "recall"}
 WRITE_TOOLS = {"write", "edit", "apply_patch"}
 NET_TOOLS = {"web_search", "web_fetch"}
 

@@ -132,29 +132,47 @@ class SearchIndex:
             c.commit()
 
     # ---- 查询
-    def search(self, query: str, limit: int = 50, per_thread: int = 3) -> list[dict]:
-        """返回按会话聚合的命中：[{thread_id, hits: [{item_id, kind, seq, snippet}]}]，最相关的会话在前。"""
+    # 单次查询的行数上限：**必须先取够再聚合**，不能拿 limit 当 SQL 上限。
+    # 原来用 `LIMIT limit*per_thread*4` 取行、再按会话聚合、最后 `[:limit]`，是全局截断：
+    # 一个高频词（wait_for 实测命中 62 条 / 11 个会话）在取到 5 个会话的上限后就把剩下的
+    # 会话（包括用户正待着的那个）挤掉了。命中集中在一个会话时尤其荒谬——那个会话自己
+    # 就有 6 条命中，却因为别处更相关而整条查不到。
+    MAX_ROWS = 2000
+
+    def search(self, query: str, limit: int = 50, per_thread: int = 3,
+               session_id: str | None = None) -> list[dict]:
+        """返回按会话聚合的命中：[{thread_id, hits: [{item_id, kind, seq, snippet}]}]，最相关的会话在前。
+
+        session_id：只看这一个会话（会话内召回用）。给了它就不会被别的会话挤掉，
+        且聚合后按 bm25 顺序返回该会话的全部命中（不受 limit 限制，只有 per_thread 封顶）。
+        """
         q = " ".join((query or "").split())
         if not q:
             return []
         self.sync()
+        where, params = "", []
+        if session_id:
+            where = " AND session_id = ?"
+            params.append(session_id)
         with _lock:
             c = self._db()
             if self.fts and len(q) >= 3:
                 phrase = '"' + q.replace('"', '""') + '"'
-                sql = ("SELECT session_id, item_id, kind, seq, text FROM docs WHERE docs MATCH ? "
-                       "ORDER BY bm25(docs) LIMIT ?")
-                rows = c.execute(sql, (phrase, limit * per_thread * 4)).fetchall()
+                sql = ("SELECT session_id, item_id, kind, seq, text FROM docs WHERE docs MATCH ?"
+                       + where + " ORDER BY bm25(docs) LIMIT ?")
+                rows = c.execute(sql, (phrase, *params, self.MAX_ROWS)).fetchall()
             else:
                 like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-                rows = c.execute("SELECT session_id, item_id, kind, seq, text FROM docs "
-                                 "WHERE text LIKE ? ESCAPE '\\' LIMIT ?", (like, limit * per_thread * 4)).fetchall()
+                sql = ("SELECT session_id, item_id, kind, seq, text FROM docs "
+                       "WHERE text LIKE ? ESCAPE '\\'" + where + " LIMIT ?")
+                rows = c.execute(sql, (like, *params, self.MAX_ROWS)).fetchall()
         out: dict[str, dict] = {}
+        cap = per_thread if not session_id else max(1, limit)
         for sid, item_id, kind, seq, text in rows:
             g = out.setdefault(sid, {"thread_id": sid, "hits": []})
-            if len(g["hits"]) < per_thread:
+            if len(g["hits"]) < cap:
                 g["hits"].append({"item_id": item_id, "kind": kind, "seq": seq, "snippet": snippet(text, q)})
-        return list(out.values())[:limit]
+        return list(out.values())[:1] if session_id else list(out.values())[:limit]
 
 
 _indexes: dict[str, SearchIndex] = {}
