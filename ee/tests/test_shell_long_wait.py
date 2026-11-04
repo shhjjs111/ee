@@ -153,15 +153,17 @@ def test_long_wait_runs_in_background(tmp_path):
     from ee.tools.shellenv import resolve_shell
 
     sh = resolve_shell("auto")
-    written = []
+    written: list[str] = []
+    events = []
     # `sleep 120; echo done`：检测会命中，但这里不想真等——shell 一进后台就立刻返回
     cmd = "sleep 120; echo done"
 
     async def go():
         mgr = BgManager(tmp_path / "logs", owner="t")
         ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
-                          shell=sh, extra={"session": type("S", (), {"bg": mgr})()})
-        ctx.emit = written.append
+                          shell=sh, extra={"session": type("S", (), {"bg": mgr})(),
+                                           "emit_event": events.append})
+        ctx.emit = written.append          # str 通道：只能是字符串，传事件对象会让服务端崩
         r = await ShellTool().run({"command": cmd}, ctx)
         mgr.kill_all_sync()
         return r
@@ -170,7 +172,7 @@ def test_long_wait_runs_in_background(tmp_path):
     assert r.meta.get("background") is True, f"应自动转后台，实际：{r.output[:300]}"
     assert r.meta.get("bg_id"), "转后台后应给出 bg id"
     assert "后台" in r.output, f"结果里应说明已转后台：{r.output[:300]}"
-    assert any("后台" in str(n) for n in written), "应发出一条 Notice 告诉用户/模型已转后台"
+    assert any("后台" in str(getattr(n, "text", n)) for n in events), "应发出一条 Notice 告诉用户/模型已转后台"
 
 
 def test_serial_full_pytest_runs_in_background(tmp_path):
@@ -182,13 +184,13 @@ def test_serial_full_pytest_runs_in_background(tmp_path):
     from ee.tools.shellenv import resolve_shell
 
     sh = resolve_shell("auto")
-    written = []
+    events = []
 
     async def go(cmd):
         mgr = BgManager(tmp_path / "logs", owner="t")
         ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
-                          shell=sh, extra={"session": type("S", (), {"bg": mgr})()})
-        ctx.emit = written.append
+                          shell=sh, extra={"session": type("S", (), {"bg": mgr})(),
+                                           "emit_event": events.append})
         try:
             return await ShellTool().run({"command": cmd}, ctx)
         finally:
@@ -197,10 +199,40 @@ def test_serial_full_pytest_runs_in_background(tmp_path):
     r = asyncio.run(go("pytest -q"))
     assert r.meta.get("background") is True, f"串行全量应转后台：{r.output[:300]}"
     assert "全量" in r.output and "子集" in r.output, f"回执应给并行/子集建议：{r.output[:400]}"
-    assert any("全量" in str(n) for n in written), "应发出一条 Notice 说明转后台原因"
+    assert any("全量" in str(getattr(e, "text", e)) for e in events), "应发出一条 Notice 说明转后台原因"
 
     r2 = asyncio.run(go("pytest -q -n 8"))
     assert r2.meta.get("background") is not True, f"并行全量不该转后台：{r2.output[:300]}"
+
+
+def test_notice_goes_through_event_channel_not_emit(tmp_path):
+    """Notice 必须走 `emit_event`；塞给 `ctx.emit`（约定是 str）会让服务端崩。
+
+    回归：自动转后台那次提示直接 `ctx.emit(Notice(...))`，服务端把它当 ToolOutput
+    的文本做字符串拼接，抛 `TypeError: can only concatenate str (not "Notice") to str`，
+    整个回合以 error 结束（CI 的 E2E 就是被这条打红的）。
+    """
+    from ee.tools.shellenv import resolve_shell
+
+    sh = resolve_shell("auto")
+    emitted: list = []
+    events: list = []
+
+    async def go():
+        mgr = BgManager(tmp_path / "logs", owner="t")
+        ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
+                          shell=sh, extra={"session": type("S", (), {"bg": mgr})(),
+                                           "emit_event": events.append})
+        ctx.emit = emitted.append
+        try:
+            return await ShellTool().run({"command": "sleep 120; echo done"}, ctx)
+        finally:
+            mgr.kill_all_sync()
+
+    r = asyncio.run(go())
+    assert r.meta.get("background") is True
+    assert all(isinstance(x, str) for x in emitted), f"emit 只该收到字符串：{emitted[:3]}"
+    assert any(type(e).__name__ == "Notice" for e in events), "Notice 应走 emit_event 通道"
 
 
 def test_explicit_background_false_is_respected(tmp_path):

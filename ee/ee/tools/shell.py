@@ -205,7 +205,7 @@ class ShellTool(Tool):
         new_kind, why = readonly_shell_override(shell.kind, sandbox_active=sb is not None)
         if why and new_kind != shell.kind:
             shell = resolve_shell(new_kind)
-            ctx.emit(Notice(why, "warn"))
+            _notice(ctx, why, "warn")
         timeout = min(MAX_TIMEOUT, max(1, int(args.get("timeout") or ctx.timeout_default)))
         if ctx.max_timeout > 0:                      # 会话级硬上限：模型显式传更大的 timeout 也不越界
             timeout = min(timeout, max(1, int(ctx.max_timeout)))
@@ -230,9 +230,9 @@ class ShellTool(Tool):
                 sess = ctx.extra.get("session")
                 if getattr(sess, "bg", None) is not None:
                     if why:
-                        ctx.emit(Notice(f"这条命令会阻塞很久（{why}），已改走后台：用 shell_output 等待结果", "info"))
+                        _notice(ctx, f"这条命令会阻塞很久（{why}），已改走后台：用 shell_output 等待结果")
                         return await run_background(command, shell, cwd, ctx)
-                    ctx.emit(Notice("这条命令要跑全量 pytest（串行约 17 分钟），已改走后台：用 shell_output 等待结果", "info"))
+                    _notice(ctx, "这条命令要跑全量 pytest（串行约 17 分钟），已改走后台：用 shell_output 等待结果")
                     return await run_background(command, shell, cwd, ctx, note=fp_hint)
         t0 = time.monotonic()
         try:
@@ -541,6 +541,13 @@ def full_pytest_hint(command: str) -> str | None:
 
 BG_YIELD = 3.0      # 后台启动后先等这么久收集开头输出（很快结束的命令直接拿到结果）
 
+def _notice(ctx: ToolContext, text: str, level: str = "info") -> None:
+    """发一条 Notice。必须走 extra["emit_event"]：ctx.emit 只接受 str（session 把它包成 ToolOutput）。"""
+    ev = (ctx.extra or {}).get("emit_event")
+    if ev is not None:
+        ev(Notice(text, level))
+
+
 async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext, note: str = "") -> ToolResult:
     sess = ctx.extra.get("session")
     mgr = getattr(sess, "bg", None)
@@ -558,7 +565,7 @@ async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext, 
         await asyncio.sleep(0.2)
     text, notes = mgr.read_new(p)
     if text:
-        ctx.emit(text)
+        ctx.emit(text)          # str：ToolContext.emit 的约定，session 会包成 ToolOutput
     head = f"[后台命令 {p.id} · pid {p.pid}]"
     tmap = getattr(sess, "tool_map", None) or {}
     if p.running and "shell_output" not in tmap:      # 没有后台命令工具（精简模式）：用 read 看日志、用 shell 结束
