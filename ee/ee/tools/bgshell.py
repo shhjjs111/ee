@@ -8,7 +8,9 @@ import re
 
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 
-MAX_WAIT = 120
+MAX_WAIT = 600                 # 与 shell 的 MAX_TIMEOUT 一致：等 CI / dev server 本来就该一次等到
+                               # 出新输出。原先 120 时模型常要 180～600（实测 61/147 次），
+                               # 被静默截到 120 后以为没等到、再发一次，多出 106 次徒劳请求。
 
 
 def _mgr(ctx: ToolContext):
@@ -60,7 +62,7 @@ class ShellOutputTool(Tool):
         "type": "object",
         "properties": {
             "id": {"type": "string"},
-            "wait": {"type": "integer", "description": f"没有新输出时最多等几秒（0～{MAX_WAIT}）"},
+            "wait": {"type": "integer", "description": f"没有新输出时最多等几秒（0～{MAX_WAIT}；超过按 {MAX_WAIT}）。等编译/测试/CI 这类长任务直接用 600，别反复小步轮询"},
             "filter": {"type": "string", "description": "只返回匹配这个正则的行"},
         },
         "required": ["id"],

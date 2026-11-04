@@ -214,6 +214,15 @@ class ShellTool(Tool):
             raise ToolError(f"workdir 不存在：{cwd}")
         if args.get("background"):
             return await run_background(command, shell, cwd, ctx)
+        # 必然久等的命令（`sleep N; ...`、`gh run watch`）直接转后台：
+        # 实测模型把它们写在前台，一条就能霍掉 600s 超时（新代码 91 回合里
+        # 这类纯阻塞等 45 分钟）。显式传 background=false 的尊重模型。
+        if args.get("background") is not False and long_wait_reason(command):
+            sess = ctx.extra.get("session")
+            if getattr(sess, "bg", None) is not None:
+                ctx.emit(Notice(f"这条命令会阻塞很久（{long_wait_reason(command)}），已改走后台："
+                                f"用 shell_output 等待结果", "info"))
+                return await run_background(command, shell, cwd, ctx)
         t0 = time.monotonic()
         try:
             code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit, sandbox=sb)
@@ -226,7 +235,11 @@ class ShellTool(Tool):
         hint = full_pytest_hint(command)
         if hint:
             body = (body or "") + "\n" + hint
-        tail = f"\n[超时：{timeout}s 后已终止]" if timed_out else ""
+        # 超时也把已捕获的输出交回去：原先文案只说「已终止」，模型看不出还能接着用
+        # （新代码 91 个回合里有 6 次撞 600s 超时，共 44 分钟，输出里其实已有进度）。
+        # 输出里往往已有「跑到哪了」，能直接判断该换子集还是转后台。
+        tail = (f"\n[超时：{timeout}s 后已终止，上面的输出是终止前已捕获的部分，可据此判断进度]"
+                if timed_out else "")
         footer = f"\n[exit {code if code is not None else '?'} · {dur:.1f}s]" + _sb_note(sb)
         ok = (code == 0) and not timed_out
         return ToolResult((body or "（无输出）") + tail + footer, ok=ok, summary=f"Ran {command}",
@@ -235,14 +248,93 @@ class ShellTool(Tool):
 
 
 
+# 必然久等的命令：模型把它们写成前台，一条就吃掉 600s 超时。识别出来转后台。
+_SLEEP_HEAD = re.compile(r"^\s*sleep\s+(\d+(?:\.\d+)?)\b", re.I)
+_WATCH_PATTERNS = (
+    (re.compile(r"\bgh\s+run\s+watch\b"), "等 CI 的 gh run watch"),
+    (re.compile(r"\bgh\s+pr\s+checks\b[^;&|]*--watch\b"), "等 CI 的 gh pr checks --watch"),
+)
+SLEEP_BG_THRESHOLD = 10          # 睡 10 秒以上且后面还串了命令，就是「先等再查」的轮询写法
+
+
+def long_wait_reason(command: str) -> str | None:
+    """命令是不是「必然阻塞很久」，是则返回原因。检测不到返回 None。
+
+    只看两类实测写法（新代码 91 回合里占了 45 分钟的纯阻塞）：
+    - `sleep N; ...` / `sleep N && ...`（N>=10）：等完再查的轮询，本该走后台；
+    - `gh run watch` / `gh pr checks --watch`：一直挂到 CI 结束，实测单次 600s。
+    单独的 `sleep N` 不算（模型就是想等一下，前台让它等完更简单）。
+    """
+    m = _SLEEP_HEAD.match(command)
+    if m and float(m.group(1)) >= SLEEP_BG_THRESHOLD and re.search(r"[;&|]|\n", command[m.end():]):
+        return f"先 sleep {m.group(1)} 秒再继续"
+    for pat, why in _WATCH_PATTERNS:
+        if pat.search(command):
+            return why
+    return None
+
+
+# 解释器的三种写法都要认：`python`、`python3`、`./.venv/Scripts/python.exe`（本机标准用法）。
+# 只认裸 `python` 是不够的——实测 13 次全量 pytest 里 12 次写成带路径的 python.exe，
+# 一次警示都没触发过。
+_PY = r"[\w./\\~$-]*python[\w.]*(?:\.exe)?"
+_PYTEST_CALL = re.compile(rf"(?:^|[\s;&|(])(?:{_PY}\s+-m\s+pytest|py\.test|pytest)(?=\s|$|[|;&)])")
+
+
 def _is_pytest_invocation(command: str) -> bool:
-    """命令是不是在跑 pytest（含 `python -m pytest`）。"""
-    return bool(re.search(r"(?:^|[\s;&|(])(?:python[\d.]*\s+-m\s+pytest|pytest|py\.test)\b", command))
+    """命令是不是在跑 pytest（含 `python -m pytest`、带路径的 python.exe、裸 pytest）。"""
+    return bool(_PYTEST_CALL.search(command))
+
+
+def _strip_prefix_chain(command: str) -> str:
+    """剥掉命令体前面的 `cd xxx &&` / `VAR=1 &&` 前缀，留下真正执行的那一段。
+
+    没有这一步时 `cd repo && pytest` 的「第一个 token」是 cd，被判成「有范围」——
+    实测这类写法的全量 pytest 全部漏检。
+    """
+    body = command
+    while True:
+        m = re.match(r"\s*(?:cd|pushd|set-location)\s+[^;&|]+\s*(?:&&|;|\|\||\n)\s*", body, re.I)
+        if not m:
+            m = re.match(r"\s*[\w.]+=[^\s;&|]*\s*(?:&&|;)\s*", body)
+        if not m:
+            return body
+        body = body[m.end():]
 
 
 # 这些参数说明「范围已缩小」或「根本没在执行」
 _SCOPING_FLAGS = ("-k", "--deselect", "--ignore", "--lf", "--last-failed", "--co", "--collect-only",
                   "--sw", "--stepwise")
+
+# 带值的选项：它们的值是配置/路径，不是「测试范围」。
+# 漏掉这个时 `-c ee/pyproject.toml` 的 `ee/pyproject.toml` 会被当成选择器，
+# 于是本机标准写法 `-c ee/pyproject.toml -q -n 8`（全量）全部漏检。
+_VALUE_FLAGS = ("-c", "--config-file", "-p", "--rootdir", "-o", "--override-ini", "--basetemp",
+                "--junitxml", "--timeout", "-W", "-m", "--numprocesses", "-n", "--tb", "--capture",
+                "--maxfail", "-x", "--durations", "--log-level")
+
+
+def _drop_option_values(body: str) -> str:
+    """把「带值选项」连同它的值一起去掉，留下真正的测试选择器。
+
+    `-c ee/pyproject.toml` 的 `ee/pyproject.toml` 是配置文件，不是测试范围；
+    不去掉就会把它当成选择器，于是本机标准写法 `-c ee/pyproject.toml -q -n 8`
+    （全量）全部漏检。
+    """
+    out: list[str] = []
+    toks = body.split()
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in _VALUE_FLAGS:
+            i += 2                      # 连带值一起跳过（值不存在时也安全：i 越界即结束）
+            continue
+        if any(t.startswith(f + "=") for f in _VALUE_FLAGS):
+            i += 1
+            continue
+        out.append(t)
+        i += 1
+    return " ".join(out)
 
 
 def full_pytest_hint(command: str) -> str | None:
@@ -257,14 +349,17 @@ def full_pytest_hint(command: str) -> str | None:
     if any(flag in command for flag in _SCOPING_FLAGS):
         return None
     # 去掉 pytest 本身与常见无害参数，看还剩不剩「路径/节点选择器」
-    body = re.sub(r"^\s*(?:python[\d.]*\s+-m\s+)?(?:pytest|py\.test)\b", "", command)
-    body = re.split(r"[|;&]", body)[0]                 # 只看管道/串联前的部分
+    body = re.split(r"[|;&]", _strip_prefix_chain(command))[0]   # 只看管道/串联前的部分
+    body = re.sub(rf"^\s*(?:{_PY}\s+-m\s+)?(?:pytest|py\.test)\b", "", body)
     body = re.sub(r"\d*>&?\d*|\d*>|\d*<|\d*<<?&?\d*", " ", body)   # 剥掉重定向（2>&1、>/dev/null 等）
+    body = _drop_option_values(body)
     for tok in body.split():
         if tok.startswith("-") or tok in ("python", "py", "/dev/null", "NUL", "nul"):
             continue
-        # 还剩位置参数（测试文件/目录/::节点）说明是有范围的
-        return None
+        # 还剩位置参数：测试文件（*.py / ::节点）说明范围已缩小；
+        # 目录（tests、ee/tests）跑的是整个目录，等同于全量，不能算缩小。
+        if tok.endswith(".py") or "::" in tok:
+            return None
     return ("[提示：这是全量 pytest（本仓库 135 个测试文件，约 17 分钟），单次 shell 有超时上限，"
             "很可能跑不完。改用相关子集：pytest <测试文件> 或 -k <关键字>]")
 
