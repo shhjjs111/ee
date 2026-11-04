@@ -266,13 +266,80 @@ SLEEP_BG_THRESHOLD = 90          # 只把「真的等很久」的转后台：历
                                  # 模型还得再发一次 shell_output，反而多一轮往返。
 
 
+
+# 带 sleep 的循环轮询：`for i in $(seq 1 20); do sleep 10; ...; done`、
+# `while ! curl ...; do sleep 5; done`。实测最长一条 131.9s 卡在前台。
+# 注意：这里的正则刻意不写任何反斜杠转义（用 [ \t] 和 (?<!…) 代替 \s、\b），
+# 因为这套代码多次在 heredoc / 工具编辑里被吃掉反斜杠，变成静默失效的坏正则。
+_NOT_WORD = "(?<![A-Za-z0-9_])"
+_NOT_WORD_END = "(?![A-Za-z0-9_])"
+_LOOP_SLEEP = re.compile(_NOT_WORD + "sleep[ \t]+([0-9]+(?:[.][0-9]+)?)", re.I)
+_FOR_HEAD = re.compile(_NOT_WORD + "for[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+in[ \t]+([^;\n]*)", re.I)
+_SEQ_TAIL = re.compile("[$][(][ \t]*seq[ \t]+[0-9]+[ \t]+([0-9]+)")
+_RANGE_TAIL = re.compile("[{]([0-9]+)[.][.]([0-9]+)[}]")
+
+# 阈值按「累计等待秒数」算，和单个 sleep 的 90s 保持一致：循环里的小 sleep
+# 加起来一样会拖很久，但转后台要多一次 shell_output 往返（中位 4.5s、p90 20s）。
+LOOP_WAIT_THRESHOLD = 90
+WHILE_ASSUMED_ROUNDS = 10
+
+_LOOP_HEAD = re.compile(_NOT_WORD + "(?:for|while|until)" + _NOT_WORD_END, re.I)
+_DO_DONE = re.compile(_NOT_WORD + "do" + _NOT_WORD_END + "(.*?)" + _NOT_WORD + "done" + _NOT_WORD_END, re.I | re.S)
+
+
+def _for_iterations(command: str) -> int | None:
+    """估算 `for` 循环的迭代次数；数不出来时返回 None（不猜）。"""
+    head = _FOR_HEAD.search(command)
+    if not head:
+        return None
+    body = head.group(1).strip()
+    seq = _SEQ_TAIL.search(body)                    # for i in $(seq 1 20)
+    if seq:
+        return int(seq.group(1))
+    rng = _RANGE_TAIL.search(body)                   # for i in {1..12}
+    if rng:
+        return abs(int(rng.group(2)) - int(rng.group(1))) + 1
+    if body.startswith("{"):                         # for i in {a,b,c}
+        return len([x for x in body.strip("{}").split(",") if x.strip()]) or None
+    if "$(" in body or "`" in body:                  # 次数运行时才知道
+        return None
+    return len(body.split()) or None                 # for i in 1 2 3
+
+
+def loop_wait_seconds(command: str) -> float | None:
+    """循环里累计要 sleep 多久（秒）；不是「带 sleep 的循环」或次数不可知时返回 None。
+
+    只数 `do ... done` 循环体里的 sleep：体外的 sleep 另有判定（`sleep N; ...`），
+    数进来会重复计算。只认真实循环结构，避免把 heredoc、python 脚本里碰巧出现的
+    sleep 字样也算进来——误判会把正常命令扔进后台。
+    """
+    if not _LOOP_HEAD.search(command):
+        return None
+    body = _DO_DONE.search(command)
+    if body is None:
+        return None
+    inner = body.group(1)
+    per = sum(float(x) for x in _LOOP_SLEEP.findall(inner))
+    if per <= 0:
+        return None
+    if _FOR_HEAD.search(command):
+        n = _for_iterations(command)
+        return None if n is None else per * n
+    # while / until 没有天然次数上限。只有体内写了 break（说明作者有退出条件）
+    # 时才按固定轮数估；否则不猜。
+    if not re.search(_NOT_WORD + "break" + _NOT_WORD_END, inner):
+        return None
+    return per * WHILE_ASSUMED_ROUNDS
+
+
 def long_wait_reason(command: str, timeout: float | None = None) -> str | None:
     """命令是不是「必然阻塞很久」，是则返回原因。检测不到返回 None。
 
-    三类实测写法（新代码 91 回合里占了 45 分钟的纯阻塞）：
+    四类实测写法（新代码 91 回合里占了 45 分钟的纯阻塞）：
     - `sleep N; ...` / `sleep N && ...`（N≥90）：等完再查的轮询，本该走后台；
     - 单独的 `sleep N` 但 N ≥ 本次超时：放前台必然被掐掉，等于白白等满 timeout；
-    - `gh run watch` / `gh pr checks --watch`：一直挂到 CI 结束，实测单次 600s。
+    - `gh run watch` / `gh pr checks --watch`：一直挂到 CI 结束，实测单次 600s；
+    - 带 sleep 的循环轮询（累计等待 ≥90s）：实测最长一条 131.9s 卡在前台。
     短 sleep 不转：转后台要多一次 shell_output 往返（一次模型往返中位 4.5s、p90 20s），
     前台等完反而更快。
     """
@@ -287,6 +354,9 @@ def long_wait_reason(command: str, timeout: float | None = None) -> str | None:
     for pat, why in _WATCH_PATTERNS:
         if pat.search(command):
             return why
+    wait = loop_wait_seconds(command)
+    if wait is not None and wait >= LOOP_WAIT_THRESHOLD:
+        return f"循环轮询累计要等约 {int(wait)} 秒"
     return None
 
 

@@ -19,7 +19,7 @@ import asyncio
 from ee.core.bgproc import BgManager
 from ee.tools.base import ToolContext, ToolState
 from ee.tools.bgshell import MAX_WAIT, ShellOutputTool
-from ee.tools.shell import ShellTool, full_pytest_hint, long_wait_reason
+from ee.tools.shell import ShellTool, full_pytest_hint, long_wait_reason, loop_wait_seconds
 
 
 # ---------------------------------------------------------------- 检测今久等
@@ -53,6 +53,44 @@ def test_single_long_sleep_over_timeout_goes_background():
     # 本次超时足够长、或 sleep 比超时短：前台等完更简单，不必多一轮往返
     assert long_wait_reason("sleep 120", timeout=600) is None
     assert long_wait_reason("sleep 30", timeout=120) is None
+
+
+def test_detects_loop_polling_by_cumulative_wait():
+    """循环轮询按「累计等待」判断：循环里的小 sleep 加起来一样会拖很久。
+
+    实测最长一条 `for i in $(seq 1 20); do sleep 10; ...; done` 卡在前台 131.9s。
+    """
+    assert loop_wait_seconds("for i in $(seq 1 20); do sleep 10; grep -q A x && break; done") == 200
+    assert loop_wait_seconds("for i in 1 2 3 4 5 6; do sleep 10; done") == 60
+    assert loop_wait_seconds("for i in {1..12}; do sleep 8; done") == 96
+    assert long_wait_reason("for i in $(seq 1 20); do sleep 10; grep -q A x && break; done") is not None
+
+
+def test_short_loop_stays_foreground():
+    """累计等待太短的循环不转后台：转一次后台就多一次模型往返。"""
+    assert loop_wait_seconds("for i in 1 2 3; do sleep 5; done") == 15
+    assert long_wait_reason("for i in 1 2 3; do sleep 5; done") is None
+
+
+def test_unknown_iteration_count_is_not_guessed():
+    """数不清轮数时不猜：猜错会把正常命令扔进后台。
+
+    `until` 没有天然次数上限，只有体内写了 break 才按固定轮数估。
+    """
+    assert loop_wait_seconds("until curl -s x; do sleep 5; done") is None
+    assert loop_wait_seconds("for f in $(ls *.log); do sleep 5; done") is None
+
+
+def test_loop_body_counts_every_sleep():
+    """循环体内多个 sleep 要累计；循环体外的不算（体外另有 `sleep N; ...` 的判定）。"""
+    assert loop_wait_seconds("for i in 1 2 3; do sleep 5; sleep 5; done") == 30
+    assert loop_wait_seconds("for i in 1 2 3; do sleep 5; done; sleep 300") == 15
+
+
+def test_plain_command_is_not_a_loop():
+    """不是循环的命令不能被当成循环轮询。"""
+    assert loop_wait_seconds("echo abc") is None
+    assert loop_wait_seconds("sleep 540; gh run list") is None
 
 
 def test_detects_ci_watch():
