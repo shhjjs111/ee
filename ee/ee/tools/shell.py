@@ -219,11 +219,21 @@ class ShellTool(Tool):
         # 这类纯阻塞等 45 分钟）。显式传 background=false 的尊重模型。
         if args.get("background") is not False:
             why = long_wait_reason(command, timeout)
-            if why:
+            # 全量 pytest 不靠 sleep 也能拖满超时：串行约 17 分钟，撞上就白等 600s
+            # 且拿不到结果（历史 2 条、约 20 分钟）。检测到就直接转后台，
+            # 并在回执里给出并行/子集建议。
+            # 只认串行全量：带 -n 的并行全量实测稳定在 140s，前台等完比转后台再查更快。
+            fp_hint = None if why else full_pytest_hint(command)
+            if fp_hint and not _pytest_serial(command):
+                fp_hint = None
+            if why or fp_hint:
                 sess = ctx.extra.get("session")
                 if getattr(sess, "bg", None) is not None:
-                    ctx.emit(Notice(f"这条命令会阻塞很久（{why}），已改走后台：用 shell_output 等待结果", "info"))
-                    return await run_background(command, shell, cwd, ctx)
+                    if why:
+                        ctx.emit(Notice(f"这条命令会阻塞很久（{why}），已改走后台：用 shell_output 等待结果", "info"))
+                        return await run_background(command, shell, cwd, ctx)
+                    ctx.emit(Notice("这条命令要跑全量 pytest（串行约 17 分钟），已改走后台：用 shell_output 等待结果", "info"))
+                    return await run_background(command, shell, cwd, ctx, note=fp_hint)
         t0 = time.monotonic()
         try:
             code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit, sandbox=sb)
@@ -367,12 +377,55 @@ def long_wait_reason(command: str, timeout: float | None = None) -> str | None:
 # 只认裸 `python` 是不够的——实测 13 次全量 pytest 里 12 次写成带路径的 python.exe，
 # 一次警示都没触发过。
 _PY = r"[\w./\\~$-]*python[\w.]*(?:\.exe)?"
-_PYTEST_CALL = re.compile(rf"(?:^|[\s;&|(])(?:{_PY}\s+-m\s+pytest|py\.test|pytest)(?=\s|$|[|;&)])")
+
+
+# 只是「看 pytest 自己的信息」而不是跑用例：`pytest --version`、`pytest -h` 之类。
+# 不排除掉会把它们当成全量，转后台就白白多一轮 shell_output 往返（实测报 0.2～1.3s）。
+_INFO_ONLY_FLAGS = ("--version", "-h", "--help", "--fixtures", "--markers", "--trace-config",
+                    "--co", "--collect-only", "--pyargs")
+
+
+def _starts_with_pytest(seg: str) -> bool:
+    """这一段命令是不是「就在跑 pytest」（`grep pytest` 不算）。"""
+    body = re.sub(rf"^(?:{_PY})\s+-m\s+", "", seg.strip()).strip()
+    if not re.match(rf"(?:{_PY}\s+-m\s+)?(?:pytest|py\.test)(?=\s|[|;&)]|$)", body):
+        return False
+    return not any(f in body for f in _INFO_ONLY_FLAGS)
+
+
+def _strip_heredocs(command: str) -> str:
+    """去掉 heredoc 正文（`<<'PY' ... PY`）：正文不是命令行，不能拿来做命令判断。
+
+    实测 93 条被判成「全量 pytest」的前台命令里有 32 条其实是写文件的脚本，
+    正文里碰巧出现 pytest 字样——转后台会误伤，必须先剥掉。
+    """
+    out: list[str] = []
+    lines = command.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.search(r"<<-?\s*['\"]?([\w.-]+)['\"]?", line)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        tag = m.group(1)
+        out.append(line[:m.start()])          # 保留 `cat > f.py <<'PY'` 这半行（里面可能是 python -m pytest）
+        i += 1
+        while i < len(lines) and lines[i].strip() != tag:
+            i += 1
+        i += 1                                 # 跳过结尾标记本身
+    return "\n".join(out)
 
 
 def _is_pytest_invocation(command: str) -> bool:
-    """命令是不是在跑 pytest（含 `python -m pytest`、带路径的 python.exe、裸 pytest）。"""
-    return bool(_PYTEST_CALL.search(command))
+    """命令里有没有「真的在跑 pytest」的一段。
+
+    只看每段的开头：`grep pytest`、`pip list | grep pytest`、`which pytest`
+    这类把 pytest 当搜索词的写法不算跑用例（实测被误判成全量，白转后台）。
+    只查信息的参数（`--version`、`-h`、`--co`）也不算跑用例。
+    """
+    return any(_starts_with_pytest(seg) for seg in re.split(r"[|;&\n]", command))
 
 
 def _strip_prefix_chain(command: str) -> str:
@@ -404,7 +457,7 @@ _MARKER_FLAG = re.compile(r"(?:^|\s)-m\s+\S")
 # 于是本机标准写法 `-c ee/pyproject.toml -q -n 8`（全量）全部漏检。
 _VALUE_FLAGS = ("-c", "--config-file", "-p", "--rootdir", "-o", "--override-ini", "--basetemp",
                 "--junitxml", "--timeout", "-W", "--numprocesses", "-n", "--tb", "--capture",
-                "--maxfail", "-x", "--durations", "--log-level")
+                "--maxfail", "--durations", "--log-level")
 
 
 def _drop_option_values(body: str) -> str:
@@ -430,6 +483,29 @@ def _drop_option_values(body: str) -> str:
     return " ".join(out)
 
 
+def _pytest_segment(command: str) -> str | None:
+    """取出真正执行 pytest 的那一段命令；不是「在跑 pytest」则返回 None。
+
+    为什么不能直接切第一段：命令常写成 `git status && pytest ...`（pytest 在第二段），
+    也可能是个 heredoc 脚本（`python - <<'PY'` 之类，正文里碰巧提到 pytest 字样）。
+    前一种会把 `git status` 当测试选择器而漏报全量，后一种会把脚本正文当成命令行而误报。
+    """
+    body = _strip_heredocs(command)
+    for seg in re.split(r"[|;&\n]", body):
+        if _is_pytest_invocation(seg):
+            return seg
+    return None
+
+
+def _pytest_serial(command: str) -> bool:
+    """全量 pytest 是不是串行跑（没写 -n/--numprocesses）。
+
+    串行全量约 17 分钟，撞上 600s 超时什么都拿不到（历史 2 条、约 20 分钟）；
+    带 -n 的并行全量实测稳定在 140s 左右，前台等完比转后台再查更快，不该动。
+    """
+    return not re.search(r"(?:^|[ \t])(?:-n[ \t]?[0-9a-z]|--numprocesses(?:[ \t]|=))", command)
+
+
 def full_pytest_hint(command: str) -> str | None:
     """检测「无范围的全量 pytest」，返回给模型的即时提示；不是全量则返回 None。
 
@@ -437,12 +513,15 @@ def full_pytest_hint(command: str) -> str | None:
     再转后台轮询又是一轮浪费。与其让模型等到超时后知后觉，不如在结果里
     立刻告诉它「这是全量，改跑子集」。
     """
-    if not _is_pytest_invocation(command):
+    if not _is_pytest_invocation(_strip_heredocs(command)):
         return None
     if any(flag in command for flag in _SCOPING_FLAGS):
         return None
-    # 去掉 pytest 本身与常见无害参数，看还剩不剩「路径/节点选择器」
-    body = re.split(r"[|;&]", _strip_prefix_chain(command))[0]   # 只看管道/串联前的部分
+    # 只看真正执行 pytest 的那一段：命令里可能先跑 `git status` 再跑 pytest，
+    # 也可能是个 heredoc 脚本（`python - <<'PY'` 里提到 pytest 字样）。
+    body = _pytest_segment(_strip_prefix_chain(command))
+    if body is None:
+        return None
     body = re.sub(rf"^\s*(?:{_PY}\s+-m\s+)?(?:pytest|py\.test)\b", "", body)
     # 到这里 `python -m pytest` 的 `-m` 已经被剥掉了，剩下的 `-m` 只可能是 marker 表达式
     if _MARKER_FLAG.search(body):
@@ -462,7 +541,7 @@ def full_pytest_hint(command: str) -> str | None:
 
 BG_YIELD = 3.0      # 后台启动后先等这么久收集开头输出（很快结束的命令直接拿到结果）
 
-async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) -> ToolResult:
+async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext, note: str = "") -> ToolResult:
     sess = ctx.extra.get("session")
     mgr = getattr(sess, "bg", None)
     if mgr is None:
@@ -495,6 +574,8 @@ async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext) 
             raise ToolError(text.strip())
     state += _sb_note(sb)
     body = text.rstrip("\n") or "（暂无输出）"
+    if note:
+        body = f"{body}\n{note}"
     return ToolResult(f"{head}\n{body}{state}", ok=(p.running or p.exit_code == 0), summary=f"Started {command}",
                       meta={"kind": "shell", "command": command, "background": True, "bg_id": p.id,
                             "exit": p.exit_code, "running": p.running, "output": text[-4000:]})

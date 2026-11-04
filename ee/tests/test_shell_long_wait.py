@@ -19,7 +19,8 @@ import asyncio
 from ee.core.bgproc import BgManager
 from ee.tools.base import ToolContext, ToolState
 from ee.tools.bgshell import MAX_WAIT, ShellOutputTool
-from ee.tools.shell import ShellTool, full_pytest_hint, long_wait_reason, loop_wait_seconds
+from ee.tools.shell import (
+    ShellTool, _pytest_serial, full_pytest_hint, long_wait_reason, loop_wait_seconds)
 
 
 # ---------------------------------------------------------------- 检测今久等
@@ -105,6 +106,43 @@ def test_plain_command_is_not_a_loop():
     assert loop_wait_seconds("sleep 540; gh run list") is None
 
 
+def test_full_pytest_behind_other_segments_is_still_full():
+    """`git status && pytest -q`：pytest 在第二段，不能把 git status 当测试选择器。"""
+    assert full_pytest_hint("git status --porcelain && pytest -q") is not None
+    assert full_pytest_hint("echo hi; pytest -q") is not None
+    # 但第二段自己带了测试文件，就是缩小范围
+    assert full_pytest_hint("git status && pytest -q ee/tests/test_a.py") is None
+
+
+def test_pytest_in_heredoc_body_or_as_search_word_is_not_a_run():
+    """heredoc 正文里提到 pytest、或者 grep pytest，都不是在跑用例。
+
+    实测 93 条被判「全量」的前台命令里有 32 条是写文件的脚本，
+    把它们的正文当命令行会误判，转后台就白多一轮往返。
+    """
+    heredoc = chr(10).join(["python - <<'PY'", "import io", "print('pytest -q')", "PY"])
+    assert full_pytest_hint(heredoc) is None
+    assert full_pytest_hint("grep -iE 'xdist|pytest' requirements.txt") is None
+    assert full_pytest_hint("pip list 2>/dev/null | grep -i pytest") is None
+    # 只查版本、不跑用例
+    assert full_pytest_hint("pytest --version") is None
+    assert full_pytest_hint("pytest -h") is None
+    # 真的跑了就要认出来
+    assert full_pytest_hint("pytest --version && pytest -q") is not None
+
+
+def test_pytest_serial_recognises_numprocesses_forms():
+    """串行/并行判定：`-n8`、`--numprocesses=auto` 这些写法都要认成并行。
+
+    串行全量约 17 分钟会撞满超时；带 -n 的并行全量实测稳定 140s，前台等完更快。
+    """
+    assert _pytest_serial("pytest -q") is True
+    assert _pytest_serial("pytest -q -n 8") is False
+    assert _pytest_serial("pytest -n8") is False
+    assert _pytest_serial("pytest --numprocesses=auto") is False
+    assert _pytest_serial("pytest --numprocesses auto") is False
+
+
 def test_detects_ci_watch():
     assert long_wait_reason("gh run watch 12345 --exit-status") is not None
     assert long_wait_reason("cd repo && gh pr checks 7 --watch") is not None
@@ -133,6 +171,36 @@ def test_long_wait_runs_in_background(tmp_path):
     assert r.meta.get("bg_id"), "转后台后应给出 bg id"
     assert "后台" in r.output, f"结果里应说明已转后台：{r.output[:300]}"
     assert any("后台" in str(n) for n in written), "应发出一条 Notice 告诉用户/模型已转后台"
+
+
+def test_serial_full_pytest_runs_in_background(tmp_path):
+    """串行全量 pytest 转后台，回执里给并行/子集建议；带 -n 的并行全量不动。
+
+    串行全量约 17 分钟，撞满 600s 超时什么都拿不到（历史 2 条、约 20 分钟纯等待）。
+    带 -n 的并行全量实测稳定 140s，前台等完比转后台再多一次 shell_output 更快。
+    """
+    from ee.tools.shellenv import resolve_shell
+
+    sh = resolve_shell("auto")
+    written = []
+
+    async def go(cmd):
+        mgr = BgManager(tmp_path / "logs", owner="t")
+        ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
+                          shell=sh, extra={"session": type("S", (), {"bg": mgr})()})
+        ctx.emit = written.append
+        try:
+            return await ShellTool().run({"command": cmd}, ctx)
+        finally:
+            mgr.kill_all_sync()
+
+    r = asyncio.run(go("pytest -q"))
+    assert r.meta.get("background") is True, f"串行全量应转后台：{r.output[:300]}"
+    assert "全量" in r.output and "子集" in r.output, f"回执应给并行/子集建议：{r.output[:400]}"
+    assert any("全量" in str(n) for n in written), "应发出一条 Notice 说明转后台原因"
+
+    r2 = asyncio.run(go("pytest -q -n 8"))
+    assert r2.meta.get("background") is not True, f"并行全量不该转后台：{r2.output[:300]}"
 
 
 def test_explicit_background_false_is_respected(tmp_path):
