@@ -139,15 +139,18 @@ jobs:
       # 这一步长期缺席（只在本地手动跑），于是「所有 spec 没隔离用户目录」这种
       # 会改用户真实配置的缺陷在仓库里静默活了很久——没人跑，就没人发现。
       #
-      # 15 分钟不够兜底：实测有过卡 44 分钟不退（playwright 的 timeout 靠 JS 定时器，
-      # 进程挂死时它自己也停了），把整个 verify 拖过 45 分钟 job 上限而 cancelled，
-      # 连带 package/publish 全部 skipped。playwright.config.ts 里的 globalTimeout
-      # 是第一道锁，这里把它夹得比 job 上限更紧，保证失败能快速报出来。
+      # 为什么走 `npm run test:ui:guard` 而不是直接 `npx playwright test`：
+      # playwright 的 timeout / globalTimeout 都是 JS 定时器，Electron 进程挂死时事件
+      # 循环停摆，它们自己也不再被调度。实测两次：一次卡 44 分钟（把 verify 拖过 45
+      # 分钟 job 上限而 cancelled，package/publish 全 skipped），一次卡 50 分钟仍
+      # in_progress，且步骤级 `timeout-minutes: 15` 与 job 级 45 分钟都没把它杀掉。
+      # e2e-watchdog.mjs 把等待放在**父进程**上（它不跟着子进程卡死），到点
+      # taskkill /F /T 杀掉整棵进程树后以 124 退出，保证这里能看到结论。
       - name: E2E with real Electron (Playwright)
         if: ${{ !cancelled() }}
         working-directory: desktop
-        timeout-minutes: 15
-        run: npx playwright test
+        timeout-minutes: 18
+        run: npm run test:ui:guard
 
   package:
     name: package
