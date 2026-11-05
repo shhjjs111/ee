@@ -271,7 +271,13 @@ class UsageStats:
         p, c, h = int(r["prompt"]), int(r["completion"]), r.get("hit")
         self.prompt += p
         self.completion += c
-        self.last_prompt, self.last_completion = p, c
+        # 「上次上下文大小」只由主对话更新：侧路请求（title / commit / compact，以及
+        # 子代理合并进来的记录）的 prompt 是另一段内容。让它覆盖，context_tokens() 会从
+        # 十几万掉到几千，needs_compaction / prune.due 因此判定「还没到水位」而跳过本该
+        # 发生的压缩与修剪，界面上的「剩余上下文」也跟着失真。
+        # 没有 role 的老记录按主对话处理（保持本字段引入时的行为）。
+        if (r.get("role") or "main") == "main":
+            self.last_prompt, self.last_completion = p, c
         if h is not None:
             self.hit += h
             self.hit_known_prompt += p
