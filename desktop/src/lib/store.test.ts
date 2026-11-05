@@ -398,3 +398,35 @@ describe("退回的排队消息要跨会话保住", () => {
     expect(useApp.getState().returnedDraft!.nonce).toBe(first.nonce);
   });
 });
+
+describe("文件预览路径不跨会话", () => {
+  // 审计 P2#71：filePath 存的是「相对第一条会话工作区」的路径，openThread / newThread 都不清
+  // 它，而 Preview 用**当前** cwd 读同一相对路径——切到别的仓库时，命中同名文件就静默显示
+  // 另一个仓库的内容，用户以为看的还是原来那个文件。
+  it("切会话时清掉 filePath / lastFilePath", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "a",
+      details: { a: detail("a", "/A"), b: detail("b", "/B") },
+      filePath: "src/index.ts",
+      lastFilePath: "src/index.ts",
+    });
+
+    const p = useApp.getState().openThread("b");
+    f.calls.find((x) => x.method === "thread/get" && x.params.thread_id === "b")!.resolve({ thread: detail("b", "/B") });
+    await p;
+
+    expect(useApp.getState().filePath, "不能拿新工作区读旧仓库的相对路径").toBeNull();
+    expect(useApp.getState().lastFilePath).toBeNull();
+  });
+
+  it("新对话时也清掉", () => {
+    useApp.setState({ filePath: "x.ts", lastFilePath: "x.ts", activeWorkspace: "/A" });
+
+    useApp.getState().newThread();
+
+    expect(useApp.getState().filePath).toBeNull();
+    expect(useApp.getState().lastFilePath).toBeNull();
+  });
+});

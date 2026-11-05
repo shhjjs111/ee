@@ -332,7 +332,9 @@ export const useApp = create<State & Actions>((set, get) => ({
 
   async openThread(id) {
     const rpc = get().rpc!;
-    set({ activeThreadId: id, view: "chat" });
+    // 切会话要清掉文件预览：filePath 是「相对上一条会话工作区」的路径，而 Preview 用**当前**
+    // cwd 去读它——不清就会在切到另一个仓库后，命中同名文件时静默显示别人仓库的内容。
+    set({ activeThreadId: id, view: "chat", filePath: null, lastFilePath: null });
     adoptReturned(id);          // 这个会话在上一次离开期间退回的消息，切回来要回到输入框
     try {
       // 首屏只要尾部一页：长会话（实测 15MB / 5215 条）一次拉全部，传输 + JSON.parse
@@ -398,7 +400,8 @@ export const useApp = create<State & Actions>((set, get) => ({
   newThread(cwd) {
     const target = cwd ?? get().activeWorkspace;
     if (target) localStorage.setItem("ee.workspace", target);
-    set({ activeThreadId: null, view: "chat", activeWorkspace: target ?? null, draftModel: null });
+    set({ activeThreadId: null, view: "chat", activeWorkspace: target ?? null, draftModel: null,
+          filePath: null, lastFilePath: null });   // 同上：预览路径不能跨工作区残留
   },
 
   async addWorkspace(path) {
