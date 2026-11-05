@@ -62,6 +62,13 @@ def to_markdown(data: dict, *, include_reasoning: bool = True,
             lines.append("## 用户")
             lines.append("")
             lines.append(_text(it.get("text")))
+            # 附件本体不随导出走（二进制太大），但至少要让人看出当时带了什么：
+            # 否则导出的存档里只剩一句话，读的人看不出上下文（审计 P2#4）。
+            atts = [a for a in (it.get("attachments") or []) if isinstance(a, dict)]
+            if atts:
+                names = "、".join(f"{a.get('name') or a.get('id') or '附件'}"
+                                 f"（{a.get('mime') or '未知类型'}）" for a in atts)
+                lines.append(f"_附件：{names}_")
             lines.append("")
         elif t == "assistant":
             lines.append("## 助手")

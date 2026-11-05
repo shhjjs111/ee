@@ -152,3 +152,24 @@ def test_export_rejects_unknown_format():
 
     with pytest.raises(ValueError):
         export(_session(), fmt="xml")
+
+def test_markdown_keeps_attachments():
+    """items 里有附件时，导出的 Markdown 不能把它们静默丢掉（审计 P2#4）。
+
+    报告里「附件不写入 items」的说法已经不成立——现在确实写了（UserItem.attachments），
+    但导出侧没跟着处理，附件信息在 Markdown 里彻底消失：用户导出一份对话存档，
+    里面只剩「这张图有问题吗」，看不出当时发了什么。
+    """
+    from ee.core.export import to_markdown
+
+    data = {
+        "meta": {"title": "看这张图"},
+        "items": [
+            {"type": "user", "seq": 1, "text": "这张图有问题吗",
+             "attachments": [{"id": "a1", "name": "shot.png", "mime": "image/png", "size": 2048}]},
+        ],
+    }
+
+    out = to_markdown(data)
+
+    assert "shot.png" in out, out
