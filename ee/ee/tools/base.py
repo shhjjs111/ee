@@ -74,6 +74,10 @@ class ToolState:
         if identity is not None:
             # 内容身份优先：身份一致 → 同一内容（即使 mtime/size 变了）；不一致 → 新建
             if rec.identity == identity:
+                # 但要把 mtime/size 刷成**当前**的：write 用这对值判「我读过之后有没有被改过」。
+                # 不刷新的话，一次 touch / 等长覆盖 / 快照还原之后 write 会一直拒绝，而它给的
+                # 解法（重新 read）又只返回同一条旧记录 —— 死循环，模型最后只能绕开 write 改用 shell 写文件。
+                rec.mtime_ns, rec.size = st.st_mtime_ns, st.st_size
                 return rec
             rec = FileRecord(st.st_mtime_ns, st.st_size, identity)
             self.files[key] = rec

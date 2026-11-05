@@ -7,6 +7,7 @@
    本产品的主平台就是 Windows，脚本/命令产出的文本文件于是完全读不了、也改不了。
 """
 import asyncio
+import os
 
 import pytest
 
@@ -68,3 +69,40 @@ def test_utf16_file_roundtrip_keeps_encoding(tmp_path):
     raw = f.read_bytes()
     assert raw[:2] in (b"\xff\xfe", b"\xfe\xff"), "写回后不再是 UTF-16"
     assert "改过的第二行" in raw.decode("utf-16")
+
+
+# ---------------------------------------------------------------- ③ touch 之后写不进去
+
+def test_touch_after_read_does_not_block_write(tmp_path):
+    """内容没变、只是 mtime 变了（touch / 等长覆盖 / 快照还原），不该拦住 write。
+
+    mark_read 在内容身份一致时直接返回旧记录、不刷新 mtime_ns，而 write 用这对值判
+    「读之后有没有被改过」——于是第一次拒绝、按提示重读（拿到同一条旧记录）、继续拒绝。
+    """
+    f = tmp_path / "t.txt"
+    f.write_text("hello\n", encoding="utf-8")
+    ctx = ctx_for(tmp_path)
+
+    asyncio.run(ReadTool().run({"path": str(f)}, ctx))
+    st = f.stat()
+    os.utime(f, (st.st_atime, st.st_mtime + 10))       # 只动 mtime，内容不变
+
+    asyncio.run(WriteTool().run({"path": str(f), "content": "new\n"}, ctx))
+    assert f.read_text(encoding="utf-8") == "new\n"
+
+
+def test_external_content_change_still_blocks_write(tmp_path):
+    """护栏不能因此削弱：内容真被外部改过，没重读就写必须拒绝。"""
+    f = tmp_path / "t3.txt"
+    f.write_text("hello\n", encoding="utf-8")
+    ctx = ctx_for(tmp_path)
+
+    asyncio.run(ReadTool().run({"path": str(f)}, ctx))
+    f.write_text("被别的程序改了\n", encoding="utf-8")
+
+    with pytest.raises(ToolError):
+        asyncio.run(WriteTool().run({"path": str(f), "content": "new\n"}, ctx))
+
+    asyncio.run(ReadTool().run({"path": str(f)}, ctx))
+    asyncio.run(WriteTool().run({"path": str(f), "content": "new\n"}, ctx))
+    assert f.read_text(encoding="utf-8") == "new\n"

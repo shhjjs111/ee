@@ -28,12 +28,22 @@ class WriteTool(Tool):
         existed = path.exists()
         if existed and not ctx.state.was_read(path):
             raise ToolError(f"{path} 已存在，覆盖前必须先用 read 读过它。若只是改一部分，请用 edit。")
+        tf = read_text(path)            # 提前：判「内容有没有变」和后面的写入都用它
         if existed:
-            st = path.stat()
             rec = ctx.state.files.get(str(path))
-            if rec and (rec.mtime_ns != st.st_mtime_ns or rec.size != st.st_size):
-                raise ToolError(f"{path} 在你读取之后被修改过，请重新 read 再写。")
-        tf = read_text(path)
+            if rec:
+                # 有内容身份就按身份判：touch / 等长覆盖 / 快照还原不改内容，不该拦住写入。
+                # 只看 mtime+size 的话，这类文件写一次被拒、按提示重读又被同一条旧记录挡住，
+                # 模型最后只能绕开 write 改用 shell 写文件。
+                if rec.identity:
+                    from ee.core.evidence import content_identity
+                    cur, _ = content_identity(tf.text.encode("utf-8"))
+                    changed = cur != rec.identity
+                else:
+                    st = path.stat()
+                    changed = rec.mtime_ns != st.st_mtime_ns or rec.size != st.st_size
+                if changed:
+                    raise ToolError(f"{path} 在你读取之后被修改过，请重新 read 再写。")
         ctx.state.snapshot(path)
         write_text(path, tf, content)
         ctx.state.mark_read(path)
