@@ -1359,13 +1359,37 @@ def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     return True
 
 
+# 内联脚本的解释器：`bash -c '…'` / `pwsh -Command '…'` / `cmd /c …` / `python -c '…'`。
+# 这些命令的“前缀”如果只取解释器名，用户点一次「以后都行」就等于永久放行任意脚本
+# （批准 `bash -c 'mkdir build'` 之后 `bash -c 'curl … | sh'` 也不再询问）。
+_INLINE_PREFIX_FLAGS = {
+    "bash": ("-c",), "sh": ("-c",), "zsh": ("-c",), "dash": ("-c",), "ksh": ("-c",),
+    "powershell": ("-c", "-command", "-encodedcommand"),
+    "pwsh": ("-c", "-command", "-encodedcommand"),
+    "cmd": ("/c", "/k"),
+    "python": ("-c",), "python3": ("-c",), "py": ("-c",),
+    "node": ("-e", "--eval", "-p", "--print"),
+    "perl": ("-e", "-E"), "ruby": ("-e",), "php": ("-r",),
+}
+_SHELLISH = {"bash", "sh", "zsh", "dash", "ksh"}
+
+
 def command_prefix(seg: str) -> str:
     """用于“以后 `<前缀>` 开头的命令都不问”：命令名 + 子命令（如 git commit、npm run）。"""
     t = tokens(seg)
     if not t:
         return seg.strip()
     name = t[0]
-    if len(t) > 1 and not t[1].startswith("-") and _cmd_name(name) in (
+    bare = _cmd_name(name)
+    if bare in _INLINE_PREFIX_FLAGS and len(t) > 1:
+        flag = t[1].lower()
+        inline = flag in _INLINE_PREFIX_FLAGS[bare]
+        if not inline and bare in _SHELLISH and re.fullmatch(r"-[A-Za-z]+", flag):
+            inline = "c" in flag                  # bash -lc / -xc 这类组合短选项
+        if inline:
+            # 解释器要执行的就是后面那一段脚本，前缀只能是这一条命令本身
+            return seg.strip()
+    if len(t) > 1 and not t[1].startswith("-") and bare in (
             "git", "gh", "npm", "pnpm", "yarn", "cargo", "go", "docker", "kubectl", "pip", "uv", "dotnet", "make"):
         return f"{name} {t[1]}"
     if _cmd_name(name) in ("python", "python3", "py") and len(t) > 2 and t[1] == "-m":

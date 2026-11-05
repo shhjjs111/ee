@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ee.core.permissions import PermissionPolicy
+from ee.core.permissions import PermissionPolicy, command_prefix
 
 WS = Path("C:/ws") if os.name == "nt" else Path("/ws")
 
@@ -141,3 +141,36 @@ def test_ambiguous_git_prefix_is_not_forced():
     git 自己会报 ambiguous 并拒绝执行，不需要我们额外拦截。"""
     d = pol("auto").check("shell", {"command": "git push origin main --forc"})
     assert d.action in ("allow", "deny")
+
+
+# ---------------------------------------------------------------- 「以后都行」的前缀
+
+@pytest.mark.parametrize("cmd", [
+    "bash -c 'mkdir build'",
+    "bash -lc 'mkdir build'",          # 组合短选项
+    "sh -c 'mkdir build'",
+    'powershell -Command "Get-Item x"',
+    "cmd /c dir",
+    "python -c 'print(1)'",
+])
+def test_inline_script_prefix_is_the_command_itself(cmd):
+    """解释器的「前缀」不能退化成解释器名。
+
+    修复前：批准 `bash -c 'mkdir build'` 记下的前缀是 `bash`，此后
+    `bash -c 'cat /etc/passwd'` 被「以后都行」直接放行，还会被永久写进
+    ~/.ee/permissions.json —— 一次审批等于永久放行任意脚本。
+    """
+    assert command_prefix(cmd) == cmd
+
+
+def test_approving_inline_bash_does_not_whitelist_other_scripts():
+    p = pol("default")
+    d = p.check("shell", {"command": "bash -c 'mkdir build'"})
+    p.remember(d, "shell")
+    assert p.check("shell", {"command": "bash -c 'cat /etc/passwd'"}).action == "ask"
+
+
+def test_subcommand_prefix_still_works():
+    """收紧不能把正常前缀一起毁掉：子命令粒度仍按原样记。"""
+    assert command_prefix("git commit -m x") == "git commit"
+    assert command_prefix("python -m pytest -q") == "python -m pytest"
