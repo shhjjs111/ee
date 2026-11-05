@@ -261,7 +261,7 @@ def test_server_rpc_and_turn_end_keeps_running(ee_home, workspace):
         ctx = _ctx(workspace, sh, mgr)
         await ShellTool().run({"command": _py(sh, "loop.py"), "background": True}, ctx)
         assert mgr.get("b2").running
-        b.thread_delete(tid)
+        await b.thread_delete(tid)
         for _ in range(50):
             if not mgr.get("b2").running:
                 break

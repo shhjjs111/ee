@@ -533,7 +533,7 @@ class Backend:
             SessionStore(self.home, session_id=p.stem).meta({"orchestrator_parent_id": None,
                                                               "orchestrator_role": None})
 
-    def thread_delete(self, thread_id: str) -> dict:
+    async def thread_delete(self, thread_id: str) -> dict:
         self._check_thread_id(thread_id)
         sessions = (self.home / "sessions").resolve()
         path = sessions / f"{thread_id}.jsonl"
@@ -569,11 +569,9 @@ class Backend:
                     asyncio.get_running_loop().create_task(aclose())
                 except RuntimeError:
                     pass                             # 没有事件循环：随进程退出释放
-        if path.is_file():
-            path.unlink()
-        if extra.is_dir():
-            import shutil
-            shutil.rmtree(extra, ignore_errors=True)
+        # 磁盘删除（附件目录可能是很深的子树）必须离开事件循环：
+        # test_server_audit.test_thread_delete_does_not_block_event_loop 守着这条。
+        await asyncio.to_thread(self._delete_thread_files, path, extra)
         try:
             from ee.core.search_index import get_index
             get_index(self.home).forget(thread_id)
@@ -581,6 +579,14 @@ class Backend:
             pass
         self.notify("thread/deleted", {"thread_id": thread_id})
         return {"ok": True}
+
+    def _delete_thread_files(self, path: Path, extra: Path) -> None:
+        """删会话的纯磁盘部分（工作线程里跑，别卡事件循环）。"""
+        if path.is_file():
+            path.unlink()
+        if extra.is_dir():
+            import shutil
+            shutil.rmtree(extra, ignore_errors=True)
 
     async def thread_undo(self, thread_id: str, force: bool = False) -> dict:
         """/undo。要恢复的文件在回合后被用户改过时返回 {needs_confirm, conflicts}、不动文件；
