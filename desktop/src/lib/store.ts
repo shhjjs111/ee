@@ -920,11 +920,18 @@ function forgetThread(id: string) {
     delete turnStartedAt[id];
     const returnedInbox = { ...s.returnedInbox };
     delete returnedInbox[id];
+    // 子会话被删时，它的待审批标记也要清：不清的话父界面横幅会一直挂着，
+    // 点「批准一次」时 call_id 已失效，只会静默失败（与「不留幽灵状态」相反）。
+    const kept = Object.entries(s.pendingChildApprovals).filter(([, n]) => n.thread_id !== id);
+    const pendingChildApprovals = kept.length === Object.keys(s.pendingChildApprovals).length
+      ? s.pendingChildApprovals
+      : Object.fromEntries(kept);
     return {
       details,
       bgProcs,
       turnStartedAt,
       returnedInbox,
+      pendingChildApprovals,
       threads: s.threads.filter((x) => x.id !== id),
       activeThreadId: s.activeThreadId === id ? null : s.activeThreadId,
     };

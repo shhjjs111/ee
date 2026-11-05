@@ -197,4 +197,25 @@ describe("refreshChildStatus：主动补拉子会话状态", () => {
     const ok = useApp.getState().threads.find((x) => x.id === "c_ok");
     expect(ok?.changed_count).toBe(2);
   });
+
+  it("删掉还在等审批的子会话后，父界面的横幅不能残留", async () => {
+    // 审计 P2#75：forgetThread 清了 details/bgProcs/turnStartedAt/returnedInbox，却完全不碰
+    // pendingChildApprovals。删掉一个仍在等审批的子会话后，父界面横幅会一直挂着，
+    // 点「批准一次」时 call_id 已失效，只会静默失败——正好与「不留幽灵状态」相反。
+    const rpc = { call: async () => ({}) } as never;
+    useApp.setState({
+      rpc,
+      threads: [thread({ id: "c1", title: "子任务", orchestrator_parent_id: "p1", orchestrator_role: "child" })],
+      details: { c1: { id: "c1", cwd: "/w", title: "c1", status: "idle", items: [], updated: 0 } },
+      activeThreadId: "p1",
+      pendingChildApprovals: {
+        p1: { parent_id: "p1", thread_id: "c1", kind: "approval", child_title: "子任务",
+              call_id: "call_1", tool: "shell", summary: "rm -rf build" },
+      },
+    } as never);
+
+    await useApp.getState().deleteThread("c1");
+
+    expect(useApp.getState().pendingChildApprovals["p1"], "删了子会话，横幅还挂着就是幽灵状态").toBeFalsy();
+  });
 });
