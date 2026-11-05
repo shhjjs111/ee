@@ -285,8 +285,14 @@ def _close_stale_runs(meta: dict) -> None:
     读的时候必须报成 interrupted：`status` 只有 idle/running，单靠它推不出「跑完了」还是
     「被杀」，界面和编排都会把中断的回合当成「空闲」——编排据此判定任务已完成是最坏的结果。
 
-    判定依据是 pid：写这条 running 的不是当前进程，就一定不是"正在跑"（本进程创建的 run
-    在内存里，不会走读路径）。老记录没有 pid 字段，同样只能来自已经不在的进程。
+    判定依据是 pid 是否**还活着**，而不是「pid 不是本进程」。后者的前提是「写这条 running
+    的不是当前进程，就一定不是正在跑」——桌面端后端与 `ee exec --resume` 共用同一份
+    sessions/<id>.jsonl 时这个前提不成立：任何一方 load 时，另一方正在跑的 run 都会被改成
+    interrupted，随后任何一次 save_meta 又会把这份被污染的 meta 整份写回磁盘（假的 interrupted
+    被持久化，用户在这期间改的会话名/模型/模式也被旧快照覆盖）。编排按 terminal_reason 判断
+    子任务是否结束，把还在跑的子任务当已结束并据此收尾/重派，是这条最坏的后果。
+
+    老记录没有 pid 字段，同样只能来自已经不在的进程。
 
     只改返回值，**不写回磁盘**：查询不该有副作用（I9 的同一条精神），而且每次读到同样结果。
     finished 留 None——不知道确切时刻就不编造。
@@ -295,10 +301,17 @@ def _close_stale_runs(meta: dict) -> None:
     if not isinstance(runs, list):
         return
     me = os.getpid()
+    from ee.server.lifeline import pid_alive      # 延迟导入：core 不该在导入期依赖 server
     for r in runs:
-        if isinstance(r, dict) and r.get("status") == "running" and r.get("pid") != me:
-            r["status"] = "done"
-            r["terminal_reason"] = "interrupted"
+        if not (isinstance(r, dict) and r.get("status") == "running"):
+            continue
+        pid = r.get("pid")
+        if pid == me:
+            continue                    # 本进程创建的 run：内存里那个任务说了算
+        if pid and pid_alive(int(pid)):
+            continue                    # 另一个还活着的 ee 进程正在跑它，别替它判死
+        r["status"] = "done"
+        r["terminal_reason"] = "interrupted"
     meta["runs"] = runs
 
 
