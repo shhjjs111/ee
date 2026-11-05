@@ -292,11 +292,24 @@ export function Conversation() {
     setAnchorId(null);
   }, [activeThreadId]);
 
-  if (!d) {
+  // 真·新对话（没有 activeThreadId）才是空状态。有 id 但详情还没到时（openThread 先 set
+  // activeThreadId，thread/get 还在路上）是「正在打开」——原来两种情况共用同一个 `!d`
+  // 分支，于是加载已有会话时会闪出「我们来做点什么」：用户以为切成了新对话，在这里打的字
+  // 会在详情到达、切回正常分支时随组件卸载直接丢掉。
+  if (!activeThreadId) {
     return (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
         <Header />
         <EmptyState />
+      </div>
+    );
+  }
+
+  if (!d) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
+        <Header />
+        <div className="flex flex-1 items-center justify-center text-[13px] text-faint">正在打开对话…</div>
       </div>
     );
   }
