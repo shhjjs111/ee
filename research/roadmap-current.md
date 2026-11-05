@@ -387,7 +387,7 @@ write 400 行文件 → 连改两处 → 问值（4 轮/组）：
       4. **PowerShell 的 `@pre` / `@assets` splat 在 `-File` 模式下被拆成单字符**，gh 报 ``no matches found for `-` ``（那个 `-` 就是 `--prerelease` 被拆出的第一段）。修法：先拼 `@argv` 数组再 `& gh @argv`。
     - 附带修的一个真问题：`playwright.config.ts` 只有 per-test `timeout`（靠 JS 定时器，进程挂死时自己也停），实测 CI 上卡过 44 分钟不退、把 verify 拖过 45 分钟 job 上限而 cancelled。已加 `globalTimeout: 12 分钟` 兜底。
     - **失败现场要自己留**：GitHub 工作流日志要仓库管理权限（API 403、页面要登录），所以 publish 失败时把 gh 输出 Tee 到 `dist-out/gh-release.log` 并上传 `release-publish-log` artifact。
-    - 仍未做：客户端未接 `electron-updater`（`build.publish` 已配好，随时可接）。
+    - ~~仍未做：客户端未接 `electron-updater`~~ → 2026-11-02 已接（`desktop/electron/updater.ts`、`main.ts` 的 IPC、设置页 UpdateCard）。
 - 仍成立的历史边界：`test_goal_acceptance` 与 `test_bgshell_guidance` 各失败过一次，但都在对应的针对性修复之前，此后连跑全绿（后者本地连跑 3 次）。
 
 ## 修订（2026-11-01）
@@ -627,7 +627,7 @@ e2e 卡住的根因（非后端）：`e2e_ws.py` 的 `reader()` 把每条通知 
 - **typescript 语言服务器未验**：本机没有 `typescript-language-server`，只有 python 路径跑过真实服务器。
 - **进程退出/崩溃恢复未用真实服务器验**：`test_crash_restarts_on_next_acquire` 仍是 Fake client。
 - **编辑器里的实际观感未验**：工具输出的可见性只验到字符串层面，没做视觉核对（桌面端已在日用，但这一项不是启动就能证明的）。
-- 集成用例用 `npx --package pyright` 启动，首次拉包约 60 秒；已给它 120 秒预算。机器上直接有 `pyright-langserver` 时走 PATH，不经过 npx。
+- 集成用例**只认 PATH 上的 `pyright-langserver`**，找不到就整个用例 skip（`2a95fe0` 移除了 npx 回落：首次拉包会超过 `LspManager` 20 秒的 initialize 预算，把环境问题伪装成代码缺陷）。代码里那个 120 是**等待诊断结果**的上限，不是拉包预算。CI 会 `npm i -g pyright`，本地没装则该用例 skip。
 - 会话内只起一种语言的服务器（按根目录特征文件判定），多语言项目需要后续扩。
 
 
@@ -672,7 +672,7 @@ D6-1 的 U1–U7 已全部提交并推送（`9d867f6`、`d68af00`、`58e1e67`、
 
 未执行 / 未验证：
 
-- ~~远端 GitHub Actions：新 workflow 的 PR 触发、verify→package 依赖关系未在真实远端跑过~~ → 2026-10-30 仓库公开后恢复 `push`/`PR` 自动触发，后续提交的 verify 均在远端跑绿（见上两节记录）。仍未走过的是 `verify→package` 这一段依赖关系。
+- ~~远端 GitHub Actions：新 workflow 的 PR 触发、verify→package 依赖关系未在真实远端跑过~~ → 2026-10-30 仓库公开后恢复 `push`/`PR` 自动触发，后续提交的 verify 均在远端跑绿（见上两节记录）。~~仍未走过的是 `verify→package` 这一段依赖关系~~ → 已在 run #152 全绿走过（见上面那条记录）。
 - 全量 pytest 已在项目 `.venv` 下执行过一次（1578 passed / 15 skipped / 0 failed）；日常仍按波次跑相关子集。
 - ~~Electron 桌面端实际渲染与交互~~ → 桌面端已日常使用（启动、三栏、会话、审批主流程可用）。仍未核对的是逐项视觉细节：间距、字号、动画、弹层方向。
 - 真实 MCP 服务器跨项目行为、真实模型评测。

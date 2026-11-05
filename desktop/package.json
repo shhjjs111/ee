@@ -1,7 +1,7 @@
 {
   "name": "ee-desktop",
   "productName": "ee",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "ee：个人 AI 编程 agent 桌面端",
   "author": "ee",
   "private": true,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ee-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "ee：个人 AI 编程 agent 的内核与桌面端后端（OpenAI Chat Completions 协议，多模型通用）"
 readme = "README.md"
 requires-python = ">=3.11"
