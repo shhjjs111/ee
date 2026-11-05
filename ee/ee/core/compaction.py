@@ -63,19 +63,55 @@ def estimate_tokens(text: str) -> int:
                + digit * _TK_DIGIT + cjk * _TK_CJK) + 1
 
 
-def message_text(m: dict) -> str:
+# 一张图按千 token 量级计：各家视觉编码器（OpenAI / Claude / Gemini）都落在这个量级。
+# 精确值取决于分辨率与厂商，但"比文本贵、比 base64 便宜得多"这个量级必须对——
+# 否则一张截图就会让估算从 ~1k 变成 6 万，诊断数字直接不可用。
+IMAGE_TOKENS = 1024
+
+_IMAGE_PART_TYPES = ("image_url", "input_image", "image")
+
+
+def _content_text(c) -> str:
+    """content 可能是字符串，也可能是多段数组（带图片的 user 消息）。"""
+    if isinstance(c, str):
+        return c
+    if c is None:
+        return ""
+    if isinstance(c, list):
+        out: list[str] = []
+        for part in c:
+            if isinstance(part, dict):
+                if part.get("type") in _IMAGE_PART_TYPES:
+                    continue                  # 图片按张数计，base64 不能当正文
+                out.append(str(part.get("text") or ""))
+            elif isinstance(part, str):
+                out.append(part)
+        return " ".join(p for p in out if p)
+    return json.dumps(c, ensure_ascii=False)
+
+
+def _image_count(m: dict) -> int:
     c = m.get("content")
-    parts = [c if isinstance(c, str) else ("" if c is None else json.dumps(c, ensure_ascii=False))]
+    if not isinstance(c, list):
+        return 0
+    return sum(1 for p in c if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
+
+
+def message_text(m: dict) -> str:
+    parts = [_content_text(m.get("content"))]
     for tc in m.get("tool_calls") or []:
         fn = tc.get("function", {})
         parts.append(f"{fn.get('name', '')}({fn.get('arguments', '')})")
-    if m.get("reasoning"):
-        parts.append(m["reasoning"])
+    # 推理：内部历史用 reasoning，发给模型的消息里叫 reasoning_content。
+    # 两个都要认——只认一个的话，按 wire 形态估算会整块漏计（note_wire 的断点归因偏小）。
+    r = m.get("reasoning") or m.get("reasoning_content")
+    if r:
+        parts.append(r)
     return "\n".join(p for p in parts if p)
 
 
 def estimate_messages(msgs: list[dict]) -> int:
-    return sum(estimate_tokens(message_text(m)) + 4 for m in msgs)
+    return sum(estimate_tokens(message_text(m)) + 4 + IMAGE_TOKENS * _image_count(m) for m in msgs)
 
 
 def strip_context_update(text: str) -> str:
