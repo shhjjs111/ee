@@ -1872,8 +1872,11 @@ class Session:
         _prune.sync_reasoning(self, profile=spec.profile)   # 压缩请求也不该把旧推理体重带上
         hist = self.history
         if prev is not None and spec.alias != self.spec.alias:
-            # 换模型时缓存本来就不共享：只发固定消息 + 旧摘要 + 之后没被概括的部分。
-            cut = C.after_summary(self.history, prev[0])
+            # 换模型时缓存本来就不共享：发固定消息 + 旧摘要 + 摘要之后的全部内容。
+            # 起点必须是摘要的下一条，不能是 after_summary()——后者返回的是「上次保留段的
+            # 末尾」（_retained_to），从那里截会把保留段（原文、还没进过摘要）整段漏掉：
+            # 换模型那次压缩之后，这段往来既不在摘要里、也不在新历史里。
+            cut = prev[0] + 1
             hist = ([m for m in self.history[:prev[0]] if m.get("_kind") == "agents"] +
                     [self.history[prev[0]]] + self.history[cut:])
         instr = C.compact_update_prompt() if prev is not None else C.compact_prompt()
@@ -1899,7 +1902,10 @@ class Session:
         """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。有上次摘要时只渲染之后的新内容 + <previous-summary>。"""
         budget = max(4000, int(min(self.profile.context_window, self.role_spec("compact").profile.context_window) * 0.5))
         if prev is not None:
-            body = C.incremental_side_request(prev[1], self.history[C.after_summary(self.history, prev[0]):], budget)
+            # 与主路一致：侧路要概括的是「摘要之后的全部」，含上次原样保留、还没进摘要的段。
+            # 用 after_summary() 当起点会把保留段排除在外 → 它既不进摘要、也不进新历史，
+            # 工具输出和命令结果就这样静默消失。
+            body = C.incremental_side_request(prev[1], self.history[prev[0] + 1:], budget)
             return await self.side_complete(C.compact_update_prompt(), body, role="compact")
         transcript = C.render_transcript(self.history, budget)
         return await self.side_complete(C.compact_prompt(), "以下是需要压缩的对话记录：\n\n" + transcript,
