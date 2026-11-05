@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import type { ConnState, NotificationHandler, RpcClient } from "./rpc";
-import { useApp } from "./store";
+import { enqueueReturned, useApp } from "./store";
 
 type Deferred = {
   method: string;
@@ -349,5 +349,52 @@ describe("长操作不用 20 秒默认超时", () => {
 
     c.resolve({ needs_confirm: false });
     await Promise.race([p, new Promise((r) => setTimeout(r, 10))]);
+  });
+});
+
+describe("退回的排队消息要跨会话保住", () => {
+  // 审计 P1#21：enqueueReturned 只在 active === id 时派生出 returnedDraft，其它会话只落
+  // returnedInbox；而 openThread / newThread / Composer 的消费 effect 都只读 returnedDraft，
+  // hasReturned 全仓没有调用方。于是在 A 会话时退回给 B 的那条消息，切回 B 后输入框是空的
+  // ——文字实际上丢了，只能去会话文件里翻。
+  it("切到该会话时，收件箱里的退回消息要回到输入框", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "a",
+      details: { a: detail("a", "/A"), b: detail("b", "/B") },
+      returnedInbox: {},
+      returnedDraft: null,
+    });
+
+    enqueueReturned("b", [{ id: "r1", text: "被退回的话" }]);
+    expect(useApp.getState().returnedDraft, "不在当前会话时只该落收件箱").toBeNull();
+
+    const p = useApp.getState().openThread("b");
+    const c = f.calls.find((x) => x.method === "thread/get" && x.params.thread_id === "b")!;
+    c.resolve({ thread: detail("b", "/B") });
+    await p;
+
+    expect(useApp.getState().returnedDraft).toMatchObject({ threadId: "b", texts: ["被退回的话"] });
+  });
+
+  it("已经在输入框待消费时不重复派生", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "b",
+      details: { b: detail("b", "/B") },
+      returnedInbox: {},
+      returnedDraft: null,
+    });
+
+    enqueueReturned("b", [{ id: "r2", text: "第一条" }]);
+    const first = useApp.getState().returnedDraft!;
+    const p = useApp.getState().openThread("b");
+    const c = f.calls.find((x) => x.method === "thread/get")!;
+    c.resolve({ thread: detail("b", "/B") });
+    await p;
+
+    expect(useApp.getState().returnedDraft!.nonce).toBe(first.nonce);
   });
 });

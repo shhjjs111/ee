@@ -333,6 +333,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   async openThread(id) {
     const rpc = get().rpc!;
     set({ activeThreadId: id, view: "chat" });
+    adoptReturned(id);          // 这个会话在上一次离开期间退回的消息，切回来要回到输入框
     try {
       // 首屏只要尾部一页：长会话（实测 15MB / 5215 条）一次拉全部，传输 + JSON.parse
       // 就要一秒以上、界面卡在空白上；上面的历史等用户真往上翻时再补（loadEarlier）。
@@ -496,7 +497,9 @@ export const useApp = create<State & Actions>((set, get) => ({
     } catch (e) {
       const msg = (e as Error).message;
       get().showToast(msg, "error");
-      if (id) set({ returnedDraft: { threadId: id, texts: [text], nonce: Date.now() } });
+      // 走收件箱而不是直接写 returnedDraft：绕过收件箱时 Composer 的 consumeReturned(id)
+      // 取到空集、draft 永不清空，来回切会话会把同一段文字反复 merge 进输入框。
+      if (id) enqueueReturned(id, [{ id: `goal_fail_${Date.now()}`, text }]);
       else set({ composerDraft: { text, nonce: Date.now() } });
       if (id) setStatus(id, "idle");
       return false;
@@ -856,7 +859,24 @@ export function latestRunStartedMs(t: ThreadDetail | undefined | null): number |
  * 关键点：`returnedDraft` 只代表**当前会话**待消费的那批；其他会话的退回内容
  * 留在 `returnedInbox` 里，等用户切过去再消费——原来它们会被直接覆盖丢弃。
  */
-function enqueueReturned(id: string, items: ReturnedInput[]) {
+/**
+ * 切到某个会话时，把它收件箱里的退回消息派生成输入框待消费的那一份。
+ *
+ * 原来只有 enqueueReturned 里 `active === id` 那个分支会派生 returnedDraft；用户在别的
+ * 会话时退回的消息只落 returnedInbox，而 openThread / newThread / Composer 的消费 effect
+ * 都只读 returnedDraft，hasReturned 全仓也没有调用方——于是切回来输入框是空的，那段文字
+ * 实际上等于丢了（只能去会话文件里翻）。inbox 保留不动，由 consumeReturned 正常清空。
+ */
+export function adoptReturned(id: string) {
+  const s = useApp.getState();        // 模块级函数拿不到 zustand 闭包里的 get/set
+  const pending = (s.returnedInbox ?? {})[id] ?? [];
+  if (!pending.length) return;
+  const cur = s.returnedDraft;
+  if (cur?.threadId === id && cur.texts.length) return;      // 已经有待消费的，别覆盖
+  useApp.setState({ returnedDraft: { threadId: id, texts: pending.map((x) => x.text), nonce: Date.now() } });
+}
+
+export function enqueueReturned(id: string, items: ReturnedInput[]) {
   useApp.setState((s) => {
     const inbox = pushReturned(s.returnedInbox, id, items);
     if (inbox === s.returnedInbox) return {};      // 全是重复投递
