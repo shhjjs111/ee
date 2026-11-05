@@ -7,7 +7,7 @@
 // 于是链条上只剩「模型推理」被替换，Composer / store / RpcClient / 后端 / 工具
 // 全是真实实现。判定看 UI 上真实出现的内容和 turn 结束标记。
 
-import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -116,6 +116,66 @@ test.afterAll(async () => {
   }
 });
 
+type TurnOutcome = "completed" | "error" | "stopped" | "max-steps" | "no-key" | "timeout" | "stale";
+
+const MARKERS = {
+  error: /出错 ·/g,
+  stopped: /已停止/g,
+  "max-steps": /达到步数上限/g,
+  completed: /完成 ·/g,
+  "no-key": /没有可用的 API key/g,
+} as const;
+const MARKER_ORDER = ["error", "stopped", "max-steps", "completed", "no-key"] as const;
+
+const countOf = (text: string, re: RegExp) => (text.match(re) ?? []).length;
+
+/**
+ * 等真实回合收尾，返回**它到底是怎么结束的**。
+ *
+ * 原来是 `expect.poll(...).not.toBe("running")`——只要不再是「进行中」就算通过，
+ * 于是「出错 ·」「已停止」「达到步数上限」和真正的「完成 ·」同权，回合坏掉照样绿。
+ *
+ * 两个必须一起解决的假绿来源：
+ * 1. 结束状态本身要成为断言对象（只有 completed 算走完）。
+ * 2. 同一会话里上一个回合的「完成 ·」还留在页面上，直接 `body.includes` 会在
+ *    新回合刚发出的第一帧就命中，于是用例在 98ms 内「通过」而回合根本没跑完。
+ *    所以结束标记按**出现次数相对发送前的基线增长**判定，并要求中途真的见过
+ *    「运行中」（输入框 placeholder 变成插话提示），否则判 stale 而不是通过。
+ */
+async function waitTurnEnd(win: Page, approve: Locator, timeoutMs: number): Promise<TurnOutcome> {
+  const ta = win.locator("textarea").first();
+  const base = await win.locator("body").innerText();
+  const seen = Object.fromEntries(MARKER_ORDER.map((k) => [k, countOf(base, MARKERS[k])])) as Record<
+    (typeof MARKER_ORDER)[number],
+    number
+  >;
+  const approvalBase = countOf(base, /需要你的批准/g);
+
+  let approved = false;
+  let sawRunning = false;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const t = await win.locator("body").innerText();
+    const ph = (await ta.getAttribute("placeholder").catch(() => "")) || "";
+    // 运行中的唯一稳定信号：placeholder 变成「继续输入：Enter 插话…」
+    if (ph.includes("继续输入：Enter 插话")) sawRunning = true;
+
+    // 只按「新出现的那张卡」放行，避免点到历史回合残留的审批按钮
+    if (countOf(t, /需要你的批准/g) > approvalBase && !approved) {
+      approved = true;
+      await approve.last().click().catch(() => undefined);
+    }
+
+    for (const k of MARKER_ORDER) {
+      if (countOf(t, MARKERS[k]) > seen[k]) {
+        return sawRunning ? k : "stale";
+      }
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return "timeout";
+}
+
 test("前置条件：后端就绪 + 假模型已接入", () => {
   test.skip(!ready, "后端未在 45s 内就绪（检查仓库根 .venv 与 Python 依赖）");
   expect(ready).toBe(true);
@@ -135,25 +195,9 @@ test("走完真实回合：输入 → 工具调用 → 审批 → 完成，且�
   // 这是设计行为，不是卡死——所以这里要像用户那样点「允许一次」，
   // 否则测出来的是「一直等审批」而不是「回合能否走完」。
   const approve = win.getByRole("button", { name: "允许一次", exact: true }).first();
-  let approved = false;
 
-  await expect
-    .poll(
-      async () => {
-        const t = await win.locator("body").innerText();
-        if (/完成 ·|已停止|达到步数上限/.test(t)) return "done";
-        if (/没有可用的 API key/.test(t)) return "no-key";
-        if (/出错 ·/.test(t)) return "error";
-        if (/需要你的批准/.test(t) && !approved) {
-          approved = true;
-          await approve.click().catch(() => undefined);
-          return "approving";
-        }
-        return "running";
-      },
-      { timeout: 120_000, intervals: [800] },
-    )
-    .not.toBe("running");
+  const outcome = await waitTurnEnd(win, approve, 120_000);
+  expect(outcome, "真实回合必须以「完成」收尾——出错 / 已停止 / 达到步数上限 / 没接上模型都算失败").toBe("completed");
 
   const body = await win.locator("body").innerText();
   // 关键断言：不能是「没配 key」——那说明假模型根本没接上
@@ -170,24 +214,8 @@ test("真实回合里出现了工具活动（读/搜/编辑/运行至少其一�
   await ta.press("Enter");
 
   const approve = win.getByRole("button", { name: "允许一次", exact: true }).first();
-  let approved = false;
-  await expect
-    .poll(
-      async () => {
-        const t = await win.locator("body").innerText();
-        if (/完成 ·|达到步数上限|已停止/.test(t)) return "done";
-        if (/出错 ·/.test(t)) return "error";
-        // 出现审批就按用户的做法放行，让回合继续
-        if (/需要你的批准/.test(t) && !approved) {
-          approved = true;
-          await approve.click().catch(() => undefined);
-          return "approving";
-        }
-        return "running";
-      },
-      { timeout: 120_000, intervals: [800] },
-    )
-    .not.toBe("running");
+  const outcome = await waitTurnEnd(win, approve, 120_000);
+  expect(outcome, "第二个真实回合必须以「完成」收尾").toBe("completed");
 
   const body = await win.locator("body").innerText();
   // 假模型脚本会用 read/grep/edit/shell：至少出现一种工具活动
