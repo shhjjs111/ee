@@ -19,13 +19,42 @@ MAX_FILES = 200
 MAX_MATCHES = 300
 
 
+RG_TIMEOUT = 120.0                  # 秒：rg 不返回时不能把整个回合挂住
+_TEXT_MAX_BYTES = 8 * 1024 * 1024   # 回退搜索不把超大文件整份读进内存
+
+
+def _read_text_any(p: Path) -> str | None:
+    """按 UTF-8 → GBK 顺序读；两种都不是就返回 None（按二进制跳过）。
+
+    原来直接用 `errors="strict"` 打开，中文 Windows 上的 GBK 文件（老项目源码、日志、
+    导出的 CSV）会在 except 里整份跳过——用户搜不到内容，也没有任何提示。本产品的主
+    平台默认编码就是 cp936，这类文件不是边角。
+    """
+    for enc in ("utf-8", "gbk"):
+        try:
+            return p.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+        except OSError:
+            return None
+    return None
+
+
 async def _rg(args: list[str], cwd: Path) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(shutil.which("rg") or "rg", *args, cwd=str(cwd),
                                                 stdin=asyncio.subprocess.DEVNULL,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                                                 **popen_kwargs())
     try:
-        out, err = await proc.communicate()
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=RG_TIMEOUT)
+    except asyncio.TimeoutError:
+        # rg 扫到一个巨大目录、或者卡在无响应的网络盘上时，不能让整个回合跟着挂住。
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        raise ToolError(f"rg {RG_TIMEOUT:.0f} 秒没有返回（可能在扫一个很大的目录），已结束它。"
+                        "缩小路径或 include 范围再试。")
     except BaseException:          # 回合被中断（取消）：结束 rg，别让它留在后台
         if proc.returncode is None:
             try:
@@ -57,13 +86,16 @@ def _py_grep(root: Path, rx: re.Pattern, include: str | None) -> dict[str, list[
         if include and not _glob_match(p.name, include):
             continue
         try:
-            if not stat.S_ISREG(os.stat(p).st_mode):
+            st = os.stat(p)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _TEXT_MAX_BYTES:
                 continue
-            with open(p, encoding="utf-8", errors="strict") as fh:
-                for i, line in enumerate(fh, 1):
-                    if rx.search(line):
-                        per_file.setdefault(str(p), []).append(f"{i}: {line.rstrip()[:400]}")
-        except (UnicodeDecodeError, OSError):
+            text = _read_text_any(p)
+            if text is None:          # UTF-8 和 GBK 都读不出：按二进制跳过
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                if rx.search(line):
+                    per_file.setdefault(str(p), []).append(f"{i}: {line.rstrip()[:400]}")
+        except OSError:
             continue
     return per_file
 
