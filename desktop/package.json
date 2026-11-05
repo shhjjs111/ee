@@ -14,8 +14,8 @@
     "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && vite build",
     "test": "vitest run",
     "backend:build": "node scripts/build-backend.mjs",
-    "dist:win": "npm run build && electron-builder --win nsis --publish never",
-    "dist:dir": "npm run build && electron-builder --dir --publish never",
+    "dist:win": "npm run build && node scripts/check-backend.mjs && electron-builder --win nsis --publish never",
+    "dist:dir": "npm run build && node scripts/check-backend.mjs && electron-builder --dir --publish never",
     "dist:win:full": "npm run build && node scripts/build-backend.mjs && electron-builder --win nsis --publish never",
     "test:ui": "playwright test",
     "test:ui:guard": "node scripts/e2e-watchdog.mjs"
