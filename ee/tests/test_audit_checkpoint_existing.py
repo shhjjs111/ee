@@ -60,3 +60,83 @@ def test_require_alive_says_expired_when_really_gone():
 def test_require_alive_passes_when_all_present():
     fake = SimpleNamespace(existing=lambda ts: set(ts))
     R._require_alive(fake, [TREE], "这个检查点")      # 不抛
+
+
+# ---------------------------------------------------------------- 时间线视图
+#
+# `checkpoint/list` 的 _list 原来是 register() 内的闭包，逐条算 expired/after_expired，
+# 判据 `(not unknown) and tree not in alive` 埋在闭包里取不到直接调用点，也没有测试
+# 覆盖 unknown 分支。这里把整段摊平逻辑提成模块级 timeline_entries。
+
+ENT = {"id": "u1", "ts": 1.0, "text": "第一问", "tree": TREE, "tree_after": "b" * 40, "undone": False}
+RP = {"id": "rp-1", "ts": 2.0, "label": "恢复点", "tree": "c" * 40}
+ENTRY_KEYS = {"id", "kind", "turn", "ts", "text", "before", "after",
+              "undone", "running", "stat", "expired", "after_expired"}
+
+
+def _numstat_recorder():
+    calls = []
+
+    def numstat(before, after):
+        calls.append((before, after))
+        return {"files": 1, "additions": 1, "deletions": 0}
+
+    return numstat, calls
+
+
+def test_timeline_does_not_mark_expired_when_git_fails():
+    """git 故障（alive=None）：一条都不能标 expired——「不知道」不是「已清理」。"""
+    numstat, calls = _numstat_recorder()
+
+    out = R.timeline_entries([(1, ENT)], [RP], None, numstat, None)
+
+    assert [e["id"] for e in out] == ["u1", "rp-1"]
+    assert [e["expired"] for e in out] == [False, False], out
+    assert [e["after_expired"] for e in out] == [False, False], out
+    assert [e["stat"] for e in out] == [None, None], out
+    assert calls == [], "存活无法判断时不该去算 diff"
+
+
+def test_timeline_marks_expired_only_when_tree_really_gone():
+    """git 正常且 tree 确实不在了：仍然如实标 expired。"""
+    numstat, calls = _numstat_recorder()
+
+    out = R.timeline_entries([(1, ENT)], [RP], {"b" * 40}, numstat, None)
+
+    turn, rp = out
+    assert turn["expired"] is True
+    assert turn["after_expired"] is False
+    assert turn["stat"] is None
+    assert rp["expired"] is True
+    assert calls == []
+
+
+def test_timeline_computes_stat_when_both_trees_alive():
+    numstat, calls = _numstat_recorder()
+
+    out = R.timeline_entries([(1, ENT)], [], {ENT["tree"], ENT["tree_after"]}, numstat, None)
+
+    assert out[0]["expired"] is False and out[0]["after_expired"] is False
+    assert out[0]["stat"] == {"files": 1, "additions": 1, "deletions": 0}
+    assert calls == [(ENT["tree"], ENT["tree_after"])]
+
+
+def test_timeline_marks_running_turn():
+    """抽取时不能丢掉 running 判据：正在跑且还没结束快照的最后一回合要标出来。"""
+    numstat, _ = _numstat_recorder()
+    running_ent = {**ENT, "tree_after": None}
+
+    out = R.timeline_entries([(1, running_ent)], [], {running_ent["tree"]}, numstat, running_ent["id"])
+
+    assert out[0]["running"] is True
+
+
+def test_timeline_entry_fields_unchanged():
+    """字段集合不能在设计外变动——前端 Checkpoint 类型按这些 key 渲染（turn 只属于回合）。"""
+    numstat, _ = _numstat_recorder()
+
+    out = R.timeline_entries([(1, ENT)], [RP], None, numstat, None)
+
+    assert set(out[0]) == ENTRY_KEYS
+    assert set(out[1]) == ENTRY_KEYS - {"turn"}
+    assert out[1]["kind"] == "restore" and out[1].get("turn") is None

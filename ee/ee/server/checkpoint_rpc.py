@@ -75,6 +75,41 @@ def _require_alive(d, trees: list[str], what: str) -> None:
         raise RpcError(f"{what}已被清理（超过保留期限）")
 
 
+def timeline_entries(ents: list[tuple[int, dict]], rps: list[dict], alive: set[str] | None,
+                     numstat, running_id: str | None) -> list[dict]:
+    """把回合与恢复点摊成 `checkpoint/list` 的时间线条目。
+
+    **`alive is None` 表示 git 出故障、无法判断 tree 还在不在**（与 `_require_alive` 同一
+    理由）。此时一条都不能标 `expired`：那是把「不知道」翻译成「已清理（超过保留期限）」，
+    用户看到就会放弃恢复——而刷新之后大概率又显示正常，行为前后矛盾。`stat` 同理不猜。
+
+    `rps` 是恢复点（`kind=restore`）；它们没有 `turn` 字段，前端 `Checkpoint.turn` 是可选。
+    """
+    unknown = alive is None
+    out = []
+    for n, it in ents:
+        before, after = it.get("tree"), it.get("tree_after")
+        stat = None
+        if not unknown and before in alive and after in alive:
+            try:
+                stat = numstat(before, after)
+            except Exception:  # noqa: BLE001
+                stat = None
+        out.append({"id": it["id"], "kind": "turn", "turn": n, "ts": it.get("ts"),
+                    "text": C.summarize(it.get("text") or ""), "before": before, "after": after,
+                    "undone": bool(it.get("undone")),
+                    "running": bool(running_id and it.get("id") == running_id and not after),
+                    "stat": stat,
+                    "expired": (not unknown) and before not in alive,
+                    "after_expired": bool(after) and not unknown and after not in alive})
+    for rp in rps:
+        out.append({"id": rp["id"], "kind": "restore", "ts": rp.get("ts"),
+                    "text": rp.get("label") or "恢复前的文件",
+                    "before": rp["tree"], "after": None, "undone": False, "running": False, "stat": None,
+                    "expired": (not unknown) and rp["tree"] not in alive, "after_expired": False})
+    return out
+
+
 def register(methods: dict, backend) -> None:
     from ee.server import gitops
     from ee.server.app import RpcError
@@ -121,27 +156,8 @@ def register(methods: dict, backend) -> None:
         rps = [rp for rp in t.meta.get("restore_points") or [] if rp.get("tree")]
         alive = d.existing([x for _, it in ents for x in (it.get("tree"), it.get("tree_after")) if x]
                            + [rp["tree"] for rp in rps])
-        unknown = alive is None      # git 出故障：不知道在不在，不能标成「已过期」
-        out = []
-        last_id = ents[-1][1].get("id") if ents else None
-        for n, it in ents:
-            before, after = it.get("tree"), it.get("tree_after")
-            running = bool(t.running and it.get("id") == last_id and not after)
-            stat = None
-            if not unknown and before in alive and after in alive:
-                try:
-                    stat = d.numstat(before, after)
-                except Exception:  # noqa: BLE001
-                    stat = None
-            out.append({"id": it["id"], "kind": "turn", "turn": n, "ts": it.get("ts"),
-                        "text": C.summarize(it.get("text") or ""), "before": before, "after": after,
-                        "undone": bool(it.get("undone")), "running": running, "stat": stat,
-                        "expired": (not unknown) and before not in alive,
-                        "after_expired": bool(after) and not unknown and after not in alive})
-        for rp in rps:
-            out.append({"id": rp["id"], "kind": "restore", "ts": rp.get("ts"), "text": rp.get("label") or "恢复前的文件",
-                        "before": rp["tree"], "after": None, "undone": False, "running": False, "stat": None,
-                        "expired": (not unknown) and rp["tree"] not in alive, "after_expired": False})
+        running_id = ents[-1][1].get("id") if (t.running and ents) else None
+        out = timeline_entries(ents, rps, alive, d.numstat, running_id)
         out.sort(key=lambda e: e.get("ts") or 0)
         return {"available": True, "checkpoints": out}
 
