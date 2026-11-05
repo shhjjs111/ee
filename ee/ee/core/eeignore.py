@@ -8,12 +8,14 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 FILENAME = ".eeignore"
+log = logging.getLogger("ee.eeignore")
 
 
 def _translate(pat: str) -> str:
@@ -62,9 +64,11 @@ class _Rule:
 
 
 class EeIgnore:
-    def __init__(self, rules: list[_Rule], files: list[Path]):
+    def __init__(self, rules: list[_Rule], files: list[Path], unreadable: list[Path] | None = None):
         self.rules = rules
         self.files = files
+        # 读不出内容的 .eeignore：那份排除规则静默消失了，调用方据此知道「保护不完整」
+        self.unreadable = unreadable or []
 
     @property
     def empty(self) -> bool:
@@ -81,11 +85,16 @@ class EeIgnore:
             if (d / ".git").exists():
                 break
         rules: list[_Rule] = []
+        unreadable: list[Path] = []
         for f in reversed(found):            # 上级的先，近的后（近的优先）
             base = _norm(f.parent)
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+            except OSError as e:
+                # 不能静默跳过：这份 .eeignore 里的排除规则就此全部失效（fail-open），
+                # 用户会以为敏感文件仍被挡着。
+                unreadable.append(f)
+                log.warning("读不出 %s，它里面的排除规则这次不生效：%s", f, e)
                 continue
             for raw in text.splitlines():
                 line = raw.rstrip()
@@ -107,7 +116,7 @@ class EeIgnore:
                 tail = "/.*$" if dir_only else "(?:/.*)?$"     # 目录规则：目录本身（带 /）及其下所有
                 rx = re.compile("^" + prefix + body + tail, re.I if os.name == "nt" else 0)
                 rules.append(_Rule(rx, neg, dir_only, base))
-        return cls(rules, found)
+        return cls(rules, found, unreadable)
 
     def ignored(self, path: Path | str, is_dir: bool | None = None) -> bool:
         if not self.rules:
