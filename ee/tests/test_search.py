@@ -67,5 +67,6 @@ def test_thread_search_rpc(ee_home, workspace, tmp_path):
     assert all(x["hits"] and "webpack" in x["hits"][0]["snippet"] for x in r["results"])
     r = b._thread_search("webpack", cwd=str(workspace))
     assert [x["thread"]["id"] for x in r["results"]] == ["x1"]
-    b.thread_delete("x1")
+    import asyncio
+    asyncio.run(b.thread_delete("x1"))       # thread_delete 是 async：磁盘删除走工作线程
     assert [x["thread"]["id"] for x in b._thread_search("webpack")["results"]] == ["x2"]
