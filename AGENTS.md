@@ -12,6 +12,12 @@ Windows 桌面 AI 编程 Agent：Python 内核（`ee/`，`ee serve` 起本地 We
 实测 `-n auto` 会红 2 条（`test_server` 的 websocket 闭环、`test_bgshell_guidance`），`-n 8` 两轮全绿。
 再少核的机器上 xdist 自己会封顶到 CPU 数，不会反而变慢。
 
+**仓库路径带中文时必须加 `PYTHONUTF8=1`**（2026-11-05 实测）：Windows 上 Python 默认用 ANSI
+代码页（cp936）处理 execnet 传给 worker 的路径，`E:\ee建设\...` 这类路径在 worker 启动阶段
+就被破坏，报 `EOFError: expected 1 bytes, got 0`（错误里能看到 `E:\ee????\...`）。此时
+`-n` 任何值都跑不起来，只能串行（17 分钟）。加上 `PYTHONUTF8=1` 后恢复正常：全量
+**2261 passed / 15 skipped，131 秒**。`scripts/verify.sh` 里已经带上这个变量。
+
 ```bash
 # 单个测试文件（最常用）
 ./.venv/Scripts/python.exe -m pytest -c ee/pyproject.toml ee/tests/test_xxx.py -q

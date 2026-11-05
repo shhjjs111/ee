@@ -95,12 +95,15 @@ if [ $QUICK -eq 1 ]; then
   fi
   # shellcheck disable=SC2086
   if [ -n "${TESTS// /}" ]; then
-    $PY -m pytest -c ee/pyproject.toml $TESTS -q $XDIST || FAILED+=("后端 pytest（定向）")
+    PYTHONUTF8=1 $PY -m pytest -c ee/pyproject.toml $TESTS -q $XDIST || FAILED+=("后端 pytest（定向）")
   else
     echo "（没有相关的后端改动，跳过；用全量模式可强制跑）"
   fi
 else
-  $PY -m pytest -c ee/pyproject.toml -q $XDIST || FAILED+=("后端 pytest（全量）")
+  # PYTHONUTF8=1：Windows 上 Python 默认用 ANSI 代码页（cp936）处理 execnet 传给 worker
+  # 的路径，仓库路径里带中文时 worker 启动即崩（EOFError: expected 1 bytes, got 0），
+  # 表现为 xdist 完全不可用。开 UTF-8 模式后恢复正常：全量 131s（串行要 17 分钟）。
+  PYTHONUTF8=1 $PY -m pytest -c ee/pyproject.toml -q $XDIST || FAILED+=("后端 pytest（全量）")
 fi
 
 # ---------------------------------------------------------------- 前端
