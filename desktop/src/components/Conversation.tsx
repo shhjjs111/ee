@@ -311,6 +311,7 @@ export function Conversation() {
       <Header />
       <div
         ref={scroller}
+        data-testid="conversation-scroller"
         onScroll={(e) => {
           const el = e.currentTarget;
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
