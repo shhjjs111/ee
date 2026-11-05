@@ -38,6 +38,7 @@ import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
 import { DELIVERED_LABEL } from "../lib/queue";
 import { changedFiles, exploreHint, truncationText } from "../lib/details";
+import { turnEndText } from "../lib/terminal";
 
 // ------------------------------------------------------------ 通用折叠行
 function Row({
@@ -783,20 +784,9 @@ export function ErrorRow({ message }: { message: string }) {
 
 export function TurnEnd({ item }: { item: TurnEndItem }) {
   const u = item.usage || {};
-  const reason =
-    item.reason === "interrupted"
-      ? "已停止"
-      : item.reason === "error"
-        ? "出错"
-        : item.reason === "max_steps"
-          ? "达到步数上限"
-          : item.reason === "loop"
-            ? "检测到重复操作，已停止"
-            : item.reason === "blocked"
-              ? "消息被 Hook 拦截"
-              : item.reason === "budget"
-                ? "达到花费上限，已停止"
-                : "完成";
+  // 取值集合与文案集中在 lib/terminal.ts：漏一个 key 时 typecheck 会报，
+  // 不会再像原来那样静默落进默认的「完成」。
+  const reason = turnEndText(item.reason);
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
   // 主对话口径（P0-1）：侧路请求（标题 / commit / 压缩 / 子代理）命中恒 0 或很低，
   // 混进分母会把用户看到的数字无端拉低。旧后端没有 main_*，回落到 hit_rate。

@@ -1,4 +1,5 @@
 import { clsx } from "clsx";
+import { cardText } from "../lib/terminal";
 import { GitBranch, X } from "lucide-react";
 import type { ThreadSummary } from "../types";
 import { Spinner, Tip } from "./ui";
@@ -15,25 +16,8 @@ export function terminalText(t: ThreadSummary): string {
   // 两个来源都要认：thread/list 带的是 runs 末条；thread/status 直接给平铺的
   // terminal_reason（refreshChildStatus 拉回来的）。只看一种会有一半场景显示「空闲」。
   const run = (t.runs ?? []).at(-1);
-  const reason = t.terminal_reason ?? run?.terminal_reason;
-  switch (reason) {
-    case "completed":
-      return "完成";
-    case "budget":
-      return "超预算停止";
-    case "interrupted":
-      return "已中断";
-    case "error":
-      return "出错";
-    case "max_steps":
-      return "步数上限";
-    case "loop":
-      return "循环停止";
-    case "blocked":
-      return "被拦截";
-    default:
-      return "空闲";
-  }
+  // 取值集合与文案集中在 lib/terminal.ts：exhausted / met 不会再落进默认的「空闲」
+  return cardText(t.terminal_reason ?? run?.terminal_reason);
 }
 
 /** 终态的颜色：成功绿、需注意黄、失败红、其余灰。 */

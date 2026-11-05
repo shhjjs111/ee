@@ -1,17 +1,17 @@
 // 桌面通知（D4-5）：根据后端事件决定要不要弹 Windows 通知、弹什么。纯函数，便于测试。
 // 真正弹不弹（窗口在不在前台、设置是 从不/不在前台/总是）由 Electron 主进程判断。
 import type { Item, ThreadStatus } from "../types";
+import { NOTIFY_HEAD, NOTIFY_KIND, isStopReason } from "./terminal";
 
 export type NotifyKind = "done" | "error" | "loop" | "approval";
 export type NotifyMsg = { kind: NotifyKind; threadId: string; title: string; body: string };
 
-const REASON: Record<string, { kind: NotifyKind; head: string } | undefined> = {
-  completed: { kind: "done", head: "已完成" },
-  done: { kind: "done", head: "已完成" },
-  max_steps: { kind: "done", head: "已达到最大步数，已停下" },
-  error: { kind: "error", head: "出错了" },
-  loop: { kind: "loop", head: "检测到重复操作，已停止" },
-};
+/** 回合结束要不要通知、通知什么。取值与文案来自 lib/terminal.ts，那边漏 key 会 typecheck 报错。 */
+function reasonInfo(reason: string | null | undefined) {
+  if (!isStopReason(reason)) return undefined;
+  const kind = NOTIFY_KIND[reason];
+  return kind ? { kind, head: NOTIFY_HEAD[reason] } : undefined;   // null = 设计上不弹
+}
 
 /** 取最后一条助手回复的开头当通知正文（去掉 markdown 记号、压成一行）。 */
 export function lastAssistantSnippet(items: Item[] | undefined, max = 120): string {
@@ -35,7 +35,7 @@ export function lastAssistantSnippet(items: Item[] | undefined, max = 120): stri
 
 /** turn/completed：interrupted（用户自己停的）不通知；其他按原因给标题。 */
 export function turnCompletedNotice(p: { thread_id: string; reason: string }, threadTitle: string, items?: Item[]): NotifyMsg | null {
-  const r = REASON[p.reason];
+  const r = reasonInfo(p.reason);
   if (!r) return null;
   const name = threadTitle || "对话";
   const snippet = r.kind === "done" ? lastAssistantSnippet(items) : "";
