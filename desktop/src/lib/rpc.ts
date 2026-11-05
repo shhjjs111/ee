@@ -6,6 +6,15 @@ export type NotificationHandler = (method: string, params: any) => void;
 export type ConnState = "connecting" | "open" | "closed" | "failed";
 
 export const DEFAULT_RPC_TIMEOUT = 20000;
+
+/**
+ * 整工作区文件级操作的超时：撤销回合、编辑重发、检查点恢复。
+ *
+ * 后端这三处都是 `asyncio.to_thread` 的全量文件恢复，耗时与改动文件数、磁盘速度成正比。
+ * 用 20 秒默认值在大仓库上会先弹「内核 20 秒没有响应」并当作失败，而后端还在改文件；
+ * 用户重试会再生成一个恢复点，界面提示与磁盘实际状态就对不上了。
+ */
+export const LONG_RPC_TIMEOUT = 180000;
 const MAX_RECONNECTS = 6; // 约 10 秒连不上就放弃，交给界面重启内核
 
 export function rpcLog(line: string): void {

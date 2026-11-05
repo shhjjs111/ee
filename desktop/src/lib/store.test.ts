@@ -3,7 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { ConnState, NotificationHandler, RpcClient } from "./rpc";
 import { useApp } from "./store";
 
-type Deferred = { method: string; params: any; resolve: (v: any) => void; reject: (e: Error) => void };
+type Deferred = {
+  method: string;
+  params: any;
+  timeoutMs?: number;
+  resolve: (v: any) => void;
+  reject: (e: Error) => void;
+};
 
 function fakeRpc() {
   const calls: Deferred[] = [];
@@ -11,8 +17,8 @@ function fakeRpc() {
   const notifHs = new Set<NotificationHandler>();
   const rpc = {
     state: "closed" as ConnState,
-    call: (method: string, params: any = {}) =>
-      new Promise((resolve, reject) => calls.push({ method, params, resolve, reject })),
+    call: (method: string, params: any = {}, timeoutMs?: number) =>
+      new Promise((resolve, reject) => calls.push({ method, params, timeoutMs, resolve, reject })),
     connect() {},
     close() {},
     onState: (h: (s: ConnState) => void) => (stateHs.add(h), () => stateHs.delete(h)),
@@ -312,5 +318,36 @@ describe("删除会话", () => {
     const st = useApp.getState();
     expect(st.details.t9).toBeUndefined();
     expect(st.bgProcs.t9).toBeUndefined();
+  });
+});
+
+describe("长操作不用 20 秒默认超时", () => {
+  // 后端这三处都是 asyncio.to_thread 的整工作区文件恢复，耗时与改动文件数成正比。
+  // 20 秒默认值会让前端先弹「内核 20 秒没有响应」并当作失败，而后端其实还在改文件：
+  // 用户重试会再生成一个恢复点，界面提示与磁盘实际状态就对不上了。
+  const LONG = 120_000;
+
+  it("撤销上一回合传了长超时", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") } });
+
+    const p = useApp.getState().undo();
+    const c = f.calls.find((x) => x.method === "thread/undo")!;
+    expect(c.timeoutMs, "撤销是整工作区恢复，不能用 20 秒默认超时").toBeGreaterThanOrEqual(LONG);
+
+    c.resolve({ restored: [] });
+    await p;
+  });
+
+  it("编辑重发传了长超时", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") } });
+
+    const p = useApp.getState().editResend("u1", "改一下");
+    const c = f.calls.find((x) => x.method === "thread/edit_resend")!;
+    expect(c.timeoutMs, "编辑重发会先撤销再发，同样要重建整个工作区").toBeGreaterThanOrEqual(LONG);
+
+    c.resolve({ needs_confirm: false });
+    await Promise.race([p, new Promise((r) => setTimeout(r, 10))]);
   });
 });

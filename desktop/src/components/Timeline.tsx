@@ -1,5 +1,6 @@
 // 检查点时间线（D5-7）：每回合自动存的检查点，点开看这一回合改了什么，可以把文件恢复到回合前/后。
 import clsx from "clsx";
+import { LONG_RPC_TIMEOUT } from "../lib/rpc";
 import { ChevronRight, History, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatWhen } from "../lib/hunks";
@@ -82,7 +83,7 @@ function Row({
           "恢复前的文件会自动存成一个检查点，随时可以再恢复回来。\n只恢复文件，不改对话记录；被 .gitignore 忽略的文件和大于 2MB 的新文件不在快照里，不会变。",
       );
       if (!ok) return;
-      const r = await rpc!.call("checkpoint/restore", { thread_id: threadId, checkpoint_id: cp.id, side });
+      const r = await rpc!.call("checkpoint/restore", { thread_id: threadId, checkpoint_id: cp.id, side }, LONG_RPC_TIMEOUT);
       if (r.partial) showToast(partialToast(r.restored.length, r.failed ?? []), "error");
       else showToast(r.restored.length ? `已恢复到${r.label}（${r.restored.length} 个文件）` : "文件已经是这个状态了");
       onRestored();

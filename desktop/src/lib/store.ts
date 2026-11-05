@@ -6,7 +6,7 @@ import { StreamBuffer, applyDeltas, type DeltaEvent } from "./streamBuffer";
 import { pushReturned, takeReturned, type ReturnedInbox, type ReturnedInput } from "./drafts";
 import type { QueueKind } from "./queue";
 import type { Attachment } from "./attachments";
-import { RpcClient, type ConnState } from "./rpc";
+import { LONG_RPC_TIMEOUT, RpcClient, type ConnState } from "./rpc";
 import { migratePrefs } from "./layout";
 
 
@@ -657,10 +657,10 @@ export const useApp = create<State & Actions>((set, get) => ({
       return;
     }
     try {
-      let r = await s.rpc!.call("thread/undo", { thread_id: id });
+      let r = await s.rpc!.call("thread/undo", { thread_id: id }, LONG_RPC_TIMEOUT);
       if (r.needs_confirm) {
         if (!confirm(conflictPrompt(r.conflicts ?? [], "撤销上一回合"))) return;
-        r = await s.rpc!.call("thread/undo", { thread_id: id, force: true });
+        r = await s.rpc!.call("thread/undo", { thread_id: id, force: true }, LONG_RPC_TIMEOUT);
       }
       if (r.partial) s.showToast(partialToast(r.restored?.length ?? 0, r.failed ?? []), "error");
       else
@@ -702,7 +702,7 @@ export const useApp = create<State & Actions>((set, get) => ({
     try {
       set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id]: Date.now() } }));
       const params = { thread_id: id, item_id: itemId, text, model: s.draftModel || undefined, mode: s.draftMode };
-      let r = await s.rpc!.call("thread/edit_resend", params);
+      let r = await s.rpc!.call("thread/edit_resend", params, LONG_RPC_TIMEOUT);
       if (r.needs_confirm) {
         if (!confirm(conflictPrompt(r.conflicts ?? [], "编辑重发"))) {
           set((st) => {
@@ -712,7 +712,7 @@ export const useApp = create<State & Actions>((set, get) => ({
           });
           return false;
         }
-        r = await s.rpc!.call("thread/edit_resend", { ...params, force: true });
+        r = await s.rpc!.call("thread/edit_resend", { ...params, force: true }, LONG_RPC_TIMEOUT);
       }
       const t = r.thread as ThreadDetail;
       set((st) => ({ details: { ...st.details, [id]: { ...t, status: "running" } }, reviewNonce: st.reviewNonce + 1 }));

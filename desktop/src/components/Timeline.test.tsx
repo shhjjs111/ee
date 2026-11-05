@@ -56,14 +56,14 @@ describe("Timeline", () => {
   afterEach(() => act(() => useApp.setState({ activeThreadId: null, details: {} })));
 
   it("新的在上；恢复前先算要改的文件、确认后再恢复", async () => {
-    const calls: [string, Record<string, unknown>][] = [];
+    const calls: [string, Record<string, unknown>, number | undefined][] = [];
     const cps = [
       { id: "u1", kind: "turn", turn: 1, ts: 1, text: "第一条", before: "a", after: "b", undone: false, running: false, expired: false, after_expired: false, stat: { files: 1, additions: 2, deletions: 0 } },
       { id: "u2", kind: "turn", turn: 2, ts: 2, text: "第二条", before: "b", after: "c", undone: true, running: false, expired: false, after_expired: false, stat: { files: 0, additions: 0, deletions: 0 } },
     ];
     const rpc = {
-      call: async (method: string, params: Record<string, unknown>) => {
-        calls.push([method, params]);
+      call: async (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+        calls.push([method, params, timeoutMs]);
         if (method === "checkpoint/list") return { available: true, checkpoints: cps };
         if (method === "checkpoint/diff") return { files: [{ path: "a.txt", additions: 1, deletions: 0, patch: PATCH, binary: false }], additions: 1, deletions: 0 };
         if (method === "checkpoint/restore") return { restored: ["a.txt"], label: "第 1 回合之前", restore_point: null };
@@ -89,6 +89,8 @@ describe("Timeline", () => {
     expect(confirmSpy.mock.calls[0][0]).toContain("a.txt");
     const r = calls.find(([m]) => m === "checkpoint/restore");
     expect(r?.[1]).toMatchObject({ thread_id: "t1", checkpoint_id: "u1", side: "before" });
+    // 恢复是整工作区的文件恢复，不能用 20 秒默认超时（审计 P2#73）
+    expect(r?.[2], "检查点恢复不能用 20 秒默认超时").toBeGreaterThanOrEqual(120_000);
   });
 
   it("取消确认就不恢复", async () => {
