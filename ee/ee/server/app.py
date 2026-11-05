@@ -39,6 +39,14 @@ from ee.server.threads import Thread
 
 log = logging.getLogger("ee.server")
 SLOW_RPC = 5.0     # 秒：超过就记一条日志
+
+# WebSocket 保活：服务端主动 ping，客户端（浏览器 / Electron 的 WebSocket 实现）在协议层
+# 自动回 pong，不占渲染进程主线程。原来这里是 ping_interval=None 且两端都没有替代探测：
+# 服务端从不发 ping，handler 的 `async for raw in ws` 也没有超时，只有收到 FIN/RST 才退出。
+# RDP 断开、休眠唤醒、客户端进程被冻结留下的半开连接会让 handler 永久阻塞，
+# conns[ws] 与它的 writer 任务只增不减，此后每条广播还继续往死连接的队列里塞。
+KEEPALIVE_PING = 20.0      # 秒：多久发一次 ping
+KEEPALIVE_TIMEOUT = 30.0   # 秒：这么久没有任何响应就认定连接已死并回收
 # 这些方法的 thread_id 是可选参数；显式传 None 表示“没有当前会话”。其余方法必须给合法 id。
 OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
 # 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环。
@@ -1126,7 +1134,7 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         log.warning("启动信息收集失败", exc_info=True)
 
     async with ws_serve(handler, host, port, process_request=check, max_size=32 * 2**20,
-                        ping_interval=None) as server:
+                        ping_interval=KEEPALIVE_PING, ping_timeout=KEEPALIVE_TIMEOUT) as server:
         real_port = next(iter(server.sockets)).getsockname()[1]
         if ready:
             ready(real_port)
