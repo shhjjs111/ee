@@ -359,7 +359,7 @@ export function ReviewCard({ result }: { result: ReviewResult }) {
 export function PlanProposalCard({ item }: { item: ToolItem }) {
   // 窄订阅：只关心本会话详情（判断是否已过这一回合）和两个动作。
   const d = useApp(selectActiveDetail);
-  const set = useApp((s) => s.set);
+  const setMode = useApp((s) => s.setMode);
   const send = useApp((s) => s.send);
   const idle = !d || d.status === "idle";
   const idx = d ? d.items.findIndex((x) => x.id === item.id) : -1;
@@ -368,8 +368,10 @@ export function PlanProposalCard({ item }: { item: ToolItem }) {
   const title = String(item.details?.title || "实施方案");
 
   const run = (mode: "default" | "auto") => {
-    localStorage.setItem("ee.mode", mode);
-    set({ draftMode: mode });
+    // 切模式走 store.setMode：有会话时会打到这个会话（thread/set_mode），
+    // 不再靠下一条消息顺带把模式传过去。send 不 await——它是排队发送，
+    // setMode 的同步部分已经把 draftMode 与新会话行为定好。
+    void setMode(mode);
     send("方案已批准，请按上面的方案开始执行；每完成一步更新任务清单，最后跑验证并汇报结果。");
   };
 

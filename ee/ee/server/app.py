@@ -93,6 +93,7 @@ class Backend:
             "thread/start": self.thread_start,
             "thread/get": self.thread_get,
             "thread/rename": self.thread_rename,
+            "thread/set_mode": self.thread_set_mode,
             "thread/delete": self.thread_delete,
             # 编排（D6-1 U9）：服务面入口。工具那五个只给模型用，界面与端到端脚本
             # 拿不到子会话列表和真实改动数。
@@ -411,6 +412,19 @@ class Backend:
             out_path = str(target)
 
         return {"format": fmt, "content": content, "path": out_path}
+
+    async def thread_set_mode(self, thread_id: str, mode: str) -> dict:
+        """切换会话的权限模式（前端下拉 / Shift+Tab / /mode 都走这里）。
+
+        以前没有这个入口：模式只随 turn/start 的 mode 参数带过去，于是一次「打开一个
+        只读会话、随手发一句话」就把会话提成了全局草稿里的模式，界面全程显示那个模式，
+        用户没有任何线索发现权限被放宽了。
+        """
+        t = await self._athread(thread_id)
+        try:
+            return await asyncio.to_thread(t.set_mode, mode)
+        except ValueError as e:
+            raise RpcError(str(e), -32602) from None
 
     async def thread_rename(self, thread_id: str, title: str) -> dict:
         t = await self._athread(thread_id)

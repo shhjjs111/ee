@@ -433,6 +433,22 @@ class Thread:
             self.notify("thread/updated", {"thread": self.summary()})
         return {"effort": s.effort, "style": s.style, "effort_support": s.effort_support(), "messages": msgs}
 
+    def set_mode(self, mode: str) -> dict:
+        """切换本会话的权限模式。
+
+        子会话不允许单独改：它的模式由派发它的父会话在 create_child 时按 orchestrator
+        的能力上限算出来（orchestrator.child_capability），这里再开一个口子就等于把
+        那个上限绕过去。
+        """
+        if self.meta.get("orchestrator_parent_id"):
+            raise ValueError("子会话的权限模式由派发它的父会话决定，不能单独修改")
+        s = self.ensure_session()
+        s.policy.set_mode(mode)                  # 未知模式抛 ValueError
+        self.meta["mode"] = s.policy.mode
+        self.save_meta()
+        self.notify("thread/updated", {"thread": self.summary()})
+        return {"mode": s.policy.mode}
+
     def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
                    images: list[str] | None = None, attachments: list[dict] | None = None,
                    display: str | None = None, readonly: bool = False, kind: str | None = None,

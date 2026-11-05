@@ -54,6 +54,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     "activeThreadId",
     "activeWorkspace",
     "draftMode",
+    "setMode",
     "draftModel",
     "draftEffort",
     "draftStyle",
@@ -96,7 +97,8 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const ta = useRef<HTMLTextAreaElement>(null);
   const cwd = detail?.cwd ?? s.activeWorkspace;
   const model = s.draftModel ?? detail?.model ?? s.defaultModel;
-  const mode = s.draftMode;
+  // 有会话时显示会话自己的模式（后端的 detail.mode），否则显示新对话的草稿值
+  const mode = (s.activeThreadId ? detail?.mode : null) ?? s.draftMode;
   // D5-9：推理强度 / 回答风格（有对话时取会话的；新对话取草稿，否则取设置里的默认）
   const [styles, setStyles] = useState<StyleInfo[]>([]);
   useEffect(() => {
@@ -256,8 +258,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           return true;
         }
         clearInput();
-        localStorage.setItem("ee.mode", m);
-        s.set({ draftMode: m });
+        void s.setMode(m);
         s.showToast(`权限模式：${modeLabel(m)}`);
         return true;
       }
@@ -303,8 +304,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
         return true;
       case "plan":
         clearInput();
-        localStorage.setItem("ee.mode", "plan");
-        s.set({ draftMode: "plan" });
+        void s.setMode("plan");
         if (args) s.send(args);
         else s.showToast("已切到计划模式：先出方案，批准后再改文件");
         return true;
@@ -507,8 +507,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
       e.preventDefault();
       const order = ["default", "auto", "plan", "read-only"];
       const next = order[(order.indexOf(s.draftMode) + 1) % order.length];
-      localStorage.setItem("ee.mode", next);
-      s.set({ draftMode: next });
+      void s.setMode(next);
       s.showToast(`权限模式：${modeLabel(next)}`);
       return;
     }
@@ -672,8 +671,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
             value={mode}
             options={MODES}
             onChange={(v) => {
-              localStorage.setItem("ee.mode", v);
-              s.set({ draftMode: v });
+              void s.setMode(v);
             }}
             icon={MODES.find((m) => m.value === mode)?.icon}
             title="权限模式"

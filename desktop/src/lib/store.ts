@@ -121,6 +121,8 @@ type Actions = {
   undo(): Promise<void>;
   /** D5-9：切换推理强度 / 回答风格。有对话时立即生效（推理强度同时按模型记住），没有对话时记为新对话的初始值。 */
   setOptions(o: { effort?: string; style?: string }): Promise<boolean>;
+  /** 切换权限模式：有会话时打到那个会话（thread/set_mode），没有会话时只记成新对话的初始值。 */
+  setMode(mode: string): Promise<void>;
   forkFrom(itemId: string): Promise<void>;
   editResend(itemId: string, text: string): Promise<boolean>;
   openSettings(section?: SettingsSection): void;
@@ -473,7 +475,8 @@ export const useApp = create<State & Actions>((set, get) => ({
     const rpc = s.rpc!;
     let id = s.activeThreadId;
     const model = s.draftModel || undefined;
-    const mode = s.draftMode;
+    // 与 send 同一规则：已有会话时模式由 thread/set_mode 管，不随消息带过去
+    const mode = s.activeThreadId ? undefined : s.draftMode;
     try {
       if (!id) {
         id = await get().ensureThread();
@@ -505,7 +508,9 @@ export const useApp = create<State & Actions>((set, get) => ({
     const rpc = s.rpc!;
     let id = s.activeThreadId;
     const model = s.draftModel || undefined;
-    const mode = s.draftMode;
+    // 已有会话时不随消息带 mode：模式由 thread/set_mode 单独切换。否则发一句话就会把
+    // 会话静默改成全局草稿里的模式（只读会话被提成 auto，且界面看不出来）。
+    const mode = s.activeThreadId ? undefined : s.draftMode;
     let queuing = false;
     try {
       if (!id) {
@@ -773,6 +778,28 @@ export const useApp = create<State & Actions>((set, get) => ({
     } catch (e) {
       get().showToast((e as Error).message, "error");
       return false;
+    }
+  },
+
+  /** 切换权限模式。
+   *
+   *  有会话时必须打到那个会话：原来只改全局 draftMode，再由下一条消息把 mode 一起发给
+   *  turn/start——于是「打开一个只读会话、随手发一句话」就把它提成了草稿里的模式，
+   *  而界面全程显示的就是那个模式，用户没有任何线索发现权限被放宽了。
+   */
+  async setMode(mode) {
+    localStorage.setItem("ee.mode", mode);          // 同时作为新对话的初始值
+    set({ draftMode: mode });
+    const id = get().activeThreadId;
+    if (!id) return;
+    try {
+      await get().rpc!.call("thread/set_mode", { thread_id: id, mode });
+      set((st) => {
+        const d = st.details[id];
+        return d ? { details: { ...st.details, [id]: { ...d, mode } } } : {};
+      });
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
     }
   },
 
