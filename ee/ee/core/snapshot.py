@@ -18,6 +18,7 @@ import threading
 import time
 from pathlib import Path
 
+from ee.core.atomic import write_text as _atomic_write
 from ee.proc import run_capture
 from ee.tools.textdecode import smart_decode
 
@@ -191,7 +192,9 @@ class DiskSnapshot:
             self.gitdir.mkdir(parents=True, exist_ok=True)
             self._run("init", "-q")
             self._write_config()
-            (self.gitdir / "ee-worktree.txt").write_text(str(self.worktree), encoding="utf-8")
+            # 原子写：断电/强杀正好卡在这一瞬间会留下空文件或半截路径，而 gc 读它失败时
+            # 只当成「工作区没了」，可能把这个影子仓库整个删掉（审计 P2#1）。
+            _atomic_write(self.gitdir / "ee-worktree.txt", str(self.worktree), newline="")
         self._write_excludes([])
         # 影子仓库的 info/attributes 优先级最高：屏蔽项目 .gitattributes 里的 text/eol/filter（LFS）/编码转换，
         # 快照和恢复都按原始字节，否则 eol=crlf 之类会让恢复出来的文件换行符和快照时不一样

@@ -140,3 +140,18 @@ def test_timeline_entry_fields_unchanged():
     assert set(out[0]) == ENTRY_KEYS
     assert set(out[1]) == ENTRY_KEYS - {"turn"}
     assert out[1]["kind"] == "restore" and out[1].get("turn") is None
+
+def test_worktree_pointer_written_atomically():
+    """ee-worktree.txt 必须原子写（审计 P2#1）。
+
+    影子仓库靠它记录工作区路径。用裸 `write_text` 时，断电/强杀正好卡在写这一瞬间会留下
+    空文件或半截路径；而 checkpoints.gc 读它失败时只是 `wt = ""`，于是这个仓库被判成
+    「工作区没了」——如果恰好又没有会话引用它，整个影子仓库会被 rmtree 掉。
+    """
+    import inspect
+
+    from ee.core.snapshot import DiskSnapshot
+
+    src = inspect.getsource(DiskSnapshot._ensure)
+    assert '(self.gitdir / "ee-worktree.txt").write_text(' not in src, "仍然是裸 write_text"
+    assert "atomic" in src.lower()
