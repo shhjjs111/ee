@@ -377,8 +377,14 @@ class Session:
             opts = " / ".join(RZ.labels(self.profile)[x] for x in ["", *RZ.levels(self.profile), "off"])
             raise ValueError(f"未知推理强度：{level}（可选 {opts}）")
         lv = RZ.canonical(self.profile, lv)       # DeepSeek：旧写法 中/高 → 默认/最高
+        # 换档位会改请求参数（reasoning_effort / thinking），服务端缓存按参数区分 → 前缀必然断。
+        # 只在「实际发出去的参数真的变了」时才记：当前模型不支持这个档位时 effective 会退回 ""，
+        # 那种情况下请求字节没变，记成断点反而是误报。
+        before = RZ.effective(self.profile, self.effort)
         self.effort = lv
         eff = RZ.effective(self.profile, lv)
+        if eff != before:
+            self._break_reason = "effort_switch"
         note = "" if eff == lv else "（当前模型不支持这个档位，请求里不会发送）"
         return f"推理强度：{RZ.labels(self.profile)[lv]}{note}"
 

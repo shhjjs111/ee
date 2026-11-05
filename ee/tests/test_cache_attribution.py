@@ -176,6 +176,48 @@ def test_reloading_the_same_model_is_not_a_switch(workspace, ee_home):
     assert s._take_break() is None
 
 
+def test_switching_effort_marks_the_next_request_as_a_break(workspace, ee_home):
+    """换推理强度会改请求参数（reasoning_effort / thinking），服务端按参数区分缓存 → 必然断点。
+
+    真实会话里改档位造成的断点一直显示 "unknown"，被当成「有东西在偷偷改写前缀」查了半天。
+    """
+    from ee.config import load_config
+    from ee.core import reasoning as RZ
+    from ee.core.session import Session
+
+    cfg = load_config(workspace)
+    name = list(cfg.data.get("models", {}))[0]
+    s = Session(cfg, model=name, cwd=workspace, persist=False, user_home=workspace)
+    lvls = RZ.levels(s.profile)
+    if not lvls:
+        pytest.skip("这个模型没有推理档位，无法验证")
+    target = lvls[0]
+    if RZ.effective(s.profile, target) == RZ.effective(s.profile, s.effort):
+        pytest.skip("起始档位已经是目标档位，切换不会改变请求参数")
+    s.set_effort(target)
+    assert s._take_break() == "effort_switch"
+
+
+def test_effort_switch_that_changes_no_param_is_not_a_break(workspace, ee_home):
+    """当前模型不支持这个档位时 effective 退回 ""，请求字节没变 → 不该记断点（否则是误报）。"""
+    from ee.config import load_config
+    from ee.core import reasoning as RZ
+    from ee.core.session import Session
+
+    cfg = load_config(workspace)
+    name = list(cfg.data.get("models", {}))[0]
+    s = Session(cfg, model=name, cwd=workspace, persist=False, user_home=workspace)
+    # 找一个「服务端实际不认」的档位：canonical 认它，但 effective 退回 ""
+    unsupported = next((x for x in ("low", "medium", "high", "max")
+                        if RZ.normalize(x) is not None and RZ.canonical(s.profile, x) not in RZ.levels(s.profile)), None)
+    if unsupported is None:
+        pytest.skip("这个模型所有档位都支持，无法验证降级路径")
+    if RZ.effective(s.profile, s.effort) == "":
+        pytest.skip("起始档位已经是「不发参数」，切换不会改变请求字节")
+    s.set_effort(unsupported)
+    assert s._take_break() is None
+
+
 # ---------------------------------------------------------------- 断点判定（wire / gap）
 
 def test_gap_within_normal_growth_is_not_a_break():
