@@ -63,6 +63,16 @@ CI 上是 2275 passed / 14 skipped——两边 skip 集不同（POSIX-only 与�
 
 `ee/tests/test_ci_offline_gate.py` 会守着这件事：**自动触发或本地等价入口，二者必须有其一**。
 
+## 产品形态
+
+**只发桌面版**：用户拿到的就是 `ee-Setup-<版本>.exe`，双击安装，不装 Python、不装 Node，也不会有 `ee` 命令进 PATH。
+
+`ee/cli.py` 里的 `serve` / `exec` / `selftest` / `doctor` / `export` / `usage` 是**开发、CI 与排障用的内部入口**，不是产品能力。由此有三条硬约束：
+
+- 判断优先级、决定某个缺陷值不值得修时，**不得**以「用户会跑 `ee exec`」之类的前提为依据。
+- 只在「多进程/多入口同时使用」下成立的缺陷（例如两个入口写同一个会话文件），在只发桌面版的前提下不成立——桌面端有单实例锁（`desktop/electron/main.ts` 的 `requestSingleInstanceLock`）。
+- 面向用户的新能力做进桌面端界面，不要做成 CLI 子命令或对外承诺的脚本接口。
+
 ## 代码约定
 
 - 权限是硬边界：只读/计划模式不得写文件；项目级 `.ee/config.toml` 只能收紧安全设置，不能放宽。

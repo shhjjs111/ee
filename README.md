@@ -9,6 +9,10 @@ ee 的个人 AI 编程 Agent 桌面端（Windows 优先）。只走 OpenAI Chat 
 - `desktop/`：Electron + React 桌面界面（对话优先：项目/会话栏 + 对话区，改动/文件/终端按需在右侧展开；设置页）
 - `research/`：设计文档和对 Codex、Claude Code、OpenCode、天枢的研究笔记
 
+> **产品形态**：ee 只以桌面应用发布（`ee-Setup-<版本>.exe`），不面向用户提供命令行。
+> 仓库里的 `ee` 命令（`serve` / `exec` / `selftest` / `doctor` / `export` / `usage`）是开发、
+> CI 与排障用的内部入口，需要自己装 Python 环境才能用；桌面端已经自带它需要的后端。
+
 ## 安装（给普通用户）
 
 从 [Releases](https://github.com/shhjjs111/ee/releases) 下载 `ee-Setup-<版本>.exe` 直接安装即可，无需 Python 或 Node。
