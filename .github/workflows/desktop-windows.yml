@@ -75,6 +75,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "./ee[test]" ruff
 
+      # 真实 LSP 用例（test_lsp_integration.py）只在 PATH 上有 pyright-langserver 时才跑，
+      # 不装它这条唯一的「真实语言服务器」验收在 CI 里永远 skip；而 -rf 不列 skip，
+      # 日志上与其他 16 个 skip 无法区分。这里装上，让门禁真的覆盖那一层。
+      # 不用 npx 兜底：首次下载会超过 initialize 的 20 秒预算，把环境问题伪装成代码缺陷。
+      - name: Install pyright (real LSP integration test)
+        run: npm i -g pyright
+
       # 只跑 pyproject.toml 里 select 的那组「代码有误」规则（见 ee/pyproject.toml 注释）。
       # 它是廉价的硬指标：语法错 / 未定义名 / 未用导入与变量，一条 0.3 秒就能查完，
       # 放在 pytest 前面，坏代码不用等 7 分钟才报。
@@ -86,9 +93,10 @@ jobs:
         id: backend-tests
         working-directory: ee
         timeout-minutes: 25
-        # -rf 让尾部列出失败用例名；--tb=short 保留足够定位的栈
-        # （以前失败只看到 "1 failed"，具体哪个用例得靠猜，日志又因权限拉不到）
-        run: python -m pytest -q -o faulthandler_timeout=150 -rf --tb=short
+        # -rf 让尾部列出失败用例名；-rs 把跳过连同原因一起列出来
+        # （没有 -rs 时，一条「该跑却被 skip 掉」的用例与正常跳过在日志上无法区分）；
+        # --tb=short 保留足够定位的栈。
+        run: python -m pytest -q -o faulthandler_timeout=150 -rf -rs --tb=short
 
       # 失败时把结果入 artifact：工作流日志需仓库管理权限才能下载，
       # 失败现场只有跑在 CI 上的这一份，不留下来就查不了。

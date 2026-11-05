@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,11 +148,16 @@ def test_real_pyright_returns_fresh_diagnostics_for_current_version(tmp_path):
         try:
             handle = await mgr.acquire(str(d), "python", spec.identity, spec=spec)
         except M.LspUnavailable as e:
-            # 环境起不来（缺依赖、权限、启动器异常）不是本仓库代码的缺陷。
-            # 用 skip 而不是 fail：区分「我们坏了」和「这台机器没准备好」，
-            # 否则 CI 会把环境问题当成红灯。注意：能走到这里说明 PATH 上确实
-            # 有 pyright-langserver，已经排除了「没装」这一种。
-            pytest.skip(f"pyright-langserver 存在但启动失败（环境问题，不算代码缺陷）：{e}")
+            # 能走到这里说明 PATH 上确实有 pyright-langserver（needs_pyright 已经排除了
+            # 「没装」这一种）。但 LspManager._spawn 把**所有**启动失败（spawn 失败、
+            # initialize 超时、协议错误）都包成 LspUnavailable，异常类型上分不出
+            # 「这台机器没准备好」和「我们这条启动链坏了」。
+            # CI 的 runner 是固定环境：那里起不来就是我们必须修的问题，判红；
+            # 本地可能是权限/杀软/临时环境，仍然 skip 但要说清原因。
+            if os.environ.get("CI"):
+                raise AssertionError(
+                    f"pyright-langserver 在 PATH 上但启动失败（CI 环境固定，这属于代码缺陷）：{e}") from e
+            pytest.skip(f"pyright-langserver 存在但启动失败（本地环境问题，不算代码缺陷）：{e}")
             return
         try:
             # 这一行是整条链的接口：没有它永远收不到诊断。

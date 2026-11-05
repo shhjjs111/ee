@@ -214,3 +214,24 @@ def test_ci_gate_covers_main_and_ee_sources():
         "scripts/verify.sh 没跑齐 CI 的关键检查：" + "、".join(missing)
         + "。本地入口与 CI 步骤不一致时，本地绿不能替代 CI 绿。"
     )
+
+
+def test_ci_runs_the_real_lsp_test_instead_of_silently_skipping_it():
+    """真实语言服务器用例必须真的跑，而不是每次 skip。
+
+    背景：CI 只装 ./ee[test]（pytest / xdist）与 ruff，desktop 也没装 pyright，
+    而 test_lsp_integration 只在 PATH 上有 pyright-langserver 时才跑。两者叠加的结果是：
+    URI 盘符归一、publishDiagnostics 回调注册、LspTool 生产接线这三层串联，
+    在 CI 里从未被验证过——而 pytest 的 -rf 不列跳过，日志上看不出区别。
+
+    这条守的是「配置上装了 + skip 可见」。真正有没有跑起来，要推一次 CI 才能确认。
+    """
+    text = (WORKFLOW_DIR / "desktop-windows.yml").read_text(encoding="utf-8")
+    assert "pyright" in text, (
+        "CI 没有安装 pyright：test_lsp_integration 的真实服务器用例会永久 skip，"
+        "那三层串联（uri 归一 / publishDiagnostics 回调 / 生产接线）无人守护。")
+    pytest_lines = [ln for ln in text.splitlines() if "-m pytest" in ln]
+    assert pytest_lines, "workflow 里找不到 pytest 命令"
+    assert any("-rs" in ln for ln in pytest_lines), (
+        "pytest 命令没有 -rs：跳过用例不会连原因一起列出来，"
+        "「该跑却被跳过」与正常跳过在日志上无法区分。")
