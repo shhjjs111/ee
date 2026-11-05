@@ -201,6 +201,12 @@ def normalize_roles(data: dict) -> dict:
 #   - 放宽权限（更宽松的 mode、加 allow 规则、删掉用户的 ask/deny）。
 # hooks 不在这里合并：项目 hooks 由 ee/core/hooks.py 直接读文件，走“设置 → Hooks 里允许”的信任机制。
 
+# 顶层直接整个丢弃的段：
+#   providers —— 改 base_url/api_key 能把用户的 key 或请求发到别处；
+#   hooks     —— 项目 hooks 走「设置 → Hooks 里允许」的信任机制，不在这里合并；
+#   context_policy —— 压缩/保留策略，等于让仓库替用户调参。
+# 顶层 `shell` 不在这里：它同时决定 shell 工具的执行器和权限判定用的语法
+# （session.py 的 shell_name 与 policy.shell 同源），换执行器不会让判定对着错误的语法。
 PROJECT_DROP_TOP = ("providers", "hooks", "context_policy")
 _MODE_RANK = {"read-only": 0, "plan": 0, "default": 1, "auto": 2}
 _KEYISH = re.compile(r"(api_key|api_key_env|base_url|_url|headers|proxy)$")
@@ -369,6 +375,51 @@ def sanitize_project_layer(layer: dict, user_cfg: dict) -> tuple[dict, list[str]
             dropped.append(f"orchestrator.{k}")
         if not orch:
             clean.pop("orchestrator")
+
+    # LSP：开启后每回合按 servers 里的 command 起子进程。项目层绝不能指定可执行文件——
+    # 打开一个陌生仓库就等于让它在用户机器上跑任意程序（config.py 顶部与 lsp 默认值注释都
+    # 写着「项目配置只能关闭或收紧，不能指定可执行文件」，这里才是真正落实那句话的地方）。
+    lsp = clean.get("lsp")
+    if "lsp" in clean and not isinstance(lsp, dict):
+        clean.pop("lsp")
+        dropped.append("lsp")
+    elif isinstance(lsp, dict):
+        ul = user_cfg.get("lsp") or {}
+        if "servers" in lsp:
+            lsp.pop("servers")
+            dropped.append("lsp.servers")
+        if "enabled" in lsp and bool(lsp["enabled"]) and not bool(ul.get("enabled", False)):
+            lsp.pop("enabled")
+            dropped.append("lsp.enabled")
+        for k in [k for k in lsp if k != "enabled"]:
+            lsp.pop(k)
+            dropped.append(f"lsp.{k}")
+        if not lsp:
+            clean.pop("lsp")
+
+    # web_fetch 的 SSRF 防护（拒绝本机/内网/云元数据地址）：只能关不能开
+    web = clean.get("web")
+    if isinstance(web, dict):
+        uw = user_cfg.get("web") or {}
+        if "allow_private" in web and bool(web["allow_private"]) and not bool(uw.get("allow_private", False)):
+            web.pop("allow_private")
+            dropped.append("web.allow_private")
+
+    # 自动审批的建议展示：仓库不能给自己加"自动通过"，其它字段也没有可安全放宽的方向
+    ap = clean.get("autoapprove")
+    if "autoapprove" in clean and not isinstance(ap, dict):
+        clean.pop("autoapprove")
+        dropped.append("autoapprove")
+    elif isinstance(ap, dict):
+        ua = user_cfg.get("autoapprove") or {}
+        if "enabled" in ap and bool(ap["enabled"]) and not bool(ua.get("enabled", False)):
+            ap.pop("enabled")
+            dropped.append("autoapprove.enabled")
+        for k in [k for k in ap if k != "enabled"]:
+            ap.pop(k)
+            dropped.append(f"autoapprove.{k}")
+        if not ap:
+            clean.pop("autoapprove")
     return clean, dropped
 
 
