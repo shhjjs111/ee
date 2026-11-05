@@ -1078,6 +1078,17 @@ class Session:
         return self.prefix
 
     # ------------------------------------------------------------ 历史（只追加）
+    def mark_deleted(self) -> None:
+        """会话被删除：之后任何写入都不能把 jsonl 建回来。
+
+        删除时 t.interrupt() 取消在飞回合，_turn 的 finally（_fill_missing）和 _sample 的
+        CancelledError 分支都会补写已经流出的片段——这两处跑在 unlink 之后，原样执行就把
+        sessions/<id>.jsonl 重新建出来。重建的文件里没有 meta，下次打开时 cwd 退回用户主目录，
+        变成一条来历不明的「新对话」，在里面执行命令会跑在完全错误的目录。
+        写入口都收在 SessionStore（append 先看 enabled），这里把它关掉即可。
+        """
+        self.store.enabled = False
+
     def _append(self, msg: dict) -> None:
         self.history.append(msg)
         self.store.message(msg)

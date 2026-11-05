@@ -91,6 +91,9 @@ def test_thread_delete_schedules_session_cleanup_on_the_loop(backend, monkeypatc
         def __init__(self):
             self.bg = type("BG", (), {"close": self._bg_close})()
 
+        def mark_deleted(self):
+            closed.append("mark_deleted")
+
         async def _bg_close(self):
             closed.append("bg")
 

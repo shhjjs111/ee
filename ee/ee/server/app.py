@@ -543,6 +543,7 @@ class Backend:
         if t is not None and t.running:
             t.interrupt()
         if t is not None and t.session is not None:      # 会话删除：杀掉它的后台命令（D4-6）
+            t.session.mark_deleted()                     # 先关门：取消中的收尾不能再把 jsonl 建回来
             try:
                 asyncio.get_running_loop().create_task(t.session.bg.close())
             except RuntimeError:
