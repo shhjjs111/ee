@@ -26,9 +26,11 @@ from ee.proc import IS_WINDOWS, child_environ, kill_tree
 
 log = logging.getLogger("ee.bgproc")
 
-BUFFER_CHARS = 400_000          # 内存里每个进程最多留这么多字符（更早的只在日志文件里）
+BUFFER_CHARS = 400_000          # 运行中每个进程最多留这么多字符（更早的只在日志文件里）
 READ_LIMIT = 30_000             # 一次回给模型的输出上限
 MAX_PROCS = 8                   # 每个会话同时运行的后台命令上限
+KEEP_AFTER_EXIT = 20_000        # 结束后内存里只留这么多字符：完整输出在日志文件里
+MAX_FINISHED = 20               # 已结束条目最多留这么多（再多就淘汰最旧的）
 
 _ALL: "weakref.WeakSet[BgManager]" = weakref.WeakSet()
 
@@ -171,6 +173,7 @@ class BgManager:
             p.status = "exited"
         p.ended = time.time()
         self._cleanup_files(p)
+        self._compact(p)          # 结束后释放内存缓冲、淘汰最旧的已结束条目
         if p._changed is not None:
             p._changed.set()
         log.info("后台命令 %s 结束：%s exit=%s", p.id, p.status, code)
@@ -189,6 +192,28 @@ class BgManager:
             except OSError:
                 pass
             p._script = None
+
+    def _compact(self, p: BgProc) -> None:
+        """进程结束后收缩内存：`_buf` 只留尾巴，已结束条目数封顶。
+
+        原来 `procs` 永不移除、`_buf` 永不释放（BUFFER_CHARS=400_000 字符，最坏约 1.6MB），
+        而 MAX_PROCS 只统计 running——「起-停」循环能把内存堆到无上限，`shell/list` 与
+        bgshell 的「现有后台命令」提示也跟着越来越长。完整输出本来就在日志文件里。
+
+        只淘汰最旧的：刚结束的那条还要能被 shell_output 取到。"""
+        if p._buf_len > KEEP_AFTER_EXIT:
+            keep = "".join(p._buf)[-KEEP_AFTER_EXIT:]
+            p._buf = [keep]
+            p._buf_len = len(keep)
+            p._buf_start = p.total - len(keep)      # text_from 据此如实报「丢了多少」
+        finished = sorted((x for x in self.procs.values() if not x.running),
+                          key=lambda x: x.ended or 0.0)
+        for x in finished[: max(0, len(finished) - MAX_FINISHED)]:
+            self.procs.pop(x.id, None)
+            x._buf = []
+            x._buf_len = 0
+            x._buf_start = x.total
+            x._changed = None
 
     def _emit(self, p: BgProc) -> None:
         cb = self.on_change
