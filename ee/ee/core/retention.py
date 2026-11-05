@@ -7,8 +7,12 @@
 误删代价远大于多留几个旧文件：
 
   - 归档：`YYYYMMDD-HHMMSS-<tool>-<6 hex>.txt`（truncate_output_info）
+    工具名段允许 `[A-Za-z0-9_.-]`：MCP 工具经 safe_name 后会保留大小写、数字与连字符
+    （如 `mcp__fs2__ReadFile`），只认 `[a-z_]` 会让这类归档永远匹配不上、只进不出。
   - 后台日志：`bg-<owner>-<id>.log`（BgManager.start）
   - 截图：`YYYYMMDD-HHMMSS-<6 hex>.png`（core/screen.py 的 ScreenHub.save，在 `screenshots/` 下）
+  - MCP 图片/音频：`<10 位 hex>.<ext>`（mcp/tool.py 的 _save_blob，在 `tool-output/mcp-images/` 下；
+    子目录要单独登记——gc 只 iterdir() 顶层、is_file() 会跳过目录）
 
 **取舍**：超过保留期的旧会话里，工具结果那句「完整输出已保存到 …」会变成死链：界面上的
 「完整输出」入口点不开（条目本身和会话都还在），模型重新 `read` 也会得到「文件不存在」。
@@ -29,11 +33,17 @@ DEFAULT_DAYS = 30
 INTERVAL = 86400                     # 两次清理的最小间隔（秒）
 _STAMP = ".retention-stamp"
 
-_ARCHIVE = re.compile(r"^\d{8}-\d{6}-[a-z_]+-[0-9a-f]{6}\.txt$")
+_ARCHIVE = re.compile(r"^\d{8}-\d{6}-[A-Za-z0-9_.\-]+-[0-9a-f]{6}\.txt$")
 _BGLOG = re.compile(r"^bg-[0-9a-zA-Z]+-[0-9a-zA-Z]+\.log$")
 _SHOT = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}\.png$")
-# 目录名 → 该目录里认哪些文件名（只删自己写的）
-_DIRS = {"tool-output": (_ARCHIVE, _BGLOG), "screenshots": (_SHOT,)}
+_MCPBLOB = re.compile(r"^[0-9a-f]{10}\.[A-Za-z0-9\-]{1,8}$")
+# 路径（相对 home）→ 该目录里认哪些文件名（只删自己写的）。
+# 子目录要单独列一项：gc 只对每个根 iterdir() 一层，遇到目录会 is_file() 跳过。
+_DIRS = {
+    "tool-output": (_ARCHIVE, _BGLOG),
+    "tool-output/mcp-images": (_MCPBLOB,),
+    "screenshots": (_SHOT,),
+}
 
 
 def settings(cfg_data: dict | None) -> float:
