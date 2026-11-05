@@ -62,8 +62,24 @@ def session_trees(items: list[dict], meta: dict, keep_days: float, keep_turns: i
     return keep
 
 
-def collect_keep(home: Path, keep_days: float, keep_turns: int, now: float | None = None) -> dict[str, set[str]]:
-    """{影子仓库目录名: 要保留的 tree}。读 ~/.ee/sessions/*.jsonl。"""
+def _looks_unreadable(p: Path) -> bool:
+    """文件有内容却读不出 meta：读失败，不是「空会话」。"""
+    try:
+        return p.stat().st_size > 0
+    except OSError:
+        return True          # 连 stat 都失败：同样不能当成「没有检查点」
+
+
+def collect_keep(home: Path, keep_days: float, keep_turns: int, now: float | None = None,
+                 problems: list[str] | None = None) -> dict[str, set[str]]:
+    """{影子仓库目录名: 要保留的 tree}。读 ~/.ee/sessions/*.jsonl。
+
+    **读不出内容的会话不能静默跳过。** `SessionStore.load` 把读盘 OSError 与损坏行吞成
+    空记录（`store._records`），于是「读失败」和「这个会话没有检查点」在这里长得一样：
+    该会话引用的 tree 从 keep 里消失，gc 据此 `update-ref delete` + `prune`，/undo、
+    编辑重发、时间线恢复一起永久失效。给了 `problems` 就把这些会话记进去，由调用方
+    决定不清理——宁可这次少省点磁盘，也不能删掉恢复不了的东西。
+    """
     from ee.core.store import SessionStore
     now = time.time() if now is None else now
     out: dict[str, set[str]] = {}
@@ -72,9 +88,13 @@ def collect_keep(home: Path, keep_days: float, keep_turns: int, now: float | Non
             d = SessionStore.load(p)
         except Exception as e:  # noqa: BLE001
             log.info("读取会话 %s 失败，跳过：%s", p.name, e)
+            if problems is not None:
+                problems.append(f"{p.name}：{e}")
             continue
         cwd = (d.get("meta") or {}).get("cwd")
         if not cwd:
+            if problems is not None and _looks_unreadable(p):
+                problems.append(f"{p.name}：读不出会话内容")
             continue
         key = snapshot.repo_key(cwd)
         out.setdefault(key, set()).update(session_trees(d.get("items") or [], d["meta"], keep_days, keep_turns, now))
@@ -106,7 +126,15 @@ def gc_all(home: Path, keep_days: float = DEFAULT_KEEP_DAYS, keep_turns: int = D
                 return {"skipped": True, "repos": 0}
         except OSError:
             pass
-    keep = collect_keep(Path(home), keep_days, keep_turns, now)
+    problems: list[str] = []
+    keep = collect_keep(Path(home), keep_days, keep_turns, now, problems)
+    if problems:
+        # 宁可这次不清理：keep 不完整的 prune 会删掉仍被引用的 ref，且不可逆。
+        # 不写 .last_gc，下次（或用户手动 checkpoint/gc）还会重试。
+        log.warning("跳过检查点清理：%d 个会话文件读不出内容，无法确定哪些检查点仍被引用：%s",
+                    len(problems), "；".join(problems[:5]))
+        return {"skipped": True, "repos": 0, "errors": [], "problems": problems,
+                "reason": "有会话文件读不出内容，无法确定哪些检查点仍被引用，这次不清理"}
     stats = {"skipped": False, "repos": 0, "removed_repos": 0, "kept_trees": 0, "errors": []}
     for gd in sorted(p for p in root.iterdir() if p.is_dir()):
         if skip and gd.name in skip:

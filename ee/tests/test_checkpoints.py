@@ -239,3 +239,49 @@ def test_keep_settings_defaults_and_bad_values():
     assert checkpoints.keep_settings({}) == (checkpoints.DEFAULT_KEEP_DAYS, checkpoints.DEFAULT_KEEP_TURNS)
     assert checkpoints.keep_settings({"snapshot": {"keep_days": "x", "keep_turns": 0}}) == (
         checkpoints.DEFAULT_KEEP_DAYS, 1)
+
+
+def test_gc_aborts_pruning_when_a_session_file_is_unreadable(ee_home, workspace):
+    """会话文件读不出来时 keep 集合不完整，不得执行不可逆的 prune。
+
+    `SessionStore._records` 把读盘 OSError 吞成空记录，于是「读失败」与「这个会话没有
+    检查点」在 collect_keep 里长得一模一样：该会话引用的 tree 全部从 keep 消失，gc 据此
+    `update-ref delete` + `gc --prune=1.hour.ago`，/undo、编辑重发、时间线恢复一起永久失效，
+    而用户只看到「这个检查点已被清理（超过保留期限）」。触发它的可以只是一次杀软扫描。
+    """
+    async def go():
+        b, _, ev = make_backend(ee_home, _script_writes(("a.txt", "v1\n"), ("a.txt", "v2\n"), ("a.txt", "v3\n")))
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await _run_turns(b, ev, tid, ["一", "二", "三"])
+        return tid
+    tid = asyncio.run(go())
+    ds = snapshot.for_dir(workspace, ee_home)
+    from ee.core.store import SessionStore
+    d = SessionStore.load(ee_home / "sessions" / f"{tid}.jsonl")
+    users = [it for it in d["items"] if it.get("type") == "user"]
+    old_tree = users[1]["tree"]          # 第 1 回合后 = 第 2 回合前，keep_turns=1 时会过期
+    st = SessionStore(ee_home, session_id=tid)
+    for it in users[:2]:
+        st.item({**it, "ts": time.time() - 30 * 86400})
+    import os
+    old = time.time() - 7200              # 宽限期 1 小时：把对象时间改旧，模拟很久以前写的
+    for p in ds.gitdir.joinpath("objects").rglob("*"):
+        if p.is_file():
+            os.utime(p, (old, old))
+
+    # 非空但读不出内容的会话文件（杀软占用、半写、断电留下的截断行）
+    broken = ee_home / "sessions" / "broken.jsonl"
+    broken.write_text('{"type": "meta", "meta": {"cwd": "E:\\\\proj\n', encoding="utf-8")
+
+    r = checkpoints.gc_all(ee_home, keep_days=14, keep_turns=1, force=True)
+    assert r["skipped"] is True, r
+    assert "读不出" in r.get("reason", ""), r
+    assert ds.existing([old_tree]) == {old_tree}, "keep 不完整时一个 ref 都不能删"
+
+    # 文件恢复可读后仍要正常清理——fail-safe 不能退化成「永不清理」
+    broken.unlink()
+    r2 = checkpoints.gc_all(ee_home, keep_days=14, keep_turns=1, force=True)
+    assert r2["skipped"] is False, r2
+    alive_after = ds.existing([old_tree])
+    assert alive_after is not None, "git 故障与「已删除」不能混为一谈"
+    assert old_tree not in alive_after, "读得出来时该清理的仍要清理"
