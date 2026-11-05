@@ -47,6 +47,32 @@ SLOW_RPC = 5.0     # 秒：超过就记一条日志
 # conns[ws] 与它的 writer 任务只增不减，此后每条广播还继续往死连接的队列里塞。
 KEEPALIVE_PING = 20.0      # 秒：多久发一次 ping
 KEEPALIVE_TIMEOUT = 30.0   # 秒：这么久没有任何响应就认定连接已死并回收
+SEND_QUEUE_MAX = 256       # 每条连接的通知队列上限：满了说明客户端读不动，断开它
+
+def _enqueue_or_drop(conns: dict, msg: str) -> list:
+    """把一条通知塞进每个连接的队列，返回「读不动」而需要断开的连接。
+
+    队列满了说明客户端消费不过来（窗口失焦被节流、机器休眠、渲染进程卡住）。
+    继续 put 而不设上限，后端内存就会跟着客户端的消费速度涨——一条 thread/updated
+    带着整个会话摘要，几十 KB 不稀奇。这里直接判定为慢客户端、从连接表移除，
+    由调用方断开它；客户端重连后会重新拉全量状态，比丢几条通知让界面停在错误状态好。
+    """
+    slow = []
+    for ws, q in list(conns.items()):
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            conns.pop(ws, None)
+            slow.append(ws)
+    return slow
+
+
+async def _close_slow(ws) -> None:
+    try:
+        await ws.close(1011, "client too slow")
+    except Exception:  # noqa: BLE001
+        pass
+
 # 这些方法的 thread_id 是可选参数；显式传 None 表示“没有当前会话”。其余方法必须给合法 id。
 OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
 # 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环。
@@ -1027,8 +1053,8 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     loop_thread = threading.get_ident()
 
     def _put_all(msg: str) -> None:
-        for q in list(conns.values()):
-            q.put_nowait(msg)
+        for ws in _enqueue_or_drop(conns, msg):
+            loop.create_task(_close_slow(ws))
 
     def broadcast(method: str, params: dict) -> None:
         # 线程安全：有的 RPC 在工作线程里跑（asyncio.to_thread），通知要切回事件循环再入队
@@ -1055,7 +1081,7 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             await _safe_send(ws, msg)
 
     async def handler(ws):
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=SEND_QUEUE_MAX)
         conns[ws] = q
         w = asyncio.ensure_future(writer(ws, q))
         try:
@@ -1065,7 +1091,10 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             pass
         finally:
             conns.pop(ws, None)
-            q.put_nowait(None)
+            try:
+                q.put_nowait(None)      # 队列可能已满（慢客户端）：writer 会随 ws 关闭自行退出
+            except asyncio.QueueFull:
+                pass
             await w
 
     async def _handle(q: asyncio.Queue, raw):
