@@ -596,6 +596,9 @@ def _normalize(raw: str, w: list[str], syntax: str, depth: int) -> list[_Seg]:
             if key.lower().startswith("alias."):
                 dyn = dyn or "git -c alias.* 能把子命令换成任意命令"
             rest = rest[2:] if o in _GIT_VALUE_OPTS else rest[1:]
+        if rest and rest[0] in _GIT_SUBCMD_LONG_OPTS:
+            cands = _GIT_SUBCMD_LONG_OPTS[rest[0]]
+            rest = [rest[0]] + [_expand_long_opt(a, cands) for a in rest[1:]]
         if rest and rest[0] == "push":
             exp: list[str] = []
             for a in rest[1:]:
@@ -641,7 +644,7 @@ DENY_PATTERNS = [
 # 强制询问（全自动也问）：破坏性但有时确实需要。
 FORCE_ASK_PATTERNS = [
     (r"\bgit\s+reset\b.*--hard", "git reset --hard 会丢弃未提交改动"),
-    (r"\bgit\s+clean\b.*\s-[a-z]*[fdx]", "git clean 会删除未跟踪文件"),
+    (r"\bgit\s+clean\b.*\s(?:-[a-z]*[fdx]|--force\b)", "git clean 会删除未跟踪文件"),
     (r"\bgit\s+push\b.*--force-with-lease", "强制推送"),
     (r"\bgit\s+(checkout|restore)\b.*\s(--\s|\.\s*$|--worktree)", "丢弃工作区改动"),
     (r"\bgit\s+branch\b.*\s-D\b", "强制删除分支"),
@@ -881,6 +884,8 @@ _GIT_READONLY_CHECK = {
                                                   "--copy", "--set-upstream-to", "-u", "--unset-upstream"))
                         and all(x.startswith("-") for x in a),
     "remote": lambda a: not a or a in (["-v"], ["show"]) or (a[:1] == ["show"]) or a == ["get-url", "origin"],
+    # reflog 的 delete / expire / drop 会改写 .git/logs（抹掉误操作后的恢复路径），只读模式不能做
+    "reflog": lambda a: not a or all(x.startswith("-") for x in a) or a[0] in ("show", "list", "exists"),
     "config": lambda a: any(x in a for x in ("--get", "--list", "-l", "--get-all", "--get-regexp")),
     "tag": lambda a: not a or a[0] in ("-l", "--list", "--contains", "--points-at"),
     "worktree": lambda a: a[:1] == ["list"],
@@ -1030,7 +1035,7 @@ _PS_SAFE_OPTS = {
 _PS_MEMBER_OPTS = {"-membername", "-process", "-expandproperty", "-begin", "-end",
                    "-filterscript", "-value"}
 # 参数值是属性名/字符串，不会是动作的情况：这些开关后面跟的值一律跳过
-_PS_VALUE_OPTS = {
+_PS_PIPE_VALUE_OPTS = {
     "-property", "-properties", "-expandproperty", "-first", "-last", "-skip", "-skipfirst", "-skiplast",
     "-membername", "-inputobject", "-eq", "-ne", "-gt", "-ge", "-lt", "-le", "-like", "-notlike",
     "-match", "-notmatch", "-contains", "-notcontains", "-in", "-notin", "-is", "-isnot", "-as",
@@ -1077,7 +1082,7 @@ def _ps_pipeline_safe(name: str, args: list[str]) -> bool:
                     return False
                 i += 1
                 continue
-            if base in _PS_VALUE_OPTS and i + 1 < n:
+            if base in _PS_PIPE_VALUE_OPTS and i + 1 < n:
                 i += 2
                 continue
             if _ps_opt_known(base):
@@ -1241,6 +1246,29 @@ def _any_short_opt(args: list[str], flags: str) -> bool:
 _GIT_DANGEROUS_LONG = {
     "--config-env", "--exec-path", "--output", "--open-files-in-pager", "--ext-diff", "--paginate",
 }
+
+# git 接受长选项的唯一前缀缩写（`git reset --har` 就是 `git reset --hard`）。
+# 只登记与破坏性有关的子命令选项，供归一化阶段把缩写展回完整写法；
+# 有歧义的前缀（如 push 的 --forc）保持原样——git 自己也会报 ambiguous option 并拒绝执行。
+_GIT_SUBCMD_LONG_OPTS: dict[str, tuple[str, ...]] = {
+    "reset": ("--hard", "--soft", "--mixed", "--merge", "--keep", "--quiet"),
+    "clean": ("--force", "--dry-run", "--quiet", "--interactive", "--exclude", "--no-ignore"),
+    "push": ("--force", "--force-with-lease", "--force-if-includes", "--delete", "--tags",
+             "--set-upstream", "--no-verify"),
+    "checkout": ("--force", "--ours", "--theirs", "--worktree"),
+    "restore": ("--source", "--staged", "--worktree"),
+    "commit": ("--no-verify", "--amend", "--allow-empty"),
+    "branch": ("--delete", "--move", "--copy", "--set-upstream-to", "--unset-upstream", "--all"),
+}
+
+
+def _expand_long_opt(a: str, cands: tuple[str, ...]) -> str:
+    """把无歧义的长选项缩写展开成完整写法；有歧义或不像选项时原样返回。"""
+    if not a.startswith("--") or len(a) < 4:
+        return a
+    head, sep, tail = a.partition("=")
+    hit = [c for c in cands if c.startswith(head)]
+    return (hit[0] + sep + tail) if len(hit) == 1 else a
 _SORT_DANGEROUS_LONG = {"--output", "--compress-program"}
 
 
@@ -1250,9 +1278,12 @@ def _segment_safe(seg: str, syntax: str = "posix") -> bool:
     if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*=", seg):
         return False  # 前置环境变量（GIT_CONFIG_*、GIT_EXTERNAL_DIFF、LESSOPEN…）能让白名单命令执行任意程序
     if syntax == "posix":
-        if words(seg, "posix") is None:
+        w = words(seg, "posix")
+        if w is None:
             return False  # 引号不配对：解析不了，按需要确认
-        t = tokens(seg)
+        # 必须用按 posix 语法解析出来的词，不能用字面词：bash 会把 `-exe\c` 还原成 -exec，
+        # 而 tokens() 在含反斜杠时走 posix=False 保留转义，白名单看到的是无害的 -exe\c。
+        t = w[1:] if w and w[0] in ("&", ".") else w
     else:
         w = words(seg, syntax)
         if w is None:
@@ -1363,6 +1394,35 @@ def _match_rule(rule: str, tool: str, subject: str) -> bool:
     if pat is None or pat.strip() in ("", "*"):
         return True
     return fnmatch.fnmatch(subject.lower().replace("\\", "/"), pat.strip().lower().replace("\\", "/"))
+
+
+def _match_shell_rule(rule: str, seg: str) -> bool:
+    """deny / ask 也要命中不带参数的裸命令。
+
+    规则写 shell(git push *)，而命令正好是 `git push`（后面没有参数）时，通配符少一个空格
+    就匹配不上。allow 分支一直用 seg + " " 做同样的补偿（见 _check_shell 末尾），
+    deny / ask 之前漏了这一步，于是用户写的「永远不许 push」对裸命令不生效。
+    """
+    return _match_rule(rule, "shell", seg) or _match_rule(rule, "shell", seg + " ")
+
+
+def _abs_for_match(p: str, workspace: Path) -> str:
+    """把待匹配路径折成绝对路径再比规则。
+
+    规则里写的是绝对路径（write(C:/ws/secret/*)），而工具参数可以是 `x/../secret/f`、
+    `./secret/f`、`C:/ws/a/../secret.env`——Windows 上打开的是同一个文件，按字面 fnmatch
+    却全都匹配不上。规则里的通配符保留，只折叠 `.` 与 `..`。
+    """
+    q = _clean_path(p)
+    if not q:
+        return q
+    try:
+        path = Path(q).expanduser()
+        if not path.is_absolute():
+            path = workspace / path
+        return os.path.normpath(os.path.abspath(str(path)))
+    except (OSError, ValueError):  # noqa: BLE001  归一失败就退回原串，不能因此放宽或崩溃
+        return q
 
 
 # ------------------------------------------------------------------ 判定
@@ -1478,7 +1538,11 @@ class PermissionPolicy:
             return self._check_write(tool, args)
         if tool in READ_TOOLS:
             subject = str(args.get("path") or args.get("pattern") or args.get("name") or "")
-            if any(_match_rule(r, tool, subject) for r in self.deny):
+            subs = [subject]
+            if args.get("path"):
+                # 同一个文件可以用 x/../secret.env、./secret.env 指到，规则是绝对路径，按字面比会漏
+                subs.append(_abs_for_match(subject, self.workspace))
+            if any(_match_rule(r, tool, s) for r in self.deny for s in subs):
                 return Decision("deny", "命中 deny 规则")
             return Decision("allow")
         if tool in ("shell_output", "shell_kill"):
@@ -1565,11 +1629,14 @@ class PermissionPolicy:
     def _check_write(self, tool: str, args: dict) -> Decision:
         paths = self._paths(tool, args)
         for p in paths:
-            if any(_match_rule(r, tool, p) or _match_rule(r, "write", p) for r in self.deny):
+            subs = (p, _abs_for_match(p, self.workspace))
+            if any(_match_rule(r, tool, s) or _match_rule(r, "write", s)
+                   for r in self.deny for s in subs):
                 return Decision("deny", f"命中 deny 规则：{p}")
         if self.mode in READONLY_MODES:
             return Decision("deny", "当前是只读/计划模式，不能修改文件")
-        if any(_match_rule(r, tool, p) for r in self.ask for p in paths):
+        if any(_match_rule(r, tool, s) for r in self.ask
+               for s in (x for p in paths for x in (p, _abs_for_match(p, self.workspace)))):
             return Decision("ask", "命中 ask 规则", prefix="")
         if self.mode == "auto":
             return Decision("allow")
@@ -1617,7 +1684,7 @@ class PermissionPolicy:
             for pat, why in DENY_PATTERNS:
                 if hits(pat, e.raw, e.norm):
                     return Decision("deny", f"危险命令已拦截（{why}）：{e.raw}")
-            if any(_match_rule(r, "shell", e.raw) or (e.norm and _match_rule(r, "shell", e.norm))
+            if any(_match_shell_rule(r, e.raw) or (e.norm and _match_shell_rule(r, e.norm))
                    for r in self.deny):
                 return Decision("deny", f"命中 deny 规则：{e.raw}")
         for e in entries:
@@ -1636,7 +1703,7 @@ class PermissionPolicy:
             if unsafe:
                 return Decision("deny", f"只读模式只能运行只读命令，被拦截：{unsafe[0]}")
             return Decision("allow")
-        if any(_match_rule(r, "shell", s) for r in self.ask for s in segs + norms):
+        if any(_match_shell_rule(r, s) for r in self.ask for s in segs + norms):
             return Decision("ask", "命中 ask 规则", prefix=command_prefix(segs[0]))
         if self.mode == "auto":
             return Decision("allow")
