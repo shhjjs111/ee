@@ -257,6 +257,7 @@ class ApplyPatchTool(Tool):
         ops = parse_patch(patch)
         # 先全部演算，任何一处失败都不落盘
         plan: list[tuple[str, Path, Path | None, str, str, object]] = []
+        staged: dict[Path, str] = {}     # 同一路径已有几段 Update 时，后一段基于前一段的结果演算
         for op in ops:
             p = ctx.resolve(op.path)
             if op.kind == "add":
@@ -273,8 +274,17 @@ class ApplyPatchTool(Tool):
                 if not p.exists():
                     raise ToolError(f"Update File 目标不存在：{p}")
                 tf = read_text(p)
-                new = apply_hunks(tf.text, op.hunks, op.path) if op.hunks else tf.text
+                # 同一路径出现多段 Update 时，后一段必须基于前一段的结果演算：每段都拿磁盘原文
+                # 算 new、再逐份 write_text 覆盖，前一段的改动会被整段抹掉，而回执里两条都写着
+                # Edited，用户以为两处都改好了。
+                base = staged.get(p, tf.text)
+                new = apply_hunks(base, op.hunks, op.path) if op.hunks else base
                 dest = ctx.resolve(op.move_to) if op.move_to else None
+                if dest is not None and dest != p and dest.exists():
+                    raise ToolError(f"Move to 目标已存在：{dest}（会静默覆盖它的内容，先删掉或换个名字）")
+                staged[p] = new
+                # 只保留该路径的一条计划：落盘的是最终内容，diff 也是从头到尾的那一份
+                plan = [x for x in plan if not (x[0] == "Edited" and x[1] == p)]
                 plan.append(("Edited", p, dest, tf.text, new, tf))
         diffs, summaries, meta_files = [], [], []
         for verb, p, dest, old, new, tf in plan:

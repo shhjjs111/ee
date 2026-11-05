@@ -41,8 +41,15 @@ log = logging.getLogger("ee.server")
 SLOW_RPC = 5.0     # 秒：超过就记一条日志
 # 这些方法的 thread_id 是可选参数；显式传 None 表示“没有当前会话”。其余方法必须给合法 id。
 OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
-# 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环（对应方法本身仍是同步函数，测试可直接调用）。
-BLOCKING_RPCS = {"thread/delete", "thread/export"}
+# 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环。
+# 放进这里的**必须**是同步函数——async 函数经 to_thread 只会得到一个协程对象，
+# 函数体根本不执行，返回值还会被 json 序列化成 "<coroutine object ...>"。
+# 两个原成员都已移出，各自的原因写在这里，避免有人再放回去：
+#   thread/export：它是 async，且自己已经 await asyncio.to_thread(_thread_export, ...)，
+#       放进这里是双重 offload，导出内容永远是协程字符串（前端读 r.content.length 直接 TypeError）。
+#   thread/delete：需要事件循环（aclose 释放连接池、interrupt 取消在飞回合）。放进这里会在
+#       工作线程里调 get_running_loop() 必然失败，aclose 被静默跳过 → 每删一个会话漏一个连接池。
+BLOCKING_RPCS: set[str] = set()
 
 
 def _thread_id_optional(fn) -> bool:
@@ -163,6 +170,11 @@ class Backend:
         try:
             if method in BLOCKING_RPCS:
                 res = await asyncio.to_thread(fn, **params)
+                if asyncio.iscoroutine(res):
+                    # 兜底：表里的方法必须是同步函数。async 函数被 to_thread 包一层只会得到
+                    # 未执行的协程对象，而 json.dumps(default=str) 会把它序列化成字符串——
+                    # 调用方看到一个「成功」的响应，实际什么都没做。
+                    res = await res
             else:
                 res = fn(**params)
                 if asyncio.iscoroutine(res):
