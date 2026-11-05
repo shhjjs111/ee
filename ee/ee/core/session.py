@@ -63,6 +63,22 @@ MIDTURN_IMAGE_NOTE = ("[系统提示] 下面是刚读到的图片，用来继续
 APPROVAL_TIMEOUT = 300.0
 
 
+def _should_attach_mcp(*, done: bool, enabled: bool, has_prefix: bool, tool_names) -> bool:
+    """这一回合还要不要尝试连接 MCP 服务器。
+
+    - 已经成功连过（done）或用户关掉了 MCP：不必
+    - 前缀已建立**且已经有 MCP 工具**：不必——再连会改工具表、让冻结前缀失效，
+      每回合白丢一次缓存，代价比多连一个服务器大
+    - 其余都要试，**包括「前缀已建立但一个 MCP 工具都没加上」**：
+      原来这里只判 `prefix is not None`，于是第一回合服务器还没起来（它比 ee 慢启动
+      是常态）就永久放弃，这个会话此后再也用不上 MCP，只能新开一个。
+    """
+    if done or not enabled:
+        return False
+    if has_prefix and any(str(n).startswith("mcp__") for n in tool_names):
+        return False
+    return True
+
 class RestoreConflict(Exception):
     """要恢复的文件在 ee 改完之后又被用户改过：conflicts = 相对路径，tree = 检测时的当前工作区快照。"""
 
@@ -940,7 +956,8 @@ class Session:
         再也连不上 MCP，只能新开会话（报告 P1-12）。现在失败会留下 _mcp_tried
         供诊断，但下一回合仍会重试。
         """
-        if self._mcp_done or self.prefix is not None or not self.mcp_enabled:
+        if not _should_attach_mcp(done=self._mcp_done, enabled=self.mcp_enabled,
+                                  has_prefix=self.prefix is not None, tool_names=self.tool_map):
             return
         self._mcp_tried = getattr(self, "_mcp_tried", 0) + 1
         from ee.mcp.config import load_servers, mcp_settings
@@ -972,7 +989,9 @@ class Session:
             emit(Status(""))
             raise
         emit(Status(""))
-        self._mcp_done = True              # 连接流程走完（成功或部分失败）才算完成
+        # 全都连不上时**不置位**：下一回合还要重试。原来无条件置真，注释写「成功或部分
+        # 失败才算完成」，实际把「一个都没连上」也算成了完成。
+        self._mcp_done = any(st.status == "ready" for st in states)
         tools, seen = [], set(self.tool_map)
         timeout = float(m.get("tool_timeout") or 120)
         for st in states:
