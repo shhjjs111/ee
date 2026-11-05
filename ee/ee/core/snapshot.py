@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 
 from ee.proc import run_capture
@@ -24,6 +25,9 @@ log = logging.getLogger("ee.snapshot")
 
 MAX_UNTRACKED_BYTES = 2 * 1024 * 1024
 CAPTURE_TIMEOUT = 60.0
+# 超过这么久没被动过的 index.lock 一定是死的：add -A 最长跑 CAPTURE_TIMEOUT 秒就会被
+# 杀进程树，活着的锁 mtime 不可能停这么久。取两倍留裕量，避免误删别的进程正持有的锁。
+STALE_LOCK_SECONDS = CAPTURE_TIMEOUT * 2
 DEFAULT_EXCLUDES = ["node_modules/", ".venv/", "venv/", "__pycache__/", ".mypy_cache/", ".pytest_cache/",
                     ".ruff_cache/", ".tox/", ".gradle/", ".idea/", ".vs/", "*.pyc"]
 _BEGIN, _END = "# >>> ee 自动排除（大文件）", "# <<< ee"
@@ -201,6 +205,28 @@ class DiskSnapshot:
             attrs.write_text(want, encoding="utf-8")
         self._ready = True
 
+    def _clear_stale_lock(self) -> None:
+        """清掉上次被强杀留下的 index.lock。
+
+        git 在 `add -A` 期间持有 $GIT_DIR/index.lock。进程被 taskkill /F、断电、关机，
+        或 capture 超时后 run_capture 杀进程树时，这个锁来不及删。此后每一次 add 都以
+        "Unable to create .../index.lock: File exists" 失败，而那段错误文本不含「超时」，
+        所以不会置 disabled——每回合重试、每回合失败，界面却仍然显示快照可用，
+        /undo 静默退回内存层。用户只能手工删 ~/.ee/snapshot/<key>/index.lock。
+        """
+        lock = self.gitdir / "index.lock"
+        try:
+            age = time.time() - lock.stat().st_mtime
+        except OSError:
+            return
+        if age < STALE_LOCK_SECONDS:
+            return
+        try:
+            lock.unlink()
+            log.warning("清理残留的 %s（%.0f 秒前被强杀留下的锁）", lock, age)
+        except OSError as e:  # noqa: BLE001  删不掉就照旧失败，不能因此崩
+            log.warning("清理残留锁 %s 失败：%s", lock, e)
+
     def _write_excludes(self, big: list[str]) -> None:
         lines: list[str] = []
         src = self.worktree / ".git"
@@ -258,6 +284,7 @@ class DiskSnapshot:
         with self._lock:
             try:
                 self._ensure()
+                self._clear_stale_lock()
                 self._write_excludes(self._big_untracked())
                 self._run("add", "-A", "--ignore-errors", "--", ".", timeout=CAPTURE_TIMEOUT)
                 tree = self._run("write-tree").decode().strip()
