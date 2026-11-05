@@ -47,6 +47,17 @@ def snippet(text: str, query: str, radius: int = SNIPPET_RADIUS) -> str:
     return ("…" if a else "") + flat[a:b] + ("…" if b < len(flat) else "")
 
 
+def _is_missing_fts5(exc: Exception) -> bool:
+    """建虚拟表失败的原因是不是「这个 sqlite 没有编 FTS5」。
+
+    并发首次建库时 sqlite 抛的也是 OperationalError（database is locked）。
+    把那种瞬时错误也当成「不支持 FTS」，会让这个进程此后的每条搜索都退化成全表扫，
+    而且真正的锁错误被伪装成「不支持 FTS」，排查时看不到任何异常。
+    """
+    msg = str(exc).lower()
+    return "fts5" in msg or "no such module" in msg
+
+
 class SearchIndex:
     def __init__(self, home: Path):
         self.home = home
@@ -60,13 +71,32 @@ class SearchIndex:
         if self._conn is not None:
             return self._conn
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        c = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        c = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=10.0)
+        try:
+            # WAL：桌面端后端与 ee exec 共用同一个 search.db。默认的 rollback journal 下
+            # 读者的 SHARED 锁会顶住对方的 COMMIT，一路顶到 timeout 才报 database is locked。
+            c.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass                    # 网络盘等不支持 WAL 的存储：退回默认，不影响功能
         c.execute("CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, mtime REAL, size INTEGER)")
+        row = c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='docs'").fetchone()
+        if row and "fts5" not in (row[0] or "").lower():
+            # 上一次降级留下的普通 docs 表。不删掉的话，下面的 IF NOT EXISTS 会因同名表已存在
+            # 而**静默跳过**，本进程带着 fts=True 去跑 `docs MATCH ?`，查询时才抛错。
+            # 索引是纯缓存（能从 sessions/ 重建），删表重建比让用户手动删 search.db 合适。
+            c.execute("DROP TABLE docs")
         try:
             c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5("
                       "text, session_id UNINDEXED, item_id UNINDEXED, kind UNINDEXED, seq UNINDEXED, "
                       "tokenize='trigram')")
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            # 只有「这个 sqlite 没有 FTS5」才该降级。并发首次建库时 sqlite 抛的恰恰也是
+            # OperationalError（database is locked）；一次偶发锁不能让这个进程此后的每条搜索
+            # 都变成 LIKE 全表扫——实例被 get_index() 永久缓存，进程内不会自行恢复，
+            # 而真正的锁错误还被伪装成「不支持 FTS」，排查时看不到任何异常。
+            if not _is_missing_fts5(e):
+                c.close()
+                raise
             self.fts = False
             c.execute("CREATE TABLE IF NOT EXISTS docs (text TEXT, session_id TEXT, item_id TEXT, kind TEXT, seq INTEGER)")
         c.commit()
@@ -108,7 +138,8 @@ class SearchIndex:
         c.execute("DELETE FROM files WHERE id = ?", (sid,))
 
     def _index_file(self, c: sqlite3.Connection, sid: str, p: Path, mtime: float, size: int) -> None:
-        c.execute("DELETE FROM docs WHERE session_id = ?", (sid,))
+        # 先读文件、把行算好，再开写事务：load 要解析整份 JSONL，放在 DELETE 之后会让写锁
+        # 横跨整个解析过程——另一个 ee 进程的写/COMMIT 就一路等到 timeout（database is locked）。
         try:
             d = SessionStore.load(p)
         except Exception:  # noqa: BLE001
@@ -122,6 +153,7 @@ class SearchIndex:
             if text:
                 rows.append((text[:MAX_TEXT], sid, str(it.get("id") or ""), str(it.get("type") or ""),
                              int(it.get("seq") or 0)))
+        c.execute("DELETE FROM docs WHERE session_id = ?", (sid,))
         c.executemany("INSERT INTO docs (text, session_id, item_id, kind, seq) VALUES (?, ?, ?, ?, ?)", rows)
         c.execute("INSERT OR REPLACE INTO files (id, mtime, size) VALUES (?, ?, ?)", (sid, mtime, size))
 
