@@ -274,6 +274,11 @@ class ApplyPatchTool(Tool):
                 if not p.exists():
                     raise ToolError(f"Update File 目标不存在：{p}")
                 tf = read_text(p)
+                if tf.lossy:
+                    # 与 edit.py 同一道护栏：按行改会把**没改动**的行也写成 U+FFFD，
+                    # 那些行的原始字节就永久没了，而回执还会说「改好了」。
+                    raise ToolError(f"认不出 {p} 的编码（不是 UTF-8 也不是 GBK），"
+                                    f"局部编辑会损坏原内容。要改请用 write 整体重写。")
                 # 同一路径出现多段 Update 时，后一段必须基于前一段的结果演算：每段都拿磁盘原文
                 # 算 new、再逐份 write_text 覆盖，前一段的改动会被整段抹掉，而回执里两条都写着
                 # Edited，用户以为两处都改好了。
