@@ -1,9 +1,16 @@
 import { test, expect, ElectronApplication, Page } from "@playwright/test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { launchIsolated, type IsolatedApp } from "./launch";
+import { pageRpc } from "./rpc";
+
+const PROBE_TITLE = "e2e-滚动回归";
 
 let app: ElectronApplication;
 let iso: IsolatedApp;
 let win: Page;
+let projDir = "";
 
 test.beforeAll(async () => {
   iso = await launchIsolated();
@@ -12,6 +19,19 @@ test.beforeAll(async () => {
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
   await win.waitForTimeout(800);
+
+  // 干净 userData 里没有任何会话：这时 Conversation 走 EmptyState 分支，压根不渲染滚动区。
+  // 上一版就是在这一状态下 querySelector(".overflow-y-auto") 命中了侧栏（它在文档序里更靠前），
+  // 于是三个「真机滚动」用例量的全是侧栏。这里先建一个真会话并打开，用例才量得到对话区。
+  projDir = fs.mkdtempSync(path.join(os.tmpdir(), "ee-e2e-scroll-"));
+  const started = await pageRpc<{ thread: { id: string } }>(win, "thread/start", { cwd: projDir });
+  await pageRpc(win, "thread/rename", { thread_id: started.thread.id, title: PROBE_TITLE });
+  await win.reload();
+  await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
+  const row = win.locator(`[data-testid=thread-row][data-title="${PROBE_TITLE}"]`);
+  await row.waitFor({ state: "visible", timeout: 30_000 });
+  await row.click();
+  await win.locator("[data-testid=conversation-scroller]").waitFor({ state: "visible", timeout: 30_000 });
 });
 
 test.afterAll(async () => {
@@ -33,7 +53,7 @@ test.afterAll(async () => {
 test("长会话下对话区可滚动、Composer 始终在视口内（ACC-52 / 真机回归）", async () => {
   // 往对话滚动区里塞 120 个高条目，模拟长会话
   await win.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto");
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]');
     if (!scroller) throw new Error("找不到对话滚动容器 .overflow-y-auto");
     const inner = scroller.firstElementChild as HTMLElement;
     for (let i = 0; i < 120; i++) {
@@ -62,7 +82,7 @@ test("长会话下对话区可滚动、Composer 始终在视口内（ACC-52 / �
     };
     const shell = document.querySelector<HTMLElement>('[data-testid="app-shell"]')!;
     const main = shell.querySelector(".flex.min-h-0") as HTMLElement | null;
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto");
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]');
     const composer = document.querySelector("textarea");
     const rect = composer?.getBoundingClientRect();
     return {
@@ -84,7 +104,7 @@ test("长会话下对话区可滚动、Composer 始终在视口内（ACC-52 / �
 
   // 3. 滚动到底部：Composer 必须仍在视口内
   await win.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     scroller.scrollTop = scroller.scrollHeight;
   });
   await win.waitForTimeout(200);
@@ -101,7 +121,7 @@ test("流式 Markdown 长回复下滚动链完好（真机缺陷回归）", asyn
   // 清掉上一个用例注入的探针条目
   await win.evaluate(() => {
     document.querySelectorAll("[data-probe]").forEach((el) => el.remove());
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     const inner = scroller.firstElementChild as HTMLElement;
     // 注入真实 Markdown 渲染产物：h2/h3/ul/pre/code 混排，与用户的 3000 字文章形态一致
     for (let i = 0; i < 40; i++) {
@@ -120,7 +140,7 @@ test("流式 Markdown 长回复下滚动链完好（真机缺陷回归）", asyn
   await win.waitForTimeout(400);
 
   const md = await win.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     const composer = document.querySelector("textarea");
     const rect = composer?.getBoundingClientRect();
     return {
@@ -142,7 +162,7 @@ test("流式 Markdown 长回复下滚动链完好（真机缺陷回归）", asyn
 
   // 滚到底也要在
   await win.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     scroller.scrollTop = scroller.scrollHeight;
   });
   await win.waitForTimeout(200);
@@ -162,7 +182,7 @@ test("流式 Markdown 长回复下滚动链完好（真机缺陷回归）", asyn
 test("超长无空格内容不得撑破布局（横向溢出回归）", async () => {
   await win.evaluate(() => {
     document.querySelectorAll("[data-probe]").forEach((el) => el.remove());
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     const inner = scroller.firstElementChild as HTMLElement;
     // 三类「不可断行」内容：超长 URL、超长代码 token、宽 Markdown 表格
     const longUrl = "https://example.com/" + "a".repeat(3000);
@@ -193,7 +213,7 @@ test("超长无空格内容不得撑破布局（横向溢出回归）", async ()
     const shell = document.querySelector<HTMLElement>('[data-testid="app-shell"]')!;
     const sidebar = shell.firstElementChild as HTMLElement;
     const sidebarRect = sidebar?.getBoundingClientRect();
-    const scroller = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     const composer = document.querySelector("textarea");
     const rect = composer?.getBoundingClientRect();
     return {
@@ -223,27 +243,19 @@ test("超长无空格内容不得撑破布局（横向溢出回归）", async ()
  * （注入内容挂在滚动容器内不会触发该失效——已实测；本用例守卫的是「约束仍在」。）
  */
 test("Conversation 层有 min-h-0，长内容不撑爆布局（真机缺陷结构性回归）", async () => {
-  // 前置：确保在某个已打开的会话里（滚动容器只在会话详情视图存在）。
-  // 前面用例可能把会话切走或清了内容，这里点侧栏第一个会话条目兜底。
-  await win.evaluate(() => {
-    const sb = document.querySelector('[data-testid="shell-sidebar"]');
-    const cands = [...(sb?.querySelectorAll("*") ?? [])].filter((el) => {
-      const t = (el.textContent || "").trim();
-      return (el.children.length === 0 || el.tagName === "SPAN") && t.length > 6 &&
-        !/^(新对话|聊天|需处理|更多|全部|搜索|设置|分组)/.test(t);
-    });
-    cands.find((el) => el.getBoundingClientRect().width > 100)?.click();
-  });
-  await win.waitForTimeout(1500);
+  // 前置由 beforeAll 保证（建好会话并点开）。这里若滚动容器不在，下面的断言会直接判红，
+  // 不再 skip —— 上一版就是靠「找不到就跳过」把这个守卫变成一直绿的空壳。
 
-  const ready = await win.evaluate(() => document.querySelectorAll(".overflow-y-auto").length);
-  if (ready < 2) test.skip(true, "测试环境没有可打开的历史会话（干净 userData），跳过结构性回归");
+  const ready = await win.evaluate(() => document.querySelectorAll('[data-testid=conversation-scroller]').length);
+  // beforeAll 已经建好并打开了一个会话：这里没有滚动容器说明「会话没被打开」，属前置失败。
+  // 不能 skip —— 上一版就是靠 ready<2 静默跳过，把这个守卫变成了一直绿的空壳。
+  expect(ready, "对话滚动容器不存在：会话没被打开，测试前置失败").toBe(1);
 
   // 注入极长内容到**滚动容器的父级（Conversation 层）**，模拟真实缺陷的传导路径：
   // 缺 min-h-0 时，任何在该层渲染的超高内容都会把它撑爆（内容进滚动容器只会被
   // overflow 截断，触发不了这个 bug——上一版用例因此假绿）。
   await win.evaluate(() => {
-    const scroller = document.querySelectorAll<HTMLElement>(".overflow-y-auto")[1] as HTMLElement;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     const conv = scroller.parentElement as HTMLElement;
     for (let i = 0; i < 80; i++) {
       const d = document.createElement("div");
@@ -256,7 +268,7 @@ test("Conversation 层有 min-h-0，长内容不撑爆布局（真机缺陷结�
   await win.waitForTimeout(300);
 
   const m = await win.evaluate(() => {
-    const scroller = document.querySelectorAll<HTMLElement>(".overflow-y-auto")[1] as HTMLElement;
+    const scroller = document.querySelector<HTMLElement>('[data-testid=conversation-scroller]')!;
     const conv = scroller.parentElement as HTMLElement;
     const composer = document.querySelector("textarea");
     const cr = composer?.getBoundingClientRect();
