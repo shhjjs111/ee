@@ -125,6 +125,9 @@ type Actions = {
   editResend(itemId: string, text: string): Promise<boolean>;
   openSettings(section?: SettingsSection): void;
   respond(callId: string, choice: "once" | "always" | "forever" | "deny", reason?: string): Promise<void>;
+  /** 子会话的审批：指向**子线程**（不是 activeThreadId），且成功之后才清父界面的横幅。 */
+  respondChild(parentId: string, threadId: string, callId: string,
+              choice: "once" | "always" | "forever" | "deny", reason?: string): Promise<boolean>;
   answer(callId: string, answer: string): Promise<boolean>;
   openFile(path: string): void;
   set(p: Partial<State>): void;
@@ -781,6 +784,24 @@ export const useApp = create<State & Actions>((set, get) => ({
     } catch (e) {
       get().showToast((e as Error).message, "error");
     }
+  },
+
+  /** 子会话的审批：必须指向子线程，且**成功之后**才清横幅。
+   *
+   *  原来这两件都错：固定打 activeThreadId（父界面上批准的是父会话，后端回
+   *  「这个审批已经处理过或已失效」），而 clear 在 RPC 之前执行，失败也照样把横幅抹掉——
+   *  用户点一下，提示消失、什么都没发生，子会话继续卡着。
+   */
+  async respondChild(parentId, threadId, callId, choice, reason) {
+    try {
+      await get().rpc!.call("approval/respond",
+        { thread_id: threadId, call_id: callId, choice, reason: reason || "" });
+    } catch (e) {
+      get().showToast((e as Error).message, "error");
+      return false;                  // 失败：横幅留着，让用户看得见还有事没处理
+    }
+    get().clearChildApproval(parentId);
+    return true;
   },
 }));
 

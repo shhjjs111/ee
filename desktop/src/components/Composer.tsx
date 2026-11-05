@@ -777,18 +777,22 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
  */
 function ChildApprovalBanner() {
   const note = useApp((s) => (s.activeThreadId ? s.pendingChildApprovals[s.activeThreadId] : undefined));
-  const rpc = useApp((s) => s.rpc);
-  const clear = useApp((s) => s.clearChildApproval);
+  const respondChild = useApp((s) => s.respondChild);
+  const openThread = useApp((s) => s.openThread);
 
   if (!note) return null;
   const isQuestion = note.kind === "question";
   // 子会话的审批要指向**子线程**（note.thread_id），所以不能复用 store.respond
   // （它固定打 activeThreadId）。参数名必须是后端签名里的 choice，不是 decision。
+  // 走 store.respondChild：成功才清横幅，失败保留并 toast。
   const respond = (choice: "once" | "always" | "forever" | "deny") => {
-    void rpc?.call("approval/respond",
-                   { thread_id: note.thread_id, call_id: note.call_id, choice, reason: "" })
-      .catch(() => undefined);
-    clear(note.parent_id);
+    void respondChild(note.parent_id, note.thread_id, note.call_id, choice);
+  };
+  // 提问不能走审批 RPC：后端 Thread.respond 只接受 type == "approval" 的条目，问题条目会被
+  // 拒（"这个审批已经处理过或已失效"）；而横幅里没有答案输入框，改成 question/respond
+  // 也送不出答案（Thread.answer 要求非空）。正确做法是把用户带到子会话，在它的提问卡片上回答。
+  const goAnswer = () => {
+    void openThread(note.thread_id);
   };
   return (
     <div className="mb-2 flex items-start gap-2 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-[12.5px]">
@@ -803,7 +807,7 @@ function ChildApprovalBanner() {
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <button
-          onClick={() => respond("once")}
+          onClick={isQuestion ? goAnswer : () => respond("once")}
           className="rounded-md border border-line px-2 py-1 text-[12px] text-fg hover:bg-hover"
         >
           {isQuestion ? "去回答" : "批准一次"}
