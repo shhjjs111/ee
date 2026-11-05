@@ -414,16 +414,22 @@ class DiskSnapshot:
         self._numstat_cache[key] = res
         return dict(res)
 
-    def existing(self, trees: list[str]) -> set[str]:
-        """这些 tree 里还在影子仓库里的（被清理掉的不在）。"""
+    def existing(self, trees: list[str]) -> set[str] | None:
+        """这些 tree 里还在影子仓库里的。
+
+        **None = 无法判断**（git 出故障），与「确定都不在了」（空集合）是两件事。
+        原来把两者混成一个返回值，调用方只能把一次瞬时故障翻译成业务结论
+        「你的检查点都被清理了」，用户会直接放弃恢复；刷新后又恢复正常，前后矛盾。
+        """
         trees = [t for t in dict.fromkeys(trees) if t and _TREE_RE.fullmatch(t)]
         if not trees or not (self.gitdir / "HEAD").is_file():
             return set()
         with self._lock:
             try:
                 out = self._run("cat-file", "--batch-check", input=("\n".join(trees) + "\n").encode())
-            except SnapshotError:
-                return set()
+            except SnapshotError as e:
+                log.warning("查询检查点对象失败（无法判断，不等于不存在）：%s", e)
+                return None
         ok = set()
         for line in out.decode("utf-8", "replace").splitlines():
             parts = line.split()

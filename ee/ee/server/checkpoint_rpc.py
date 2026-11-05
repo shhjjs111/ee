@@ -59,6 +59,22 @@ def restore_point_view(rp: dict | None) -> dict | None:
     return None if not rp else {"id": rp["id"], "kind": "restore", "ts": rp["ts"], "text": rp["label"]}
 
 
+def _require_alive(d, trees: list[str], what: str) -> None:
+    """确保这些 tree 还在。
+
+    **git 故障时说「暂时不可用」，不是「已被清理」**——两者对用户是相反的结论：前者该
+    稍后重试，后者只能放弃恢复。原来两处各写一遍 `existing(...) != {…}`，把故障和
+    「真没了」压成同一个分支。
+    """
+    from ee.server.app import RpcError
+
+    alive = d.existing(trees)
+    if alive is None:
+        raise RpcError("检查点存储暂时不可用（git 出错），请稍后重试")
+    if any(t not in alive for t in trees):
+        raise RpcError(f"{what}已被清理（超过保留期限）")
+
+
 def register(methods: dict, backend) -> None:
     from ee.server import gitops
     from ee.server.app import RpcError
@@ -105,13 +121,14 @@ def register(methods: dict, backend) -> None:
         rps = [rp for rp in t.meta.get("restore_points") or [] if rp.get("tree")]
         alive = d.existing([x for _, it in ents for x in (it.get("tree"), it.get("tree_after")) if x]
                            + [rp["tree"] for rp in rps])
+        unknown = alive is None      # git 出故障：不知道在不在，不能标成「已过期」
         out = []
         last_id = ents[-1][1].get("id") if ents else None
         for n, it in ents:
             before, after = it.get("tree"), it.get("tree_after")
             running = bool(t.running and it.get("id") == last_id and not after)
             stat = None
-            if before in alive and after in alive:
+            if not unknown and before in alive and after in alive:
                 try:
                     stat = d.numstat(before, after)
                 except Exception:  # noqa: BLE001
@@ -119,11 +136,12 @@ def register(methods: dict, backend) -> None:
             out.append({"id": it["id"], "kind": "turn", "turn": n, "ts": it.get("ts"),
                         "text": C.summarize(it.get("text") or ""), "before": before, "after": after,
                         "undone": bool(it.get("undone")), "running": running, "stat": stat,
-                        "expired": before not in alive, "after_expired": bool(after) and after not in alive})
+                        "expired": (not unknown) and before not in alive,
+                        "after_expired": bool(after) and not unknown and after not in alive})
         for rp in rps:
             out.append({"id": rp["id"], "kind": "restore", "ts": rp.get("ts"), "text": rp.get("label") or "恢复前的文件",
                         "before": rp["tree"], "after": None, "undone": False, "running": False, "stat": None,
-                        "expired": rp["tree"] not in alive, "after_expired": False})
+                        "expired": (not unknown) and rp["tree"] not in alive, "after_expired": False})
         out.sort(key=lambda e: e.get("ts") or 0)
         return {"available": True, "checkpoints": out}
 
@@ -164,8 +182,7 @@ def register(methods: dict, backend) -> None:
             if not cur:
                 raise RpcError("抓取当前工作区快照失败")
         a, b = a or cur, b or cur
-        if d.existing([a, b]) != {a, b}:
-            raise RpcError("这个检查点已被清理（超过保留期限）")
+        _require_alive(d, [a, b], "这个检查点")
         files = gitops.split_diff(hunks.display(d.diff_text(a, b)))
         for f in files:
             f["hunks"] = []
@@ -200,8 +217,7 @@ def register(methods: dict, backend) -> None:
         else:
             target = ent["tree"]
             label = "恢复点"
-        if d.existing([target]) != {target}:
-            raise RpcError("这个检查点已被清理（超过保留期限），无法恢复")
+        _require_alive(d, [target], "这个检查点")
         cur = d.capture()
         if not cur:
             raise RpcError("抓取当前工作区快照失败，没有恢复")
