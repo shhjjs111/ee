@@ -11,6 +11,9 @@ export const EXECUTABLE_EXTS = new Set([
   ".ws", ".settingcontent-ms", ".library-ms", ".search-ms", ".diagcab", ".xbap", ".dll", ".sys", ".drv", ".ocx",
 ]);
 
+/** UNC / 网络路径：交给资源管理器会让 Windows 去连对方服务器（NTLM 凭据泄露的经典路径）。 */
+const NETWORK_PATH_RE = /^\\\\|^\/\//;
+
 export type OpenDecision =
   | { action: "open"; path: string }
   | { action: "reveal"; path: string; reason: string }
@@ -96,7 +99,7 @@ export function isExecutablePath(p: string): boolean {
 
 export function decideOpen(p: unknown, roots: string[]): OpenDecision {
   if (typeof p !== "string" || !p.trim()) return { action: "deny", reason: "路径为空" };
-  if (/^\\\\|^\/\//.test(p)) return { action: "deny", reason: "不支持打开网络路径" };
+  if (NETWORK_PATH_RE.test(p)) return { action: "deny", reason: "不支持打开网络路径" };
   if (!isAbsolutePath(p)) return { action: "deny", reason: "只能打开绝对路径" };
   const abs = path.resolve(p);
   if (!roots.some((r) => r && isInside(abs, r))) return { action: "deny", reason: "只能打开当前工作区或 ee 目录里的文件" };
@@ -143,4 +146,28 @@ export async function guardedOpenPath(
     return d.reason;
   }
   return sh.openPath(d.path);
+}
+
+/**
+ * 主进程 shell:showItem 处理：与 openPath 走同一道守门。
+ *
+ * `showItemInFolder` 会把路径交给资源管理器——UNC 路径会让 Windows 去连对方服务器
+ *（NTLM 凭据泄露的经典路径），工作区外的路径也会把用户没打开过的目录暴露出来。
+ * 原来 `main.ts` 里直接 `shell.showItemInFolder(p)`，这层守门完全没生效。
+ * 返回空串表示成功，否则是给界面看的提示（与 guardedOpenPath 的约定一致）。
+ *
+ * 这里不要求文件存在：showItem 的用途是「定位」，文件刚被删除时定位不到但不该报错。
+ */
+export function guardedShowItem(
+  p: unknown,
+  sh: { showItemInFolder(p: string): void },
+  roots: string[] = allowedRoots(),
+): string {
+  if (typeof p !== "string" || !p.trim()) return "路径为空";
+  if (NETWORK_PATH_RE.test(p)) return "不支持打开网络路径";
+  if (!isAbsolutePath(p)) return "只能打开绝对路径";
+  const abs = path.resolve(p);
+  if (!roots.some((r) => r && isInside(abs, r))) return "只能打开当前工作区或 ee 目录里的文件";
+  sh.showItemInFolder(abs);
+  return "";
 }

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { allowedRoots, decideOpen, guardedOpenPath, isExecutablePath } from "./openpath";
+import { allowedRoots, decideOpen, guardedOpenPath, guardedShowItem, isExecutablePath } from "./openpath";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ee-openpath-"));
 const home = path.join(tmp, "home");
@@ -53,6 +53,13 @@ describe("用默认程序打开：守门", () => {
     const main = fs.readFileSync(path.join(__dirname, "main.ts"), "utf-8");
     expect(main).not.toMatch(/"shell:openPath",\s*\(_e,\s*p:\s*string\)\s*=>\s*shell\.openPath\(p\)/);
     expect(main).toMatch(/"shell:openPath"[^\n]*guardedOpenPath/);
+  });
+
+  it("主进程的 shell:showItem 也走守门，不再直接 shell.showItemInFolder(p)", () => {
+    // 只测 guardedShowItem 本身守不住接线：main.ts 里改回直接调用，上面三条依然全绿。
+    const main = fs.readFileSync(path.join(__dirname, "main.ts"), "utf-8");
+    expect(main).not.toMatch(/"shell:showItem"[^\n]*=>\s*shell\.showItemInFolder\(p\)/);
+    expect(main).toMatch(/"shell:showItem"[^\n]*guardedShowItem/);
   });
 });
 
@@ -123,5 +130,32 @@ describe("盘符根下的目录必须是绝对路径（用户报告的真实缺�
       expect(d.reason, `不该是路径格式问题，实际：${d.reason}`).not.toContain("绝对路径");
     }
     expect(d.action === "open" || d.action === "deny").toBe(true);
+  });
+});
+
+describe("shell:showItem 也要走守门", () => {
+  // showItemInFolder 把路径交给资源管理器：UNC 路径会让 Windows 去连对方服务器，
+  // 这正是 openPath 那边已经明确拒掉的「网络路径」。而 main.ts 里它原本直接
+  // 调 shell.showItemInFolder(p)，守门完全没生效。
+  const roots = allowedRoots(home);
+
+  it("网络路径一律拒绝（正斜杠与反斜杠两种形态由同一正则覆盖）", () => {
+    const sh = { showItemInFolder: vi.fn() };
+    expect(guardedShowItem("//evil.example/share/a.txt", sh, roots)).toContain("网络");
+    expect(sh.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it("工作区外拒绝", () => {
+    const sh = { showItemInFolder: vi.fn() };
+    const f = touch(path.join(outside, "secret.txt"));
+    expect(guardedShowItem(f, sh, roots)).toContain("工作区");
+    expect(sh.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it("工作区内允许定位，返回空串（与 shell.openPath 的约定一致）", () => {
+    const sh = { showItemInFolder: vi.fn() };
+    const f = touch(path.join(ws, "ok.txt"));
+    expect(guardedShowItem(f, sh, roots)).toBe("");
+    expect(sh.showItemInFolder).toHaveBeenCalledWith(f);
   });
 });
