@@ -47,6 +47,7 @@ for a in "$@"; do
 done
 
 FAILED=()
+UNMAPPED=""          # --quick：有后端改动却没匹配到任何测试文件的模块（要显式警告，别报假绿）
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
 # ---------------------------------------------------------------- 后端
@@ -61,6 +62,8 @@ step "后端 pytest（$([ $QUICK -eq 1 ] && echo 定向子集 || echo 全量)）
 if [ $QUICK -eq 1 ]; then
   # 只跑与当前工作区改动相关的测试文件；没有改动就跳过（不假装跑过）
   CHANGED=$(git diff --name-only HEAD 2>/dev/null | grep -E '^ee/(ee|tests)/.*\.py$' || true)
+  # 未跟踪的新文件也要算：git diff 看不到它们，新模块 + 新测试会被一起漏掉
+  CHANGED="$CHANGED $(git ls-files --others --exclude-standard -- 'ee/ee/*.py' 'ee/tests/*.py' 2>/dev/null || true)"
   TESTS=""
   for f in $CHANGED; do
     case "$f" in
@@ -68,10 +71,28 @@ if [ $QUICK -eq 1 ]; then
       ee/ee/*)
         mod=$(basename "$f" .py)
         cand="ee/tests/test_${mod}.py"
-        [ -f "$cand" ] && TESTS="$TESTS $cand"
+        if [ -f "$cand" ]; then
+          TESTS="$TESTS $cand"
+          continue
+        fi
+        # 没有同名测试是常态（core/session.py、server/app.py、tools/shell.py 都没有）。
+        # 退一步找「直接 import 了这个模块」的测试——否则改最核心的几个文件时
+        # 一条后端测试都不跑，脚本却照常打印「全部通过」并以 0 退出。
+        dotted=$(printf '%s' "${f#ee/}" | sed 's#/#.#g; s#\.py$##')
+        hits=$(grep -rl --include='*.py' -e "from ${dotted} import" -e "^import ${dotted}" ee/tests 2>/dev/null || true)
+        if [ -n "$hits" ]; then
+          for h in $hits; do TESTS="$TESTS $h"; done
+        else
+          UNMAPPED="$UNMAPPED $f"
+        fi
         ;;
     esac
   done
+  TESTS=$(printf '%s\n' $TESTS | sort -u | tr '\n' ' ')
+  if [ -n "$UNMAPPED" ]; then
+    printf '\033[33m⚠ 这些后端模块没有匹配到任何测试文件，本次 --quick 不覆盖它们：%s\033[0m\n' "$UNMAPPED"
+    printf '\033[33m  别把「全部通过」当成它们被验证过的证据；改动面涉及它们时用全量模式。\033[0m\n'
+  fi
   # shellcheck disable=SC2086
   if [ -n "${TESTS// /}" ]; then
     $PY -m pytest -c ee/pyproject.toml $TESTS -q $XDIST || FAILED+=("后端 pytest（定向）")
@@ -100,7 +121,11 @@ fi
 # ---------------------------------------------------------------- 汇总
 printf '\n'
 if [ ${#FAILED[@]} -eq 0 ]; then
-  printf '\033[32m全部通过\033[0m\n'
+  if [ -n "${UNMAPPED:-}" ]; then
+    printf '\033[32m全部通过\033[0m\033[33m（但上面有模块没匹配到测试，后端覆盖不完整）\033[0m\n'
+  else
+    printf '\033[32m全部通过\033[0m\n'
+  fi
   exit 0
 fi
 printf '\033[31m失败项：\033[0m\n'
