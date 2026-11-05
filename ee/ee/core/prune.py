@@ -28,6 +28,7 @@ import json
 
 from ee.core import compaction as C
 from ee.core.events import Notice
+from ee.core.paths import norm_rel
 
 DEFAULTS = {
     # 消息级修剪默认关（max_tokens=0）：全量重放显示它让成本高 10.5%，因为修剪改历史中段会让其后
@@ -125,7 +126,7 @@ def placeholder(name: str, args: dict, chars: int, tokens: int) -> str:
 
 
 def _norm(p: str) -> str:
-    return (p or "").replace("\\", "/").strip().lstrip("./")
+    return norm_rel((p or "").strip())
 
 
 def plan(history: list[dict], cfg: dict) -> list[dict]:

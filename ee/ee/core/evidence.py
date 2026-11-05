@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from ee.core.paths import norm_rel
 
 SCHEMA_VERSION = 1
 
@@ -107,7 +108,7 @@ def _norm_root(p: str) -> str:
 
 
 def _norm_rel(p: str) -> str:
-    return (p or "").replace("\\", "/").lstrip("./")
+    return norm_rel(p)
 
 
 def may_use_cache(tool: str, *, permission_ok: bool) -> bool:

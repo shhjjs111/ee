@@ -24,6 +24,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from ee.core.paths import norm_rel
 
 # 这些目录里的「忽略文件」默认不迁移：都是可重建的依赖/缓存，搬过去只浪费时间
 _DEP_DIRS = frozenset({"node_modules", ".venv", "venv", "__pycache__", ".pytest_cache",
@@ -118,7 +119,7 @@ def build_manifest(root: Path | str, *, ignored_policy: str = "skip",
     seen: dict[str, Entry] = {}
 
     def add(rel: str, category: str) -> None:
-        norm = rel.replace("\\", "/").lstrip("./")
+        norm = norm_rel(rel)
         if not norm or norm.startswith(".git/") or norm == ".git":
             return
         if norm in seen:

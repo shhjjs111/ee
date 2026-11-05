@@ -224,3 +224,25 @@ def test_repo_subdir_is_still_a_repo(repo):
     (sub / "c.py").write_text("y = 1\n", encoding="utf-8")
     m = build_manifest(sub)
     assert m.root == str(sub.resolve())
+
+def test_manifest_keeps_top_level_dotfiles(repo):
+    """.env / .github 这类前导点路径不能被 lstrip("./") 改名。
+
+    `str.lstrip("./")` 的参数是**字符集合**而不是前缀：".env" 被砍成 "env"、
+    ".github/ci.yml" 被砍成 "github/ci.yml"。改名之后 base/norm 指向不存在的路径，
+    这些文件就从迁移清单里静默消失了——而清单正是「证明可恢复」的唯一依据。
+    """
+    import subprocess
+
+    from ee.core.handoff import build_manifest
+
+    (repo / ".env").write_text("SECRET=1", encoding="utf-8")
+    (repo / ".github").mkdir(exist_ok=True)
+    (repo / ".github" / "ci.yml").write_text("on: push", encoding="utf-8")
+    subprocess.run(["git", "add", ".env", ".github/ci.yml"], cwd=repo, check=True)
+
+    m = build_manifest(repo)
+    paths = {e.path for e in m.entries}
+
+    assert ".env" in paths, f"顶层点文件被改名漏掉：{sorted(paths)}"
+    assert ".github/ci.yml" in paths, f"点目录下的文件被改名漏掉：{sorted(paths)}"
