@@ -49,16 +49,28 @@ def read_text(path: Path) -> TextFile:
         raise ToolError(f"{path} 太大（{size // (1024 * 1024)}MB，上限 {MAX_TEXT_BYTES // (1024 * 1024)}MB），"
                         "不能整体按文本处理；用 read 的 offset/limit 分段看，或用 shell 处理")
     raw = path.read_bytes()
-    if b"\x00" in raw[:8192]:
+    # UTF-16 文本（Windows PowerShell 5.1 的 `>` 重定向与 Out-File 默认写 UTF-16LE+BOM）
+    # 每隔一个字节就是 0x00，正好命中下面「前 8KB 有 0x00 就算二进制」的判据。
+    # 本产品的主平台是 Windows —— 脚本产出的文本文件因此完全读不了、也改不了。
+    # 先看 BOM：是 UTF-16 就按它解码。（服务端预览 server/files.py 早就是这么做的。）
+    utf16 = raw[:2] in (b"\xff\xfe", b"\xfe\xff")
+    if not utf16 and b"\x00" in raw[:8192]:
         raise ToolError(f"{path} 看起来是二进制文件，不能按文本编辑")
     enc, lossy = "utf-8", False
-    try:
-        s = raw.decode("utf-8")
-    except UnicodeDecodeError:
+    if utf16:
+        enc = "utf-16"                     # Python 的 utf-16 编解码器会自动处理/写回 BOM
         try:
-            s, enc = raw.decode("gbk"), "gbk"  # Windows 中文老文件
+            s = raw.decode("utf-16")
         except UnicodeDecodeError:
-            s, lossy = raw.decode("utf-8", errors="replace"), True
+            s, lossy = raw.decode("utf-16", errors="replace"), True
+    else:
+        try:
+            s = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                s, enc = raw.decode("gbk"), "gbk"  # Windows 中文老文件
+            except UnicodeDecodeError:
+                s, lossy = raw.decode("utf-8", errors="replace"), True
     bom = s.startswith(BOM)
     if bom:
         s = s[1:]

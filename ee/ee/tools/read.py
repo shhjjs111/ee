@@ -115,17 +115,21 @@ class ReadTool(Tool):
         # CRLF/BOM 差异对模型不可见，不该触发假失效（ACC-40）。
         from ee.core.evidence import content_identity
         identity, _ = content_identity(tf.text.encode("utf-8"))
-        rec = ctx.state.mark_read(path, identity)
-        key = (offset, limit)
         all_lines = tf.text.split("\n")
         if tf.text.endswith("\n"):
             all_lines = all_lines[:-1]
         total = len(all_lines)
         if total == 0:
+            ctx.state.mark_read(path, identity)      # 空文件：读过就是读过，允许后续写入
             return ToolResult("<文件为空>", summary=f"Read {rel(path, ctx.cwd)}",
                               meta={"kind": "read", "path": rel(path, ctx.cwd), "total_lines": 0})
         if offset > total:
+            # 越界检查必须在 mark_read **之前**：否则一次失败的读取也记成「读过」，
+            # write 的「覆盖前必须先 read 过」护栏就被一次读错（模型猜 offset、文档越界）
+            # 满足了，它随后覆盖的是自己从未看见过的内容。
             raise ToolError(f"offset={offset} 超过文件总行数 {total}")
+        rec = ctx.state.mark_read(path, identity)
+        key = (offset, limit)
         # 未变的重复读 → 引用（省 token）；同一引用第二次再要就给全文，避免死循环
         if key in rec.reads and rec.size >= REF_MIN_BYTES and rec.reads[key] == 0:
             rec.reads[key] = 1
