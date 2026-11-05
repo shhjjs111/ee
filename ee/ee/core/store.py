@@ -212,6 +212,7 @@ class SessionStore:
             first_user = next((it for it in items.values() if it.get("type") == "user"), None)
             meta["title"] = _title(first_user["text"]) if first_user else "新对话"
         ordered = sorted(items.values(), key=lambda it: _int(it.get("seq"), 0))
+        _close_pending_items(ordered)
         return {"messages": messages, "items": ordered, "meta": meta}
 
     @staticmethod
@@ -313,6 +314,22 @@ def _close_stale_runs(meta: dict) -> None:
         r["status"] = "done"
         r["terminal_reason"] = "interrupted"
     meta["runs"] = runs
+
+
+def _close_pending_items(items: list[dict]) -> None:
+    """把上一个进程留下的 pending 审批/提问条目标成 cancelled。
+
+    这两类条目在创建时就把 `status: "pending"` 落盘了（threads.py 里 persist=True），
+    进程被杀时必然残留。而重启后 Thread.approvals 是新进程里的空表，respond()/answer()
+    一定抛「这个审批已经处理过或已失效」——界面上却还是可点的卡片，看起来有一个
+    永远批准不了的阻塞操作。
+
+    与 _close_stale_runs 同一套做法：只改返回值，不写回磁盘。
+    """
+    for it in items:
+        if isinstance(it, dict) and it.get("status") == "pending" \
+                and it.get("type") in ("approval", "question"):
+            it["status"] = "cancelled"
 
 
 def _apply_prune(messages: list[dict], rec: dict) -> None:

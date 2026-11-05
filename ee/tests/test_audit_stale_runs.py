@@ -56,3 +56,26 @@ def test_finished_runs_are_untouched():
     meta = {"runs": [{"id": "r1", "status": "done", "terminal_reason": "completed", "pid": 999_999}]}
     _close_stale_runs(meta)
     assert meta["runs"][0]["terminal_reason"] == "completed"
+
+
+def test_pending_approval_items_are_closed_on_load(tmp_path):
+    """进程被杀时残留的 pending 审批/提问条目，读取时标成 cancelled。
+
+    这些条目在创建时就落盘（threads.py 里 persist=True），而重启后 Thread.approvals
+    是新进程里的空表 —— respond()/answer() 一定抛「这个审批已经处理过或已失效」，
+    界面上却还是可点的卡片，看起来有一个永远批准不了的阻塞操作。
+    """
+    from ee.core.store import SessionStore
+
+    tid = "20260101-000000-abcdef"
+    s = SessionStore(tmp_path, session_id=tid)
+    s.item({"type": "approval", "status": "pending", "call_id": "c1", "id": "ap1", "seq": 1, "tool": "shell"})
+    s.item({"type": "question", "status": "pending", "call_id": "c2", "id": "q1", "seq": 2, "question": "选哪个"})
+    s.item({"type": "approval", "status": "once", "call_id": "c3", "id": "ap2", "seq": 3, "tool": "write"})
+
+    d = SessionStore.load(tmp_path / "sessions" / f"{tid}.jsonl")
+    got = {it["id"]: it["status"] for it in d["items"]}
+
+    assert got["ap1"] == "cancelled", "残留的 pending 审批没有归一"
+    assert got["q1"] == "cancelled", "残留的 pending 提问没有归一"
+    assert got["ap2"] == "once", "已经处理完的审批被改坏了"
