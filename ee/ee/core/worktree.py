@@ -281,9 +281,26 @@ def _ident(cwd: Path) -> list[str]:
     return [] if (name and email) else ["-c", "user.name=ee", "-c", "user.email=ee@localhost"]
 
 
+# ee 自己的原子写残留：`.{name}.{pid}.{8 hex}.tmp`（core/atomic.py:31）。
+# 进程被强杀 / 断电时来不及删，就一直躺在用户仓库里。
+_TMP_RESIDUE = re.compile(r"^\?\? (?:.*/)?\..*\.[0-9]+\.[0-9a-f]{8}\.tmp$")
+
+
 def _dirty(p: Path) -> bool:
-    """严格版的“有没有未提交改动”：git 出错/超时直接报错，不当成干净。"""
-    return bool(_git(["status", "--porcelain", "-z", "--untracked-files=normal"], p, timeout=120).strip("\0 \n"))
+    """严格版的“有没有未提交改动”：git 出错/超时直接报错，不当成干净。
+
+    ee 自己的原子写残留不算：那是我们制造的垃圾，让它挡住 worktree/merge 等于用户被
+    自己的工具拦在门外，而报错只说「主目录有未提交的改动，先提交或暂存后再合并」，
+    完全不提那个隐藏临时文件——用户只能自己去翻 git status 才发现。
+    """
+    out = _git(["status", "--porcelain", "-z", "--untracked-files=normal"], p, timeout=120)
+    for entry in out.split("\0"):
+        if not entry.strip():
+            continue
+        if _TMP_RESIDUE.match(entry):
+            continue
+        return True
+    return False
 
 
 def _autosave(p: Path, msg: str) -> str | None:
