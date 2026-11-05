@@ -312,7 +312,9 @@ class Orchestrator:
         """等到子会话都不在运行，或超时。取消等待不等于停止子任务。"""
         if not child_ids:
             raise OrchestratorError("没有要等待的子会话")
-        kids = [self._own_child(parent_id, cid) for cid in child_ids]
+        # _own_child 对不在内存里的子会话要 SessionStore.load（读并解析整份 JSONL）
+        kids = await asyncio.to_thread(
+            lambda: [self._own_child(parent_id, cid) for cid in child_ids])
         limit = min(max(1.0, float(timeout if timeout is not None else WAIT_DEFAULT)), WAIT_LIMIT)
         deadline = time.monotonic() + limit
         timed_out = False
@@ -323,5 +325,8 @@ class Orchestrator:
                 timed_out = True
                 break
             await asyncio.sleep(0.1)
-        return {"timed_out": timed_out,
-                "threads": [self.status(parent_id, k.id) for k in kids]}
+        # status() 每个子会话都要跑一次 git status 子进程。放在事件循环上做，等子会话结束
+        # 的这一刻会把所有窗口的流式输出、审批、状态查询一起卡住（实测 3 个子会话 0.45s）。
+        rows = await asyncio.to_thread(
+            lambda: [self.status(parent_id, k.id) for k in kids])
+        return {"timed_out": timed_out, "threads": rows}

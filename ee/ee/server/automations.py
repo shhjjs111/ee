@@ -734,6 +734,10 @@ def register(methods: dict, backend: "Backend") -> Automations:
 
     async def run_now(id: str) -> dict:  # noqa: A002
         try:
+            # 注意：这里**不能**套 asyncio.to_thread。_launch 末尾要
+            # asyncio.get_running_loop().create_task(...) 起执行任务，在工作线程里会直接
+            # RuntimeError。要真正把磁盘 IO 挪走，得先把 _launch 拆成「落盘」和「调度」两段，
+            # 那是重构而不是修 bug —— 收益（点「立即运行」时循环阻塞几十毫秒）不抵这个风险。
             return {"run": au.run_now(id)}
         except KeyError:
             raise RpcError("自动化不存在（可能已被删除）", 404)
