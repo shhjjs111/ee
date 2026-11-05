@@ -44,6 +44,20 @@ class AskUserTool(Tool):
             raise ToolError("当前环境不能向用户提问（无人值守运行），请自己做出合理决定并在结果里说明")
         fut = asyncio.get_running_loop().create_future()
         emit(QuestionRequest(ctx.extra.get("call_id", ""), q, opts, bool(args.get("multiple")), fut))
-        answer = await fut
+        # 与工具审批共用一个超时：窗口关掉 / 前端断线时这个 future 永远等不到结果，
+        # 整个回合挂在这里，_history_lock 不释放，之后连下一条消息都发不出去。
+        # 延迟导入：ee.core.session 会导入 tools 包，顶层导入会成环。
+        from ee.core.session import APPROVAL_TIMEOUT
+        if APPROVAL_TIMEOUT > 0:
+            try:
+                answer = await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
+            except (asyncio.TimeoutError, TimeoutError):
+                if not fut.done():
+                    fut.cancel()
+                raise ToolError(
+                    f"等了 {APPROVAL_TIMEOUT:.0f} 秒没有收到用户的回答（窗口可能关了或断线了）。"
+                    "不要假设答案：把这个问题和当前进展写进回复里，等用户回来再继续。") from None
+        else:
+            answer = await fut
         return ToolResult(f"用户回答：{answer}", summary=q[:80],
                           meta={"kind": "question", "question": q, "options": opts, "answer": answer})

@@ -510,7 +510,19 @@ class Session:
             detail = ("继续这一回合：本回合内不再询问；本会话不再询问：直到关闭这个对话；停止：结束本回合。"
                       "上限在 设置 → 回答与花费 里修改。")
             emit(ApprovalRequest(f"budget_{_u.uuid4().hex[:8]}", "budget", text, detail, "", fut, force=True))
-            dec = await fut
+            # 与工具审批同一个超时：窗口关掉 / 断线时这个 future 等不到结果，
+            # 回合会永远挂着（_history_lock 不释放，界面显示「正在工作」）。
+            # 超时按「停止」处理——拿不到用户答复时不能继续花钱。
+            if APPROVAL_TIMEOUT > 0:
+                try:
+                    dec = await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
+                except (asyncio.TimeoutError, TimeoutError):
+                    if not fut.done():
+                        fut.cancel()
+                    emit(Notice(f"花费确认等了 {APPROVAL_TIMEOUT:.0f} 秒没有回应，本回合按「停止」处理。", "warn"))
+                    return "deny"
+            else:
+                dec = await fut
             return {"once": "once", "always": "always", "forever": "always"}.get(dec.choice, "deny")
 
         return await g.check(self.session_spent, lambda t: emit(Notice(t, "warn")), ask)
