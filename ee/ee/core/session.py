@@ -773,16 +773,23 @@ class Session:
         d = self.disk()
         if d is None or not any(e.get("before") for e in self.turn_trees):
             return None
-        cur = None
+        cur = d.capture()          # 当前快照只抓一次（原先每轮重试，某次成功就会去算更早回合的差异）
         for e in reversed(self.turn_trees):
             if e.get("undone") or not e.get("before"):
                 continue
+            after = e.get("after") or cur
+            if not after:
+                # 这个回合没有「回合后快照」（回合中断 / 崩溃 / 收尾抓取失败），现在也抓不到
+                # 当前状态 → 它到底改了什么无从判断。**不能跳过它去撤更早的回合**：那会把
+                # 更早回合的成果一起回滚，界面却提示「已恢复到你上一回合修改之前」，
+                # 用户没有任何线索发现撤销的对象错了，被误动的那条还被永久标成已撤销。
+                log.warning("磁盘快照撤销：拿不到当前快照，无法判断最近回合的改动（%s）",
+                            e.get("before"))
+                return None
             try:
-                cur = cur or d.capture()
-                after = e.get("after") or cur
-                paths = d.changed(e["before"], after) if after else []
+                paths = d.changed(e["before"], after)
                 if not paths:
-                    continue
+                    continue          # 该回合确实没改动 → 继续找更早的那个（正常语义）
                 conflicts = self._conflicts(d, [(e["before"], e.get("after"))], cur, paths)
             except Exception as ex:  # noqa: BLE001
                 log.warning("磁盘快照撤销失败：%s", ex)
