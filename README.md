@@ -71,7 +71,7 @@ npm run test:ui          # 真实 Electron 窗口的渲染基线（Playwright）
 
 ## 当前路线（2026-10-28）
 
-当前实施入口：[research\roadmap-current.md](research/roadmap-current.md)。先执行 Wave 0–2：文档与 CI 基线、worktree/MCP/预算稳定化、会话生命周期；达到停点后再进入 D6 指挥会话和 LSP。旧研究文档不再作为当前待办。
+当前实施入口：[research\roadmap-current.md](research/roadmap-current.md)。Wave 0–2（文档与 CI 基线、worktree/MCP/预算稳定化、会话生命周期）与 D6（指挥会话、LSP）均已完成，实际状态与后续计划以该文档开头的状态表为准。旧研究文档不再作为当前待办。
 
 下面是已有能力与历史交付摘要，其中的测试数字不是本批复验结果。本批验证状态以当前路线的执行记录为准。
 

@@ -15,7 +15,7 @@
 | Wave 1 / T5 | 项目只能收紧预算；隔离失败不回退写主目录 | 已完成并验证 | `ee\ee\config.py`、`server\automations.py`；`ee\tests\test_budget_and_isolation.py` |
 | Wave 2 / T6 | 会话加载单飞、删除不复活、设置重载释放客户端、前端清理幽灵数据 | 已完成并验证 | `ee\ee\server\app.py`、`threads.py`；`desktop\src\lib\store.ts`；`ee\tests\test_session_lifecycle.py`、`desktop\src\lib\store.test.ts` |
 | D6-1 Wave A / U1–U4 | 关系模型（`orchestrator_parent_id` 与 fork 的 `parent_id` 分离）、run 终态、名额控制器、能力继承 | 已完成并验证 | `ee\ee\core\orchestrator_cap.py`、`orchestrator_slots.py`、`server\threads.py`；`ee\tests\test_orchestrator_model.py`、`test_orchestrator_slots.py`、`test_orchestrator_cap.py` |
-| D6-1 Wave B / U5 | 窄接口 `OrchestratorAPI` 与三个读工具（list/status/wait） | 已完成并验证 | `ee\ee\core\orchestrator.py`、`server\orchestrator.py`、`tools\orchestrate.py`；`ee\tests\test_orchestrator_tools.py` |
+| D6-1 Wave B / U5 | 窄接口 `OrchestratorAPI` 与三个读工具（list/status/wait） | 已完成并验证 | `ee\ee\server\orchestrator.py`、`tools\orchestrate.py`；`ee\tests\test_orchestrator_tools.py` |
 | D6-1 Wave B / U6 | 写工具（create/send）与审批冒泡 | 已完成并验证 | 同上 + `server\threads.py` 的 `_bubble_to_parent`；`ee\tests\test_orchestrator_flow.py` |
 | D6-1 Wave B / U7 | 重启把遗留 running 标为 interrupted、父删不级联删 worktree、重启不重放回合 | 已完成并验证 | `ee\ee\core\store.py` 的 `_close_stale_runs`、`server\app.py` 的 `_detach_children`；`ee\tests\test_orchestrator_flow.py` |
 | D6-1 Wave C / U8 | 桌面端左栏树形与子会话卡片、审批冒泡落盘 | 已完成并验证 | `desktop\src\components\ChildThreadCard.tsx`、`Sidebar.tsx`、`lib\store.ts`；`ChildThreadCard.test.tsx`、`SidebarChildIndent.test.tsx`、`lib\childApproval.test.ts` |
@@ -171,6 +171,10 @@ scroll anchoring，点按钮与滚到顶两条路径行为一致，问题消失�
 prune 在每种组合下都更贵（8–12% 纯浪费）。**`[prune].max_tokens` 默认 100000 → 0**（留清推理）。
 `[compact].max_tokens` 140000 → **100000**：60k 成本更低但压缩 27 次，而压缩的信息损失实测是
 函数名 0%、报错 0% 覆盖，压得越频繁损失越大；100k 是成本与信息量的拐点。
+
+> **后续变更（2026-11-03，`bba46f3`）**：代码里 `[compact].max_tokens` 的默认值已经改回 **140000**，
+> 而本节结论与下面的成本表都是按 100k 实测的。两者不一致——要按 100k 调参，先确认那次改回的理由，
+> 或重跑一遍本节的成本对比。代码以 `ee/config.py` 为准。
 
 **③ 真正的杠杆在「追加时就做减法」。** 首次压缩前完整历史（566 条 / 249,201 tok）的构成：
 工具输出 41.1%、assistant 推理 29.7%（已不回传）、**工具调用参数 21.9%**、assistant 正文 6.0%。
