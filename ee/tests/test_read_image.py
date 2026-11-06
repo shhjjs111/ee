@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ee.tools.base import ToolContext, ToolState
+import pytest
+
+from ee.tools.base import ToolContext, ToolError, ToolState
 from ee.tools.read import ReadTool
 
 
@@ -74,3 +76,38 @@ def test_non_image_file_unaffected():
     assert "hello" in r.output
     assert ctx.state.pending_images == []
     txt.unlink()
+
+
+def test_misnamed_png_rejected_not_registered(tmp_path):
+    """扩展名是 .png、文件头是 ZIP（Word 导出的 XPS）：不得登记待看图片，且要说清它是什么。
+
+    如果只报「不是图片」，模型会重试；必须把真实格式告诉它，它才会换路（用 read 读文档）。
+    """
+    p = tmp_path / "_page1.png"
+    p.write_bytes(b"PK\x03\x04\x14\x00\x06\x00" + b"\x00" * 60)
+
+    async def go():
+        ctx = _ctx(tmp_path)
+        with pytest.raises(ToolError) as ei:
+            await ReadTool().run({"path": "_page1.png", "as_image": True}, ctx)
+        return ei.value, ctx
+
+    err, ctx = asyncio.run(go())
+    assert "XPS" in str(err) or "ZIP" in str(err), f"要指明真实格式：{err}"
+    assert ctx.state.pending_images == [], "格式不对就不能进待看队列（否则每轮重发、上游 400）"
+
+
+def test_bmp_rejected_with_conversion_hint(tmp_path):
+    """BMP 是图片但不是模型能收的格式：拒绝登记，并给出可行下一步。"""
+    p = tmp_path / "a.bmp"
+    p.write_bytes(b"BM" + b"\x00" * 60)
+
+    async def go():
+        ctx = _ctx(tmp_path)
+        with pytest.raises(ToolError) as ei:
+            await ReadTool().run({"path": "a.bmp", "as_image": True}, ctx)
+        return ei.value, ctx
+
+    err, ctx = asyncio.run(go())
+    assert "BMP" in str(err) and "PNG" in str(err), f"要说明 BMP 不支持并给转换建议：{err}"
+    assert ctx.state.pending_images == []

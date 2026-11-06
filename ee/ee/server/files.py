@@ -19,6 +19,30 @@ IMAGE_MIME = {
     ".webp": "image/webp", ".bmp": "image/bmp", ".ico": "image/x-icon", ".svg": "image/svg+xml",
     ".avif": "image/avif",
 }
+
+
+def _image_mime(head: bytes) -> str | None:
+    """按文件头认图片格式。扩展名只说明「用户以为它是什么」，文件头才说明它是什么。"""
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:2] == b"BM":
+        return "image/bmp"
+    if head[:4] == b"\x00\x00\x01\x00":
+        return "image/x-icon"
+    if head[4:8] == b"ftyp" and head[8:12] in (b"avif", b"avis"):
+        return "image/avif"
+    if head[:4] in (b"II*\x00", b"MM\x00*"):
+        return "image/tiff"
+    text = head.lstrip()
+    if text[:4] == b"<svg" or (text[:5] == b"<?xml" and b"<svg" in head):
+        return "image/svg+xml"
+    return None
 # 一眼就知道是二进制的扩展名，省得读文件
 BINARY_EXT = {".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib", ".pyc", ".pyd", ".class",
               ".jar", ".zip", ".gz", ".tgz", ".7z", ".rar", ".xz", ".bz2", ".pdf", ".woff", ".woff2", ".ttf",
@@ -156,9 +180,16 @@ def read(cwd: str, path: str, max_bytes: int = MAX_TEXT) -> dict:
     if ext in IMAGE_MIME:
         if size > MAX_IMAGE:
             return {**base, "kind": "binary", "reason": "too_large"}
+        with f.open("rb") as fh:
+            head = fh.read(512)
+        mime = _image_mime(head)
+        if mime is None:
+            # 扩展名说是图片、文件头说不是（改名 / 导出格式错）：按二进制处理。
+            # 否则界面会拿 ZIP 的字节去渲染 <img>，只得到一张裂图，还说不出为什么。
+            return {**base, "kind": "binary", "reason": "not_image"}
         data = f.read_bytes()
-        return {**base, "kind": "image", "mime": IMAGE_MIME[ext],
-                "data_url": f"data:{IMAGE_MIME[ext]};base64,{base64.b64encode(data).decode('ascii')}"}
+        return {**base, "kind": "image", "mime": mime,
+                "data_url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}
     from ee.core.docread import DOC_EXTS, DocError, extract
     if ext in DOC_EXTS:               # PDF / Word / Excel / PPT 转文字预览（D4-7）
         try:

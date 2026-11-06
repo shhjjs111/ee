@@ -13,6 +13,26 @@ LINE_READ_CAP = 64 * 1024          # 逐行扫描时每行最多读入的字节�
 
 # read 工具能按「视觉内容」读取的图片扩展名（方案 A：as_image=true 登记到下一轮 image 上下文）
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+HEAD_BYTES = 16
+
+
+def _describe_head(head: bytes) -> str:
+    """文件头 → 人类可读的格式名。"""
+    if head[:4] == b"PK\x03\x04":
+        return "ZIP 容器（docx/xlsx/pptx，或 Word 导出的 XPS）"
+    if head[:4] == b"%PDF":
+        return "PDF 文档"
+    if head[:2] == b"BM":
+        return "BMP 位图"
+    if head[:4] in (b"II*\x00", b"MM\x00*"):
+        return "TIFF 图片"
+    if head[4:8] == b"ftyp":
+        return "HEIF/AVIF 图片"
+    if head[:2] == b"\x1f\x8b":
+        return "gzip 压缩包"
+    if head[:4] == b"RIFF":
+        return "RIFF 容器"
+    return "无法识别的字节"
 
 
 def _scan_window(path, offset: int, limit: int) -> tuple[list[str], int]:
@@ -93,6 +113,17 @@ class ReadTool(Tool):
         # 下一轮作为 image_url 块注入 user 消息（tool 结果是字符串，无法本轮带图）。
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
             if args.get("as_image") is True:
+                # 扩展名是用户以为的格式，文件头才是真的。按扩展名登记的话，一个叫
+                # _page1.png 的 XPS 会被当成 png 发出，上游回 400 拒整条请求，而这条
+                # 消息随历史每轮重发，会话从此永久卡死。所以发送前按字节验一次。
+                from ee.core.attachments import sniff
+                with open(path, "rb") as fh:
+                    head = fh.read(HEAD_BYTES)
+                if sniff(head) is None:
+                    raise ToolError(
+                        f"{path} 不能作为图片发送：文件头是{_describe_head(head)}，"
+                        f"不是 JPEG/PNG/GIF/WebP（扩展名 {path.suffix} 说明不了格式）。"
+                        "要发图请先转成 PNG 或 JPEG；如果它其实是文档，直接用 read（不带 as_image）读文字。")
                 ctx.state.pending_images.append(str(path))
                 return ToolResult(
                     f"[图片已登记] {path} 将在下一轮作为图片内容发送给模型。"

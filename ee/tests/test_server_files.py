@@ -82,6 +82,14 @@ def test_read_kinds(ee_home, workspace):
     assert bn["kind"] == "binary" and "text" not in bn
 
 
+def test_misnamed_image_falls_back_to_binary(ee_home, workspace):
+    """扩展名是 .png、内容却是 ZIP（Word 导出的 XPS）：不能当图片预览，也不该让界面拿到假 data URL。"""
+    (workspace / "_page1.png").write_bytes(b"PK\x03\x04\x14\x00" + b"\x00" * 100)
+    b = Backend(home=ee_home)
+    r = call(b, "files/read", cwd=str(workspace), path="_page1.png")
+    assert r["kind"] == "binary" and "data_url" not in r
+
+
 def test_read_truncates_and_decodes(ee_home, workspace):
     (workspace / "big.txt").write_bytes(b"ab\n" * 200_000)   # write_text 在 Windows 上会写成 \r\n
     (workspace / "crlf.txt").write_bytes(b"a\r\nb\r\n")

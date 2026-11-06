@@ -90,11 +90,20 @@ def save_all(home: Path, thread_id: str, items: list[dict]) -> tuple[list[str], 
 
 
 def data_url(path: str) -> str | None:
+    """图片 → data URL；读不到、或文件头不是 JPEG/PNG/GIF/WebP 时返回 None。
+
+    不按扩展名猜格式，也不拿 image/png 兜底：把 ZIP/文档的字节标成 png 发给上游，
+    换来的是整条请求 400（unsupported image）——而图片是随历史每轮重发的，
+    这条坏消息会让会话从此永久卡死（实测 2026-11-06：一个叫 _page1.png 的 XPS）。
+    宁可少发一张图。
+    """
     try:
         data = Path(path).read_bytes()
     except OSError:
         return None
-    mime = sniff(data) or "image/png"
+    mime = sniff(data)
+    if mime is None:
+        return None
     return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
 
 
@@ -109,15 +118,27 @@ def wire_content(text: str, images: list[str], vision: bool):
     if not vision:
         return text + "\n\n" + no_vision_note(len(images))
     parts: list[dict] = [{"type": "text", "text": text}]
-    missing = 0
+    missing: list[str] = []
+    unsupported: list[str] = []
     for p in images:
         url = data_url(p)
         if url is None:
-            missing += 1
+            name = Path(p).name
+            if Path(p).exists():
+                unsupported.append(name)
+            else:
+                missing.append(name)
             continue
         parts.append({"type": "image_url", "image_url": {"url": url}})
+    notes: list[str] = []
     if missing:
-        parts[0]["text"] = text + f"\n\n[有 {missing} 张图片文件已被删除，无法发送]"
+        notes.append(f"[有 {len(missing)} 张图片文件已被删除，无法发送]")
+    if unsupported:
+        shown = "、".join(unsupported[:3])
+        notes.append(f"[有 {len(unsupported)} 个文件不是可用的图片（只支持 JPEG、PNG、GIF、WebP），"
+                     f"未发送：{shown}。如果它们其实是文档，直接 read 它们读文字]")
+    if notes:
+        parts[0]["text"] = text + "\n\n" + "\n\n".join(notes)
     return parts
 
 

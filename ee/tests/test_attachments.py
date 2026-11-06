@@ -15,6 +15,10 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
 
 
+# Word 导出的 XPS / docx：文件头是 ZIP（PK），只是名字常被写成 .png。
+XPS = b"PK\x03\x04\x14\x00\x06\x00" + b"\x00" * 32
+
+
 def b64(b):
     return base64.b64encode(b).decode()
 
@@ -50,6 +54,26 @@ def test_wire_vision_and_fallback(tmp_path):
     p.unlink()
     w3 = T.wire_messages(hist, flash)[0]
     assert len(w3["content"]) == 1 and "已被删除" in w3["content"][0]["text"]
+
+
+def test_misnamed_file_never_wired_as_image(tmp_path):
+    """扩展名撒谎（.png 实为 ZIP/XPS）时，绝不能当成 png 发出去。
+
+    真实故障（2026-11-06）：read(as_image=true) 读了 E:\\毕业设计\\_page1.png，
+    它其实是 XPS，data_url 认不出格式就按 image/png 硬编码，上游回 400
+    「You have uploaded an unsupported image」；这条坏图还进了历史，每轮都重发，
+    会话从此永久卡死。所以：认不出格式就必须不发。
+    """
+    p = tmp_path / "_page1.png"
+    p.write_bytes(XPS)
+    assert A.sniff(p.read_bytes()) is None
+    assert A.data_url(str(p)) is None, "认不出格式时不该产出 data URL"
+    w = T.wire_messages([{"role": "user", "content": "看图", "_images": [str(p)]}],
+                        profile_for("deepseek-flash"))[0]
+    assert all(part["type"] != "image_url" for part in w["content"]), "坏图不能进请求"
+    assert len(w["content"]) == 1 and "不是可用的图片" in w["content"][0]["text"]
+    assert T.wire_messages([{"role": "user", "content": "看图", "_images": [str(p)]}],
+                           profile_for("deepseek-flash"))[0] == w, "失败提示也要字节稳定（前缀缓存）"
 
 
 def test_turn_with_image_end_to_end(ee_home, workspace):
