@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Backend } from "./backend";
 import { allowedRoots, guardedOpenPath, guardedShowItem } from "./openpath";
+import { registerDiagIpc } from "./diag";
 import { killAll as killTerminals, registerTerminalIpc, setPtySearchPaths } from "./terminal";
 import { markQuitting, setupTray } from "./tray";
 import { UpdateController, releaseUrl, type UpdateState } from "./updater";
@@ -27,6 +28,8 @@ const backend = new Backend({
 
 setPtySearchPaths(app.isPackaged ? [path.join(process.resourcesPath, "node-pty"), "node-pty"] : ["node-pty"]);
 registerTerminalIpc();
+// 卡死诊断（P0-3）：托盘菜单里能一键导出快照，不依赖渲染进程有响应
+const diag = registerDiagIpc({ getWin: () => win, logsDir: app.getPath("logs") });
 
 backend.onExit = (code, tail) => {
   win?.webContents.send("backend:exit", { code, tail });
@@ -200,7 +203,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     backend.info().catch(() => undefined); // 尽早启动，窗口加载时并行
     createWindow();
-    trayCtl = setupTray({ appRoot: path.resolve(__dirname, ".."), getWin: () => win, createWindow });
+    trayCtl = setupTray({ appRoot: path.resolve(__dirname, ".."), getWin: () => win, createWindow,
+                          diag: () => diag.collect() });
     // 开机静默查一次：失败不弹窗，只在日志留一行（见 updater.ts 文件头）
     setTimeout(() => updater()?.start(), 8000);
     app.on("activate", () => {

@@ -63,7 +63,7 @@ function tooltip() {
   return parts.length ? `ee — ${parts.join("，")}` : "ee";
 }
 
-function buildMenu(getWin: () => BrowserWindow | null, create: () => void) {
+function buildMenu(getWin: () => BrowserWindow | null, create: () => void, diag?: () => Promise<{ ok: boolean; file?: string; summary: string }>) {
   const send = (action: string) => {
     const w = showWindow(getWin, create);
     w?.webContents.send("app:trayAction", action);
@@ -76,6 +76,21 @@ function buildMenu(getWin: () => BrowserWindow | null, create: () => void) {
     { label: tooltip().replace(/^ee — /, "") || "空闲", enabled: false },
     { type: "separator" },
     {
+      // 卡死诊断（P0-3）：界面卡住时设置页点不到，托盘菜单始终可点。
+      // 只写文件并弹一个提示，不依赖渲染进程有任何响应。
+      label: "导出卡死诊断…",
+      enabled: !!diag,
+      click: () => {
+        if (!diag) return;
+        void diag().then((r) => {
+          if (Notification.isSupported()) {
+            new Notification({ title: "ee 诊断已导出", body: r.summary + (r.file ? `\n${r.file}` : "") }).show();
+          }
+        });
+      },
+    },
+    { type: "separator" },
+    {
       label: "退出",
       click: () => {
         quitting = true;
@@ -85,14 +100,19 @@ function buildMenu(getWin: () => BrowserWindow | null, create: () => void) {
   ]);
 }
 
-export function setupTray(opts: { appRoot: string; getWin: () => BrowserWindow | null; createWindow: () => void }) {
-  const { appRoot, getWin, createWindow } = opts;
+export function setupTray(opts: {
+  appRoot: string;
+  getWin: () => BrowserWindow | null;
+  createWindow: () => void;
+  diag?: () => Promise<{ ok: boolean; file?: string; summary: string }>;
+}) {
+  const { appRoot, getWin, createWindow, diag } = opts;
   if (process.platform === "win32") app.setAppUserModelId("com.ee.desktop"); // Windows 通知需要，与 electron-builder appId 一致
 
   const refresh = () => {
     if (!tray) return;
     tray.setToolTip(tooltip());
-    tray.setContextMenu(buildMenu(getWin, createWindow));
+    tray.setContextMenu(buildMenu(getWin, createWindow, diag));
   };
 
   const ensureTray = () => {
