@@ -815,6 +815,33 @@ class Thread:
                         return "met"
         return "exhausted" if not best.met else "met"
 
+    def _allout_candidate_event(self, ev, prefix: str) -> bool:
+        """候选会话的阻塞事件接回主会话；处理了返回 True。
+
+        审批按**主会话的权限规则**走：候选与主会话共用同一个 PermissionPolicy
+        判定，需要问的时候在主会话上出审批卡片（call_id 加 `allout-N/` 前缀，
+        与子代理的父子前缀同一写法），用户的选择通过 `respond()` 回到候选等待的
+        future。无人值守时由 headless 的 `auto_approve` 决定（危险命令仍拒绝）。
+
+        这里不能"一律拒绝"：那会让候选连 `pytest` 都跑不了——权限判定在
+        auto 模式下只对危险命令与动态替换（$(…)、反引号）返回 ask，其余直接放行；
+        默认模式下普通命令也会 ask，一律拒绝等于分叉路永远失败。
+        """
+        from dataclasses import replace as _replace
+
+        from ee.core.events import ApprovalRequest, QuestionRequest
+
+        if isinstance(ev, ApprovalRequest):
+            self._on_event(_replace(ev, call_id=f"{prefix}/{ev.call_id}",
+                                    title=f"[全力以赴候选] {ev.title}"))
+            return True
+        if isinstance(ev, QuestionRequest):
+            # 候选的 ask_user 在配置里已关；万一出现，不能让它卡到超时。
+            if ev.future is not None and not ev.future.done():
+                ev.future.set_result("（候选不能提问，请自行判断）")
+            return True
+        return False
+
     async def _allout_fanout(self, spec, plan, payload: str, cap: int) -> list[dict]:
         """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。"""
         import copy
@@ -865,12 +892,10 @@ class Thread:
                 child._mcp_done = True
                 child.effort = s.effort_for(child.spec)
                 async for ev in child.run_turn(payload):
-                    from ee.core.events import ApprovalRequest, QuestionRequest
-                    if isinstance(ev, ApprovalRequest) and ev.future is not None and not ev.future.done():
-                        from ee.core.permissions import ApprovalDecision
-                        ev.future.set_result(ApprovalDecision("deny_with_reason", "全力以赴的候选在无人值守下运行"))
-                    elif isinstance(ev, QuestionRequest) and ev.future is not None and not ev.future.done():
-                        ev.future.set_result("（候选不能提问，请自行判断）")
+                    # 候选的审批接回主会话（与子代理同一条纪律）：一律拒绝会把
+                    # pytest 这类命令挡死，分叉路等于永远跑不完。桌面端出审批卡片，
+                    # 无人值守下由 headless 的 auto_approve 决定。
+                    self._allout_candidate_event(ev, f"allout-{i + 1}")
                 # 判据必须跑在候选自己的 worktree 里：判的是候选的代码，不是主目录的。
                 from ee.core.goal import GoalSpec as _GS
                 cand_spec = _GS(command=spec.command, cwd=wt["cwd"],

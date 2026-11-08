@@ -42,7 +42,9 @@
 - **真模型端到端演练（2026-11-09）**：默认模型 `deepseek-v4.1-flash11`（opencode 网关），临时仓库里一个红测试（`add` 写成减法）。`allout_plan` 推出 candidates=2 / repair=1 / effort=max / 温度阶梯 [0, 0.3]；模型自己 `ls` → 跑 pytest → 读两个文件 → 一次 `edit` 修好 → 判据 `ok：1 个测试通过` → `phase=done how=first_try`。全程 **33.1 秒、¥0.0103**，仓库测试转绿。附带验证：`rm -rf .pytest_cache __pycache__` 被无人值守策略**拒绝**（危险命令不自动放行），模型改用安全做法收尾；`persist=False`，`~/.ee/sessions` 仍是 61 个（没有污染会话列表）。
 - **真跑暴露并修掉一个 bug**：`allout_plan` 的 `reasons` 写「并行 3 路」而实际 `candidates=2`——用户上限原先是在 `derive()` 之后截断的。现在 `max_candidates` 参与推导，`reasons` 与实际路数一致（`test_allout.py` 新增参数化用例，`test_allout_turn.py` 改成无条件断言）。
 - **验证**：`./scripts/verify.sh` 全量通过——后端 **2460 passed / 16 skipped**（180.2 秒）、前端 65 文件 **386 passed**、`tsc --noEmit` exit 0、`ruff check ee/` 全绿。
-- **未做**：候选遇到需要用户审批的写操作时当前一律自动拒绝（比自动放行更保守，但与主会话「以后都行」的规则不联动）；修复轮与分叉路径只在假模型/桩 judge 下测过，真模型只走到了 `first_try` 分支；Gradle 项目需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数。
+- **候选审批跟随主会话权限（2026-11-09 修复）**：原先候选的审批一律自动拒绝，而主会话在全自动模式下普通命令是直接放行的——候选连 `pytest` 都跑不了，分叉路等于永远失败。现在候选的审批冒泡到主会话（`call_id` 加 `allout-N/` 前缀，与子代理同一写法）：桌面端出审批卡片，无人值守下由 `headless.auto_approve` 按主会话的 `--approve` 档位决定（普通命令批、危险命令仍拒）。权限判定本身两边用的是同一套 `PermissionPolicy` 规则，没有为候选放宽任何边界。
+- **为什么「全自动」还会问**：`auto` 模式不是「全都放行」。两类仍会强制询问（`force=True`）：一是 `FORCE_ASK_PATTERNS` 里的破坏性但有时确实需要的命令（`git reset --hard`、`git clean`、`git checkout -- .`、递归删除、`sudo`/提权、`set-executionpolicy`/`reg add` 等）；二是带动态替换的命令（`$(…)`、反引号），因为没法静态判定它会执行什么。`DENY_PATTERNS`（递归删根目录、强推、关机等）在 `auto` 下直接拒绝而不是询问。这是有意为之——把「最高权限」理解成「连危险命令都不问」会让一次误操作不可逆。
+- **未做**：修复轮与分叉路径只在假模型/桩 judge 下测过；Gradle 项目需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数。
 
 ## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）
 

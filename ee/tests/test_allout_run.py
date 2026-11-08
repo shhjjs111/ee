@@ -139,3 +139,105 @@ def test_judge_calls_are_serialized(ee_home, workspace, monkeypatch):
 
     asyncio.run(go())
     assert peak[0] == 1, "判据调用必须串行"
+
+
+# ---------------------------------------------------------------- 候选审批
+
+
+def test_candidate_approval_reaches_main_thread(ee_home, workspace):
+    """候选的审批必须落到主会话（出卡片 / 走 auto_approve），不能一律拒绝。
+
+    真模型演练里主会话能自动批准 pytest，而候选被一律拒绝——分叉路径会因此
+    永远跑不完。这里守的是接线本身。
+    """
+    from ee.core.events import ApprovalRequest
+
+    th = _thread(ee_home, workspace)
+    fut = asyncio.new_event_loop().create_future()
+    ev = ApprovalRequest("c1", "shell", "运行命令：python -m pytest -q", detail="python -m pytest -q",
+                         prefix="python -m pytest", future=fut)
+    handled = th._allout_candidate_event(ev, "allout-1")
+    assert handled is True
+    key = "allout-1/c1"
+    assert key in th.approvals, "审批要注册到主会话，用户才能回应"
+    assert th.approvals[key][0] is fut, "回填的必须是候选等待的那个 future"
+    item = th.approvals[key][1]
+    assert item["type"] == "approval"
+    assert item["call_id"] == key
+    assert "全力以赴候选" in item["title"]
+
+
+def test_candidate_approval_decision_resolves_future(ee_home, workspace):
+    from ee.core.events import ApprovalRequest
+
+    th = _thread(ee_home, workspace)
+    fut = asyncio.new_event_loop().create_future()
+    ev = ApprovalRequest("c2", "shell", "运行命令：pytest", future=fut)
+    th._allout_candidate_event(ev, "allout-2")
+    th.notify = lambda m, p: None
+    th.respond("allout-2/c2", "once")
+    assert fut.done()
+    assert fut.result().choice == "once"
+
+
+def test_candidate_question_does_not_block(ee_home, workspace):
+    """候选的 ask_user 已在配置里关掉；万一出现也不能卡到超时。"""
+    from ee.core.events import QuestionRequest
+
+    th = _thread(ee_home, workspace)
+    fut = asyncio.new_event_loop().create_future()
+    ev = QuestionRequest("q1", "用哪个方案？", future=fut)
+    assert th._allout_candidate_event(ev, "allout-1") is True
+    assert fut.done() and "自行判断" in fut.result()
+
+
+def test_normal_event_not_consumed(ee_home, workspace):
+    """非阻塞事件不能被吞掉，否则候选的工具输出不会进主会话。"""
+    from ee.core.events import Notice
+
+    th = _thread(ee_home, workspace)
+    assert th._allout_candidate_event(Notice("hi", "info"), "allout-1") is False
+
+
+def test_candidate_approval_follows_main_session_auto_approve(ee_home, workspace):
+    """无人值守下，候选的普通命令审批由 auto_approve 自动批准（与主会话同一档位）。
+
+    守的是「提高权限」这条路径：主会话开 auto，候选就该跟着 auto——
+    否则候选连 pytest 都跑不了，分叉永远失败（2026-11-09 实测过）。
+    """
+    import asyncio as aio
+
+    from ee import headless
+    from ee.core.events import ApprovalRequest
+
+    th = _thread(ee_home, workspace)
+    th.notify = lambda m, p: None
+    fut = aio.new_event_loop().create_future()
+    # 走真实路径：候选事件先改名注册到主会话，再由 auto_approve 按主会话档位决定
+    ev = ApprovalRequest("c3", "shell", "运行命令：python -m pytest -q",
+                         prefix="python -m pytest", future=fut)
+    th._allout_candidate_event(ev, "allout-1")
+    renamed = next(it for k, (f, it) in th.approvals.items() if f is fut)
+    appro = ApprovalRequest("allout-1/c3", "shell", "运行命令：python -m pytest -q",
+                            prefix="python -m pytest", future=fut)
+    headless.auto_approve(th, appro, "auto")
+    assert renamed["call_id"] == "allout-1/c3"
+    assert fut.done() and fut.result().choice == "once", "普通命令应被自动批准"
+
+
+def test_candidate_approval_force_still_denied_under_auto(ee_home, workspace):
+    """危险命令（force=True）在无人值守下仍被拒绝，不因 allout 放宽。"""
+    import asyncio as aio
+
+    from ee import headless
+    from ee.core.events import ApprovalRequest
+
+    th = _thread(ee_home, workspace)
+    th.notify = lambda m, p: None
+    fut = aio.new_event_loop().create_future()
+    ev = ApprovalRequest("allout-1/c4", "shell", "运行命令：git push --force",
+                         prefix="git push", future=fut, force=True)
+    th._on_event(ev)
+    decision, why = headless.auto_approve(th, ev, "auto")
+    assert decision == "denied"
+    assert fut.done() and fut.result().choice == "deny_with_reason"
