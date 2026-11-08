@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-11-02（桌面端接上 `electron-updater`：只后台下载、重启权在用户；切会话卡顿：大会话分页 + 区块窗口化 + 窄订阅；补 e2e 隔离、CI 接入 e2e 与 lint、发布链路首跑；缓存命中率回归排查与零断点清推理；上下文成本：关掉消息级修剪、历史大字段占位、工具输出阈值 16KB。见「执行记录（2026-11-02）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-08（文件与图片交互：拖入 PDF/Word 等文件插路径给模型自己读、图片灯箱看原图 + 多图切换/缩放/旋转/另存为；11-05~11-08 稳定性批次 118 提交 / 70 fix。见「执行记录（2026-11-08）」。更早的 11-02 条目见「执行记录（2026-11-02，桌面端接上 `electron-updater`…）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -75,6 +75,24 @@ CI 上 `test_goal_acceptance::test_goal_closes_loop_red_then_green` 偶发失败
 验证：探针把 mtime 强行拨回原值、大小不变（最坏情况），修复前 pytest 持续报旧结果，修复后
 `1 passed`；端到端 goal 闭环 5/5 通过；新增 4 条测试（将 `_drop_bytecode` 打成空操作确认它们是红的）；
 相关子集 184 passed。
+
+## 执行记录（2026-11-08，文件与图片交互 + 稳定性批次）
+
+**本次（11-08）**：图片与文件两条交互打通。
+
+- **拖入非图片不再静默丢弃**。前端按类型分派：图片仍走附件通道（`image_url`），其他文件取**真实磁盘路径**插入输入框为 `@路径`，由模型自己 `read`；路径含空格自动加引号；压缩包/可执行/音视频/设计稿当场 toast 说明。取路径走 `webUtils.getPathForFile`（Electron 32 起 `File.path` 已移除，官方做法是在 preload 里调），`Composer.tsx` + `electron/preload.ts`。**后端零改动**：`read` 原本就支持 pdf/docx/xlsx/pptx 与工作区外绝对路径（`tools/read.py`、`core/docread.py`），缺的只是入口。不存副本——存副本会让模型读到用户改之前的旧版本。
+- **对话里的图片可看原图**。新增 RPC `attachment/read`（`server/app.py`）：按 `[0-9a-f]{12}` 校验 id 后才碰文件系统（id 参与路径拼接，不能靠"文件不存在"兜底），从 `~/.ee/sessions/<会话id>/attachments/` 取原图转 data URL。灯箱 `desktop/src/components/ImageLightbox.tsx` 支持多图左右切换（到头不绕回）、滚轮缩放 1×–5×、放大后拖拽平移、`R` 旋转、另存为。另存为走主进程保存对话框（`electron/saveimage.ts` + `main.ts` 的 `dialog:saveImage`），渲染进程不传目标路径；data URL 只认 `image/<已知类型>;base64`，扩展名按**真实字节格式**定，Windows 保留设备名（CON/LPT1）加前缀规避。
+- **验证**：后端 `test_attachments.py` 7 例 + `test_server.py` 14 例、`ruff check ee/` 通过；前端 vitest 380 例、typecheck 通过；真实 Electron e2e 34 passed（含新增 `attach-file-path.spec.ts`、`save-image.spec.ts`，后者用 `app.evaluate` 把 `showSaveDialog` 换成固定路径桩，断言写出的字节与源一致）；CI run #211 全绿 13m12s。
+
+**11-05 ~ 11-08 稳定性批次（118 提交 / 70 fix）**：
+
+- 会话生命周期：删除会话时关掉写入口（迟到收尾不再重建幽灵 jsonl）、用 pid 存活判断 run 是否中断、重启后把残留的 pending 审批/提问标成 cancelled。
+- 原子写与检查点：回收被强杀留下的原子写残留、会话文件读不出内容时不再 prune（不可逆删数据）、存储故障不再被翻译成「检查点已被清理」、`ee-worktree.txt` 改原子写。
+- 上下文与计量：base64 图片不再被当正文（一张图 6 万 token → 1k）、wire 形态的推理不漏计、「上次上下文大小」只由主对话更新、换推理强度的断点归因成 `effort_switch`、历史大字段占位。
+- 搜索与编码：GBK 文件不再被跳过、rg 卡住时不拖死整个回合、锁错误不再被当成「没有 FTS5」永久降级（并启用 WAL）、UTF-16 不再被判成二进制、认不出编码的文件不再按行改。
+- 连接与内存：恢复 WebSocket 保活探测（半开连接不再滞留）、通知队列加上限、后台命令结束回收内存缓冲。
+- 图片正确性：扩展名撒谎的文件（`.png` 实为 ZIP/XPS）不再冒充图片发给模型——按文件头字节判断，认不出就不发。
+- 桌面端：加载中的会话不再闪「新对话」空状态、切会话时清掉文件预览路径、退回的排队消息放回输入框、停止原因映射表合并成单一取值集合、界面卡死时托盘可导出诊断。
 
 ## 执行记录（2026-11-02，切会话卡顿：全量渲染 + 全量订阅）
 
