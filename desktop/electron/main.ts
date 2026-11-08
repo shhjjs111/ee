@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Backend } from "./backend";
 import { allowedRoots, guardedOpenPath, guardedShowItem } from "./openpath";
+import { decodeImageDataUrl, suggestedFileName } from "./saveimage";
 import { registerDiagIpc } from "./diag";
 import { killAll as killTerminals, registerTerminalIpc, setPtySearchPaths } from "./terminal";
 import { markQuitting, setupTray } from "./tray";
@@ -134,6 +135,26 @@ ipcMain.handle("backend:restart", async () => {
 ipcMain.handle("dialog:openFolder", async () => {
   const r = await dialog.showOpenDialog(win!, { title: "选择项目文件夹", properties: ["openDirectory", "createDirectory"] });
   return r.canceled ? null : r.filePaths[0] ?? null;
+});
+// 图片另存为：渲染进程没有文件系统权限，写盘必须在主进程做，且路径只能由保存对话框给出
+// （不接受渲染进程传目的地，否则等于给了它任意写文件的能力）。数据校验见 saveimage.ts。
+ipcMain.handle("dialog:saveImage", async (e, name: unknown, dataUrl: unknown) => {
+  const dec = decodeImageDataUrl(dataUrl);
+  if (!dec) return { ok: false, error: "这串内容不是可保存的图片" };
+  const opts = {
+    title: "保存图片",
+    defaultPath: suggestedFileName(name, dec.ext),
+    filters: [{ name: "图片", extensions: [dec.ext] }],
+  };
+  const owner = BrowserWindow.fromWebContents(e.sender);
+  const r = owner ? await dialog.showSaveDialog(owner, opts) : await dialog.showSaveDialog(opts);
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+  try {
+    await fs.promises.writeFile(r.filePath, dec.bytes);
+    return { ok: true, path: r.filePath };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
 });
 ipcMain.handle("shell:openPath", (_e, p: unknown) => guardedOpenPath(p, shell, [...allowedRoots(), app.getPath("logs")])); // 可执行文件只定位不运行；限工作区/ee 目录/日志目录
 ipcMain.handle("shell:showItem", (_e, p: unknown) => guardedShowItem(p, shell, [...allowedRoots(), app.getPath("logs")])); // 同一守门：UNC 路径不能让资源管理器去连对方服务器

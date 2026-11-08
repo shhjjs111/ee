@@ -496,6 +496,9 @@ export interface EeBridge {
    *  主进程的 `webUtils.getPathForFile`（electron/preload.ts）。返回空串表示这个
    *  File 不是磁盘上的文件（浏览器调试模式、或 JS 里 new 出来的），调用方要兜住。 */
   getFilePath?(f: File): string;
+  /** 把图片另存为到用户选的位置（主进程弹保存对话框 + 写盘）。
+   *  canceled 表示用户点了取消；error 是写盘失败的原因。 */
+  saveImage?(name: string, dataUrl: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   onBackendExit(cb: (info: { code: number | null; tail: string }) => void): () => void;
   log?(line: string): void; // 写进 logs/backend.log
   // D4-5 桌面通知 + 托盘

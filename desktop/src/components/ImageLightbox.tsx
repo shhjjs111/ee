@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, RotateCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "../lib/store";
 import type { AttachmentMeta } from "../types";
@@ -35,11 +35,13 @@ export function ImageLightbox({
   onClose: () => void;
 }) {
   const rpc = useApp((s) => s.rpc);
+  const showToast = useApp((s) => s.showToast);
   const [i, setI] = useState(startIndex);
   const [fulls, setFulls] = useState<Record<string, string>>({});
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [scale, setScale] = useState(1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [rot, setRot] = useState(0); // 0 / 90 / 180 / 270：扫描件、手机照片常是躺着的
   const boxRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
@@ -54,6 +56,7 @@ export function ImageLightbox({
       });
       setScale(1);
       setPos({ x: 0, y: 0 });
+      setRot(0);
     },
     [n],
   );
@@ -75,7 +78,7 @@ export function ImageLightbox({
     };
   }, [rpc, threadId, att, fulls, errs]);
 
-  // 左右方向键切换（Escape 交给 Radix 关闭）
+  // 左右方向键切换，R 旋转（Escape 交给 Radix 关闭）
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "ArrowLeft") {
@@ -84,6 +87,9 @@ export function ImageLightbox({
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         go(1);
+      } else if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        setRot((r) => (r + 90) % 360);
       }
     };
     window.addEventListener("keydown", h);
@@ -112,6 +118,27 @@ export function ImageLightbox({
   const url = fulls[att.id];
   const err = errs[att.id];
   const pannable = scale > 1;
+
+  /** 另存为：主进程弹保存对话框再写盘。只认已经拿到的**原图**——存缩略图没意义。 */
+  const saveAs = async () => {
+    if (!url) {
+      showToast("原图还在加载，稍等一下再存", "error");
+      return;
+    }
+    const bridge = window.ee;
+    if (!bridge?.saveImage) {
+      showToast("另存为只能在 ee 桌面应用里用（浏览器调试模式没有文件系统权限）", "error");
+      return;
+    }
+    try {
+      const r = await bridge.saveImage(att.name, url);
+      if (r.canceled) return;
+      if (r.ok) showToast(`已保存到 ${r.path}`);
+      else showToast(`保存失败：${r.error ?? "未知原因"}`, "error");
+    } catch (e) {
+      showToast(`保存失败：${(e as Error).message}`, "error");
+    }
+  };
 
   return (
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
@@ -178,17 +205,35 @@ export function ImageLightbox({
             }}
             draggable={false}
             style={{
-              transform: `translate(${pos.x}px, ${pos.y}px) scale(${scale})`,
+              transform: `translate(${pos.x}px, ${pos.y}px) scale(${scale}) rotate(${rot}deg)`,
               cursor: pannable ? (drag.current ? "grabbing" : "grab") : "zoom-in",
             }}
             className="max-h-[86vh] max-w-[92vw] select-none rounded-xl object-contain shadow-2xl transition-transform duration-75"
           />
 
-          <div className="absolute bottom-4 flex max-w-[90vw] items-center gap-2 rounded-full bg-black/50 px-3 py-1.5 text-[12px] text-white/85">
-            <span className="max-w-[46vw] truncate">{att.name}</span>
+          <div className="absolute bottom-4 flex max-w-[90vw] items-center gap-2 rounded-full bg-black/55 px-3 py-1.5 text-[12px] text-white/85">
+            <span className="max-w-[40vw] truncate">{att.name}</span>
             {n > 1 && <span className="shrink-0 tabular-nums">{i + 1} / {n}</span>}
             {scale > 1 && <span className="shrink-0 tabular-nums">×{scale.toFixed(scale < 2 ? 2 : 1)}</span>}
+            {rot !== 0 && <span className="shrink-0 tabular-nums">{rot}°</span>}
             {err ? <span className="text-danger">{err}</span> : !url && <span className="text-white/60">正在加载原图…</span>}
+            <span className="mx-1 h-4 w-px bg-white/20" />
+            <button
+              type="button"
+              onClick={() => setRot((r) => (r + 90) % 360)}
+              title="旋转 90°（R）"
+              className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white/15"
+            >
+              <RotateCw size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={saveAs}
+              title="另存为…"
+              className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white/15"
+            >
+              <Download size={14} />
+            </button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

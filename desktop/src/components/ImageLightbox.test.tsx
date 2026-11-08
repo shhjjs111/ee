@@ -199,3 +199,84 @@ describe("缩放", () => {
     expect(Number(shown().dataset.scale)).toBe(1);
   });
 });
+
+describe("旋转（扫描件、手机照片常是躺着的）", () => {
+  it("点旋转按钮转 90°，按 R 再转 90°", async () => {
+    const el = mount(rpcMock());
+    await click(thumbs(el)[0]);
+    expect(shown().style.transform).not.toContain("rotate(90deg)");
+
+    await click(lightbox()!.querySelector("button[title*='旋转']")!);
+    expect(shown().style.transform).toContain("rotate(90deg)");
+
+    await press("r");
+    expect(shown().style.transform).toContain("rotate(180deg)");
+    // 底部要显示当前角度，否则用户不知道转到哪了
+    expect(lightbox()!.textContent).toContain("180°");
+  });
+
+  it("切图后旋转复位，不会带着上一张的角度", async () => {
+    const el = mount(rpcMock());
+    await click(thumbs(el)[0]);
+    await press("r");
+    expect(shown().style.transform).toContain("rotate(90deg)");
+    await press("ArrowRight");
+    expect(shown().style.transform).toContain("rotate(0deg)");
+  });
+});
+
+describe("另存为", () => {
+  const withBridge = (saveImage: ReturnType<typeof vi.fn>) => {
+    (window as unknown as { ee?: unknown }).ee = { saveImage };
+    return saveImage;
+  };
+  afterEach(() => {
+    delete (window as unknown as { ee?: unknown }).ee;
+  });
+
+  it("把**原图**交给主进程保存（不是 160px 缩略图）", async () => {
+    const save = withBridge(vi.fn().mockResolvedValue({ ok: true, path: "C:\\图片\\截图1.png" }));
+    const el = mount(rpcMock());
+    await click(thumbs(el)[0]);
+
+    await act(async () => {
+      (lightbox()!.querySelector("button[title*='另存为']") as HTMLButtonElement).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(save).toHaveBeenCalledWith("截图1.png", FULL.aaa111aaa111);
+  });
+
+  it("原图还没加载好时不存缩略图，而是提示等一下", async () => {
+    const save = withBridge(vi.fn());
+    const never = vi.fn(() => new Promise(() => {})); // 永远不返回
+    const el = mount(never);
+    await click(thumbs(el)[0]);
+
+    await act(async () => {
+      (lightbox()!.querySelector("button[title*='另存为']") as HTMLButtonElement).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(save, "存出去的必须是原图，缩略图存了没意义").not.toHaveBeenCalled();
+    expect(useApp.getState().toast?.text).toContain("原图还在加载");
+  });
+
+  it("用户取消保存：不报错、不弹成功提示", async () => {
+    const save = withBridge(vi.fn().mockResolvedValue({ ok: false, canceled: true }));
+    act(() => useApp.setState({ toast: null } as never));
+    const el = mount(rpcMock());
+    await click(thumbs(el)[0]);
+
+    await act(async () => {
+      (lightbox()!.querySelector("button[title*='另存为']") as HTMLButtonElement).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(save).toHaveBeenCalled();
+    expect(useApp.getState().toast).toBeFalsy();
+  });
+});

@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld("ee", {
     },
   },
   captureWindow: () => ipcRenderer.invoke("ui:capture"),
+  /** 图片另存为：主进程弹保存对话框并写盘（渲染进程没有文件系统权限）。 */
+  saveImage: (name: string, dataUrl: string) => ipcRenderer.invoke("dialog:saveImage", name, dataUrl),
   log: (line: string) => ipcRenderer.send("log:write", line),
   term: {
     available: () => ipcRenderer.invoke("term:available"),
