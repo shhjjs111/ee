@@ -142,6 +142,7 @@ class Backend:
             "turn/start": self.turn_start,
             "turn/interrupt": self.turn_interrupt,
             "turn/withdraw": self.turn_withdraw,
+            "attachment/read": self.attachment_read,
             "approval/respond": self.approval_respond,
             "question/respond": self.question_respond,
             "ui/capture_result": self.capture_result,
@@ -701,6 +702,24 @@ class Backend:
         except ValueError as e:
             raise RpcError(f"配置错误：{e}")
         return await asyncio.to_thread(breakdown.for_session, s)
+
+    async def attachment_read(self, thread_id: str, attachment_id: str) -> dict:
+        """取回一张已发图片的**原图**（界面点缩略图看大图用）。
+
+        缩略图是前端 canvas 压到 160px 的 data URL，放大必糊；原图留在会话附件目录里。
+        `attachment_id` 直接参与路径拼接，所以先按 12 位十六进制校验——`../..` 这类输入
+        必须在拼接之前挡住，不能指望"文件不存在"兜底（那是靠运气，不是靠校验）。
+        """
+        aid = str(attachment_id or "")
+        if len(aid) != 12 or any(c not in "0123456789abcdef" for c in aid):
+            raise RpcError("附件 id 不对", -32602)
+        await self._athread(thread_id)          # 会话不存在就报错，不往后走文件系统
+        from ee.core.attachments import attachments_dir, data_url
+        for p in sorted(attachments_dir(self.home, thread_id).glob(f"{aid}.*")):
+            url = data_url(str(p))
+            if url:
+                return {"id": aid, "mime": url[5:].split(";", 1)[0], "data_url": url}
+        raise RpcError("图片已不在磁盘上（可能被清理了）")
 
     async def turn_start(self, thread_id: str, text: str, model: str | None = None, mode: str | None = None,
                          attachments: list | None = None, effort: str | None = None, style: str | None = None,

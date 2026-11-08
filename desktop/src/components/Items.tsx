@@ -31,7 +31,8 @@ import { diffStat, formatDuration, shortPath } from "../lib/reduce";
 import { splitReview } from "../lib/review";
 import { PlanProposalCard, ReviewCard } from "./ReviewDialogs";
 import { useApp } from "../lib/store";
-import type { ApprovalItem, AssistantItem, Item, PlanItem, QuestionItem, ToolItem, TurnEndItem, UserItem } from "../types";
+import type { ApprovalItem, AssistantItem, AttachmentMeta, Item, PlanItem, QuestionItem, ToolItem, TurnEndItem, UserItem } from "../types";
+import { ImageLightbox } from "./ImageLightbox";
 import { SkillCard, SubagentCard, WebFetchCard, WebSearchCard } from "./AgentItems";
 import { DiffView, Stat } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -147,6 +148,9 @@ export function UserMessage({ item }: { item: UserItem }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.text);
   const [busy, setBusy] = useState(false);
+  // 点开的图片（null = 没开灯箱）。threadId 用来向后台要这张图的**原图**。
+  const [viewing, setViewing] = useState<AttachmentMeta | null>(null);
+  const threadId = useApp((s) => s.activeThreadId);
   const idle = !status || status === "idle";
   const canBranch = typeof item.hist === "number" && !item.queued && item.kind !== "review";
 
@@ -195,13 +199,23 @@ export function UserMessage({ item }: { item: UserItem }) {
         <div className="mb-1.5 flex max-w-[80%] flex-wrap justify-end gap-1.5">
           {item.attachments.map((a) =>
             a.thumb ? (
-              <img key={a.id} src={a.thumb} alt={a.name} title={a.name} className="h-20 max-w-[160px] rounded-xl border border-line object-cover" />
+              // 点开看原图：缩略图只有 160px，看不出任何细节（见 ImageLightbox）
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => setViewing(a)}
+                title={`${a.name}（点击看大图）`}
+                className="cursor-zoom-in rounded-xl border border-line transition hover:border-line-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <img src={a.thumb} alt={a.name} className="h-20 max-w-[160px] rounded-xl object-cover" />
+              </button>
             ) : (
               <span key={a.id} className="rounded-lg border border-line px-2 py-1 text-[12px] text-muted">{a.name}</span>
             ),
           )}
         </div>
       )}
+      {viewing && threadId && <ImageLightbox threadId={threadId} att={viewing} onClose={() => setViewing(null)} />}
       <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-soft px-4 py-2.5 text-[14px] leading-relaxed text-fg">
         {item.kind === "review" && <SearchCheck size={14} className="mr-1.5 inline-block align-[-2px] text-muted" />}
         {item.kind === "loop" && (

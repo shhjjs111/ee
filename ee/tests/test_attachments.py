@@ -136,3 +136,38 @@ def test_models_list_and_settings_vision(ee_home):
         ms = {m["name"]: m for m in (await b.call("models/list", {}))["models"]}
         assert ms["deepseek-pro"]["vision"] is True
     asyncio.run(go())
+
+def test_attachment_read_returns_original_image(ee_home, workspace):
+    """界面点缩略图要能看到**原图**：缩略图只有 160px（前端 canvas 压缩），放大必糊。
+
+    原图存在 `~/.ee/sessions/<会话id>/attachments/<id>.<ext>`，这里按 id 取回。
+    id 与 thread_id 都会参与路径拼接，所以非法值必须是拒绝而不是"找不到"——
+    否则 `../..` 这类输入能读到任意文件。
+    """
+
+    async def go():
+        b, fake, ev = make_backend(ee_home, [text_chunks("好") + finish("stop")])
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "model": "deepseek-flash"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "看图",
+                                    "attachments": [{"name": "s.png", "data": b64(PNG)}]})
+        await wait_for(ev, "turn/completed")
+
+        d = (await b.call("thread/get", {"thread_id": tid}))["thread"]
+        u = next(it for it in d["items"] if it["type"] == "user")
+        aid = u["attachments"][0]["id"]
+
+        r = await b.call("attachment/read", {"thread_id": tid, "attachment_id": aid})
+        # 必须是磁盘上那份原图的完整字节，不是缩略图
+        expect = "data:image/png;base64," + b64(PNG)
+        assert r["data_url"] == expect
+        assert r["mime"] == "image/png"   # 界面的文件名用 thread/get 里的 meta，接口不重复带
+
+        # 路径穿越：id 不是 12 位十六进制就拒绝
+        for bad in ("../..", "..\\..", "a" * 12 + "/../x", ""):
+            with pytest.raises(RpcError):
+                await b.call("attachment/read", {"thread_id": tid, "attachment_id": bad})
+        # 12 位十六进制但不存在：是"已不在磁盘上"，不是穿越
+        with pytest.raises(RpcError, match="不在"):
+            await b.call("attachment/read", {"thread_id": tid, "attachment_id": "0123456789ab"})
+
+    asyncio.run(go())
