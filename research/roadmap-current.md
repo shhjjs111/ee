@@ -26,7 +26,21 @@
 | T10-c / 自动审批 | 建议态：只出建议、不碰决策 | **已完成并验证**（建议态 + 落库 + 审批卡片显示）；自动放行版本未做，需另行安全审查 | `ee\ee\core\autoapprove.py`、`events.py` 的 `ApprovalRequest.suggestion`、`session.py` 的 `_attach_suggestion`、`server\threads.py` 的 `_on_event` 落 `ApprovalItem`、`desktop\src\components\Items.tsx` 的建议区；`test_autoapprove.py`（10）、`test_autoapprove_wiring.py`（5）、`test_autoapprove_persist.py`（3）、`ApprovalSuggestion.test.tsx`（4） |
 | T10-d / best-of-n | 候选评选，胜者只由判据决定 | **已完成并验证**（评选层 + RPC + 判据编排 + 桌面端） | `ee\ee\core\bestof.py`（复用 `goal.Verdict`）、`server\bestof_rpc.py` 的 `bestof/pick`、`server\bestof_verify.py` 的 `bestof/verify`（每候选单轮判据）、`desktop\src\components\BestofDialog.tsx`；`test_bestof.py`（14）、`test_bestof_rpc.py`（4）、`test_bestof_verify.py`（5）、`BestofDialog.test.tsx`（7） |
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
+| allout / 全力以赴 | 模型固定为用户所选；判据门控 → 批评修复（keep-policy）→ 分叉（温度阶梯、判据串行）→ 同模型 A/B 排序 → 补丁写回 | **已完成并验证**（阶段 0–5：`parse_tests` 七种 runner、判据探测、火力推导、前端进度与开关、质量信号与执行原语、Thread 层编排）。**未做**：候选审批冒泡（候选在无人值守下自动拒绝写操作以外的审批——当前实现是自动拒绝，见计划 §9）、真实模型端到端演练 | `ee\ee\core\goal.py`（`parse_tests`）、`core\probe.py`、`core\allout.py`、`core\bestof.py`、`server\threads.py` 的 `_plan_allout`/`_run_allout`/`_allout_fanout`/`_allout_rank`、`server\app.py` 的 `turn/start(allout=)`、`config.py` 的 `allout` 默认项与项目层收紧、`desktop` 的 `store.ts`/`reduce.ts`/`Composer.tsx`/`BestofDialog.tsx`/`types.ts`；`test_parse_tests_runners.py`（24）、`test_probe.py`（15）、`test_allout.py`（22）、`test_allout_config.py`（9）、`test_allout_turn.py`（13）、`test_bestof_quality.py`（9）、`test_allout_engine.py`（14）、`test_allout_run.py`（5）；方案见 `plans\2026-11-09-allout-v2.md` |
 | 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下）；**客户端已接 `electron-updater`（2026-11-02，只后台下载、绝不自动重启）** | 正式发版后才有可更新的 Release（只剩预发布时 `/releases/latest` 是 404，检查必然失败） |
+
+## 执行记录（2026-11-09，全力以赴 allout 阶段 0–5）
+
+用户定义：基于电脑配置与当前模型，把模型逼近它自己的极限；**模型固定为用户所选，一个都不换**。方案见 `plans\2026-11-09-allout-v2.md`（v1 已被替代，保留追溯）。调研用真实浏览器核实了全部 9 个引用来源，结论按杠杆排序：判据门控 > 批评修复（keep-policy）> 同模型 A/B 排序 > 预算自适应 > 并行路数。
+
+- **阶段 0**：`parse_tests` 扩到七种 runner 形态。实测修前 go/dotnet/mocha/rspec/phpunit/bun 全读 0、vitest 把 `Test Files 3 passed` 误读成 3；修后 24 例表驱动样本全绿。`test_parse_tests_runners.py`。
+- **阶段 1**：`core/probe.py` 判据探测（只读文件、不跑命令），九种项目类型 + 测试文件清单 + gradle 计数提示；探测结果 `confirmed=False`，陌生仓库的判据必须先经用户确认。`test_probe.py`（15）。
+- **阶段 2**：`core/allout.py` 的 `derive()`（强度/路数/修复轮数/温度阶梯，每条取值带理由）；`DEFAULTS` 加 `allout` 并与 orchestrator 同款收紧（项目层不能打开、candidates 不能调大、不接受 model 字段）。`test_allout.py`（22）、`test_allout_config.py`（9）、`test_allout_turn.py`（13）。
+- **阶段 3**：前端接 `goal_check`/`goal_done`/`allout_plan` 三个通知；Composer「更多」菜单加开关（`store.allout`，随 `turn/start` 透传）；`BestofDialog` 显示 A/B 票数、「动过测试文件」与改动面。`store.test.ts`/`reduce.test.ts`/`BestofDialog.test.tsx` 覆盖。
+- **阶段 4**：`bestof.pick` 换排序键（回归门 → A/B 净胜票 → 测试数 → 改动面 → 未碰测试 → 成本 → id），`pick_reason` 写明用了哪条规则；`Candidate` 六个新字段全部中性默认，老调用方行为不变。`test_bestof_quality.py`（9）。
+- **阶段 5**：`core/allout.py` 的 `keep_policy`/`ab_prompt`/`parse_ab`/`net_votes`/`apply_winner`（补丁写回，脏主目录实测保留用户改动），`Thread._run_allout` 编排（单路 → 批评修复 → 分叉 → 同模型 A/B 两轮位置对调 → 写回并刷新 `tree_after`）；候选各自 worktree、温度阶梯、判据串行（`asyncio.Lock`）、先通过即取消其余、候选内 `task`/`ask_user` 关闭、用量记 `role="allout"`。`test_allout_engine.py`（14，含真实 git 写回）、`test_allout_run.py`（5）。
+- **验证**：`./scripts/verify.sh` 全量通过——后端 **2455 passed / 16 skipped**（170.6 秒）、前端 65 文件 **386 passed**、`tsc --noEmit` exit 0、`ruff check ee/` 全绿。
+- **未做**：真实模型端到端演练（只有假模型/桩 judge 的闭环）；候选遇到需要用户审批的写操作时当前一律自动拒绝（比自动放行更保守，但与主会话「以后都行」的规则不联动）；Gradle 项目需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数。
 
 ## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）
 

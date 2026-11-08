@@ -177,6 +177,25 @@ export function BestofDialog() {
                           {c.worktree}
                         </span>
                         {res && <span className="mt-0.5 block text-[11px] text-muted">{c.reason}</span>}
+                        {res && (
+                          <span className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-faint">
+                            {typeof c.votes === "number" && c.votes !== 0 && (
+                              <span title="同模型 A/B 评定，位置对调各评一次后的净胜票">
+                                A/B {c.votes > 0 ? `+${c.votes}` : c.votes}
+                              </span>
+                            )}
+                            {c.touched_tests && (
+                              <span className="text-warn" title="改动碰过测试文件，可疑：可能是改测试而不是修代码">
+                                动过测试文件
+                              </span>
+                            )}
+                            {typeof c.files === "number" && c.files > 0 && (
+                              <span className="mono">
+                                {c.files} 文件 +{c.additions ?? 0} −{c.deletions ?? 0}
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </span>
                     </div>
                   );

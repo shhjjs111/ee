@@ -37,6 +37,13 @@ class Candidate:
     self_reported_ok: bool = False     # 模型自己说通过 —— 不参与判定，只记录
     verified_state: str | None = None  # 跑判据时的代码状态指纹
     current_state: str | None = None   # 现在的代码状态指纹（调用方给；None = 未比对）
+    # ---- allout 的质量信号（全部中性默认：老调用方不传时行为与 T10-d 完全一致）
+    regressed: bool = False            # 回归门：弄坏了改动前已通过的测试
+    votes: int = 0                     # 同模型 A/B 位置对调后的净胜票数
+    touched_tests: bool = False        # 改动碰过测试文件（可疑，排在后面）
+    files: int = 0                     # 改动文件数（改动面）
+    additions: int = 0                 # 新增行数
+    deletions: int = 0                 # 删除行数
 
     @property
     def stale(self) -> bool:
@@ -72,6 +79,10 @@ class Candidate:
                 "run_id": self.run_id, "cost": self.cost, "verified": self.verified,
                 "met": self.met, "self_reported_ok": self.self_reported_ok,
                 "stale": self.stale, "reason": self.reason,
+                # allout 的质量信号（老调用方不传时全是中性默认）
+                "regressed": self.regressed, "votes": self.votes,
+                "touched_tests": self.touched_tests, "files": self.files,
+                "additions": self.additions, "deletions": self.deletions,
                 # 跨请求比对要用：调用方拿 verified_state 存起来，下次连同 current_state 传回来
                 "verified_state": self.verified_state, "current_state": self.current_state}
 
@@ -118,14 +129,58 @@ def validate(candidates: list[Candidate]) -> list[str]:
     return problems
 
 
+def _rank_key(c: Candidate) -> tuple:
+    """胜者的排序键（allout v2 §8）。每一条都来自可观测事实，没有模型自述。
+
+    顺序即优先级：回归门 → A/B 净胜票 → 测试数多 → 改动面小 → 未碰测试
+    → 成本低 → id（稳定排序，不因输入顺序碰运气）。
+    没给新字段的老数据全是中性默认，于是退化成原来的「成本 → id」。
+    """
+    tests = int(getattr(c.verdict, "tests", 0) or 0)
+    size = int(c.files or 0) + int(c.additions or 0) + int(c.deletions or 0)
+    return (
+        0 if not c.regressed else 1,     # 回归过的一律排后面
+        -int(c.votes or 0),              # 净胜票多者优先
+        -tests,                          # 覆盖更完整的优先
+        size,                            # 改动面小者优先
+        0 if not c.touched_tests else 1, # 没碰测试的优先
+        float(c.cost or 0.0),            # 同等条件下成本低者优先
+        c.id,
+    )
+
+
 def pick(candidates: list[Candidate]) -> Candidate | None:
-    """选出胜者。没有任何候选已验证时返回 None —— 不凭自述挑。"""
+    """选出胜者。没有任何候选已验证时返回 None —— 不凭自述挑。
+
+    「已验证」仍是硬门槛；在此之上按 `_rank_key` 排序。全部回归的候选
+    不算赢（宁可不写回，也不把弄坏旧测试的改动写进主目录）。
+    """
     verified = [c for c in candidates if c.verified]
     if not verified:
         return None
-    # 先按花费低，再按 id：同花费时结果稳定，不因输入顺序让候选「碰运气」
-    verified.sort(key=lambda c: (float(c.cost or 0.0), c.id))
-    return verified[0]
+    clean = [c for c in verified if not c.regressed]
+    if not clean:
+        return None
+    clean.sort(key=_rank_key)
+    return clean[0]
+
+
+def pick_reason(winner: Candidate | None, candidates: list[Candidate]) -> str:
+    """一句话说明「凭什么选它」，用于 report 与界面。"""
+    if winner is None:
+        return "没有候选通过判据，不选（模型自述不算证据）"
+    if int(winner.votes or 0) and any(int(c.votes or 0) != int(winner.votes or 0) for c in candidates):
+        return f"{winner.id} 通过了判据，且同模型 A/B 净胜 {int(winner.votes)} 票"
+    tests = int(getattr(winner.verdict, "tests", 0) or 0)
+    if tests and any(int(getattr(c.verdict, "tests", 0) or 0) != tests for c in candidates):
+        return f"{winner.id} 通过了判据，按「测试覆盖更完整」选中（{tests} 个测试）"
+    size = int(winner.files or 0) + int(winner.additions or 0) + int(winner.deletions or 0)
+    if size and any((int(c.files or 0) + int(c.additions or 0) + int(c.deletions or 0)) != size
+                    for c in candidates):
+        return f"{winner.id} 通过了判据，按「改动面更小」选中（{size} 处改动）"
+    if any(bool(c.touched_tests) != bool(winner.touched_tests) for c in candidates):
+        return f"{winner.id} 通过了判据，且没有改动测试文件"
+    return f"{winner.id} 通过了判据（{winner.reason}）"
 
 
 def plan_cleanup(candidates: list[Candidate], winner_id: str | None,
@@ -148,8 +203,5 @@ def report(candidates: list[Candidate], winner_id: str | None) -> str:
         cost = f" ¥{float(c.cost or 0):.4f}" if c.cost else ""
         lines.append(f"- {c.id} [{mark}] {c.title}{cost} → {c.reason}")
     win = next((c for c in candidates if c.id == winner_id), None)
-    if win is not None:
-        lines.append(f"选中理由：{win.id} 通过了判据（{win.reason}）")
-    else:
-        lines.append("选中理由：没有候选通过判据，不选（模型自述不算证据）")
+    lines.append(f"选中理由：{pick_reason(win, candidates)}")
     return "\n".join(lines)

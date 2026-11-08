@@ -83,6 +83,7 @@ def _norm_goal(goal: dict) -> dict:
     """
     if not isinstance(goal, dict):
         raise ValueError("goal 必须是对象")
+
     cmd = str(goal.get("command") or "").strip()
     if not cmd:
         raise ValueError("goal.command 不能为空：没有判据的循环没有意义")
@@ -103,6 +104,33 @@ def _norm_goal(goal: dict) -> dict:
         if t > 0:
             out["timeout"] = min(t, 3600.0)
     return out
+
+
+MAX_ALLOUT_CANDIDATES = 3      # 与 core/allout.py 的 CANDIDATES_CAP 一致；界面上限
+
+
+def _norm_allout(allout: dict) -> dict:
+    """校验并规范化全力以赴的开关参数。
+
+    与 `_norm_goal` 同一条纪律：**只从 start_turn 这条入口来**，模型无法写入。
+    这里只做三件事：`enabled` 必须是布尔、`candidates` 必须是 1~3 的整数、
+    不接受任何模型字段——模型固定为用户当前所选（见 allout v2 §0）。
+    """
+    if not isinstance(allout, dict):
+        raise ValueError("allout 必须是对象")
+    if "model" in allout:
+        raise ValueError("allout 不能指定模型：它固定使用会话当前的模型")
+    enabled = allout.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"allout.enabled 必须是布尔值：{enabled!r}")
+    raw = allout.get("candidates", 3)
+    try:
+        candidates = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"allout.candidates 必须是整数：{raw!r}") from None
+    if candidates < 1:
+        raise ValueError(f"allout.candidates 必须 >= 1：{candidates}")
+    return {"enabled": enabled, "candidates": min(candidates, MAX_ALLOUT_CANDIDATES)}
 
 
 def spent_before_from_usage(u: dict | None) -> dict[str, float]:
@@ -453,7 +481,7 @@ class Thread:
                    images: list[str] | None = None, attachments: list[dict] | None = None,
                    display: str | None = None, readonly: bool = False, kind: str | None = None,
                    effort=None, style: str | None = None, queue: str | None = None,
-                   goal: dict | None = None) -> dict:
+                   goal: dict | None = None, allout: dict | None = None) -> dict:
         """images：已保存的附件路径；attachments：对应的界面元数据（D3-D）。
         display：界面上显示的用户消息（模型收到的仍是 text，例如 /review 拼好的长提示）；
         readonly：这一回合临时只读，回合结束恢复原模式（/review）；kind：用户条目的类型标记（review）。
@@ -463,6 +491,13 @@ class Thread:
         s = self.ensure_session()
         if goal is not None:
             goal = _norm_goal(goal)
+        if allout is not None:
+            allout = _norm_allout(allout)
+            if allout.get("enabled") and self.running:
+                # 运行中改跑法等于中途换策略：与 goal 的排队语义一致，明确拒绝。
+                raise ValueError("ee 正在工作，等这一回合结束再打开全力以赴")
+            if not allout.get("enabled"):
+                allout = None            # 关着与不传等价：界面不显示、不落条目
         if images and self.running:
             raise ValueError("ee 正在工作，等这一回合结束再发图片")
         if (readonly or display) and self.running:
@@ -476,6 +511,9 @@ class Thread:
             # 记在用户条目上：界面据此显示"这一回合在追什么目标"，
             # 也让"判据从哪来"可追溯（只可能来自这里，不是模型写的）。
             user_item["goal"] = dict(goal)
+        if allout:
+            # 同样是可追溯的事实：这一回合开了全力以赴、上限几路。
+            user_item["allout"] = dict(allout)
         if attachments:
             user_item["attachments"] = attachments
         if self.running:
@@ -513,7 +551,7 @@ class Thread:
             s.set_mode("read-only")
         s._turn_role = "review" if kind == "review" else None      # 审查回合按 roles.review 取模型（D5-9）
         self.notify("thread/updated", {"thread": self.summary()})
-        self.task = asyncio.create_task(self._consume(text, images, goal=goal))
+        self.task = asyncio.create_task(self._consume(text, images, goal=goal, allout=allout))
         self.notify("thread/updated", {"thread": self.summary()})
         return {"queued": False, "item_id": user["id"]}
 
@@ -590,7 +628,7 @@ class Thread:
         return {"ok": True}
 
     async def _consume(self, text: str, images: list[str] | None = None,
-                       goal: dict | None = None) -> None:
+                       goal: dict | None = None, allout: dict | None = None) -> None:
         s = self.session
         assert s is not None
         self.turn_started_at = time.monotonic()
@@ -598,7 +636,23 @@ class Thread:
         self.plan_item = None
         reason = "error"
         try:
-            if goal:
+            if allout:
+                await self._plan_allout(allout, goal)
+            if allout and goal:
+                reason = await self._run_allout(text, images, goal, allout)
+            elif allout:
+                # 降级路径（allout v2 §4）：没有客观判据就不存在「极限」，
+                # 按普通回合跑，并在对话里说清楚为什么没开火力。
+                self._add({"type": "notice", "level": "warn",
+                           "text": "全力以赴已开，但这一回合没有可执行的判据：按单路尝试，结果不保证正确性。"
+                                   "可以用「目标」填一条测试命令启用完整模式。"})
+                async for ev in s.run_turn(text, images):
+                    if isinstance(ev, TurnDone):
+                        reason = ev.reason
+                        if ev.tree_after:
+                            self._mark_tree_after(ev.tree_after)
+                    self._on_event(ev)
+            elif goal:
                 # Goal 模式：反复跑回合直到判据通过或轮次用完。
                 # 回合本身仍走 s.run_turn（不新建 agent 循环），只是调用方变成循环。
                 # 必须在这个 try 里：提前 return 会跳过下面的 finally，
@@ -633,6 +687,318 @@ class Thread:
                 log.error("回合收尾异常（会话 %s）", self.id, exc_info=True)
                 self.notify("turn/completed", {"thread_id": self.id, "reason": "error", "duration_ms": 0,
                                                "usage": self.usage, "context_left": self.context_left})
+
+    async def _plan_allout(self, allout: dict, goal: dict | None) -> None:
+        """全力以赴的推导与判据探测：只发通知，不执行任何命令。
+
+        **为什么不在这里直接跑探测到的判据**：陌生仓库不能让 ee 自动执行它的
+        测试脚本（allout v2 §9）。探测结果带 `confirmed=False` 推给界面，由用户
+        确认一次；本回合在没有用户判据时按普通回合跑（单路、标注未验证），
+        这正是 v2 §4 的降级路径，不违背任何边界。
+
+        `goal` 是用户显式填的判据：有了它就不需要探测，`verified=True` 直接成立。
+        """
+        from ee.core.allout import derive
+        from ee.core.probe import probe as probe_project
+
+        s = self.session
+        assert s is not None
+        has_goal = bool(goal and goal.get("command"))
+        proj = None if has_goal else probe_project(self.cwd)
+        plan = derive(config=s.config.data, profile=s.profile, has_goal=has_goal,
+                      max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3))
+        # 用户设的 candidates 是上限：界面显示的路数必须和 _run_allout 实际执行的一致，
+        # 否则会出现「界面说 3 路、实际只跑 1 路」的静默不一致。
+        cap = max(1, min(int(allout.get("candidates") or 3), plan.candidates))
+        if cap == plan.candidates:
+            shown = plan
+        else:
+            from dataclasses import replace as _replace
+
+            shown = _replace(plan, candidates=cap, temperature_ladder=plan.temperature_ladder[:cap])
+        self.notify("allout_plan", {
+            "thread_id": self.id,
+            "plan": shown.as_dict(),
+            "goal": (goal or {}).get("command"),
+            "probe": proj.as_dict() if proj is not None else None,
+            "candidates_cap": cap,
+        })
+
+    # ------------------------------------------------------------ 全力以赴（阶段 5）
+
+    async def _run_allout(self, text: str, images: list[str] | None, goal: dict, allout: dict) -> str:
+        """全力以赴的完整编排：单路 → 批评修复 → 分叉 → 排序 → 写回。
+
+        返回停止原因（met / exhausted / budget / interrupted / error）。
+        模型固定为用户当前所选：候选、修复、A/B 评定全部用同一个模型
+        （allout v2 §0）。判据串行执行（§4）：并发抢 CPU 会造出假失败。
+        """
+        from ee.core import allout as A
+        from ee.core.goal import GoalSpec, judge
+        from ee.core.goal_feedback import build_feedback, build_first_turn
+
+        s = self.session
+        assert s is not None
+        spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
+                        min_tests=int(goal.get("min_tests") or 1),
+                        timeout=float(goal.get("timeout") or 300.0))
+        plan = A.derive(config=s.config.data, profile=s.profile, has_goal=True,
+                        max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3))
+        cap = max(1, min(int(allout.get("candidates") or 3), plan.candidates))
+        lock = getattr(self, "_allout_judge_lock", None)
+        if lock is None:
+            lock = self._allout_judge_lock = asyncio.Lock()
+
+        async def judge_serial(cwd: str | None = None) -> object:
+            sp = spec if cwd is None else GoalSpec(command=spec.command, cwd=cwd,
+                                                   min_tests=spec.min_tests, timeout=spec.timeout)
+            async with lock:                      # 串行：判据命令本身吃 CPU
+                v = await judge(sp)
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "judge",
+                                            "met": bool(v.met), "reason": v.reason,
+                                            "tests": v.tests, "cwd": cwd})
+            return v
+
+        payload = build_first_turn(text, spec)
+        rounds = {"n": 0}
+
+        async def one_turn(msg: str) -> str:
+            rounds["n"] += 1
+            reason = "completed"
+            async for ev in s.run_turn(msg, images if rounds["n"] == 1 else None):
+                if isinstance(ev, TurnDone):
+                    reason = ev.reason
+                    if ev.tree_after:
+                        self._mark_tree_after(ev.tree_after)
+                self._on_event(ev)
+            return reason
+
+        self.notify("allout_progress", {"thread_id": self.id, "phase": "start",
+                                        "candidates": cap, "reasons": list(plan.reasons)})
+        # ---- 轮 1：单路。一次就过则零额外成本（预算不是配额）。
+        if await one_turn(payload) == "interrupted":
+            return "interrupted"
+        best = await judge_serial()
+        if best.met:
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "first_try"})
+            return "met"
+        if getattr(s.budget, "stop_reason", None):
+            return "budget"
+
+        # ---- 轮 2：批评修复（判据 + 失败输出喂回去），keep-policy 只在更好时保留。
+        for attempt in range(1, max(1, plan.repair_rounds) + 1):
+            msg = build_feedback(best, spec, attempt=attempt, max_checks=plan.repair_rounds + 2)
+            if await one_turn(msg) == "interrupted":
+                return "interrupted"
+            after = await judge_serial()
+            keep, why = A.keep_policy(best, after)
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "repair",
+                                            "attempt": attempt, "kept": keep, "why": why})
+            if keep:
+                best = after
+            if best.met:
+                self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "repair"})
+                return "met"
+            if getattr(s.budget, "stop_reason", None):
+                return "budget"
+
+        # ---- 轮 3：分叉（候选各自 worktree、温度阶梯、判据串行、先通过即取消其余）。
+        if cap > 1:
+            cands = await self._allout_fanout(spec, plan, payload, cap)
+            passed = [c for c in cands if getattr(c.get("verdict"), "met", False)]
+            if passed:
+                winner = await self._allout_rank(passed, text, getattr(best, "output", "") or "")
+                if winner is not None:
+                    res = await asyncio.to_thread(A.apply_winner, winner["cwd"], winner["base"], self.cwd)
+                    self.notify("allout_progress", {"thread_id": self.id, "phase": "apply",
+                                                    "winner": winner["id"], "result": res})
+                    if res.get("applied"):
+                        await asyncio.to_thread(s.refresh_git)
+                        tree = await asyncio.to_thread(s.disk_capture)
+                        if tree:
+                            self._mark_tree_after(tree)
+                        return "met"
+        return "exhausted" if not best.met else "met"
+
+    async def _allout_fanout(self, spec, plan, payload: str, cap: int) -> list[dict]:
+        """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。"""
+        import copy
+        from pathlib import Path
+
+        from ee.core import worktree as W
+        from ee.core.permissions import PermissionPolicy
+        from ee.core.session import Session
+        from ee.core.goal import judge
+
+        s = self.session
+        assert s is not None
+        if getattr(s.budget, "stop_reason", None):
+            return []
+        ok, why = await asyncio.to_thread(W.agent_eligible, self.cwd)
+        if not ok:
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout_skipped", "why": why})
+            return []
+        lock = self._allout_judge_lock
+
+        async def run_one(i: int) -> dict:
+            wt = await asyncio.to_thread(W.create_for_agent, self.cwd, f"allout-{i + 1}", self.home)
+            child = None
+            rec = {"id": f"cand-{i + 1}", "cwd": wt["cwd"], "base": wt["agent_base"],
+                   "worktree": wt["path"], "cost": 0.0, "verdict": None, "regressed": False,
+                   "touched_tests": False, "files": 0, "additions": 0, "deletions": 0, "votes": 0}
+            try:
+                data = copy.deepcopy(s.config.data)
+                alias = s.spec.alias
+                models = data.setdefault("models", {})
+                models[alias] = {**(models.get(alias) or {}), "temperature": float(plan.temperature_ladder[i])}
+                data.setdefault("subagent", {})["enabled"] = False      # 候选不嵌套
+                data["ask_user"] = False
+                cfg = copy.copy(s.config)
+                cfg.data = data
+                child = Session(cfg, model=alias, cwd=Path(wt["cwd"]), mode=s.policy.mode,
+                                client_factory=self.client_factory, persist=False, home=self.home,
+                                shell=s.shell_name, user_home=self.user_home)
+                p = s.policy
+                child.policy = PermissionPolicy(mode=p.mode, workspace=Path(wt["cwd"]),
+                                                allow=list(p.allow), ask=list(p.ask), deny=list(p.deny),
+                                                session_prefixes=p.session_prefixes,
+                                                session_tools=p.session_tools, shell=p.shell)
+                child.budget = s.budget
+                child.budget_owner = False
+                child.budget_root = s.budget_root or s
+                child.disk_enabled = False
+                child._mcp_done = True
+                child.effort = s.effort_for(child.spec)
+                async for ev in child.run_turn(payload):
+                    from ee.core.events import ApprovalRequest, QuestionRequest
+                    if isinstance(ev, ApprovalRequest) and ev.future is not None and not ev.future.done():
+                        from ee.core.permissions import ApprovalDecision
+                        ev.future.set_result(ApprovalDecision("deny_with_reason", "全力以赴的候选在无人值守下运行"))
+                    elif isinstance(ev, QuestionRequest) and ev.future is not None and not ev.future.done():
+                        ev.future.set_result("（候选不能提问，请自行判断）")
+                # 判据必须跑在候选自己的 worktree 里：判的是候选的代码，不是主目录的。
+                from ee.core.goal import GoalSpec as _GS
+                cand_spec = _GS(command=spec.command, cwd=wt["cwd"],
+                                min_tests=spec.min_tests, timeout=spec.timeout)
+                async with lock:
+                    v = await judge(cand_spec)
+                rec["verdict"] = v
+                try:
+                    rec["cost"] = float(child.stats.totals().get("cost") or 0.0)
+                except Exception:  # noqa: BLE001  费用读不到不影响判定
+                    pass
+                await self._allout_merge_usage(s, child)
+                v_out = await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}", self.home)
+                rec["files"] = int(v_out.get("file_count") or 0)
+                rec["additions"] = int(v_out.get("additions") or 0)
+                rec["deletions"] = int(v_out.get("deletions") or 0)
+                rec["touched_tests"] = any(
+                    _sub_touched(f.get("path", "")) for f in (v_out.get("files") or []))
+                self.notify("allout_progress", {"thread_id": self.id, "phase": "candidate",
+                                                "id": rec["id"], "met": bool(getattr(v, "met", False))})
+                return rec
+            except asyncio.CancelledError:
+                # 被取消（别的候选先通过）：收尾保留改动，别留半个 worktree
+                try:
+                    await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（已取消）", self.home)
+                except Exception:  # noqa: BLE001
+                    pass
+                rec["cancelled"] = True
+                raise
+            except Exception as e:  # noqa: BLE001  单个候选失败不影响其它
+                rec["error"] = f"{type(e).__name__}: {e}"
+                return rec
+
+        def _sub_touched(rel: str) -> bool:
+            from ee.core.probe import is_test_file
+            return is_test_file(rel)
+
+        tasks = [asyncio.ensure_future(run_one(i)) for i in range(cap)]
+        results: list[dict] = []
+
+        async def watch():
+            nonlocal results
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for t in done:
+                    try:
+                        r = t.result()
+                        results.append(r)
+                        if getattr(r.get("verdict"), "met", False):
+                            for q in pending:          # 先通过 → 立即取消其余（预算不是配额）
+                                q.cancel()
+                            pending = set()
+                            break
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        await watch()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        return results
+
+    @staticmethod
+    async def _allout_merge_usage(parent, child) -> None:
+        """把候选用量并入主会话账本，role 记 "allout"（不污染主对话命中率）。"""
+        st, cs = parent.stats, child.stats
+        store = getattr(parent, "store", None)
+        for r in cs.records:
+            if r.get("role") == "main":
+                r = {**r, "role": "allout"}
+            st.add_record(r)
+            if store is not None:
+                store.usage(r)
+
+    async def _allout_rank(self, passed: list[dict], task: str, judge_output: str) -> dict | None:
+        """同模型 A/B 评定（位置对调两轮），净胜票写回候选；再交 bestof.pick。"""
+        from ee.core import allout as A
+        from ee.core import bestof as B
+        from ee.core import gitinfo
+        from ee.proc import run_capture
+        from ee.tools.textdecode import smart_decode
+
+        exe = gitinfo.git_exe() or "git"
+        diffs: dict[str, str] = {}
+
+        def _diff(c: dict) -> str:
+            code, out, _ = run_capture([exe, "diff", "--no-color", f"{c['base']}..HEAD"], cwd=c["cwd"], timeout=60)
+            return smart_decode(out or b"") if code == 0 else ""
+
+        for c in passed:
+            diffs[c["id"]] = await asyncio.to_thread(_diff, c)
+        s = self.session
+        assert s is not None
+        for i in range(len(passed)):
+            for j in range(i + 1, len(passed)):
+                x, y = passed[i], passed[j]
+                wins: list[str] = []
+                for swap in (False, True):
+                    a, b = (y, x) if swap else (x, y)
+                    sys_msg, user = A.ab_prompt(task, judge_output, diffs[a["id"]], diffs[b["id"]],
+                                                a_touched_tests=bool(a.get("touched_tests")),
+                                                b_touched_tests=bool(b.get("touched_tests")))
+                    try:
+                        text = await s.side_complete(sys_msg, user, role="allout")
+                    except Exception:  # noqa: BLE001  评定失败按平票处理，不阻塞写回
+                        text = ""
+                    pick = A.parse_ab(text)
+                    if pick == "A":
+                        wins.append(a["id"])
+                    elif pick == "B":
+                        wins.append(b["id"])
+                x["votes"] = int(x.get("votes") or 0) + A.net_votes(wins, x["id"], y["id"])
+                y["votes"] = int(y.get("votes") or 0) + A.net_votes(wins, y["id"], x["id"])
+        cand_objs = [B.Candidate(id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
+                                 cost=float(c.get("cost") or 0.0), votes=int(c.get("votes") or 0),
+                                 touched_tests=bool(c.get("touched_tests")), files=int(c.get("files") or 0),
+                                 additions=int(c.get("additions") or 0), deletions=int(c.get("deletions") or 0))
+                     for c in passed]
+        win = B.pick(cand_objs)
+        if win is None:
+            return None
+        return next(c for c in passed if c["id"] == win.id)
 
     async def _consume_goal(self, text: str, images: list[str] | None, goal: dict) -> str:
         """跑 Goal 循环，返回停止原因（met / exhausted / budget / interrupted / error）。

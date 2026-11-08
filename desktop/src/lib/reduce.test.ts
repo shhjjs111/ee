@@ -8,6 +8,25 @@ const base: ThreadDetail = {
 };
 
 describe("applyItemNotification", () => {
+  it("goal_check 把判定进度写进 status_text（长跑不会看起来卡死）", () => {
+    const t = applyItemNotification(base, "goal_check", { round: 2, met: false, reason: "exit=1：命令以非零退出" });
+    expect(t.status_text).toContain("目标还没达成");
+    expect(t.status_text).toContain("第 2 次判定");
+    const ok = applyItemNotification(base, "goal_check", { round: 3, met: true, reason: "ok：12 个测试通过" });
+    expect(ok.status_text).toBe("判据已通过");
+  });
+
+  it("goal_done 清掉进度文字", () => {
+    const t = applyItemNotification({ ...base, status_text: "目标还没达成" }, "goal_done", { stop_reason: "exhausted" });
+    expect(t.status_text).toBe("");
+  });
+
+  it("allout_plan 显示火力路数", () => {
+    const t = applyItemNotification(base, "allout_plan", { plan: { candidates: 3 }, goal: null, probe: null });
+    expect(t.status_text).toContain("全力以赴");
+    expect(t.status_text).toContain("3 路");
+  });
+
   it("started → delta → updated → removed", () => {
     let t = applyItemNotification(base, "item/started", { item: { id: "a1", type: "assistant", text: "", reasoning: "" } });
     t = applyItemNotification(t, "item/delta", { item_id: "a1", field: "text", delta: "你好" });

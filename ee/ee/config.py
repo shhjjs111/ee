@@ -113,6 +113,12 @@ DEFAULTS: dict = {
     # 指挥会话（D6-1）：一个会话派发多个真正的子会话。默认关（多五个工具是固定 token 开销）；
     # 项目层只能关、只能调小。max_children 是同时运行数，max_total_children 是子会话总数。
     "orchestrator": {"enabled": False, "max_children": 4, "max_total_children": 16},
+    # 全力以赴（allout）：会话级开关，打开后把推理预算花在「真正通过验证」上
+    # （先一次做好，失败按原因修，还不行才分叉；模型固定为用户所选）。
+    # candidates 是分叉路数的**上限**，实际值由 cpu / 上下文 / subagent.max_parallel
+    # 在 core/allout.py 的 derive() 里钳制，不是写死的配额。
+    # 项目层只能关、只能调小（见 sanitize_project_layer）。
+    "allout": {"enabled": False, "candidates": 3},
     # LSP 诊断（D6-2 / T9）：让模型改完文件看到语言服务器的类型错误。默认关——工具 schema
     # 是固定 token 开销，还进冻结前缀；没装服务器时它也只会一直报 unavailable。
     # **开启后 repo_map 工具会让位**（两个都是"理解代码"，而 full 工具表只剩 79 token
@@ -375,6 +381,34 @@ def sanitize_project_layer(layer: dict, user_cfg: dict) -> tuple[dict, list[str]
             dropped.append(f"orchestrator.{k}")
         if not orch:
             clean.pop("orchestrator")
+
+    # 全力以赴：开不开只能由用户决定。项目层自己打开等于「克隆一个陌生仓库，
+    # 它就能让 ee 并行改代码并自动写回主目录」——与 orchestrator.enabled 同一条边界。
+    # candidates 只能调小：调大等于让项目绕过用户机器算力的钳制。
+    allo = clean.get("allout")
+    if "allout" in clean and not isinstance(allo, dict):
+        clean.pop("allout")
+        dropped.append("allout")
+    elif isinstance(allo, dict):
+        ua = user_cfg.get("allout") or {}
+        if "enabled" in allo and bool(allo["enabled"]) and not bool(ua.get("enabled", False)):
+            allo.pop("enabled")
+            dropped.append("allout.enabled")
+        if "candidates" in allo:
+            try:
+                want, have = int(allo["candidates"]), int(ua.get("candidates") or 0)
+            except (TypeError, ValueError):
+                allo.pop("candidates")
+                dropped.append("allout.candidates")
+            else:
+                if have > 0 and want > have:
+                    allo.pop("candidates")
+                    dropped.append("allout.candidates")
+        for k in [k for k in allo if k not in ("enabled", "candidates")]:
+            allo.pop(k)
+            dropped.append(f"allout.{k}")
+        if not allo:
+            clean.pop("allout")
 
     # LSP：开启后每回合按 servers 里的 command 起子进程。项目层绝不能指定可执行文件——
     # 打开一个陌生仓库就等于让它在用户机器上跑任意程序（config.py 顶部与 lsp 默认值注释都

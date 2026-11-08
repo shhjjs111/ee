@@ -59,6 +59,8 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     "draftEffort",
     "draftStyle",
     "draftWorktree",
+    "allout",
+    "setAllout",
     "defaultModel",
     "defaultEffort",
     "defaultStyle",
@@ -756,6 +758,22 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
                   disabled: !effortSupported(o.value, support),
                   onSelect: () => void s.setOptions({ effort: o.value }),
                 })),
+              },
+              {
+                group: "全力以赴",
+                items: (() => {
+                  const ao = s.allout;
+                  const on = ao.enabled;
+                  return [{
+                    label: on ? `已开启（上限 ${ao.candidates} 路）` : "全力以赴",
+                    desc: "先一次做好，失败按原因修，还不行才分头试；模型不变，多数任务不会多花一分钱",
+                    hint: on ? "当前" : undefined,
+                    onSelect: () => {
+                      s.setAllout({ enabled: !on });
+                      s.showToast(on ? "已关闭全力以赴" : `全力以赴已开启（上限 ${ao.candidates} 路，可用「目标」填判据）`, "info");
+                    },
+                  }];
+                })(),
               },
               {
                 group: "回答风格",

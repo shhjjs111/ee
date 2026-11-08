@@ -60,6 +60,8 @@ type State = {
   draftMode: string;
   draftEffort: string | null; // D5-9：新对话首条消息前选的推理强度（null = 按模型默认）
   draftStyle: string | null; // D5-9：新对话首条消息前选的回答风格（null = 设置里的默认）
+  /** 全力以赴：这一回合是否开着（会话级开关，只随下一次 turn/start 带过去） */
+  allout: { enabled: boolean; candidates: number };
   defaultEffort: string; // 设置里的全局默认推理强度
   defaultStyle: string; // 设置里的默认回答风格
   draftWorktree: boolean; // 新对话在新 worktree 里开始（D5-1）
@@ -112,6 +114,8 @@ type Actions = {
   /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
   sendGoal(text: string, command: string, maxRounds: number): Promise<boolean>;
+  /** 全力以赴开关（会话级）：打开后下一次发送会带上 allout，模型不变。 */
+  setAllout(v: { enabled?: boolean; candidates?: number }): void;
   /** 没有当前对话时按草稿（项目、模型、模式、worktree）新建一个，返回会话 id；没选项目返回 null。 */
   ensureThread(): Promise<string | null>;
   withdrawQueued(itemId: string): Promise<void>;
@@ -157,6 +161,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   draftMode: localStorage.getItem("ee.mode") || "default",
   draftEffort: null,
   draftStyle: null,
+  allout: { enabled: false, candidates: 3 },
   defaultEffort: "",
   defaultStyle: "default",
   draftWorktree: false,
@@ -474,6 +479,12 @@ export const useApp = create<State & Actions>((set, get) => ({
    * 混进 send 会让普通路径多一堆 goal 分支。共用 ensureThread/状态设置，
    * 只是 rpc 调用多带 goal 字段。
    */
+  setAllout(v) {
+    const cur = get().allout;
+    const next = { enabled: v.enabled ?? cur.enabled, candidates: Math.max(1, Math.min(3, v.candidates ?? cur.candidates)) };
+    set({ allout: next });
+  },
+
   async sendGoal(text, command, maxRounds) {
     const s = get();
     const rpc = s.rpc!;
@@ -489,12 +500,14 @@ export const useApp = create<State & Actions>((set, get) => ({
       set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id!]: Date.now() } }));
       setStatus(id, "running");
       setStatusText(id, "正在开始目标循环…");
+      const ao = get().allout;
       await rpc.call("turn/start", {
         thread_id: id,
         text,
         model,
         mode,
         goal: { command, max_rounds: maxRounds },
+        ...(ao.enabled ? { allout: { enabled: true, candidates: ao.candidates } } : {}),
       });
       return true;
     } catch (e) {
@@ -533,7 +546,11 @@ export const useApp = create<State & Actions>((set, get) => ({
       const effort = s.activeThreadId ? undefined : (s.draftEffort ?? undefined);
       const style = s.activeThreadId ? undefined : (s.draftStyle ?? undefined);
       if (!s.activeThreadId) set({ draftEffort: null, draftStyle: null });
-      await rpc.call("turn/start", { thread_id: id, text, model, mode, attachments: atts, effort, style, queue }, atts ? 120000 : undefined);
+      const ao = get().allout;
+      await rpc.call("turn/start", {
+        thread_id: id, text, model, mode, attachments: atts, effort, style, queue,
+        ...(ao.enabled ? { allout: { enabled: true, candidates: ao.candidates } } : {}),
+      }, atts ? 120000 : undefined);
       return true;
     } catch (e) {
       const msg = (e as Error).message;

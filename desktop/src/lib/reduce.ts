@@ -22,6 +22,24 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
     }
     case "item/removed":
       return { ...t, items: t.items.filter((x) => x.id !== p.item_id) };
+    case "goal_check":
+      // Goal / 全力以赴的进度：每轮判定都推一条。没有它长跑看起来就是卡死。
+      return {
+        ...t,
+        status_text: p.met
+          ? "判据已通过"
+          : `目标还没达成：${p.reason || ""}（第 ${p.round ?? "?"} 次判定）`.trim(),
+      };
+    case "goal_done":
+      return {
+        ...t,
+        status_text: "",
+      };
+    case "allout_plan":
+      return {
+        ...t,
+        status_text: `全力以赴 · ${p.plan?.candidates ?? 1} 路`,
+      };
     case "turn/status":
       return { ...t, status_text: p.text || "" };
     case "thread/usage":

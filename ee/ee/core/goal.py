@@ -118,16 +118,55 @@ _SKIPPED = re.compile(r"(\d+)\s+skipped", re.I)
 _COLLECTED = re.compile(r"collected\s+(\d+)\s+items?", re.I)
 _RAN = re.compile(r"(\d+)\s+(?:tests?|用例)\s*(?:passed|通过)", re.I)
 
+# 其它 runner 的汇总行（allout 阶段 0）。每一条都用行首锚定：
+# vitest 的 `Test Files 3 passed` 会命中 `(\d+) passed`，不锚定就会把文件数当测试数。
+#
+# 返回值的口径统一为「真跑过的测试数」= 通过 + 失败（跳过不算）：
+# 只取通过数会让「修好一半」的进度被低估，也偏离 pytest 分支的既有口径。
+_GO_OK = re.compile(r"^ok\s+\S+", re.M)                       # 成功行：ok  pkg  0.12s
+_GO_PASS = re.compile(r"^\s*--- PASS:\s+\S+", re.M)           # -v 形态
+_GO_FAIL = re.compile(r"^\s*--- FAIL:\s+\S+", re.M)           # -v 形态（未通过也算跑过）
+_GO_FAIL_SUMMARY = re.compile(r"^(?:FAIL|\s*FAIL)\s+\S+", re.M)  # 非 -v 的失败汇总行
+_VITEST_TESTS = re.compile(r"^\s*Tests\s+(.+)$", re.M)        # Tests  1 failed | 11 passed (12)
+_JEST_TESTS = re.compile(r"^\s*Tests:\s+(.+)$", re.M)         # Tests:  1 failed, 11 passed, 12 total
+_DOTNET = re.compile(r"Failed:\s*(\d+),\s*Passed:\s*(\d+)", re.I)
+_MOCHA_PASS = re.compile(r"(\d+)\s+passing", re.I)
+_RSPEC = re.compile(r"(\d+)\s+examples?,\s*(\d+)\s+failures?", re.I)
+_PHPUNIT_OK = re.compile(r"OK\s*\((\d+)\s+tests?", re.I)
+_PHPUNIT_SUM = re.compile(r"Tests:\s*(\d+),\s*Assertions:", re.I)
+_BUN_PASS = re.compile(r"^\s*(\d+)\s+pass\s*$", re.M)
+_BUN_FAIL = re.compile(r"^\s*(\d+)\s+fail\s*$", re.M)
+_MAVEN = re.compile(r"Tests run:\s*(\d+)", re.I)
+
+# 「Tests  1 failed | 11 passed (12)」/「Tests: 1 failed, 11 passed, 12 total」里的数字提取
+_NUM_PASSED = re.compile(r"(\d+)\s+passed", re.I)
+_NUM_FAILED = re.compile(r"(\d+)\s+failed", re.I)
+_NUM_TOTAL = re.compile(r"(\d+)\s+total", re.I)
+
+
+def _from_vitest_jest(line: str) -> int:
+    """vitest / jest 的 Tests 行：优先 通过+失败，再退回 total。"""
+    p = _NUM_PASSED.search(line)
+    f = _NUM_FAILED.search(line)
+    if p and f:
+        return int(p.group(1)) + int(f.group(1))
+    if p:
+        return int(p.group(1))
+    if f:
+        return int(f.group(1))
+    t = _NUM_TOTAL.search(line)
+    return int(t.group(1)) if t else 0
+
 
 def parse_tests(output: str) -> int:
     """从判据输出里读出「有多少个测试真正跑过了」。
 
     规则（按可靠性排序）：
-    - 有 `N passed` 与 `M failed` 时**相加**：两个都是"真跑过"的测试，
+    - 先认 pytest 的 `N passed` / `M failed`：两者**相加**，都是"真跑过"的测试，
       `2 failed, 3 passed` 表示跑了 5 个。只取 passed 会把失败那部分漏掉，
       在"修好一半"的场景里低估进度。
-    - 只有 `N passed` 就用它。
-    - 只有 `N failed` 就用它（跑过但都失败）。
+    - 其它 runner（go / dotnet / vitest / jest / mocha / rspec / phpunit / bun /
+      maven）按各自汇总行解析，口径同样是「通过 + 失败」。
     - 否则 `collected N items`。
     - 都没有 → 0（读不出就当没跑，不假成功）。
 
@@ -136,8 +175,17 @@ def parse_tests(output: str) -> int:
     """
     if not output:
         return 0
-    p = _PASSED.search(output)
-    f = _FAILED.search(output)
+    # vitest / jest 的 `Tests` 行必须先判：vitest 会把 `Test Files  3 passed`
+    # 放在前面，pytest 的通用 `N passed` 会先把文件数当成测试数。
+    m = _VITEST_TESTS.search(output) or _JEST_TESTS.search(output)
+    if m:
+        n = _from_vitest_jest(m.group(1))
+        if n:
+            return n
+    # 没有 Tests 行时，`Test Files  3 passed` 同样不能被通用规则当测试数。
+    generic = re.sub(r"^.*Test Files.*$", "", output, flags=re.M)
+    p = _PASSED.search(generic)
+    f = _FAILED.search(generic)
     if p and f:
         return int(p.group(1)) + int(f.group(1))
     if p:
@@ -155,6 +203,44 @@ def parse_tests(output: str) -> int:
     r = _RAN.search(output)
     if r:
         return int(r.group(1))
+
+    # ---- 其它 runner（顺序无关，形态互不重叠；但 vitest/jest 必须在 go 之前判，
+    # 否则 `Tests  ... passed` 不会被命中，也不冲突。放在一起按最具体的先查。）
+    m = _VITEST_TESTS.search(output) or _JEST_TESTS.search(output)
+    if m:
+        n = _from_vitest_jest(m.group(1))
+        if n:
+            return n
+    m = _MAVEN.search(output)
+    if m:
+        return int(m.group(1))          # Tests run 已含 failures/errors，不能相加
+    m = _DOTNET.search(output)
+    if m:
+        return int(m.group(1)) + int(m.group(2))
+    m = _RSPEC.search(output)
+    if m:
+        return int(m.group(1))          # examples 已含 failures
+    m = _PHPUNIT_OK.search(output)
+    if m:
+        return int(m.group(1))
+    m = _PHPUNIT_SUM.search(output)
+    if m:
+        return int(m.group(1))
+    m = _MOCHA_PASS.search(output)
+    if m:
+        passes = int(m.group(1))
+        fail = re.search(r"(\d+)\s+failing", output, re.I)
+        return passes + (int(fail.group(1)) if fail else 0)
+    bp, bf = _BUN_PASS.search(output), _BUN_FAIL.search(output)
+    if bp:
+        return int(bp.group(1)) + (int(bf.group(1)) if bf else 0)
+    go_fail = bool(_GO_FAIL_SUMMARY.search(output)) or bool(_GO_FAIL.search(output))
+    passes = len(_GO_OK.findall(output)) + len(_GO_PASS.findall(output))
+    if passes:
+        return passes + len(_GO_FAIL.findall(output))
+    if go_fail:
+        # go 全失败且没带 -v：没有可数的通过行。0 是保守方向（退出码非零本来就不通过）
+        return 0
     return 0
 
 

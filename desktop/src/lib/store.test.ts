@@ -203,6 +203,41 @@ describe("item/delta 有界合并（T22）", () => {
   });
 });
 
+describe("全力以赴开关", () => {
+  it("关着时 turn/start 不带 allout", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") }, allout: { enabled: false, candidates: 3 } });
+    void useApp.getState().send("改一下");
+    await Promise.resolve();
+    const call = f.calls.find((c) => c.method === "turn/start")!;
+    expect(call.params.allout).toBeUndefined();
+    call.resolve({});
+  });
+
+  it("开着时 turn/start 带 allout，且带的是用户选的模型（不换模型）", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") },
+      draftModel: "deepseek-v4", allout: { enabled: true, candidates: 2 },
+    });
+    void useApp.getState().send("改一下");
+    await Promise.resolve();
+    const call = f.calls.find((c) => c.method === "turn/start")!;
+    expect(call.params.allout).toEqual({ enabled: true, candidates: 2 });
+    expect(call.params.model).toBe("deepseek-v4");
+    call.resolve({});
+  });
+
+  it("candidates 钳在 1..3", () => {
+    useApp.getState().setAllout({ enabled: true, candidates: 99 });
+    expect(useApp.getState().allout.candidates).toBe(3);
+    useApp.getState().setAllout({ candidates: 0 });
+    expect(useApp.getState().allout.candidates).toBe(1);
+    useApp.getState().setAllout({ enabled: false });
+    expect(useApp.getState().allout.enabled).toBe(false);
+  });
+});
+
 describe("发送失败", () => {
   it("空闲时 turn/start 失败：错误进对话，文字退回输入框（不丢用户打的字）", async () => {
     const f = fakeRpc();

@@ -3,7 +3,20 @@
 export type ItemBase = { id: string; ts?: number; seq?: number };
 
 export type AttachmentMeta = { id: string; name: string; mime: string; size: number; thumb?: string };
-export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review" | "loop"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[] };
+export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review" | "loop"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[]; goal?: { command: string; max_rounds: number; timeout?: number }; allout?: { enabled: boolean; candidates: number } };
+
+/** 全力以赴的火力推导结果（后端 core/allout.py 的 AlloutPlan.as_dict）。 */
+export type AlloutPlanInfo = {
+  candidates: number;
+  repair_rounds: number;
+  max_rounds: number;
+  effort: string;
+  max_steps: number;
+  temperature_ladder: number[];
+  verified: boolean;
+  reasons: string[];
+  degradations: string[];
+};
 export type AssistantItem = ItemBase & { type: "assistant"; text: string; reasoning: string; streaming?: boolean };
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 export type ToolItem = ItemBase & {
@@ -664,4 +677,11 @@ export type BestofCandidate = {
   verified_state?: string | null;
   current_state?: string | null;
   reason: string;
+  /** allout 的质量信号（老后端不返回时当作中性默认）。 */
+  regressed?: boolean;
+  votes?: number;
+  touched_tests?: boolean;
+  files?: number;
+  additions?: number;
+  deletions?: number;
 };

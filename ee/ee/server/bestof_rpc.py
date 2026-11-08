@@ -52,6 +52,13 @@ def register(methods: dict, backend) -> None:
                 # 跨请求比对要用：前端把 verify 时拿到的指纹原样带回来（ACC-16）
                 verified_state=(str(c["verified_state"]) if c.get("verified_state") else None),
                 current_state=(str(c["current_state"]) if c.get("current_state") else None),
+                # allout 的质量信号：全部缺省中性，老调用方不传时行为不变
+                regressed=bool(c.get("regressed")),
+                votes=int(c.get("votes") or 0),
+                touched_tests=bool(c.get("touched_tests")),
+                files=int(c.get("files") or 0),
+                additions=int(c.get("additions") or 0),
+                deletions=int(c.get("deletions") or 0),
             ))
         return out
 
