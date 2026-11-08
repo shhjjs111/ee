@@ -147,6 +147,39 @@ def test_idle_is_not_completed(ee_home, workspace):
     asyncio.run(go())
 
 
+def test_interrupt_during_wait_is_not_error(ee_home, workspace):
+    """用户在「会话空闲、但外层任务还在跑」时点停止，终态必须是 interrupted 而不是 error。
+
+    这条路径真实存在：Goal 模式的判据命令跑在子进程里，此刻模型会话是空闲的，
+    session.interrupt() 停不到东西，Thread.interrupt() 只能 cancel 外层 task。
+    CancelledError 是 BaseException，`except Exception` 接不住，reason 就停在初值
+    "error"——子会话卡片显示「出错」、编排也据此当成失败重试。
+    """
+    async def go():
+        b, fake = _backend(ee_home, [text_chunks("一") + finish("stop")])
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        t = b.threads[th["id"]]
+
+        async def slow_goal(*a, **k):
+            await asyncio.sleep(10)      # 模拟判据子进程：会话空闲，长跑
+            return "completed"
+
+        t._consume_goal = slow_goal
+        t._new_run("干活")
+        task = asyncio.ensure_future(t._consume("干活", None, {"command": "x"}))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert t.meta["runs"][-1]["terminal_reason"] == "interrupted"
+        assert t.status == "idle"
+
+    asyncio.run(go())
+
+
 def test_run_ids_are_unique_per_dispatch(ee_home, workspace):
     async def go():
         b, fake = _backend(ee_home, [text_chunks("一") + finish("stop"),

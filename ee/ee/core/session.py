@@ -179,7 +179,8 @@ class Session:
         self.store = SessionStore(self.home, enabled=persist)
         self._task: asyncio.Task | None = None
         self._stop_why: str = ""             # 中断原因：空 = 用户点了停止（见 interrupt()）
-        self._prefix_drift: str = ""         # 已提醒过的前缀漂移（sha 或 verify）：同一原因只提醒一次
+        self._prefix_drift_sha: str = ""     # 已提醒过的前缀 sha：同一个值只提醒一次
+        self._prefix_bad_verify: bool = False  # 已提醒过「冻结前缀被改动」：只报一次
         self._open_calls: list[str] = []
         self._results: dict[str, str] = {}
         self._ok: dict[str, bool] = {}
@@ -1110,16 +1111,18 @@ class Session:
                     emit(Notice(text, level))
             return self.prefix
         if not self.prefix.verify():
-            if self._prefix_drift != "verify":
-                self._prefix_drift = "verify"
+            if not self._prefix_bad_verify:
+                self._prefix_bad_verify = True
                 emit(Notice("冻结前缀的内容被改动了（sha256 不符），缓存会失效。", "warn"))
         fresh = self.current_prefix().sha256
         if fresh != self.prefix.sha256:
             # 同一个原因只在**第一次**提醒（P2）：_ensure_prefix 每次请求前都跑，
             # 原来一句警告在恢复会话后的 5 次请求里重复了 5 遍，日志和界面都很难看。
             # 用 sha 去重而不是布尔标记：提示词文件之后再改一次，新 sha 还会再提醒一次。
-            if self._prefix_drift != fresh:
-                self._prefix_drift = fresh
+            # 两类警告各自记（两个字段而不是一个）：共用一个字段时，sha 分支一覆盖，
+            # verify 分支下轮就以为没提醒过，于是两个条件同时成立时照样每轮刷一遍。
+            if self._prefix_drift_sha != fresh:
+                self._prefix_drift_sha = fresh
                 emit(Notice("system/tools 与会话开始时不同（可能改了提示词文件）；继续使用会话开始时冻结的版本以保住缓存。", "warn"))
         return self.prefix
 

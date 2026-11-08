@@ -611,6 +611,13 @@ class Thread:
                         if ev.tree_after:
                             self._mark_tree_after(ev.tree_after)
                     self._on_event(ev)
+        except asyncio.CancelledError:
+            # 用户点停止时 `interrupt()` 会 cancel 外层 task（session 已经空闲停不到东西时只能这样）：
+            # CancelledError 是 BaseException，上面的 except Exception 接不住，reason 会停在初值
+            # "error"，于是这次主动停止被记成 terminal_reason=error，子会话卡片显示「出错」、
+            # 编排也据此当成失败重试。写 interrupted 再抛，取消语义不变。
+            reason = "interrupted"
+            raise
         except Exception as e:  # noqa: BLE001
             log.error("回合异常（会话 %s）", self.id, exc_info=True)
             self._add({"type": "error", "message": f"内部错误：{type(e).__name__}: {e}"})

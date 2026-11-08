@@ -221,3 +221,35 @@ def test_interrupt_carries_reason_into_history():
             s._task.cancel()
 
     asyncio.run(go())
+
+
+def test_prefix_warnings_dedupe_independently(workspace):
+    """两类前缀警告同时成立时，各报一次，不能互相把去重状态覆盖掉（P2）。
+
+    共用一个去重字段时会出现这种情况：verify 报了 → sha 分支把字段改成新 sha →
+    下一轮 verify 又发现「没提醒过」→ 每轮都刷一遍，恢复会话后正好 5 次请求刷 5 遍，
+    也就是报告里说的重复警告。
+    """
+    from tests.conftest import make_session
+
+    s, _ = make_session(workspace, [])
+    evs: list = []
+
+    emit = evs.append          # 同步收集：写成 async def 会返回没人 await 的协程，事件静默丢失
+
+    async def go():
+        s._ensure_prefix(emit)               # 第一次调用才冻结前缀，之后才谈得上「漂移」
+        evs.clear()
+        # 让两个条件同时成立：verify 失败 + 当前 sha 与冻结的不同
+        s.prefix.verify = lambda: False                   # type: ignore[method-assign]
+        s.current_prefix = lambda: SimpleNamespace(          # type: ignore[method-assign]
+            sha256="other", system="x", tools="y")
+        for _ in range(5):
+            s._ensure_prefix(emit)
+
+    asyncio.run(go())
+    warns = [e.text for e in evs if isinstance(e, Notice)]
+    verify = [t for t in warns if "冻结前缀" in t]
+    drift = [t for t in warns if "与会话开始时不同" in t]
+    assert len(verify) == 1, f"verify 警告应只报一次，实际 {len(verify)} 次：{verify}"
+    assert len(drift) == 1, f"漂移警告应只报一次，实际 {len(drift)} 次：{drift}"
