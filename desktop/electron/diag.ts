@@ -46,11 +46,13 @@ const LAG_SCRIPT = `new Promise((resolve) => {
 })`;
 
 export function registerDiagIpc(opts: { getWin: () => BrowserWindow | null; logsDir: string }) {
-  const collect = async (): Promise<DiagResult> => {
+  const collect = async (why: { reason?: string } = {}): Promise<DiagResult> => {
     const win = opts.getWin();
     const now = new Date();
     const facts: Record<string, unknown> = {
       ts: now.toISOString(),
+      // 为什么导这份：手动导出不带，自动留证会写 unresponsive / render-process-gone: oom
+      reason: why.reason || "manual",
       app: { version: app.getVersion(), packaged: app.isPackaged, locale: app.getLocale() },
       platform: { os: process.platform, arch: process.arch, versions: process.versions, uptime_s: Math.round(process.uptime()) },
       main: { pid: process.pid, memory_rss: process.memoryUsage().rss },
@@ -95,7 +97,9 @@ export function registerDiagIpc(opts: { getWin: () => BrowserWindow | null; logs
       facts.metrics = [];
     }
 
-    const file = path.join(opts.logsDir, `diagnostic-${now.toISOString().replace(/[:.]/g, "-")}.json`);
+    const tag = (why.reason || "manual").replace(/[^a-z0-9-]+/gi, "-").slice(0, 24);
+    const file = path.join(opts.logsDir,
+      `diagnostic-${now.toISOString().replace(/[:.]/g, "-")}-${tag}.json`);
     try {
       fs.mkdirSync(opts.logsDir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(facts, null, 2), "utf-8");

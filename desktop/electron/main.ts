@@ -80,8 +80,25 @@ function createWindow() {
     if (win && trayCtl?.interceptClose(win)) e.preventDefault();
   });
   win.on("focus", () => win && trayCtl?.stopFlash(win));
+  // 卡死自动留证（P0-3）：界面无响应时用户往往连托盘都点不动，靠手点导不出东西。
+  // 这两个事件由主进程监听，只要主进程还活着就一定触发，不依赖渲染进程响应。
+  let hungAt = 0;
+  win.on("unresponsive", () => {
+    hungAt = Date.now();
+    void diag.collect({ reason: "unresponsive" }).catch(() => undefined);
+  });
+  // 恢复响应也要记：有这条才知道「卡了多久、自己好了还是没好」，只记开始不够。
+  win.on("responsive", () => {
+    if (!hungAt) return;
+    const secs = Math.round((Date.now() - hungAt) / 1000);
+    hungAt = 0;
+    void diag.collect({ reason: `responsive-after-${secs}s` }).catch(() => undefined);
+  });
   win.on("closed", () => {
     win = null;
+  });
+  win.webContents.on("render-process-gone", (_e, details) => {
+    void diag.collect({ reason: `render-process-gone: ${details.reason}` }).catch(() => undefined);
   });
   // 外部链接用系统浏览器打开
   win.webContents.setWindowOpenHandler(({ url }) => {
