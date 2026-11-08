@@ -10,4 +10,18 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = ["json_tool_calls"]
+# 思考开关与推理强度（官方文档 https://ark.volcengine.com/region:cn-beijing/docs/model-parameter-support，2026-11 查阅）：
+# - thinking.type = enabled / disabled / auto。
+# - reasoning_effort 默认 high，有效档位 low / medium / high；minimal 表示停止思考，
+#   none 映射成 minimal，xhigh / max 映射成 high（所以这三个不是独立档位）。
+# 因此只给 low / medium / high 三档；ee 的「最高」由 canonical 自动落到 high。
+# 这些参数只有 Seed 2.1 / 2.0 及 doubao-seed-evolving 支持，老版本不认——
+# 发了会 400，openai_chat 会去掉并记住。
 thinking_param = "thinking_type"
+
+[[variants]]
+match = ["seed-2", "seed-evolving", "doubao-seed-2"]
+effort_param = "reasoning_effort"
+effort_levels = ["low", "medium", "high", "max"]
+effort_values = { max = "high" }
+effort_labels = { max = "最高（服务端按 high 处理）" }

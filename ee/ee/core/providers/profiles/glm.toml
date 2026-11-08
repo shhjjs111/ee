@@ -10,4 +10,16 @@ edit_style = "edit"
 prompt_patch = "glm"
 empty_assistant_content = "empty"
 quirks = ["xml_tool_calls", "json_tool_calls"]
+# 思考开关与推理强度（官方文档 https://docs.z.ai/guides/capabilities/thinking，2026-11 查阅）：
+# - thinking.type = enabled（默认）/ disabled。GLM-5.3 与 5.3-FLASH 不再支持关闭（传 disabled 会报错）。
+# - reasoning_effort 只有 GLM-5.2 及以上支持：max（默认，深推理）/ high / low。
+#   5.3 与 5.3-FLASH 只接受这三档；5.2 另有 xhigh（映射 max）、medium 与 minimal（映射 high）、none（停止思考）。
+# GLM-4.6 及以下没有这个参数，发了会 400——openai_chat 会去掉并记住，不会卡死。
+# 所以只在 GLM-5 系上开强度档，且只用三家都认的 low/high/max。
 thinking_param = "thinking_type"
+
+[[variants]]
+match = ["glm-5"]
+effort_param = "reasoning_effort"
+effort_levels = ["low", "high", "max"]
+effort_aliases = { medium = "high" }

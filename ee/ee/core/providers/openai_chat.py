@@ -214,8 +214,20 @@ class ChatClient:
     @staticmethod
     def has_reasoning_params(p: dict) -> bool:
         eb = p.get("extra_body") or {}
-        return "reasoning_effort" in p or "thinking" in eb or "enable_thinking" in eb or any(
-            k.endswith("effort") for k in eb)
+        if "reasoning_effort" in p or "thinking" in eb or "enable_thinking" in eb:
+            return True
+        # effort 也可能嵌在对象里（Claude 的 output_config.effort、Gemini 原生的
+        # google.thinking_config.thinking_level），只看顶层键会漏判：那时 400 走不到
+        # 「去掉推理参数重试一次」这一步，用户直接看到报错。
+        def _nested(d) -> bool:
+            for k, v in d.items():
+                if str(k).endswith("effort") or str(k).endswith("thinking_level"):
+                    return True
+                if isinstance(v, dict) and _nested(v):
+                    return True
+            return False
+
+        return _nested(eb)
 
     # ------------------------------------------------------------ 流式调用
     async def stream(self, messages: list[dict], tools: list[dict] | None,

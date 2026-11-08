@@ -56,6 +56,92 @@ def test_effort_params_by_family():
     assert "extra_body" not in params("deepseek-flash", "off", {"no_thinking": True})
 
 
+def test_cn_families_effort_reaches_max():
+    """国产家族也能调推理强度——以前只配了「开关思考」，强度拉不上去。
+
+    依据（2026-11 查阅官方文档）：
+    - GLM：reasoning_effort 仅 GLM-5.2+，max/high/low（docs.z.ai/guides/capabilities/thinking）
+    - Qwen：qwen3.x 是 low/medium/xhigh，默认 xhigh（platform.qianwenai.com 思考模式）
+    - Kimi：K3/K3.1-Pro 是 low/high/max，默认 max；K2.x 没有这个参数
+    - 豆包：low/medium/high，xhigh/max 被服务端映射成 high
+    - MiniMax：M3.1-Flash 是 low/medium/high/xhigh/max，默认 max
+    """
+    assert params("glm-5.3", "max")["reasoning_effort"] == "max"
+    assert params("qwen3.8-max", "max")["reasoning_effort"] == "xhigh"    # ee 的 max → 它家的 xhigh
+    assert params("kimi-k3.1-pro", "max")["reasoning_effort"] == "max"
+    assert params("doubao-seed-2.1-pro", "max")["reasoning_effort"] == "high"
+    assert params("MiniMax-M3.1-Flash", "max")["reasoning_effort"] == "max"
+    # 老型号不认这个参数，一个字节都不能发（发了会 400）
+    for old in ("glm-4.6", "qwen-max", "kimi-k2.6", "doubao-seed-1.6", "MiniMax-M2.5"):
+        assert "reasoning_effort" not in params(old, "max"), old
+    # 始终推理的模型不能发 thinking
+    assert "extra_body" not in params("kimi-k3.1-pro", "off")
+
+
+def test_high_stays_high_not_max():
+    """「高」不能被悄悄升成「最高」——用户选什么就发什么。
+
+    各家最高档的写法不同（Qwen=xhigh、GPT-5.2=xhigh、豆包=high），但中间档必须
+    保持原值。以前用 effort_aliases={high: max} 实现映射，副作用是用户点「高」
+    拿到的是最高档，等于偷偷替换了选择。
+    """
+    assert params("gpt-5.2", "high")["reasoning_effort"] == "high"
+    assert params("gpt-5.2", "max")["reasoning_effort"] == "xhigh"
+    assert params("qwen3.8-max", "high")["reasoning_effort"] == "high"
+    assert params("qwen3.8-max", "max")["reasoning_effort"] == "xhigh"
+    assert params("MiniMax-M3.1-Flash", "high")["reasoning_effort"] == "high"
+    assert params("MiniMax-M3.1-Flash", "max")["reasoning_effort"] == "max"
+    # 豆包服务端把 xhigh/max 都映射成 high，所以这两档发出相同的值是预期行为
+    assert params("doubao-seed-2.1-pro", "high")["reasoning_effort"] == "high"
+    assert params("doubao-seed-2.1-pro", "max")["reasoning_effort"] == "high"
+    # 老型号一个字节都不发
+    for old in ("gpt-5.1", "gpt-5", "o3-mini"):
+        assert params(old, "high")["reasoning_effort"] == "high", old
+        assert params(old, "max")["reasoning_effort"] == "high", old
+
+
+def test_claude_and_gemini_effort():
+    """Claude 用嵌套 output_config.effort；Gemini 3 用顶层 reasoning_effort；老模型都不发。"""
+    assert params("claude-opus-5-5", "max")["extra_body"] == {"output_config": {"effort": "max"}}
+    assert params("claude-sonnet-4-6", "max")["extra_body"] == {"output_config": {"effort": "max"}}
+    assert "extra_body" not in params("claude-3-5-sonnet", "max")
+    assert params("gemini-3-pro", "high")["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in params("gemini-2.5-pro", "high")
+    # GPT-5.2 及更新能到 xhigh；5.1/o 系列只到 high
+    assert params("gpt-5.2", "max")["reasoning_effort"] == "xhigh"
+    assert params("gpt-5.1", "max")["reasoning_effort"] == "high"
+
+
+def test_has_reasoning_params_sees_nested_effort():
+    """嵌套参数也算「发了推理参数」，否则 400 时的降级重试会被跳过。
+
+    Claude 发的是 extra_body.output_config.effort，键名 output_config 不以 effort
+    结尾；只看顶层键会判成「没发」，于是 400 不走去掉参数的重试，用户直接看到报错。
+    """
+    for model in ("claude-opus-5-5", "claude-sonnet-4-6"):
+        p = params(model, "max")
+        assert p["extra_body"] == {"output_config": {"effort": "max"}}
+        assert ChatClient.has_reasoning_params(p) is True
+    # 顶层名和 thinking 老路径仍然认得
+    assert ChatClient.has_reasoning_params(params("gpt-5.2", "max")) is True
+    assert ChatClient.has_reasoning_params(params("deepseek-flash", "off")) is True
+    # 没发就是没发
+    assert ChatClient.has_reasoning_params(params("gpt-4o", "max")) is False
+    assert ChatClient.has_reasoning_params(params("claude-3-5-sonnet", "max")) is False
+
+
+def test_claude_400_strips_nested_effort_and_remembers(tmp_path):
+    """Claude 的 400 也要能去掉嵌套参数重试一次。"""
+    c, fake = _client([FakeError(400, "Invalid request body"), text_chunks("ok") + finish("stop")],
+                      tmp_path, model="claude-opus-5-5")
+    evs = run(_drain(c, "max"))
+    assert fake.calls[0]["extra_body"] == {"output_config": {"effort": "max"}}
+    assert "extra_body" not in fake.calls[1]
+    notes = [v for k, v in evs if k == "notice"]
+    assert any("去掉推理强度参数重试" in n for n in notes)
+    assert c.state.get(c.key).get("no_reasoning_effort") is True
+
+
 def test_custom_effort_param_goes_to_extra_body(workspace):
     cfg = load_config(workspace)
     cfg.data["models"]["mine"] = {"provider": "deepseek", "model": "my-model", "effort_param": "effort_level",

@@ -10,4 +10,17 @@ edit_style = "edit"
 prompt_patch = "qwen"
 empty_assistant_content = "empty"
 quirks = ["xml_tool_calls", "json_tool_calls"]
+# 思考开关与推理强度（官方文档 https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking）：
+# - enable_thinking = true / false（混合思考模式；部分模型是纯思考模式，关不掉）。
+# - reasoning_effort 控制推理力度，取值按模型而异：qwen3.8-max 是 low / medium / xhigh（默认 xhigh）。
+#   另有 thinking_budget 按 token 数限制思考长度，但两者不能同时传（会报错），ee 只发前者。
+# ee 的档位只有 low/medium/high/max，所以最高档发 xhigh；旧模型（qwen-plus/flash 等）不认这个参数，
+# 444 后 openai_chat 会自动去掉并记住。
 thinking_param = "enable_thinking"
+
+[[variants]]
+match = ["re:qwen3", "qwen-3"]
+effort_param = "reasoning_effort"
+effort_levels = ["low", "medium", "high", "max"]
+effort_values = { max = "xhigh" }
+effort_labels = { max = "最高（xhigh）" }

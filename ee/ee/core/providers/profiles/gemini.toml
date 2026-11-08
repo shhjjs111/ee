@@ -10,4 +10,18 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = ["json_tool_calls"]
+# 推理强度（官方文档 https://ai.google.dev/gemini-api/docs/thinking 与
+# OpenAI 兼容说明 https://aistudio.google.com/docs/openai，2026-11 查阅）：
+# - Gemini 3 用 thinking_level：MINIMAL / LOW / MEDIUM / HIGH，默认 HIGH。
+# - OpenAI 兼容层把 reasoning_effort 直接映射成 thinking_level（minimal/low/medium/high）；
+#   想传原生参数得用 extra_body.google.thinking_config.thinking_level。
+# - 两者不能同时传，同传会 400。
+# - Gemini 2.5 用 thinking_budget（按 token 数），没有档位概念，所以这里不给 2.5 配档位。
+# 默认已经是 HIGH，意味着「最高」不需要发参数就是最高档——但显式发 high 更明确，也让
+# 用户能从低档往回调。这里用 OpenAI 兼容层的 reasoning_effort（顶层），最省事且通用。
+
+[[variants]]
+match = ["gemini-3", "gemini-4"]
 effort_param = "reasoning_effort"
+effort_levels = ["low", "medium", "high"]
+effort_labels = { high = "高（默认）" }

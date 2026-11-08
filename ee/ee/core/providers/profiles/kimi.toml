@@ -10,3 +10,26 @@ edit_style = "edit"
 prompt_patch = "kimi"
 empty_assistant_content = "empty"
 quirks = ["json_tool_calls"]
+# 思考开关与推理强度（官方文档 https://platform.kimi.com/docs/guide/use-reasoning-effort，2026-11 查阅）：
+# - K3 / K3.1-Pro：顶层 reasoning_effort = low / high / max，**默认就是 max**。
+#   这两个是「始终推理」模型，不能传 thinking 字段（K2.x 的老写法，传了会出错），所以变体里把
+#   thinking_param 清空。
+# - K2.6 / K2.5：thinking.type = enabled / disabled，没有 reasoning_effort。
+# - K2.7-code：两个都不可用（始终思考），变体里一起清空。
+# 「默认就是 max」意味着 Kimi K3 用户什么都不设已经是最高档——把「高」映射到 max 才不会误降级。
+thinking_param = ""
+
+[[variants]]
+match = ["kimi-k3", "k3.1", "k3"]
+thinking_param = ""
+effort_param = "reasoning_effort"
+effort_levels = ["low", "high", "max"]
+effort_aliases = { medium = "high" }
+
+[[variants]]
+match = ["k2.7-code", "kimi-k2.7"]
+thinking_param = ""
+
+[[variants]]
+match = ["kimi-k2.6", "kimi-k2.5", "k2.6", "k2.5"]
+thinking_param = "thinking_type"

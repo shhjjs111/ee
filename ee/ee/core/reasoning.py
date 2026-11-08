@@ -10,6 +10,9 @@
 
 模型支不支持看档案：effort_param（强度参数名）决定强度档能不能用，thinking_param 决定能不能关闭思考。
 不支持的档位不发任何参数（界面置灰）。服务端返回 400 时由 openai_chat 去掉参数重试并记住。
+
+effort_param 可以带点写成嵌套路径（如 Claude 的 output_config.effort）：带点时整条走 extra_body
+并按点拆成嵌套对象；"reasoning_effort" 这个名字特殊，OpenAI 兼容层认它在请求顶层。
 """
 from __future__ import annotations
 
@@ -85,6 +88,20 @@ def effective(profile, level: str) -> str:
     return lvl if lvl in sup["levels"] else ""
 
 
+def _nest(dst: dict, path: str, val) -> None:
+    """把 "a.b.c" + 值写进 dst，沿途缺的层建成 dict。"""
+    parts = [x for x in str(path).split(".") if x]
+    cur = dst
+    for p in parts[:-1]:
+        nxt = cur.get(p)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[p] = nxt
+        cur = nxt
+    if parts:
+        cur[parts[-1]] = val
+
+
 def request_params(profile, level: str, strip_effort: bool = False, strip_thinking: bool = False) -> tuple[dict, dict]:
     """→ (顶层参数, extra_body 参数)。level 不被支持或被降级掉时返回空。"""
     top: dict = {}
@@ -96,7 +113,8 @@ def request_params(profile, level: str, strip_effort: bool = False, strip_thinki
         if name == "reasoning_effort":
             top[name] = val
         else:
-            body[name] = val
+            # 带点的（output_config.effort / google.thinking_config.thinking_level）拆成嵌套对象
+            _nest(body, name, val)
     elif lvl == "off" and not strip_thinking:
         if profile.thinking_param == "thinking_type":
             body["thinking"] = {"type": "disabled"}

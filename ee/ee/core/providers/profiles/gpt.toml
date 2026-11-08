@@ -13,9 +13,21 @@ empty_assistant_content = "null"
 quirks = []
 # OpenAI 支持 prompt_cache_key（会话级缓存路由）；不支持的网关会在 400 时被自动降级并记住。
 supports_prompt_cache_key = true
-# 普通 GPT 不支持推理强度；o 系列 / gpt-5 系在下方 variants 里打开
+# 普通 GPT 不支持推理强度；o 系列 / gpt-5 系在下方 variants 里打开。
+# 注意 variants 是「第一个匹配上的生效」（profiles.py:for_model），所以具体的放前面。
 
-# o 系列 / gpt-5 系推理模型：reasoning_effort = low / medium / high
+# GPT-5.2 及更新：官方 Reasoning 文档（2026-11 查阅）说 GPT-5.2 支持
+# none / low / medium / high / xhigh，gpt-5.2-pro 只支持 medium / high / xhigh。
+# ee 的「最高」发 xhigh（none 是关闭思考，不走强度档）。
+[[variants]]
+match = ["gpt-5.2", "gpt-6", "re:gpt-5\\.[2-9]", "re:gpt-[6-9]"]
+reasoning = true
+effort_param = "reasoning_effort"
+effort_levels = ["low", "medium", "high", "max"]
+effort_values = { max = "xhigh" }
+effort_labels = { max = "最高（xhigh）" }
+
+# o 系列 / gpt-5 / 5.1：只有 low / medium / high，多发 xhigh 会 400。
 [[variants]]
 match = ["re:(^|/)o[1-9]", "gpt-5"]
 reasoning = true

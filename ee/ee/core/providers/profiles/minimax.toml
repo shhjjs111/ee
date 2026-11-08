@@ -11,3 +11,17 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = ["think_tags", "xml_tool_calls", "json_tool_calls"]
+# 思考开关与推理强度（官方文档 https://platform.minimax.cn/docs/api-reference/text-openai-api，2026-11 查阅）：
+# - thinking.type = disabled / adaptive（省略 = 开启）。M3.1-Flash 强制思考，传 disabled 会 400。
+# - reasoning_effort = low / medium / high / xhigh / max，省略时默认 max；只有 M3.1-Flash 生效。
+#   M2.x 不认这个参数，发了会 400（openai_chat 会去掉并记住）。
+# 「默认就是 max」意味着 M3.1-Flash 用户什么都不设已是最高档；把「高」映射到 max 才不会误降级。
+thinking_param = "thinking_type"
+
+[[variants]]
+match = ["m3.1", "minimax-m3"]
+effort_param = "reasoning_effort"
+# M3.1-Flash 官方可选 low/medium/high/xhigh/max，默认 max。ee 只有四档，
+# 所以把「最高」直接发 max，中间的「高」保留为 high——别把 high 也映上去，
+# 那会让用户选「高」时莫名变成最高档。
+effort_levels = ["low", "medium", "high", "max"]

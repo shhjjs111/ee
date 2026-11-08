@@ -10,3 +10,18 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = []
+
+# 推理强度（官方 Effort 文档 https://platform.claude.com/docs/zh-CN/build-with-claude/effort，2026-11 查阅）：
+# - Messages API 用 output_config.effort（嵌套，不是顶层 reasoning_effort）。
+# - 档位 low / medium / high / xhigh / max；xhigh 与 max 只有「自适应思考」模型支持，
+#   旧模型会把它们降成 high 的预算。
+# - 自适应思考模型：Opus 5.x / Sonnet 5.x / Opus 4.6-4.8 / Sonnet 4.6 / Fable / Mythos。
+#   这些用 thinking:{type:"adaptive"}，不接受 budget_tokens（4.7 起传了会 400）。
+# - 旧模型（Opus 4.5 及以下、Sonnet 4.5 及以下）没有 output_config.effort 的稳定支持，
+#   一个字节都不发；需要调深度得用已弃用的 thinking.budget_tokens，ee 不做。
+[[variants]]
+match = ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+         "claude-sonnet-4-6", "claude-fable-5", "claude-mythos-5", "claude-haiku-5"]
+effort_param = "output_config.effort"
+effort_levels = ["low", "medium", "high", "max"]
+effort_labels = { max = "最高（max）" }
