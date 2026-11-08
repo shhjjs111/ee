@@ -1,7 +1,18 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("ee", {
   platform: process.platform,
+  /** 文件的真实磁盘路径。Electron 32 起 `File.path` 被移除，官方做法就是在 preload 里
+   *  用 `webUtils.getPathForFile`（https://www.electronjs.org/docs/latest/api/web-utils）。
+   *  JS 里 new 出来的 File 没有磁盘对应，返回空串；不是 File 会抛错，一律兜成空串，
+   *  由渲染进程决定提示什么（拖入的压缩包之类不该插进输入框）。 */
+  getFilePath: (f: File) => {
+    try {
+      return webUtils.getPathForFile(f) || "";
+    } catch {
+      return "";
+    }
+  },
   getBackend: () => ipcRenderer.invoke("backend:info"),
   restartBackend: () => ipcRenderer.invoke("backend:restart"),
   openFolder: () => ipcRenderer.invoke("dialog:openFolder"),

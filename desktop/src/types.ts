@@ -492,6 +492,10 @@ export interface EeBridge {
     onState(cb: (s: UpdateState) => void): () => void;
   };
   captureWindow?(): Promise<{ data_url?: string; error?: string }>;
+  /** 拖入/粘贴/选中的文件的真实路径。Electron 32 起 `File.path` 被移除，只能走
+   *  主进程的 `webUtils.getPathForFile`（electron/preload.ts）。返回空串表示这个
+   *  File 不是磁盘上的文件（浏览器调试模式、或 JS 里 new 出来的），调用方要兜住。 */
+  getFilePath?(f: File): string;
   onBackendExit(cb: (info: { code: number | null; tail: string }) => void): () => void;
   log?(line: string): void; // 写进 logs/backend.log
   // D4-5 桌面通知 + 托盘

@@ -188,3 +188,80 @@ describe("子会话卡在审批时，父界面要看得见（P1-8）", () => {
     expect(useApp.getState().pendingChildApprovals["t1"]).toBeFalsy();
   });
 });
+
+/**
+ * 拖入/粘贴非图片文件必须留下痕迹。
+ *
+ * 改之前：`addFiles` 先 `filter(isImageFile)`，非图片被滤空后直接 `return`——
+ * 用户拖进一个 PDF，边框亮了一下，松手什么都没发生，像"发不出去"（实测反馈）。
+ * 现在非图片要变成输入框里的 `@路径`，由模型自己去 read；读不了的类型要给 toast。
+ */
+describe("非图片文件：插路径，不静默丢弃", () => {
+  /** jsdom 没有磁盘，路径由 window.ee 桥注入（真实环境是 webUtils.getPathForFile）。 */
+  function fakeFile(name: string, diskPath: string) {
+    const f = new File(["x"], name);
+    paths.set(f, diskPath);
+    return f;
+  }
+  const paths = new Map<File, string>();
+
+  function mountWithBridge() {
+    const toasts: string[] = [];
+    (window as unknown as { ee?: unknown }).ee = {
+      getFilePath: (f: File) => paths.get(f) ?? "",
+    };
+    act(() =>
+      useApp.setState({
+        ...baseState,
+        showToast: (m: string) => toasts.push(m),
+      } as never),
+    );
+    return { el: render(<Composer />), toasts };
+  }
+
+  function pick(input: HTMLInputElement, files: File[]) {
+    Object.defineProperty(input, "files", { value: files, configurable: true });
+    act(() => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+
+  afterEach(() => {
+    paths.clear();
+    delete (window as unknown as { ee?: unknown }).ee;
+  });
+
+  it("选一个 PDF：输入框里出现它的绝对路径", () => {
+    const { el } = mountWithBridge();
+    const input = el.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(input, "Composer 没有渲染出文件输入").toBeTruthy();
+
+    pick(input, [fakeFile("论文.pdf", "E:\\毕业设计\\论文.pdf")]);
+
+    expect(textarea(el).value).toContain("@E:\\毕业设计\\论文.pdf");
+  });
+
+  it("路径带空格时加引号包住，避免被空格截断", () => {
+    const { el } = mountWithBridge();
+    const input = el.querySelector('input[type="file"]') as HTMLInputElement;
+    pick(input, [fakeFile("开题 报告.docx", "C:\\Users\\ee\\开题 报告.docx")]);
+    expect(textarea(el).value).toContain('@"C:\\Users\\ee\\开题 报告.docx"');
+  });
+
+  it("压缩包这种读不了的：toast 说清原因，输入框不动", () => {
+    const { el, toasts } = mountWithBridge();
+    const input = el.querySelector('input[type="file"]') as HTMLInputElement;
+    pick(input, [fakeFile("资料.zip", "E:\\资料.zip")]);
+
+    expect(textarea(el).value, "压缩包不该插进输入框").toBe("");
+    expect(toasts.length, "读不了的类型必须给提示，不能再静默").toBeGreaterThan(0);
+    expect(toasts[0]).toContain("资料.zip");
+  });
+
+  it("图片仍走附件通道，不会被当成路径插入", () => {
+    const { el } = mountWithBridge();
+    const input = el.querySelector('input[type="file"]') as HTMLInputElement;
+    pick(input, [fakeFile("截图.png", "E:\\截图.png")]);
+    expect(textarea(el).value).not.toContain("@");
+  });
+});

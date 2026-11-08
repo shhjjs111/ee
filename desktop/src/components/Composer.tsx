@@ -4,7 +4,7 @@ import { BgCommands } from "./BgCommands";
 import { ContextRing } from "./ContextPanel";
 import { GitBranch, ArrowUp, AtSign, Cpu, File, ListChecks, Shield, ShieldCheck, ShieldOff, SlidersHorizontal, Square, X } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { isImageFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
+import { isImageFile, isUnreadableFile, MAX_ATTACHMENTS, prepareImage, type Attachment } from "../lib/attachments";
 import {
   effortLabel,
   effortOptionsFor,
@@ -197,8 +197,54 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
     setAtts([]);
   }
 
+  /**
+   * 非图片文件：把**真实路径**插进输入框，由模型自己 `read`。
+   *
+   * 为什么不走图片那套附件通道：图片要转 base64 塞进 `image_url` 发给模型，而文档
+   * 不需要发——`read` 能直接打开本机文件（`ee/core/docread.py` 支持 pdf/docx/xlsx/pptx），
+   * 存副本反而会让模型读到用户改之前的旧版本，还白占磁盘。
+   *
+   * 返回 true 表示至少插进了一条。路径含空格时加引号：`@a b.pdf` 会被空格截断，
+   * 模型只看到前半段就去找不存在的文件（Windows 用户目录里这种文件名很常见）。
+   */
+  function insertFilePaths(list: File[]) {
+    const unreadable = list.filter(isUnreadableFile);
+    if (unreadable.length) {
+      s.showToast(
+        `${unreadable[0].name} 这类文件 ee 读不出内容（压缩包/可执行/音视频/设计稿），先解压或转成文本、PDF、Word 再发`,
+        "error",
+      );
+    }
+    const refs: string[] = [];
+    for (const f of list) {
+      if (isUnreadableFile(f)) continue;
+      const p = window.ee?.getFilePath?.(f) ?? "";
+      // 浏览器调试模式没有桥，拿不到路径：不静默，告诉用户为什么不行
+      if (!p) {
+        s.showToast(`${f.name}：拿不到文件路径，拖入文件需要在 ee 桌面应用里用`, "error");
+        continue;
+      }
+      refs.push(/[\s"]/.test(p) ? `@"${p}"` : `@${p}`);
+    }
+    if (!refs.length) return false;
+    const caret = ta.current?.selectionStart ?? text.length;
+    const ins = refs.join(" ") + " ";
+    setText(text.slice(0, caret) + ins + text.slice(caret));
+    const pos = caret + ins.length;
+    requestAnimationFrame(() => {
+      ta.current?.setSelectionRange(pos, pos);
+      ta.current?.focus();
+    });
+    return true;
+  }
+
   async function addFiles(list: FileList | File[]) {
-    const files = Array.from(list).filter(isImageFile);
+    const all = Array.from(list);
+    if (!all.length) return;
+    // 按类型分派：图片发给模型看（附件），其它文件给路径让模型自己读
+    const files = all.filter(isImageFile);
+    const others = all.filter((f) => !isImageFile(f));
+    if (others.length) insertFilePaths(others);
     if (!files.length) return;
     const room = MAX_ATTACHMENTS - atts.length;
     if (room <= 0) {
@@ -609,7 +655,9 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           onClick={(e) => updateMention(text, (e.target as HTMLTextAreaElement).selectionStart)}
           onKeyDown={onKeyDown}
           onPaste={(e) => {
-            const files = Array.from(e.clipboardData.files).filter(isImageFile);
+            // 粘贴文件：图片走附件，其它插路径。从 Word 里复制**文字**时
+            // clipboardData.files 是空的，纯文本粘贴照旧不受影响。
+            const files = Array.from(e.clipboardData.files);
             if (files.length) {
               e.preventDefault();
               addFiles(files);

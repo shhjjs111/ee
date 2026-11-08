@@ -16,6 +16,31 @@ export function isImageFile(f: File) {
   return ACCEPT.includes(f.type) || /\.(png|jpe?g|gif|webp)$/i.test(f.name);
 }
 
+/**
+ * 明确读不了的类型：压缩包、可执行/库文件、音视频、设计稿、数据库。
+ *
+ * 这些拖进输入框也只会让模型看到一条读不出内容的路径，所以要当场说清楚。
+ * 反过来**不要**做成"只允许 pdf/docx"的白名单——未知扩展名（`LICENSE`、
+ * `.env.local`、自定义后缀）大多是可读文本，误拦比放过更让人困惑。
+ * 能读什么由后端 `ee/core/docread.py` 定：pdf / docx / xlsx / xlsm / pptx + 普通文本。
+ */
+const BLOCKED_EXT = new Set([
+  // 压缩包
+  "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "cab", "iso", "img",
+  // 可执行 / 库
+  "exe", "msi", "dll", "so", "dylib", "bin", "node", "wasm", "class", "jar", "apk",
+  // 音视频
+  "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mp3", "wav", "flac", "ogg", "wma", "m4a", "aac",
+  // 设计稿 / 数据库
+  "psd", "ai", "sketch", "fig", "db", "sqlite", "sqlite3", "mdb", "accdb", "pdb", "tif", "tiff", "raw",
+]);
+
+/** 扩展名在 BLOCKED_EXT 里才算读不了；无扩展名的文件按可读处理（多数是纯文本配置）。 */
+export function isUnreadableFile(f: File) {
+  const m = /\.([^.\\/]+)$/.exec(f.name);
+  return !!m && BLOCKED_EXT.has(m[1].toLowerCase());
+}
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
