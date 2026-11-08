@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ee import __version__
 from ee.core import reasoning as RZ
+from ee.core.session import INTERRUPTED_EXIT
 from ee.config import ROLES
 from ee.config import ee_home, load_config
 from ee.core.fileindex import FileIndex
@@ -1180,7 +1181,8 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     await backend.automations.stop()
     await backend.loops.stop()
     for t in backend.threads.values():
-        t.interrupt()
+        # 内核退出不是用户点停止：把原因写清楚，否则历史里会留下一句“用户中断”（P1）
+        t.interrupt(why=INTERRUPTED_EXIT)
     try:
         from ee.core.bgproc import close_all as bg_close_all
         await asyncio.wait_for(bg_close_all(), 8)       # 结束所有后台命令（D4-6）

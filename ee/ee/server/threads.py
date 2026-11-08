@@ -517,7 +517,7 @@ class Thread:
         self.notify("thread/updated", {"thread": self.summary()})
         return {"queued": False, "item_id": user["id"]}
 
-    def interrupt(self) -> bool:
+    def interrupt(self, why: str = "") -> bool:
         """用户点停止：停掉属于这个会话的一切工作，返回是否真的停到了东西。
 
         **为什么不能只转给 session.interrupt()**：Goal 循环跑在 self.task（_consume）
@@ -528,7 +528,7 @@ class Thread:
         先试 session（能停模型回合就按原来的路子停），不行再取消外层 task；
         两者都没有可停的东西才返回 False。
         """
-        if self.session is not None and self.session.interrupt():
+        if self.session is not None and (self.session.interrupt(why) if why else self.session.interrupt()):
             return True
         if self.task is not None and not self.task.done():
             self.task.cancel()

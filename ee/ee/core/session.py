@@ -55,12 +55,22 @@ LAST_STEP_NOTE = ("[系统提示] 已达到本回合允许的最大步数。请�
 SEGMENT_NOTE = ("[系统提示] 本段步数已用完，任务还没收尾。接着做，不要重复已经完成的部分；"
                 "如果确实需要用户决定什么，就直接用文字问。")
 INTERRUPTED = "用户中断：这次工具调用没有执行完（或没有执行）。"
+# 进程退出（桌面端关闭 / 强杀 / 内核被结束）导致的中断：和「用户点了停止」必须分开。
+# 原先一律写成“用户中断”，实测用户根本没收过手，却被告知是自己中断了，
+# 自动化也把任务记成用户取消，排障时完全误导。
+INTERRUPTED_EXIT = "ee 进程退出：这次工具调用没有执行完（不是你点了停止）。"
 MIDTURN_IMAGE_NOTE = ("[系统提示] 下面是刚读到的图片，用来继续当前任务（不是新的用户要求）。")
 # 审批等待上限（秒）。无人值守 / 窗口关掉 / 前端断线时，ApprovalRequest 的 future
 # 永远等不到结果：_turn 一直挂着、_history_lock 一直被持有，/compact 和下一回合
 # 全堵在锁后，会话变成「永远 running」。超时按拒绝处理并给出提示。
 # 0 或负数 = 不超时（保留旧行为，给需要长时间等待的自动化留口子）。
 APPROVAL_TIMEOUT = 300.0
+# 工具调用看门狗（秒）：单个调用超过这么久没有结果，就主动在界面上报一次“还在跑”。
+# 实测一次 wait=500 的 shell_output 期间界面零事件，用户无法区分“在等后台命令”和“卡死了”，
+# 直接强杀 ee（会话被记成 interrupted，已采集的数据也丢了）。只报警不终止：
+# 卡住不一定是工具本身——长 CI、大仓库的 to_thread、模型网络重试都可能慢。
+TOOL_STALL_WARN = 120.0
+TOOL_STALL_EVERY = 120.0
 
 
 def _should_attach_mcp(*, done: bool, enabled: bool, has_prefix: bool, tool_names) -> bool:
@@ -168,6 +178,8 @@ class Session:
         self.snap_epoch = uuid.uuid4().hex[:8]   # 内存快照层号只在本次进程内有效（重启后层号会撞）
         self.store = SessionStore(self.home, enabled=persist)
         self._task: asyncio.Task | None = None
+        self._stop_why: str = ""             # 中断原因：空 = 用户点了停止（见 interrupt()）
+        self._prefix_drift: str = ""         # 已提醒过的前缀漂移（sha 或 verify）：同一原因只提醒一次
         self._open_calls: list[str] = []
         self._results: dict[str, str] = {}
         self._ok: dict[str, bool] = {}
@@ -584,8 +596,10 @@ class Session:
     def add_note(self, text: str) -> None:
         self.notes.append(text)
 
-    def interrupt(self) -> bool:
+    def interrupt(self, why: str = "") -> bool:
+        """取消正在跑的回合。`why` 是要写进工具结果的中断原因（不传 = 用户点了停止）。"""
         if self._task and not self._task.done():
+            self._stop_why = why
             self._task.cancel()
             return True
         return False
@@ -1096,10 +1110,17 @@ class Session:
                     emit(Notice(text, level))
             return self.prefix
         if not self.prefix.verify():
-            emit(Notice("冻结前缀的内容被改动了（sha256 不符），缓存会失效。", "warn"))
+            if self._prefix_drift != "verify":
+                self._prefix_drift = "verify"
+                emit(Notice("冻结前缀的内容被改动了（sha256 不符），缓存会失效。", "warn"))
         fresh = self.current_prefix().sha256
         if fresh != self.prefix.sha256:
-            emit(Notice("system/tools 与会话开始时不同（可能改了提示词文件）；继续使用会话开始时冻结的版本以保住缓存。", "warn"))
+            # 同一个原因只在**第一次**提醒（P2）：_ensure_prefix 每次请求前都跑，
+            # 原来一句警告在恢复会话后的 5 次请求里重复了 5 遍，日志和界面都很难看。
+            # 用 sha 去重而不是布尔标记：提示词文件之后再改一次，新 sha 还会再提醒一次。
+            if self._prefix_drift != fresh:
+                self._prefix_drift = fresh
+                emit(Notice("system/tools 与会话开始时不同（可能改了提示词文件）；继续使用会话开始时冻结的版本以保住缓存。", "warn"))
         return self.prefix
 
     # ------------------------------------------------------------ 历史（只追加）
@@ -1412,8 +1433,8 @@ class Session:
                 self._flush_pending_images(emit)      # 工具刚读到的图，下一步就能看到
                 await self._deliver(Q.STEER, emit)
         except asyncio.CancelledError:
-            log.info("回合被中断：会话 %s", self.store.id)
-            self._fill_missing(INTERRUPTED)
+            log.info("回合被中断：会话 %s（%s）", self.store.id, self._stop_why or "用户停止")
+            self._fill_missing(self._stop_why or INTERRUPTED)
             emit(TurnDone("interrupted", final))
         except Exception as e:  # noqa: BLE001
             log.error("回合出错：会话 %s：%s", self.store.id, e, exc_info=True)
@@ -1424,8 +1445,9 @@ class Session:
             # 兜底：KeyboardInterrupt / SystemExit 这类 BaseException 不是 Exception 的子类，
             # 上面两个 except 都接不住；不补的话它们同样会留下孤儿 tool_calls（会话永久 400）。
             # _fill_missing 幂等（_open_calls 已空时什么也不做），正常路径下这里是空操作。
-            self._fill_missing(INTERRUPTED)
+            self._fill_missing(self._stop_why or INTERRUPTED)
             self._turn_running = False    # 回合结束：下一次 _maybe_auto_compact 可以真的压缩了
+            self._stop_why = ""           # 一次性：下回合重新判定，不能把上回合的原因带过去
 
 
     async def _sample_or_compact(self, emit) -> Completion:
@@ -1656,7 +1678,7 @@ class Session:
         if err is not None:
             res = ToolResult(err, ok=False, summary=summary)
         else:
-            res = await self._guarded_run(cid, tool, args, emit, pre)
+            res = await self._run_watched(cid, name, tool, args, emit, pre)
             res = await hooks.post_tool_use(self, cid, tool, args, res, emit)   # D5-4 Hooks
         # A6：content 给模型（截断后进历史），details 只给界面（不进历史，持久化在条目上）
         out, trunc = truncate_output_info(res.output, self.home / "tool-output", name)
@@ -1700,6 +1722,38 @@ class Session:
         if self.lsp_notifier.client_for(path=str(path), uri=uri) is None:
             return
         await self.lsp_notifier.changed(str(path), uri, text, language=lang)
+
+    async def _run_watched(self, cid: str, name: str, tool, args: dict, emit, pre) -> ToolResult:
+        """跑一个工具调用，并在它长时间不返回时给界面发进度（P0-2）。
+
+        为什么要跟一层：工具调用发出后、结果回来前，界面上那段是完全静止的。
+        实测一次 shell_output(wait=500) 之后 5 分 24 秒会话零事件，用户分不清
+        “在正常等”与“卡死了”，于是强杀 ee；重启后会话被写成 interrupted（还被
+        说成“用户中断”），自动化任务当成失败。
+
+        只报不改行为：超时也不取消工具（长 CI、大仓库 to_thread、网络重试都可能慢，
+        擅自取消会真丢已跑大半的任务）；用户随时可以看到“已跑 Ns”并用 Esc 停。
+        """
+        task = asyncio.ensure_future(self._guarded_run(cid, tool, args, emit, pre))
+        started = time.monotonic()
+        warned = 0
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=TOOL_STALL_EVERY)
+                if done:
+                    return task.result()
+                elapsed = time.monotonic() - started
+                if elapsed >= TOOL_STALL_WARN + TOOL_STALL_EVERY * warned:
+                    warned += 1
+                    emit(Notice(f"工具 {name} 已跑 {int(elapsed)} 秒还没有返回，仍在执行；"
+                                f"可用 Esc 停止这一回合。", "warn"))
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
     async def _guarded_run(self, cid: str, tool, args: dict, emit, pre=None) -> ToolResult:
         if pre is None:

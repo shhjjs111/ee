@@ -264,9 +264,16 @@ class BgManager:
                 return False
         return True
 
-    async def wait_output(self, p: BgProc, wait_s: float, pattern: re.Pattern | None = None) -> None:
-        """最多等 wait_s 秒：有新输出（有 pattern 时要新输出里匹配）或进程结束就返回。"""
-        deadline = time.monotonic() + max(0.0, wait_s)
+    async def wait_output(self, p: BgProc, wait_s: float, pattern: re.Pattern | None = None,
+                          tick: Callable[[float], None] | None = None, tick_s: float = 5.0) -> None:
+        """最多等 wait_s 秒：有新输出（有 pattern 时要新输出里匹配）或进程结束就返回。
+
+        `tick`：等待期间每隔 tick_s 秒调一次（参数是已等秒数）。长等待（wait=600）
+        在界面上原本是一段完全无事件的空白，用户看到的是「agent 没反应、还在进程里跑」
+        和「已经卡死」毫无区别（实测一次 wait=500 让人误判为卡死并强杀了 ee）。
+        """
+        start = time.monotonic()
+        deadline = start + max(0.0, wait_s)
         while p.running:
             if p.total > p.cursor:
                 if pattern is None or pattern.search(p.text_from(p.cursor)[0]):
@@ -279,9 +286,12 @@ class BgManager:
             assert p._changed is not None
             p._changed.clear()
             try:
-                await asyncio.wait_for(p._changed.wait(), timeout=left)
+                # 一次最多等 tick_s：到点先回调一次进度，再继续等剩下的
+                await asyncio.wait_for(p._changed.wait(), timeout=min(left, tick_s))
             except asyncio.TimeoutError:
-                return
+                if tick is not None:
+                    tick(time.monotonic() - start)
+                continue
 
     def read_new(self, p: BgProc, limit: int = READ_LIMIT, pattern: re.Pattern | None = None) -> tuple[str, dict]:
         """取模型还没读过的输出并前移游标。超长保留开头和结尾；pattern 只留匹配的行。"""

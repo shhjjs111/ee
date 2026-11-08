@@ -3,4 +3,5 @@
 ## 规则
 - 想知道自己派了哪些子任务、它们成功没有，用 threads_list。
 - `status` 是交互状态（idle/running/waiting_approval/compacting）；`terminal_reason` 才是结果（completed / error / interrupted / budget / max_steps）。idle 不代表成功。
+- run 的 `status: "done"` 只说明「这一回合结束了」，不代表成功——是否成功一律看 `terminal_reason`。所以 `done` + `interrupted` 是正常的组合（回合结束，但是被中断的）。
 - 只能看到本会话派发的子会话；其他会话的子会话不在结果里。

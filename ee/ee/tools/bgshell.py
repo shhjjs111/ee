@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 
+from ee.core.events import Status
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 MAX_WAIT = 600                 # 与 shell 的 MAX_TIMEOUT 一致：等 CI / dev server 本来就该一次等到
@@ -55,6 +56,29 @@ def _format(p, text: str, notes: dict) -> str:
     return "\n".join(parts)
 
 
+def _wait_tick(ctx: ToolContext, p, wait: int):
+    """长等待期间给界面发进度（Status），不再是一段无事件的空白。
+
+    实测一次 `wait=500` 期间界面零事件，用户分不清「还在正常等后台命令」和「卡死了」，
+    于是强杀了 ee。每 5 秒报一次「等待中 · 已等 Ns / 上限 Ms」，成本可忽略（一次 status 通知）。
+    """
+    ev = (ctx.extra or {}).get("emit_event")
+    if ev is None:
+        return None
+
+    def tick(elapsed: float) -> None:
+        ev(Status(f"等待后台命令 {p.id} 输出：已等 {int(elapsed)}s / 上限 {wait}s"))
+
+    return tick
+
+
+def _clear_status(ctx: ToolContext) -> None:
+    """等待结束（等到输出 / 进程退出 / 到点）：把进度清掉，免得停在「等待中」误导用户。"""
+    ev = (ctx.extra or {}).get("emit_event")
+    if ev is not None:
+        ev(Status(""))
+
+
 class ShellOutputTool(Tool):
     name = "shell_output"
     read_only = True
@@ -82,7 +106,10 @@ class ShellOutputTool(Tool):
                 raise ToolError(f"filter 不是合法正则：{e}")
         wait = max(0, min(MAX_WAIT, int(args.get("wait") or 0)))
         if wait:
-            await mgr.wait_output(p, wait, pattern)
+            try:
+                await mgr.wait_output(p, wait, pattern, tick=_wait_tick(ctx, p, wait))
+            finally:
+                _clear_status(ctx)
         text, notes = mgr.read_new(p, pattern=pattern)
         if text:
             ctx.emit(text)
