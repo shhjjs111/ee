@@ -799,7 +799,7 @@ class Thread:
 
         # ---- 轮 3：分叉（候选各自 worktree、温度阶梯、判据串行、先通过即取消其余）。
         if cap > 1:
-            cands = await self._allout_fanout(spec, plan, payload, cap)
+            cands = await self._allout_fanout(spec, plan, text, cap)
             passed = [c for c in cands if getattr(c.get("verdict"), "met", False)]
             if passed:
                 winner = await self._allout_rank(passed, text, getattr(best, "output", "") or "")
@@ -842,11 +842,17 @@ class Thread:
             return True
         return False
 
-    async def _allout_fanout(self, spec, plan, payload: str, cap: int) -> list[dict]:
-        """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。"""
+    async def _allout_fanout(self, spec, plan, task_text: str, cap: int) -> list[dict]:
+        """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。
+
+        `task_text` 是**用户原话**（不是拼好判据段的第一轮输入）：每个候选自己
+        按它的 worktree 重新构造，保证第一句话里的「判据执行目录」指向候选自己
+        的目录，而不是主仓库。
+        """
         import copy
         from pathlib import Path
 
+        from ee.core import allout as A
         from ee.core import worktree as W
         from ee.core.permissions import PermissionPolicy
         from ee.core.session import Session
@@ -881,8 +887,11 @@ class Thread:
                                 client_factory=self.client_factory, persist=False, home=self.home,
                                 shell=s.shell_name, user_home=self.user_home)
                 p = s.policy
+                # 隔离靠 deny：auto 模式下工作区外写是直接放行的，不加这条规则
+                # 模型会用绝对路径改主仓库（2026-11-09 实测到），worktree 等于没用。
                 child.policy = PermissionPolicy(mode=p.mode, workspace=Path(wt["cwd"]),
-                                                allow=list(p.allow), ask=list(p.ask), deny=list(p.deny),
+                                                allow=list(p.allow), ask=list(p.ask),
+                                                deny=list(p.deny) + A.candidate_deny_rules(self.cwd),
                                                 session_prefixes=p.session_prefixes,
                                                 session_tools=p.session_tools, shell=p.shell)
                 child.budget = s.budget
@@ -891,7 +900,15 @@ class Thread:
                 child.disk_enabled = False
                 child._mcp_done = True
                 child.effort = s.effort_for(child.spec)
-                async for ev in child.run_turn(payload):
+                # 给候选的任务说明必须指向它自己的 worktree：用主仓库 spec 构造的
+                # payload 第一句就写着「判据执行目录：主仓库」——等于明确指挥模型
+                # 去主仓库干活，这是隔离被破坏的直接诱因（2026-11-09 实测到）。
+                from dataclasses import replace as _replace
+
+                from ee.core.goal_feedback import build_first_turn
+
+                cand_prompt = build_first_turn(task_text, _replace(spec, cwd=wt["cwd"]))
+                async for ev in child.run_turn(cand_prompt):
                     # 候选的审批接回主会话（与子代理同一条纪律）：一律拒绝会把
                     # pytest 这类命令挡死，分叉路等于永远跑不完。桌面端出审批卡片，
                     # 无人值守下由 headless 的 auto_approve 决定。

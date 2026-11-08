@@ -205,6 +205,43 @@ def net_votes(winner_ids: list, x: str, y: str) -> int:
     return wx - wy
 
 
+# ---------------------------------------------------------------- 候选隔离（deny 规则）
+
+
+def candidate_deny_rules(main_cwd) -> list[str]:
+    """候选会话追加的 deny 规则：拦住「写主仓库」与「进主仓库执行命令」。
+
+    **为什么需要它**：候选跑在自己的 worktree 里，但它继承主会话的权限模式。
+    `auto` 模式下 `_check_write` / `_check_shell` 对工作区外的路径**直接放行**，
+    模型于是能（也确实做过，2026-11-09 实测）用绝对路径改主仓库——worktree
+    形同虚设，写回时补丁对不上（`patch does not apply`）。
+
+    deny 判定在 `auto` 放行之前，所以这条规则在最高权限下同样生效。
+    路径精确到主仓库全路径，兄弟目录（`repo2`）与候选自己的 worktree
+    （`~/.ee/worktrees/repo-xxx/...`，路径里含仓库名）都不受影响。
+    """
+    from pathlib import Path
+
+    if not str(main_cwd or "").strip():
+        return []
+    p = str(Path(main_cwd)).replace("\\", "/").rstrip("/").lower()
+    # 盘符根 "e:" 也是空路径的一种退化：规则只能写 `shell(*e:)` 级别，没有意义，
+    # 直接不生成——宁可少拦（用户真在盘符根开仓库是极端情况），不能把候选自己的工作区也拦死。
+    if len(p) <= 2:
+        return []
+    # shell：命令里出现主仓库全路径就拦。三种边界（结尾、后跟 /、后跟空白或引号）
+    # 覆盖 `cd main`、`cat main/x`、`cd "main" && ...` 三种写法。
+    return [
+        f"shell(*{p})",
+        f"shell(*{p}/*)",
+        f"shell(*{p}[ \"']*)",
+        f"write({p})",
+        f"write({p}/*)",
+        f"edit({p}/*)",
+        f"apply_patch({p}/*)",
+    ]
+
+
 # ---------------------------------------------------------------- 写回（补丁方式，不要求主目录干净）
 
 
