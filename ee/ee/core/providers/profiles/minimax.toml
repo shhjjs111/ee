@@ -13,15 +13,26 @@ empty_assistant_content = "empty"
 quirks = ["think_tags", "xml_tool_calls", "json_tool_calls"]
 # 思考开关与推理强度（官方文档 https://platform.minimax.cn/docs/api-reference/text-openai-api，2026-11 查阅）：
 # - thinking.type = disabled / adaptive（省略 = 开启）。M3.1-Flash 强制思考，传 disabled 会 400。
-# - reasoning_effort = low / medium / high / xhigh / max，省略时默认 max；只有 M3.1-Flash 生效。
+# - reasoning_effort = low / medium / high / xhigh / max，省略时默认 max。
 #   M2.x 不认这个参数，发了会 400（openai_chat 会去掉并记住）。
-# 「默认就是 max」意味着 M3.1-Flash 用户什么都不设已是最高档；把「高」映射到 max 才不会误降级。
+# 默认已经是 max：所以「默认」档在界面上写成「默认（已是最高档）」；
+# 「高」保持发 high，不要把它也映射到 max，否则用户选「高」会莫名变成最高档。
 thinking_param = "thinking_type"
 
+# M3.1-Flash 强制思考，官方「始终开启思考，不支持关闭」，传 disabled 会 400。
+# 变体里清空 thinking_param，界面就不给「关闭思考」。
+# for_model 只取第一个匹配上的变体，所以强度字段要原样带上；
+# 也必须排在下面通用的 "m3.1" 之前（注意 "minimax-m3.1-flash" 也含 "m3.1"）。
+[[variants]]
+match = ["m3.1-flash"]
+thinking_param = ""
+effort_param = "reasoning_effort"
+effort_levels = ["low", "medium", "high", "max"]
+# 默认就是 max：不选档位时已经是最高档。
+effort_labels = { "" = "默认（已是最高档）" }
+
+# MiniMax-M3 **没有**强度档：官方「reasoning_effort 仅 MiniMax-M3.1-Flash 生效」。
+# 给 M3 开强度档会让用户选了却没效果（服务端静默忽略、不报错，比 400 更难发现）。
+# 这里只保留档案继承来的 thinking_type（M3 可以关思考）。
 [[variants]]
 match = ["m3.1", "minimax-m3"]
-effort_param = "reasoning_effort"
-# M3.1-Flash 官方可选 low/medium/high/xhigh/max，默认 max。ee 只有四档，
-# 所以把「最高」直接发 max，中间的「高」保留为 high——别把 high 也映上去，
-# 那会让用户选「高」时莫名变成最高档。
-effort_levels = ["low", "medium", "high", "max"]

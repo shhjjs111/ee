@@ -16,7 +16,8 @@ quirks = ["json_tool_calls"]
 #   thinking_param 清空。
 # - K2.6 / K2.5：thinking.type = enabled / disabled，没有 reasoning_effort。
 # - K2.7-code：两个都不可用（始终思考），变体里一起清空。
-# 「默认就是 max」意味着 Kimi K3 用户什么都不设已经是最高档——把「高」映射到 max 才不会误降级。
+# 「默认就是 max」意味着 K3 用户什么都不设已经是最高档；但「高」仍发 high，不映射到 max，
+# 只有 K3 没有的「中」用 effort_aliases 落到 high（不能落成 max，那才是误升一级）。
 thinking_param = ""
 
 [[variants]]
@@ -25,6 +26,8 @@ thinking_param = ""
 effort_param = "reasoning_effort"
 effort_levels = ["low", "high", "max"]
 effort_aliases = { medium = "high" }
+# K3 的默认就是 max：不选档位时已经是最高档，界面上要说清楚。
+effort_labels = { "" = "默认（已是最高档）" }
 
 [[variants]]
 match = ["k2.7-code", "kimi-k2.7"]

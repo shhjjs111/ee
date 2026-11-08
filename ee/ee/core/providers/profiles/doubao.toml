@@ -24,4 +24,6 @@ match = ["seed-2", "seed-evolving", "doubao-seed-2"]
 effort_param = "reasoning_effort"
 effort_levels = ["low", "medium", "high", "max"]
 effort_values = { max = "high" }
-effort_labels = { max = "最高（服务端按 high 处理）" }
+# 豆包服务端把 xhigh/max 都映射成 high，所以「最高」与「高」发出去是同一个值：
+# 文案要写明，别让用户以为从「高」切到「最高」升了一级。
+effort_labels = { max = "最高（等同 high）" }

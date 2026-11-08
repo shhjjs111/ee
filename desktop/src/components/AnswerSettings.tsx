@@ -78,7 +78,7 @@ export function AnswerSettings({ draft, resp, up }: { draft: Settings; resp: Set
     <>
       <h2 className="mb-5 text-[20px] font-semibold tracking-tight text-fg">回答与花费</h2>
 
-      <Card title="推理强度" desc="一个档位管所有模型。输入框旁的“推理”或 /effort 可以只改当前会话，新会话用这里的默认。">
+      <Card title="推理强度" desc="一个档位管所有模型。输入框“更多”里的“推理强度”或 /effort 可以只改当前会话，新会话用这里的默认。">
         <Row label="全局默认" desc="“默认”= 不指定，用模型自己的默认；模型不支持的档位会自动降级或按默认处理（输入框里置灰）">
           <Select
             value={effort}

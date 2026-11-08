@@ -38,7 +38,7 @@ export const BUILTIN: SlashCommand[] = [
   { name: "undo", description: "撤销上一回合的文件改动", takesArgs: false, kind: "builtin" },
   { name: "model", description: "切换模型", argHint: "<模型名>", takesArgs: true, kind: "builtin" },
   { name: "mode", description: "切换权限模式", argHint: "只读 | 默认 | 全自动 | 计划", takesArgs: true, kind: "builtin" },
-  { name: "effort", description: "推理强度（本会话，并按模型记住）", argHint: "默认 | 低 | 中 | 高 | 最高 | 关闭", takesArgs: true, kind: "builtin" },
+  { name: "effort", description: "推理强度（只改本会话，新对话用设置里的默认）", argHint: "默认 | 低 | 中 | 高 | 最高 | 关闭", takesArgs: true, kind: "builtin" },
   { name: "style", description: "回答风格（本会话）", argHint: "默认 | 简洁", takesArgs: true, kind: "builtin" },
   { name: "plan", description: "计划模式：先调研出方案，批准后再改（可直接跟任务）", argHint: "[任务]", takesArgs: true, kind: "builtin" },
   { name: "memory", description: "记住一句话（不带文字则打开记忆设置）", argHint: "[要记住的话]", takesArgs: true, kind: "builtin" },
@@ -60,7 +60,7 @@ export const EFFORT_OPTIONS = [
   { value: "low", label: "低", hint: "想得少、快、省 token" },
   { value: "medium", label: "中", hint: "平衡" },
   { value: "high", label: "高", hint: "想得更久，适合难题" },
-  { value: "max", label: "最高", hint: "想得最久（DeepSeek 的 max 档）" },
+  { value: "max", label: "最高", hint: "想得最久；各家的写法不同（max / xhigh / high）" },
   { value: "off", label: "关闭思考", hint: "不输出思考过程（模型支持时）" },
 ];
 

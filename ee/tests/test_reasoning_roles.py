@@ -87,8 +87,12 @@ def test_high_stays_high_not_max():
     """
     assert params("gpt-5.2", "high")["reasoning_effort"] == "high"
     assert params("gpt-5.2", "max")["reasoning_effort"] == "xhigh"
-    assert params("qwen3.8-max", "high")["reasoning_effort"] == "high"
+    # Qwen3.8-max 官方只有 low/medium/xhigh，**没有 high**：发 high 是非法值会 400，
+    # 所以档位表里根本没有 high，旧值 high 经 effort_aliases 落到 max（即 xhigh）。
+    assert RZ.levels(spec("qwen3.8-max").profile) == ["low", "medium", "max"]
+    assert params("qwen3.8-max", "medium")["reasoning_effort"] == "medium"
     assert params("qwen3.8-max", "max")["reasoning_effort"] == "xhigh"
+    assert params("qwen3.8-max", "high")["reasoning_effort"] == "xhigh"   # 旧值 high → 别名到 max → xhigh
     assert params("MiniMax-M3.1-Flash", "high")["reasoning_effort"] == "high"
     assert params("MiniMax-M3.1-Flash", "max")["reasoning_effort"] == "max"
     # 豆包服务端把 xhigh/max 都映射成 high，所以这两档发出相同的值是预期行为
@@ -100,11 +104,54 @@ def test_high_stays_high_not_max():
         assert params(old, "max")["reasoning_effort"] == "high", old
 
 
-def test_claude_and_gemini_effort():
-    """Claude 用嵌套 output_config.effort；Gemini 3 用顶层 reasoning_effort；老模型都不发。"""
-    assert params("claude-opus-5-5", "max")["extra_body"] == {"output_config": {"effort": "max"}}
-    assert params("claude-sonnet-4-6", "max")["extra_body"] == {"output_config": {"effort": "max"}}
-    assert "extra_body" not in params("claude-3-5-sonnet", "max")
+def test_gpt_52_pro_has_no_low():
+    """gpt-5.2-pro 官方只支持 medium / high / xhigh：给「低」就是必 400。"""
+    p = spec("gpt-5.2-pro").profile
+    assert RZ.levels(p) == ["medium", "high", "max"]
+    assert params("gpt-5.2-pro", "max")["reasoning_effort"] == "xhigh"
+    assert params("gpt-5.2-pro", "medium")["reasoning_effort"] == "medium"
+    assert "reasoning_effort" not in params("gpt-5.2-pro", "low")     # 不支持：不发，而不是发个非法值
+    # 普通 5.2 仍有「低」
+    assert params("gpt-5.2", "low")["reasoning_effort"] == "low"
+
+
+def test_profiles_only_promise_what_the_docs_say():
+    """界面置灰与否必须和官方文档一致：许诺了却不生效，比置灰更难发现。
+
+    - MiniMax-M3（非 Flash）：官方「reasoning_effort 仅 MiniMax-M3.1-Flash 生效」→ 不给档
+    - GLM-5.0 / 5.1：z.ai「only supported by GLM-5.2 and above」→ 不给档
+    - GLM-5.2：low 在服务端也落到 high，文案要写明
+    - Qwen3.8 默认 xhigh；其它 Qwen3.x 没有官方依据，不写「默认已是最高档」
+    """
+    for model in ("MiniMax-M3", "glm-5", "glm-5.1", "chatglm-5"):
+        assert RZ.support(spec(model).profile)["levels"] == [], model
+    assert RZ.levels(spec("MiniMax-M3.1-Flash").profile)
+    assert RZ.levels(spec("glm-5.2").profile) == ["low", "high", "max"]
+    assert RZ.labels(spec("glm-5.2").profile)["low"] == "低（服务端按 high）"
+    assert RZ.labels(spec("qwen3.8-max").profile)[""] == "默认（已是最高档）"
+    assert RZ.labels(spec("qwen3.7-plus").profile)[""] == "默认"
+
+
+def test_claude_effort_is_not_configured():
+    """Claude **不配**强度档：OpenAI 兼容层会把 reasoning_effort 静默忽略。
+
+    依据（2026-11 查阅 https://platform.claude.com/docs/en/api/openai-sdk）：
+    字段支持表把 `reasoning_effort` 明确列为 Ignored，表里也没有 `output_config`，
+    且文档原话「Most unsupported fields are silently ignored rather than producing errors」。
+    既然原生 Messages API 的 output_config.effort 走兼容层会被静默丢弃（**不报错**），
+    那 openai_chat 的 400 降级重试永远不会触发——用户看到"已设为最高档"而实际毫无变化，
+    是最坏的一种假装生效。所以内置档案一个字节都不发，界面置灰。
+
+    需要时可以在 ~/.ee/config.toml 里按模型覆盖 effort_param（见 claude.toml 注释）。
+    """
+    for model in ("claude-opus-5-5", "claude-sonnet-4-6", "claude-3-5-sonnet"):
+        assert RZ.support(spec(model).profile)["effort"] is False, model
+        p = params(model, "max")
+        assert "reasoning_effort" not in p and "extra_body" not in p, model
+
+
+def test_gemini_and_gpt_effort_levels():
+    """Gemini 3/4 走 OpenAI 兼容层顶层 reasoning_effort；GPT-5.2+ 能到 xhigh。"""
     assert params("gemini-3-pro", "high")["reasoning_effort"] == "high"
     assert "reasoning_effort" not in params("gemini-2.5-pro", "high")
     # GPT-5.2 及更新能到 xhigh；5.1/o 系列只到 high
@@ -115,31 +162,63 @@ def test_claude_and_gemini_effort():
 def test_has_reasoning_params_sees_nested_effort():
     """嵌套参数也算「发了推理参数」，否则 400 时的降级重试会被跳过。
 
-    Claude 发的是 extra_body.output_config.effort，键名 output_config 不以 effort
-    结尾；只看顶层键会判成「没发」，于是 400 不走去掉参数的重试，用户直接看到报错。
+    内置档案里已经没有嵌套写法的模型（Claude 那条实测会被兼容层忽略，已去掉），
+    但点分路径是 effort_param 的公开写法，用户可以在 ~/.ee/config.toml 里覆盖成
+    output_config.effort / google.thinking_config.thinking_level 这类嵌套参数。
+    键名不以 effort 结尾时只看顶层会判成「没发」，400 就走不到去掉参数的重试。
     """
-    for model in ("claude-opus-5-5", "claude-sonnet-4-6"):
-        p = params(model, "max")
-        assert p["extra_body"] == {"output_config": {"effort": "max"}}
-        assert ChatClient.has_reasoning_params(p) is True
+    from ee.core.providers.profiles import Profile
+
+    nested = Profile(family="default", effort_param="output_config.effort",
+                     effort_levels=["low", "medium", "high", "max"])
+    top, body = RZ.request_params(nested, "max")
+    assert body == {"output_config": {"effort": "max"}} and not top
+    assert ChatClient.has_reasoning_params({"model": "x", "extra_body": body}) is True
+
+    level = Profile(family="default", effort_param="google.thinking_config.thinking_level",
+                    effort_levels=["low", "medium", "high"])
+    _, body2 = RZ.request_params(level, "high")
+    assert ChatClient.has_reasoning_params({"model": "x", "extra_body": body2}) is True
+
     # 顶层名和 thinking 老路径仍然认得
     assert ChatClient.has_reasoning_params(params("gpt-5.2", "max")) is True
     assert ChatClient.has_reasoning_params(params("deepseek-flash", "off")) is True
     # 没发就是没发
     assert ChatClient.has_reasoning_params(params("gpt-4o", "max")) is False
-    assert ChatClient.has_reasoning_params(params("claude-3-5-sonnet", "max")) is False
+    assert ChatClient.has_reasoning_params(params("claude-opus-5-5", "max")) is False
 
 
-def test_claude_400_strips_nested_effort_and_remembers(tmp_path):
-    """Claude 的 400 也要能去掉嵌套参数重试一次。"""
-    c, fake = _client([FakeError(400, "Invalid request body"), text_chunks("ok") + finish("stop")],
-                      tmp_path, model="claude-opus-5-5")
+def test_nested_effort_400_strips_and_remembers(tmp_path):
+    """嵌套参数形态的 400 也要能去掉重试一次（用户自定义档案时会走到这条路）。"""
+    from ee.core.providers.profiles import Profile
+    c, fake = _client([FakeError(400, "Invalid request body"), text_chunks("ok") + finish("stop")], tmp_path)
+    c.profile = Profile(family="default", effort_param="output_config.effort",
+                        effort_levels=["low", "medium", "high", "max"])
     evs = run(_drain(c, "max"))
     assert fake.calls[0]["extra_body"] == {"output_config": {"effort": "max"}}
     assert "extra_body" not in fake.calls[1]
     notes = [v for k, v in evs if k == "notice"]
     assert any("去掉推理强度参数重试" in n for n in notes)
     assert c.state.get(c.key).get("no_reasoning_effort") is True
+
+
+def test_always_thinking_models_do_not_offer_off():
+    """官方明确「不能关闭思考」的型号不给「关闭思考」，而不是等服务端 400。
+
+    - GLM-5.3 / 5.3-FLASH：官方「强制思考不能关闭」
+    - MiniMax-M3.1-Flash：官方「始终开启思考，不支持关闭」
+    这些变体清了 thinking_param；但 for_model 只取第一个匹配上的变体，
+    所以强度档必须一起带上，不能被顺手丢掉。
+    """
+    for model in ("glm-5.3", "glm-5.3-flash", "MiniMax-M3.1-Flash"):
+        p = spec(model).profile
+        assert RZ.support(p)["off"] is False, model
+        assert RZ.support(p)["levels"], f"{model} 的强度档被 thinking 变体吃掉了"
+        top, body = RZ.request_params(p, "off")
+        assert not body, model
+    # 同家族里能关的型号不受影响
+    assert RZ.support(spec("glm-5.2").profile)["off"] is True
+    assert RZ.support(spec("MiniMax-M3").profile)["off"] is True
 
 
 def test_custom_effort_param_goes_to_extra_body(workspace):

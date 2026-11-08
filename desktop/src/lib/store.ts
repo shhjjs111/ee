@@ -119,7 +119,7 @@ type Actions = {
   interrupt(): Promise<void>;
   compact(): Promise<void>;
   undo(): Promise<void>;
-  /** D5-9：切换推理强度 / 回答风格。有对话时立即生效（推理强度同时按模型记住），没有对话时记为新对话的初始值。 */
+  /** D5-9：切换推理强度 / 回答风格。有对话时立即生效（推理强度只改本会话，不落盘），没有对话时记为新对话的初始值。 */
   setOptions(o: { effort?: string; style?: string }): Promise<boolean>;
   /** 切换权限模式：有会话时打到那个会话（thread/set_mode），没有会话时只记成新对话的初始值。 */
   setMode(mode: string): Promise<void>;

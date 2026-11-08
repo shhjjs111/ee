@@ -315,10 +315,18 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
           return true;
         }
         clearInput();
-        // DeepSeek 没有 中 / 高 档：后端会规整成 默认 / 最高，这里提示用后端回来的档位
+        // 后端会把档位按当前模型规整（Qwen/DeepSeek 的「高」→「最高」，Kimi 的「中」→「高」），
+        // 提示要用**规整之后**的值，否则用户看到的和实际发出去的不是一回事。
         const unsupported = !effortSupported(v, support) && !(support.effort && ["medium", "high"].includes(v));
-        if (await s.setOptions({ effort: v }))
-          s.showToast(`推理强度：${effortLabel(v, support)}` + (unsupported ? "（当前模型不支持，请求里不会发送）" : ""));
+        if (await s.setOptions({ effort: v })) {
+          const st = useApp.getState();
+          const id = st.activeThreadId;
+          const applied = (id ? st.details[id]?.effort : st.draftEffort) || v;
+          const note = unsupported
+            ? "（当前模型不支持，请求里不会发送）"
+            : applied !== v ? `（${effortLabel(v, support)} 在当前模型上按「${effortLabel(applied, support)}」处理）` : "";
+          s.showToast(`推理强度：${effortLabel(applied, support)}${note}`);
+        }
         return true;
       }
       case "style": {

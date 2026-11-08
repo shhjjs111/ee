@@ -19,6 +19,22 @@ supports_prompt_cache_key = true
 # GPT-5.2 及更新：官方 Reasoning 文档（2026-11 查阅）说 GPT-5.2 支持
 # none / low / medium / high / xhigh，gpt-5.2-pro 只支持 medium / high / xhigh。
 # ee 的「最高」发 xhigh（none 是关闭思考，不走强度档）。
+#
+# gpt-5.2-pro 只支持 medium / high / xhigh：发 low 会 400，所以单独一份变体，不给「低」。
+# 必须排在通用 5.2 变体之前（for_model 只取第一个匹配上的）。
+#
+# GPT-6 系（gpt-6-astra / luna / sol、gpt-6.1-*）的档位没有官方公开页可读（文档站 403），
+# 从 models.dev 的模型目录看：主流端点都是 none/low/medium/high/xhigh/max，
+# 少数中转只到 high。所以仍沿用 5.2 的四档、最高发 xhigh——这一档在各家目录里都有，
+# 比直接发 max 更能跨中转通用；真要 max 可以按 400 降级或在 [models.X] 里覆盖 effort_values。
+[[variants]]
+match = ["gpt-5.2-pro"]
+reasoning = true
+effort_param = "reasoning_effort"
+effort_levels = ["medium", "high", "max"]
+effort_values = { max = "xhigh" }
+effort_labels = { max = "最高（xhigh）" }
+
 [[variants]]
 match = ["gpt-5.2", "gpt-6", "re:gpt-5\\.[2-9]", "re:gpt-[6-9]"]
 reasoning = true

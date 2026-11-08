@@ -15,11 +15,31 @@ quirks = ["xml_tool_calls", "json_tool_calls"]
 # - reasoning_effort 只有 GLM-5.2 及以上支持：max（默认，深推理）/ high / low。
 #   5.3 与 5.3-FLASH 只接受这三档；5.2 另有 xhigh（映射 max）、medium 与 minimal（映射 high）、none（停止思考）。
 # GLM-4.6 及以下没有这个参数，发了会 400——openai_chat 会去掉并记住，不会卡死。
-# 所以只在 GLM-5 系上开强度档，且只用三家都认的 low/high/max。
+# **GLM-5.0 / 5.1 也不支持**（官方「only supported by GLM-5.2 and above」），
+# 所以强度档只在 5.2 及以上开；5.0/5.1 只保留思考开关。
+# 例外：如果 GLM 是经千问 AI 平台部署接入的，那边的文档写 glm-5 / glm-5.1 也接受
+# high / max——这种情况在 ~/.ee/config.toml 里给对应模型覆盖 effort_param 即可，
+# 内置档案只认模型厂商自己的规格。
 thinking_param = "thinking_type"
 
+# GLM-5.3 / 5.3-FLASH 强制思考：官方明确「要想关闭 thinking，注意 GLM-5.3 GLM-5.3-FLASH
+# 强制思考不能关闭」，传 disabled 会报错。变体里把 thinking_param 清空，界面就不给「关闭思考」，
+# 而不是等服务端 400 再把整个开关记住关掉。
+# 注意 for_model 只取**第一个**匹配上的变体，所以这里必须把强度字段也原样带上，
+# 否则 5.3 会连强度档一起丢掉。这条也必须排在下面通用的 "glm-5" 之前。
 [[variants]]
-match = ["glm-5"]
+match = ["glm-5.3"]
+thinking_param = ""
 effort_param = "reasoning_effort"
 effort_levels = ["low", "high", "max"]
 effort_aliases = { medium = "high" }
+
+# GLM-5.2：官方可选 max（默认）/ xhigh（映射 max）/ high / medium（映射 high）/ low / minimal / none。
+# 注意 5.2 的 **low 在服务端也落到 high**（官方「low/medium are mapped to high」），
+# 所以「低」这一档要写明，别让用户以为真的降了一级。
+[[variants]]
+match = ["glm-5.2"]
+effort_param = "reasoning_effort"
+effort_levels = ["low", "high", "max"]
+effort_aliases = { medium = "high" }
+effort_labels = { low = "低（服务端按 high）" }
