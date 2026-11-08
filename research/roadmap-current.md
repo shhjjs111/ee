@@ -39,8 +39,10 @@
 - **阶段 3**：前端接 `goal_check`/`goal_done`/`allout_plan` 三个通知；Composer「更多」菜单加开关（`store.allout`，随 `turn/start` 透传）；`BestofDialog` 显示 A/B 票数、「动过测试文件」与改动面。`store.test.ts`/`reduce.test.ts`/`BestofDialog.test.tsx` 覆盖。
 - **阶段 4**：`bestof.pick` 换排序键（回归门 → A/B 净胜票 → 测试数 → 改动面 → 未碰测试 → 成本 → id），`pick_reason` 写明用了哪条规则；`Candidate` 六个新字段全部中性默认，老调用方行为不变。`test_bestof_quality.py`（9）。
 - **阶段 5**：`core/allout.py` 的 `keep_policy`/`ab_prompt`/`parse_ab`/`net_votes`/`apply_winner`（补丁写回，脏主目录实测保留用户改动），`Thread._run_allout` 编排（单路 → 批评修复 → 分叉 → 同模型 A/B 两轮位置对调 → 写回并刷新 `tree_after`）；候选各自 worktree、温度阶梯、判据串行（`asyncio.Lock`）、先通过即取消其余、候选内 `task`/`ask_user` 关闭、用量记 `role="allout"`。`test_allout_engine.py`（14，含真实 git 写回）、`test_allout_run.py`（5）。
-- **验证**：`./scripts/verify.sh` 全量通过——后端 **2455 passed / 16 skipped**（170.6 秒）、前端 65 文件 **386 passed**、`tsc --noEmit` exit 0、`ruff check ee/` 全绿。
-- **未做**：真实模型端到端演练（只有假模型/桩 judge 的闭环）；候选遇到需要用户审批的写操作时当前一律自动拒绝（比自动放行更保守，但与主会话「以后都行」的规则不联动）；Gradle 项目需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数。
+- **真模型端到端演练（2026-11-09）**：默认模型 `deepseek-v4.1-flash11`（opencode 网关），临时仓库里一个红测试（`add` 写成减法）。`allout_plan` 推出 candidates=2 / repair=1 / effort=max / 温度阶梯 [0, 0.3]；模型自己 `ls` → 跑 pytest → 读两个文件 → 一次 `edit` 修好 → 判据 `ok：1 个测试通过` → `phase=done how=first_try`。全程 **33.1 秒、¥0.0103**，仓库测试转绿。附带验证：`rm -rf .pytest_cache __pycache__` 被无人值守策略**拒绝**（危险命令不自动放行），模型改用安全做法收尾；`persist=False`，`~/.ee/sessions` 仍是 61 个（没有污染会话列表）。
+- **真跑暴露并修掉一个 bug**：`allout_plan` 的 `reasons` 写「并行 3 路」而实际 `candidates=2`——用户上限原先是在 `derive()` 之后截断的。现在 `max_candidates` 参与推导，`reasons` 与实际路数一致（`test_allout.py` 新增参数化用例，`test_allout_turn.py` 改成无条件断言）。
+- **验证**：`./scripts/verify.sh` 全量通过——后端 **2460 passed / 16 skipped**（180.2 秒）、前端 65 文件 **386 passed**、`tsc --noEmit` exit 0、`ruff check ee/` 全绿。
+- **未做**：候选遇到需要用户审批的写操作时当前一律自动拒绝（比自动放行更保守，但与主会话「以后都行」的规则不联动）；修复轮与分叉路径只在假模型/桩 judge 下测过，真模型只走到了 `first_try` 分支；Gradle 项目需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数。
 
 ## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）
 

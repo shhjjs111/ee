@@ -76,8 +76,13 @@ def _ladder(profile, n: int) -> tuple:
 
 
 def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = None,
-           max_parallel: int | None = None) -> AlloutPlan:
-    """推导一次 allout 的火力。`config` 是已加载的配置字典（取 max_steps 等）。"""
+           max_parallel: int | None = None, max_candidates: int | None = None) -> AlloutPlan:
+    """推导一次 allout 的火力。`config` 是已加载的配置字典（取 max_steps 等）。
+
+    `max_candidates` 是用户设的上限（界面开关旁的「最多几路」）。它参与钳制而不是
+    事后截断——否则 `reasons` 会写「并行 3 路」而实际只跑 2 路，界面自相矛盾
+    （2026-11-09 真模型演练实测到）。
+    """
     reasons: list[str] = []
     degr: list[str] = []
     cfg = config or {}
@@ -109,18 +114,21 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
     gate = int(max_parallel) if max_parallel is not None else int(
         (cfg.get("subagent") or {}).get("max_parallel") or 3)
     gate = max(1, gate)
-    candidates = max(1, min(by_cpu, by_ctx, gate, CANDIDATES_CAP))
+    user_cap = CANDIDATES_CAP if max_candidates is None else max(1, int(max_candidates))
+    candidates = max(1, min(by_cpu, by_ctx, gate, CANDIDATES_CAP, user_cap))
 
     if candidates == 1:
         if by_cpu < 2:
             reasons.append(f"并行 1 路：CPU {n_cpu} 核，按每路 {CORES_PER_CANDIDATE} 核算不足以并行")
         elif by_ctx < 2:
             reasons.append(f"并行 1 路：上下文 {ctx // 1000}k，低于 {CONTEXT_MIN_FOR_PARALLEL // 1000}k 不做并行")
-        else:
+        elif gate < 2:
             reasons.append(f"并行 1 路：并发闸门限制为 {gate}")
+        else:
+            reasons.append(f"并行 1 路：你把上限设成了 {user_cap}")
     else:
         reasons.append(f"并行 {candidates} 路：CPU {n_cpu} 核 / 上下文 {ctx // 1000}k / "
-                       f"闸门 {gate} / 上限 {CANDIDATES_CAP}")
+                       f"闸门 {gate} / 上限 {min(CANDIDATES_CAP, user_cap)}")
 
     # ---- 轮数与修复：修复优先于并行（预算不是配额）
     repair_rounds = 1

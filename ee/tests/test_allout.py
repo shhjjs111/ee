@@ -132,3 +132,27 @@ def test_model_is_never_changed():
     plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
     assert not hasattr(plan, "model")
     assert "model" not in plan.as_dict()
+
+
+# ---------------------------------------------------------------- 用户上限
+
+
+@pytest.mark.parametrize("cap,want", [(1, 1), (2, 2), (3, 3)])
+def test_user_cap_participates_in_derivation(cap, want):
+    """用户设的上限参与钳制（不是事后截断）。真模型演练时发现过
+    「实际 2 路、reasons 写 3 路」的矛盾。"""
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, max_candidates=cap)
+    assert plan.candidates == want
+    assert len(plan.temperature_ladder) == want
+    assert f"并行 {want} 路" in " ".join(plan.reasons), f"reasons 与实际路数不一致：{plan.reasons}"
+
+
+def test_user_cap_never_raises_above_hard_cap():
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=64, max_candidates=99)
+    assert plan.candidates == 3, "用户上限只能收紧，不能突破硬上界"
+
+
+def test_user_cap_explained_when_it_is_the_binding_constraint():
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, max_parallel=8,
+                  max_candidates=1)
+    assert any("上限设成了 1" in r for r in plan.reasons)

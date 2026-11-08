@@ -185,6 +185,7 @@ def test_plan_allout_user_cap_shrinks_shown_plan(ee_home, workspace):
     asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
                                 {"command": "pytest -q", "max_rounds": 3}))
     p = [x for m, x in notes if m == "allout_plan"][0]
-    if p["plan"]["candidates"] >= 1 and p["candidates_cap"] == 1:
-        assert p["plan"]["candidates"] == 1, "显示的路数必须被用户上限钳住"
-        assert len(p["plan"]["temperature_ladder"]) == 1, "温度阶梯要跟着截断"
+    assert p["candidates_cap"] == 1
+    assert p["plan"]["candidates"] == 1, "显示的路数必须被用户上限钳住"
+    assert len(p["plan"]["temperature_ladder"]) == 1, "温度阶梯要跟着截断"
+    assert "并行 1 路" in " ".join(p["plan"]["reasons"]), "reasons 不能写与实际不符的路数"

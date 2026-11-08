@@ -705,23 +705,17 @@ class Thread:
         assert s is not None
         has_goal = bool(goal and goal.get("command"))
         proj = None if has_goal else probe_project(self.cwd)
+        # 用户设的 candidates 作为上限参与推导（而不是事后截断）：否则 reasons 会写
+        # 「并行 3 路」而实际只跑 2 路，界面自相矛盾（2026-11-09 真模型演练实测到）。
         plan = derive(config=s.config.data, profile=s.profile, has_goal=has_goal,
-                      max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3))
-        # 用户设的 candidates 是上限：界面显示的路数必须和 _run_allout 实际执行的一致，
-        # 否则会出现「界面说 3 路、实际只跑 1 路」的静默不一致。
-        cap = max(1, min(int(allout.get("candidates") or 3), plan.candidates))
-        if cap == plan.candidates:
-            shown = plan
-        else:
-            from dataclasses import replace as _replace
-
-            shown = _replace(plan, candidates=cap, temperature_ladder=plan.temperature_ladder[:cap])
+                      max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
+                      max_candidates=int(allout.get("candidates") or 3))
         self.notify("allout_plan", {
             "thread_id": self.id,
-            "plan": shown.as_dict(),
+            "plan": plan.as_dict(),
             "goal": (goal or {}).get("command"),
             "probe": proj.as_dict() if proj is not None else None,
-            "candidates_cap": cap,
+            "candidates_cap": plan.candidates,
         })
 
     # ------------------------------------------------------------ 全力以赴（阶段 5）
@@ -743,8 +737,9 @@ class Thread:
                         min_tests=int(goal.get("min_tests") or 1),
                         timeout=float(goal.get("timeout") or 300.0))
         plan = A.derive(config=s.config.data, profile=s.profile, has_goal=True,
-                        max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3))
-        cap = max(1, min(int(allout.get("candidates") or 3), plan.candidates))
+                        max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
+                        max_candidates=int(allout.get("candidates") or 3))
+        cap = plan.candidates
         lock = getattr(self, "_allout_judge_lock", None)
         if lock is None:
             lock = self._allout_judge_lock = asyncio.Lock()
