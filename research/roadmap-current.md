@@ -55,6 +55,7 @@
 - **边界（保留）**：① 分叉内「两个候选同时通过、由早退取消之外的路径进入 A/B」不会在真模型下自然触发（生产早退策略下第一个通过就取消其余，A/B 服务于候选几乎同时通过的场景与 bestof 手工比较）；这段生产接线由 `test_allout_rank.py` 覆盖。② Gradle **成功时**仍需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数（失败时的 `N tests completed, M failed` 汇总与开了 testLogging 的逐条行已能解析）。③ 回归门是**可选**的：用户不填 `pass_to_pass` 时不跑（多数项目的目标判据本身就是全量测试，无需重复）。
 
 - **最终验证（2026-11-09，回归门接通后）**：后端全量 **2499 passed / 16 skipped**（`-n 8`，184.1 秒）、前端 65 文件 **392 passed**、`tsc --noEmit` exit 0、`ruff check ee/` 全绿、真实 Electron Playwright e2e **34 passed / 2 skipped**（1.3 分钟，界面含「回归命令」输入框）。
+- **推理强度也覆盖降级路径（2026-11-09，用户问「开了全力以赴是不是自动拉满」时发现）**：effort 的应用点原先在 `_run_allout`（完整模式）里，降级路径（开了全力以赴但没有判据，按单路普通回合跑）不走它——但 `allout_plan` 的 reasons 照样写「推理强度：max」。现在应用点移到 `_plan_allout`（两条路径都经过），条件不变：仅新会话（`s.turns == 0`）、档位取该模型档案的最高档、不支持调节的模型不发参数；已有会话保持原档（换档会断前缀缓存）。`test_allout_run.py` 改为针对 `_plan_allout` 的两个守卫用例，另加「降级路径也拉满」1 例。
 - **v1.0.0 正式发布（2026-11-09）**：tag `v1.0.0`（指向 `dc34596`）→ release workflow `42568765581` 四个 job 全绿（check version / build·verify / build·package / publish）。Release 页为**正式版**（非 Pre-release / 非 draft），五个资产：`ee-Setup-1.0.0.exe`（161,654,712 B）、`ee-Setup-1.0.0.exe.blockmap`、`latest.yml`（version: 1.0.0）、`SHA256SUMS.txt`、`builder-debug.yml`。exe 的 SHA256 `c3ef9342…510146` 与 GitHub asset digest 逐字符一致、与 `SHA256SUMS.txt` 一致。`releases/latest` 已指向 v1.0.0——客户端更新器的检查通路从此可用（此前只有预发布时恒 404）。注：build·verify 上仍带那条老的 `test_mcp` teardown 注解「Event loop is closed」，与本次改动无关（上一版 CI 同样有）。
 
 ## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）

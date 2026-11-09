@@ -316,42 +316,54 @@ def test_probe_goal_denied_degrades_without_judge(ee_home, workspace, monkeypatc
     assert any("没有确认" in x for x in notices), notices
 
 
-def test_run_allout_applies_plan_effort_on_new_session(ee_home, workspace, monkeypatch):
-    """推理强度是设计里最大的杠杆：新会话必须真的切到 plan.effort，而不是只写在文案里。"""
+def test_plan_allout_applies_effort_on_new_session(ee_home, workspace, monkeypatch):
+    """开了全力以赴，新会话必须真的切到推导出的最高强度，而不是只写在文案里。"""
     import ee.core.allout as A
 
     th = _thread(ee_home, workspace)
-    _patch_judge(monkeypatch, [_Verdict(True, 3, "3 passed")])
-    _stub_turn(th, ["completed"])
+    th.ensure_session()
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
         candidates=1, repair_rounds=1, max_rounds=2, effort="high", max_steps=50,
         temperature_ladder=(0.0,), verified=True, reasons=(), degradations=()))
-    reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
-                                        {"enabled": True, "candidates": 1}))
-    assert reason == "met"
+    asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
+                                {"command": "pytest -q", "max_rounds": 3}))
     from ee.core import reasoning as RZ
     want = RZ.canonical(th.session.profile, "high")   # 档案可能把 high 映射成 max
     assert th.session.effort == want, "新会话必须切到推导出的最高强度（按档案规整后）"
     assert th.meta.get("effort") == want
 
 
-def test_run_allout_leaves_used_session_effort_alone(ee_home, workspace, monkeypatch):
+def test_plan_allout_leaves_used_session_effort_alone(ee_home, workspace, monkeypatch):
     """已有会话中途换档会断前缀缓存（effort_switch），保持原档不动。"""
     import ee.core.allout as A
 
     th = _thread(ee_home, workspace)
-    _patch_judge(monkeypatch, [_Verdict(True, 3, "3 passed")])
-    _stub_turn(th, ["completed"])
+    th.ensure_session()
     th.session.set_effort("low")        # 先落到一个与 plan.effort 不同的档，守卫才有可观测效果
     th.session.turns = 7
     before = th.session.effort
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
         candidates=1, repair_rounds=1, max_rounds=2, effort="high", max_steps=50,
         temperature_ladder=(0.0,), verified=True, reasons=(), degradations=()))
-    asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
-                               {"enabled": True, "candidates": 1}))
+    asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
+                                {"command": "pytest -q", "max_rounds": 3}))
     assert th.session.effort == before, "已有会话不能被中途换档"
     assert th.meta.get("effort") is None
+
+
+def test_plan_allout_degraded_path_also_maxes_effort(ee_home, workspace):
+    """没有判据的降级路径（不走 _run_allout）也要拉满：用户开了全力以赴就该拿到最高强度。"""
+    from ee.core import reasoning as RZ
+    from ee.core.allout import max_effort
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    lv = max_effort(th.session.profile)
+    assert lv, "测试环境的默认模型档案应支持调节强度"
+    asyncio.run(th._plan_allout({"enabled": True, "candidates": 3}, None))
+    want = RZ.canonical(th.session.profile, lv)
+    assert th.session.effort == want
+    assert th.meta.get("effort") == want
 
 
 def test_candidate_ok_requires_met_and_not_regressed():
