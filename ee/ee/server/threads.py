@@ -78,8 +78,8 @@ def _norm_goal(goal: dict) -> dict:
     """校验并规范化 Goal 判据。
 
     判据只从 start_turn 这条入口来，模型无法写入——那会让"测试通过"变成
-    "不用测"。这里做三件事：命令不能为空、轮次必须是正整数且有上限、
-    超时可选但给了必须是正数。
+    "不用测"。这里做四件事：命令不能为空、轮次必须是正整数且有上限、
+    超时可选但给了必须是正数、回归命令（PASS_TO_PASS）可选。
     """
     if not isinstance(goal, dict):
         raise ValueError("goal 必须是对象")
@@ -103,6 +103,11 @@ def _norm_goal(goal: dict) -> dict:
             raise ValueError("goal.timeout 必须是数字") from None
         if t > 0:
             out["timeout"] = min(t, 3600.0)
+    # 回归门（PASS_TO_PASS）：候选除了通过目标判据，还要通过这条命令，否则视为
+    # 弄坏了原有测试。用户不填就不启用（v2 §4「回归门」）。
+    p2p = str(goal.get("pass_to_pass") or "").strip()
+    if p2p:
+        out["pass_to_pass"] = p2p[:2000]
     return out
 
 
@@ -797,6 +802,7 @@ class Thread:
         spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
                         min_tests=int(goal.get("min_tests") or 1),
                         timeout=float(goal.get("timeout") or 300.0))
+        pass_to_pass = str(goal.get("pass_to_pass") or "").strip() or None
         plan = A.derive(config=s.config.data, profile=s.profile, has_goal=True,
                         max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
                         max_candidates=int(allout.get("candidates") or 3))
@@ -823,6 +829,21 @@ class Thread:
                                             "tests": v.tests, "cwd": cwd})
             return v
 
+        async def p2p_judge(cwd: str | None = None) -> object:
+            """跑回归命令（PASS_TO_PASS）。只有在用户填了 pass_to_pass 时才会调用。
+
+            与目标判据同样串行；min_tests=1（回归命令通常只覆盖一部分测试，
+            不能套用目标判据的 min_tests，否则会把正常的回归子集误判为失败）。
+            """
+            assert pass_to_pass
+            sp = GoalSpec(command=pass_to_pass, cwd=cwd or spec.cwd, min_tests=1, timeout=spec.timeout)
+            async with lock:
+                v = await judge(sp)
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "regression",
+                                            "met": bool(v.met), "reason": v.reason,
+                                            "tests": v.tests, "cwd": cwd})
+            return v
+
         payload = build_first_turn(text, spec)
         rounds = {"n": 0}
 
@@ -842,8 +863,29 @@ class Thread:
         # ---- 轮 1：单路。一次就过则零额外成本（预算不是配额）。
         if await one_turn(payload) == "interrupted":
             return "interrupted"
-        best = await judge_serial()
-        if best.met:
+        best = await judge_serial()      # 目标判据的判定；同时作为 keep-policy 的基线（同一命令才可比）
+        regressed = False                # 目标过了但回归失败：best 保持绿的判据结果，这个标记拦住「通过」
+        last_fail = None if best.met else best   # 下一轮修复该看谁的失败输出
+
+        def reg_fail_verdict(rv):
+            """把回归失败包装成「判据失败」，只用于构造修复轮的反馈输入。
+
+            不能直接改写 best：keep-policy 比较的是**同一命令**前后跑了多少测试，
+            把回归命令的测试数塞进 best 会把正常修复误判成退步
+            （回归套件常比目标判据大，例如目标 3 个、回归 100 个）。
+            """
+            from ee.core.goal import Verdict as _Verdict
+            return _Verdict(exit=rv.exit, tests=rv.tests, timed_out=rv.timed_out,
+                            output=(f"目标判据已通过，但回归命令失败（改动破坏了原有测试）。\n\n"
+                                    f"回归命令：\n{pass_to_pass}\n\n输出：\n{(rv.output or '').rstrip()}"),
+                            min_tests=1)
+
+        if best.met and pass_to_pass:
+            rv = await p2p_judge()
+            if not rv.met:
+                regressed = True
+                last_fail = reg_fail_verdict(rv)
+        if best.met and not regressed:
             self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "first_try"})
             return "met"
         if getattr(s.budget, "stop_reason", None):
@@ -851,16 +893,28 @@ class Thread:
 
         # ---- 轮 2：批评修复（判据 + 失败输出喂回去），keep-policy 只在更好时保留。
         for attempt in range(1, max(1, plan.repair_rounds) + 1):
-            msg = build_feedback(best, spec, attempt=attempt, max_checks=plan.repair_rounds + 2)
+            msg = build_feedback(last_fail or best, spec, attempt=attempt, max_checks=plan.repair_rounds + 2)
             if await one_turn(msg) == "interrupted":
                 return "interrupted"
             after = await judge_serial()
             keep, why = A.keep_policy(best, after)
+            if keep and pass_to_pass:
+                # 修复轮也要过回归门：判据过了但弄坏旧测试的修复不能保留。
+                rv = await p2p_judge()
+                if not rv.met:
+                    keep, why = False, f"回归门未通过（{rv.reason}），丢弃修复"
+                    regressed, last_fail = True, reg_fail_verdict(rv)
+                else:
+                    regressed = False
             self.notify("allout_progress", {"thread_id": self.id, "phase": "repair",
                                             "attempt": attempt, "kept": keep, "why": why})
             if keep:
                 best = after
-            if best.met:
+                last_fail = None
+            elif not after.met:
+                # 这次连目标判据都没过（可能是修复把功能改坏了）：下一轮看它的失败输出。
+                last_fail = after
+            if best.met and not regressed:
                 self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "repair"})
                 return "met"
             if getattr(s.budget, "stop_reason", None):
@@ -868,8 +922,9 @@ class Thread:
 
         # ---- 轮 3：分叉（候选各自 worktree、温度阶梯、判据串行、先通过即取消其余）。
         if cap > 1:
-            cands = await self._allout_fanout(spec, plan, text, cap)
-            passed = [c for c in cands if getattr(c.get("verdict"), "met", False)]
+            cands = await self._allout_fanout(spec, plan, text, cap, pass_to_pass)
+            # 回归门拦下的候选不能进排序：它们让原有测试变红了。
+            passed = [c for c in cands if A.candidate_ok(c)]
             if passed:
                 winner = await self._allout_rank(passed, text, getattr(best, "output", "") or "")
                 if winner is not None:
@@ -882,7 +937,7 @@ class Thread:
                         if tree:
                             self._mark_tree_after(tree)
                         return "met"
-        return "exhausted" if not best.met else "met"
+        return "exhausted" if (not best.met or regressed) else "met"
 
     def _allout_candidate_event(self, ev, prefix: str) -> bool:
         """候选会话的阻塞事件接回主会话；处理了返回 True。
@@ -911,7 +966,8 @@ class Thread:
             return True
         return False
 
-    async def _allout_fanout(self, spec, plan, task_text: str, cap: int) -> list[dict]:
+    async def _allout_fanout(self, spec, plan, task_text: str, cap: int,
+                             pass_to_pass: str | None = None) -> list[dict]:
         """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。
 
         `task_text` 是**用户原话**（不是拼好判据段的第一轮输入）：每个候选自己
@@ -989,6 +1045,16 @@ class Thread:
                 async with lock:
                     v = await judge(cand_spec)
                 rec["verdict"] = v
+                if bool(getattr(v, "met", False)) and pass_to_pass:
+                    # 回归门：目标判据过了不算数，还要证明没弄坏原有测试。
+                    p2p_spec = _GS(command=pass_to_pass, cwd=wt["cwd"], min_tests=1,
+                                   timeout=spec.timeout)
+                    async with lock:
+                        rv = await judge(p2p_spec)
+                    rec["regressed"] = not bool(getattr(rv, "met", False))
+                    self.notify("allout_progress", {"thread_id": self.id, "phase": "regression",
+                                                    "id": rec["id"], "met": bool(getattr(rv, "met", False)),
+                                                    "reason": rv.reason})
                 try:
                     rec["cost"] = float(child.stats.totals().get("cost") or 0.0)
                 except Exception:  # noqa: BLE001  费用读不到不影响判定
@@ -1031,8 +1097,9 @@ class Thread:
                     try:
                         r = t.result()
                         results.append(r)
-                        if getattr(r.get("verdict"), "met", False):
-                            for q in pending:          # 先通过 → 立即取消其余（预算不是配额）
+                        if A.candidate_ok(r):
+                            # 先通过（且没被回归门拦下）→ 立即取消其余（预算不是配额）
+                            for q in pending:
                                 q.cancel()
                             pending = set()
                             break
@@ -1098,6 +1165,7 @@ class Thread:
                 y["votes"] = int(y.get("votes") or 0) + A.net_votes(wins, y["id"], x["id"])
         cand_objs = [B.Candidate(id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
                                  cost=float(c.get("cost") or 0.0), votes=int(c.get("votes") or 0),
+                                 regressed=bool(c.get("regressed")),
                                  touched_tests=bool(c.get("touched_tests")), files=int(c.get("files") or 0),
                                  additions=int(c.get("additions") or 0), deletions=int(c.get("deletions") or 0))
                      for c in passed]

@@ -103,8 +103,9 @@ describe("GoalMenu（Codex 式两级交互）", () => {
   it("点「目标」从菜单原位换成输入态（不新开窗口）", async () => {
     const ui = mount({ onSubmit: vi.fn() });
     await openGoal(ui);
-    expect(ui.textInputs().length).toBe(1);
+    expect(ui.textInputs().length).toBe(2);
     expect(ui.textInputs()[0].placeholder).toContain("pytest");
+    expect(ui.textInputs()[1].placeholder).toContain("回归命令");
     expect(ui.view()).toContain("要持续追求的目标");
   });
 
@@ -133,6 +134,21 @@ describe("GoalMenu（Codex 式两级交互）", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit.mock.calls[0][0]).toMatchObject({ command: "pytest -q", maxRounds: 3 });
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("passToPass", "没填回归命令就不该带这个字段");
+  });
+
+  it("回归命令可选：填了就一起提交（去空白）", async () => {
+    const onSubmit = vi.fn();
+    const ui = mount({ onSubmit });
+    await openGoal(ui);
+    setInput(ui.textInputs()[0], "pytest -q");
+    setInput(ui.textInputs()[1], " pytest -q tests/ ");
+    await flush();
+    act(() => ui.buttons().find((b) => (b.textContent ?? "").trim() === "开始")!.click());
+    await flush();
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      command: "pytest -q", maxRounds: 3, passToPass: "pytest -q tests/",
+    });
   });
 
   it("提交后关掉菜单并清空（不把上次的判据留下）", async () => {

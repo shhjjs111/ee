@@ -162,6 +162,15 @@ def keep_policy(before, after) -> tuple[bool, str]:
     return True, f"修复后判据通过且测试数 {n_after} ≥ {n_before}，保留"
 
 
+def candidate_ok(rec: dict) -> bool:
+    """候选能否进入排序/写回：目标判据通过，且没有触发回归门。
+
+    `rec` 是 `Thread._allout_fanout` 的候选记录（`verdict` + `regressed`）。
+    回归门没启用时 `regressed` 恒为 False，行为与旧版一致。
+    """
+    return bool(getattr(rec.get("verdict"), "met", False)) and not bool(rec.get("regressed"))
+
+
 # ---------------------------------------------------------------- 同模型 A/B 评定（选择是第二瓶颈）
 
 AB_SYSTEM = """你是代码评审。给你同一个任务的两次尝试（A 与 B），各自附上判据输出与改动补丁。

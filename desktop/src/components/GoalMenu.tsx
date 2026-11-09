@@ -10,6 +10,8 @@ import { Button, Input } from "./ui";
 export interface GoalRequest {
   command: string;
   maxRounds: number;
+  /** 可选：回归命令（PASS_TO_PASS）。候选除了目标判据，还要跑它证明没弄坏原有测试。 */
+  passToPass?: string;
 }
 
 export function GoalMenu({
@@ -28,6 +30,7 @@ export function GoalMenu({
   const [open, setOpen] = useState(false);
   const [command, setCommand] = useState("");
   const [rounds, setRounds] = useState(defaultRounds);
+  const [passToPass, setPassToPass] = useState("");
 
   const close = () => {
     setOpen(false);
@@ -37,8 +40,10 @@ export function GoalMenu({
   const startGoal = () => {
     const cmd = command.trim();
     if (!cmd) return;                       // 空判据不提交：没有判据的循环没有意义
-    onSubmit({ command: cmd, maxRounds: rounds });
+    const p2p = passToPass.trim();
+    onSubmit({ command: cmd, maxRounds: rounds, ...(p2p ? { passToPass: p2p } : {}) });
     setCommand("");
+    setPassToPass("");
     close();
   };
 
@@ -139,6 +144,19 @@ export function GoalMenu({
                   className="h-6 w-12 rounded-md border border-line bg-bg px-1.5 text-[11.5px] text-fg outline-none focus:border-accent"
                 />
                 <span>轮判定</span>
+              </div>
+              <Input
+                value={passToPass}
+                onChange={(e) => setPassToPass(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) startGoal();
+                  if (e.key === "Escape") close();
+                }}
+                placeholder="回归命令（可选）：例如 pytest -q tests/"
+                className="mb-2"
+              />
+              <div className="mb-2.5 text-[11px] leading-relaxed text-faint">
+                填了回归命令后，全力以赴还要确认候选没弄坏原有测试（全力以赴 / Goal 生效）。
               </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="primary" onClick={startGoal} disabled={!command.trim()}>

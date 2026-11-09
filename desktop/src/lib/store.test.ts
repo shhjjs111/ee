@@ -259,6 +259,26 @@ describe("全力以赴开关", () => {
   });
 });
 
+describe("sendGoal", () => {
+  it("回归命令随 goal 一起发出；不填就不带字段", async () => {
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") } });
+    void useApp.getState().sendGoal("改一下", "pytest -q", 3, "pytest -q tests/");
+    await Promise.resolve();
+    const call = f.calls.find((c) => c.method === "turn/start")!;
+    expect((call.params.goal as any).pass_to_pass).toBe("pytest -q tests/");
+    call.resolve({});
+
+    const f2 = fakeRpc();
+    useApp.setState({ rpc: f2.rpc, activeThreadId: "t", details: { t: detail("t", "/A") } });
+    void useApp.getState().sendGoal("改一下", "pytest -q", 3);
+    await Promise.resolve();
+    const call2 = f2.calls.find((c) => c.method === "turn/start")!;
+    expect((call2.params.goal as any).pass_to_pass).toBeUndefined();
+    call2.resolve({});
+  });
+});
+
 describe("发送失败", () => {
   it("空闲时 turn/start 失败：错误进对话，文字退回输入框（不丢用户打的字）", async () => {
     const f = fakeRpc();

@@ -353,3 +353,101 @@ def test_run_allout_leaves_used_session_effort_alone(ee_home, workspace, monkeyp
     assert th.session.effort == before, "已有会话不能被中途换档"
     assert th.meta.get("effort") is None
 
+
+def test_candidate_ok_requires_met_and_not_regressed():
+    from ee.core.allout import candidate_ok
+
+    class _V:
+        def __init__(self, met): self.met = met
+
+    assert candidate_ok({"verdict": _V(True), "regressed": False})
+    assert not candidate_ok({"verdict": _V(True), "regressed": True}), "弄坏旧测试的候选不能算通过"
+    assert not candidate_ok({"verdict": _V(False), "regressed": False})
+    assert not candidate_ok({"verdict": None, "regressed": False})
+
+
+def test_run_allout_regression_gate_forces_repair(ee_home, workspace, monkeypatch):
+    """首轮目标判据过了但回归命令失败：不能报 met，必须进修复轮。"""
+    th = _thread(ee_home, workspace)
+    _patch_judge(monkeypatch, [_Verdict(True, 3), _Verdict(False, 1, "regressed"),
+                               _Verdict(True, 3), _Verdict(True, 5)])
+    calls = _stub_turn(th, ["completed", "completed"])
+    notes = []
+    th.notify = lambda m, p: notes.append((m, p))
+    reason = asyncio.run(th._run_allout("修好它", None,
+                                        {"command": "pytest -q", "max_rounds": 3,
+                                         "pass_to_pass": "pytest -q tests/"},
+                                        {"enabled": True, "candidates": 1}))
+    assert reason == "met"
+    assert len(calls) == 2, "回归失败必须触发修复轮"
+    how = [p.get("how") for m, p in notes if m == "allout_progress" and p.get("phase") == "done"]
+    assert how == ["repair"]
+
+
+def test_run_allout_regression_suite_larger_than_target_suite(ee_home, workspace, monkeypatch):
+    """回归套件比目标判据大时，不能被 keep-policy 误判成「测试数下降」而丢弃修复。
+
+    回归命令跑 100 个测试、目标判据只跑 3 个；修复后目标仍是 3 个——
+    比较必须发生在「同一命令」的前后，否则正常修复会被永久丢弃。
+    """
+    th = _thread(ee_home, workspace)
+    _patch_judge(monkeypatch, [_Verdict(True, 3), _Verdict(False, 100),
+                               _Verdict(True, 3), _Verdict(True, 200)])
+    calls = _stub_turn(th, ["completed", "completed"])
+    reason = asyncio.run(th._run_allout("修好它", None,
+                                        {"command": "pytest -q tests/test_x.py", "max_rounds": 3,
+                                         "pass_to_pass": "pytest -q"},
+                                        {"enabled": True, "candidates": 1}))
+    assert reason == "met", "回归套件更大不该把修复误判为退步"
+    assert len(calls) == 2
+
+
+def test_run_allout_regressed_result_never_reported_as_met(ee_home, workspace, monkeypatch):
+    """修复始终弄坏旧测试时：即使目标判据是绿的，最终也只能报 exhausted，不能报 met。"""
+    th = _thread(ee_home, workspace)
+    _patch_judge(monkeypatch, [_Verdict(True, 3), _Verdict(False, 100),
+                               _Verdict(True, 3), _Verdict(False, 100)])
+    _stub_turn(th, ["completed", "completed"])
+    reason = asyncio.run(th._run_allout("修好它", None,
+                                        {"command": "pytest -q tests/test_x.py", "max_rounds": 3,
+                                         "pass_to_pass": "pytest -q"},
+                                        {"enabled": True, "candidates": 1}))
+    assert reason == "exhausted", "回归门没通过就不能算达成"
+
+
+def test_run_allout_filters_regressed_candidates_before_rank(ee_home, workspace, monkeypatch):
+    """回归门拦下的候选不进 A/B 排序；pass_to_pass 必须透传给分叉。"""
+    import ee.core.allout as A
+
+    th = _thread(ee_home, workspace)
+    _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1)])
+    _stub_turn(th, ["completed", "completed"])
+    monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
+        candidates=2, repair_rounds=1, max_rounds=3, effort="", max_steps=50,
+        temperature_ladder=(0.0, 0.3), verified=True, reasons=(), degradations=()))
+    seen = {}
+
+    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None):
+        seen["p2p"] = pass_to_pass
+        bad = {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": True,
+               "cwd": str(workspace), "base": "x"}
+        good = {"id": "cand-2", "verdict": _Verdict(True, 3), "regressed": False,
+                "cwd": str(workspace), "base": "x"}
+        return [bad, good]
+
+    ranked = []
+
+    async def fake_rank(passed, task, judge_output):
+        ranked.extend(c["id"] for c in passed)
+        return None
+
+    monkeypatch.setattr(th, "_allout_fanout", fake_fanout)
+    monkeypatch.setattr(th, "_allout_rank", fake_rank)
+    reason = asyncio.run(th._run_allout("修好它", None,
+                                        {"command": "pytest -q", "max_rounds": 3,
+                                         "pass_to_pass": "pytest -q tests/"},
+                                        {"enabled": True, "candidates": 2}))
+    assert seen["p2p"] == "pytest -q tests/", "回归命令必须透传到分叉"
+    assert ranked == ["cand-2"], "回归的候选不能进排序"
+    assert reason == "exhausted"
+

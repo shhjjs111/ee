@@ -113,7 +113,7 @@ type Actions = {
   deleteThread(id: string): Promise<boolean>;
   /** queue：运行中发送时排进哪条队列（steer 插话 / follow 完成后再做）；空闲时忽略。 */
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
-  sendGoal(text: string, command: string, maxRounds: number): Promise<boolean>;
+  sendGoal(text: string, command: string, maxRounds: number, passToPass?: string): Promise<boolean>;
   /** 全力以赴开关（会话级）：打开后下一次发送会带上 allout，模型不变。 */
   setAllout(v: { enabled?: boolean; candidates?: number }): void;
   /** 没有当前对话时按草稿（项目、模型、模式、worktree）新建一个，返回会话 id；没选项目返回 null。 */
@@ -495,7 +495,7 @@ export const useApp = create<State & Actions>((set, get) => ({
     set({ allout: next });
   },
 
-  async sendGoal(text, command, maxRounds) {
+  async sendGoal(text, command, maxRounds, passToPass) {
     const s = get();
     const rpc = s.rpc!;
     let id = s.activeThreadId;
@@ -516,7 +516,7 @@ export const useApp = create<State & Actions>((set, get) => ({
         text,
         model,
         mode,
-        goal: { command, max_rounds: maxRounds },
+        goal: { command, max_rounds: maxRounds, ...(passToPass ? { pass_to_pass: passToPass } : {}) },
         ...(ao.enabled ? { allout: { enabled: true, candidates: ao.candidates } } : {}),
       });
       return true;

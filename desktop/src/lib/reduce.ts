@@ -60,6 +60,10 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
       if (phase === "apply") {
         return { ...t, status_text: p.result?.applied ? "全力以赴：候选补丁已写回" : "全力以赴：补丁写回失败" };
       }
+      if (phase === "regression") {
+        const who = p.id ? `（${p.id}）` : "";
+        return { ...t, status_text: `全力以赴：回归检查${p.met ? "通过" : "未通过"}${who}` };
+      }
       if (phase === "fanout_skipped") {
         return { ...t, status_text: `全力以赴：未分叉（${p.why || "原因未知"}）` };
       }

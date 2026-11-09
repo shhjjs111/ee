@@ -126,6 +126,15 @@ def test_timeout_optional_but_validated():
         _norm_goal({"command": "pytest", "timeout": "abc"})
 
 
+def test_pass_to_pass_optional_and_trimmed():
+    """回归命令可选；给了就裁剪空白，不给就不写入（老调用方行为不变）。"""
+    from ee.server.threads import _norm_goal
+
+    assert "pass_to_pass" not in _norm_goal({"command": "pytest"})
+    g = _norm_goal({"command": "pytest", "pass_to_pass": " pytest -q tests/ "})
+    assert g["pass_to_pass"] == "pytest -q tests/"
+
+
 # ---------------------------------------------------------------- 条目写入
 
 def test_goal_written_into_user_item(ee_home, workspace):

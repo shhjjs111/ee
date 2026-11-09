@@ -3,7 +3,7 @@
 export type ItemBase = { id: string; ts?: number; seq?: number };
 
 export type AttachmentMeta = { id: string; name: string; mime: string; size: number; thumb?: string };
-export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review" | "loop"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[]; goal?: { command: string; max_rounds: number; timeout?: number }; allout?: { enabled: boolean; candidates: number } };
+export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review" | "loop"; queued?: boolean; queue?: "steer" | "follow"; hist?: number; snap?: number; attachments?: AttachmentMeta[]; goal?: { command: string; max_rounds: number; timeout?: number; pass_to_pass?: string }; allout?: { enabled: boolean; candidates: number } };
 
 /** 全力以赴的火力推导结果（后端 core/allout.py 的 AlloutPlan.as_dict）。 */
 export type AlloutPlanInfo = {

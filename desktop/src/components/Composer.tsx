@@ -703,7 +703,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
                 return;
               }
               setText("");
-              void s.sendGoal(t, req.command, req.maxRounds);
+              void s.sendGoal(t, req.command, req.maxRounds, req.passToPass);
             }}
             disabled={running || attBusy}
           />

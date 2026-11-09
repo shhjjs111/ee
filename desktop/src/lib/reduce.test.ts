@@ -49,6 +49,10 @@ describe("applyItemNotification", () => {
     const skipped = applyItemNotification(base, "allout_progress", { phase: "fanout_skipped", why: "不是 git 仓库" });
     expect(skipped.status_text).toContain("未分叉");
     expect(skipped.status_text).toContain("不是 git 仓库");
+
+    const reg = applyItemNotification(base, "allout_progress", { phase: "regression", met: false, id: "cand-1" });
+    expect(reg.status_text).toContain("回归检查未通过");
+    expect(reg.status_text).toContain("cand-1");
   });
 
   it("allout_progress 的 done 不清状态，交给 turn/completed", () => {
