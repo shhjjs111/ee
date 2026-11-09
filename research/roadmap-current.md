@@ -52,6 +52,8 @@
 - **收尾接线（2026-11-09，回答「是否全部做完」时的核对暴露）**：设计里有、实现没接上的三处补齐——① **只读/计划模式禁用**：`start_turn` 在 `enabled=True` 时检查生效档位（含同回合 `mode` 参数与 `/review` 的临时只读），`read-only`/`plan` 直接拒绝；前端 `setAllout` 同样拦（先提示，不发出去才报错），菜单项在两种模式下置灰。② **探测判据首次确认**：`Thread.meta["allout"]["goal_confirmed"]` 记录已确认命令；没填「目标」但探测到判据时弹审批卡片（`tool="allout_probe"`，无人值守由 `auto_approve` 按档位决定），确认后重新推导并再推一条完整版 `allout_plan`（否则界面停在降级版「1 路」与实际不符），拒绝则按单路降级并说明「你这次没有确认」。③ **前端执行进度**：`reduce.ts` 接 `allout_progress` 六个阶段（start/judge/repair/candidate/apply/fanout_skipped），修复轮次、候选通过、补丁写回都能在状态行看到；`done` 交给 `turn/completed` 清空。测试：`test_allout_turn.py` 新增 5 例（只读/计划/临时只读/mode 参数/确认标记回写）、`test_allout_run.py` 新增 2 例（确认后走完整流程并写回 meta、拒绝后不跑判据）、`reduce.test.ts` 新增 2 例、`store.test.ts` 新增 2 例。
 - **边界（保留）**：分叉内「两个候选同时通过、由早退取消之外的路径进入 A/B」不会在真模型下自然触发（生产早退策略下第一个通过就取消其余，A/B 服务于候选几乎同时通过的场景与 bestof 手工比较）；这段生产接线由 `test_allout_rank.py` 覆盖；Gradle **成功时**仍需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数（失败时的 `N tests completed, M failed` 汇总与开了 testLogging 的逐条行已能解析）。
 
+- **最终验证（2026-11-09，收尾接线后）**：后端全量 **2491 passed / 16 skipped**（`-n 8`，164.9 秒）、前端 65 文件 **390 passed**、`tsc --noEmit` exit 0、`ruff check ee/` 全绿、真实 Electron Playwright e2e **34 passed / 2 skipped**（1.3 分钟）。
+
 ## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）
 
 压缩是目前唯一真实的损失面（摘要的标识符覆盖率实测 8.6%，目标是 35%），但**本轮否掉了两个错误假设**，也找到了一个更省的做法：
