@@ -801,6 +801,14 @@ class Thread:
                         max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
                         max_candidates=int(allout.get("candidates") or 3))
         cap = plan.candidates
+        # 推理强度是设计里最大的杠杆（v2 §1.1），必须真的落到请求参数上：
+        # 推导结果原先只写进了 reasons，没写进会话——界面说「max」，请求仍是默认档。
+        # 只在新会话应用：已有会话中途换档会断前缀缓存（session.py 的 effort_switch）。
+        if plan.effort and s.turns == 0 and s.effort != plan.effort:
+            s.set_effort(plan.effort)
+            self.meta["effort"] = s.effort
+            self.save_meta()
+            self.notify("thread/updated", {"thread": self.summary()})
         lock = getattr(self, "_allout_judge_lock", None)
         if lock is None:
             lock = self._allout_judge_lock = asyncio.Lock()
