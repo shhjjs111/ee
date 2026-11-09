@@ -122,21 +122,28 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # npm ci 的 electron postinstall 偶尔不会留下二进制（实测：2026-11-09 的一次
-      # run 里 desktop 代码与上一次全绿 run 完全相同，12 个 spec 却全部报
-      # "Electron failed to install correctly"）。E2E 之前显式校验并补装，
-      # 让失败点落在这一步，不再静默扩散成 12 个用例的假象。
+      # electron@45 的 package.json **没有** postinstall——二进制是在首次
+      # `require('electron')` 时由 index.js 懒下载的（downloadElectron）。实测：
+      # 2026-11-09 的一次 run 里 desktop 代码与上一次全绿 run 完全相同，12 个 spec
+      # 却全部报 "Electron failed to install correctly"——懒下载在 E2E 进程里失败了，
+      # 一次失败扩散成 12 个用例。E2E 之前显式触发并校验，让失败点落在这一步。
       - name: Verify Electron binary
         if: ${{ !cancelled() }}
         working-directory: desktop
         shell: pwsh
         run: |
+          # 实测（2026-11-09）：GitHub release CDN 对 electron-v45.0.0-win32-x64.zip
+          # 连续返回 504，懒下载失败后一次扩散成 12 个 spec 报错。重试 3 次，
+          # 短暂抖动不至于打红整轮；仍失败则在这一步明确失败，不再伪装成用例失败。
           $exe = "node_modules/electron/dist/electron.exe"
-          if (-not (Test-Path $exe)) {
-            Write-Host "Electron 二进制缺失，重新运行 install.js 补装…"
+          for ($i = 1; $i -le 3; $i++) {
+            if (Test-Path $exe) { break }
+            Write-Host "Electron 二进制缺失（第 $i 次尝试），运行 install.js 下载…"
             node node_modules/electron/install.js
+            if (Test-Path $exe) { break }
+            if ($i -lt 3) { Start-Sleep -Seconds 15 }
           }
-          if (-not (Test-Path $exe)) { throw "Electron binary still missing: $exe" }
+          if (-not (Test-Path $exe)) { throw "Electron binary still missing after 3 attempts: $exe" }
           node -e "console.log('electron:', require('electron'))"
 
       - name: Frontend unit tests (vitest)
