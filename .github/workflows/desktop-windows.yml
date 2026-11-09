@@ -122,6 +122,23 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # npm ci 的 electron postinstall 偶尔不会留下二进制（实测：2026-11-09 的一次
+      # run 里 desktop 代码与上一次全绿 run 完全相同，12 个 spec 却全部报
+      # "Electron failed to install correctly"）。E2E 之前显式校验并补装，
+      # 让失败点落在这一步，不再静默扩散成 12 个用例的假象。
+      - name: Verify Electron binary
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $exe = "node_modules/electron/dist/electron.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "Electron 二进制缺失，重新运行 install.js 补装…"
+            node node_modules/electron/install.js
+          }
+          if (-not (Test-Path $exe)) { throw "Electron binary still missing: $exe" }
+          node -e "console.log('electron:', require('electron'))"
+
       - name: Frontend unit tests (vitest)
         if: ${{ !cancelled() }}
         working-directory: desktop
