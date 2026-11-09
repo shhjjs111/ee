@@ -44,6 +44,12 @@ SAMPLES = [
     # ---- maven surefire：Tests run 已含 failures，不能重复相加
     ("maven_ok", "[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0\n", 12),
     ("maven_fail", "[ERROR] Tests run: 12, Failures: 1, Errors: 0, Skipped: 0\n", 12),
+    # ---- gradle：成功默认不打计数；失败打 `N tests completed, M failed`；
+    #      开 testLogging 后逐条输出 PASSED/FAILED
+    ("gradle_default_fail_summary", "> Task :test\n\n3 tests completed, 1 failed\n\nBUILD FAILED in 3s\n", 3),
+    ("gradle_default_ok_has_no_count", "> Task :test\n\nBUILD SUCCESSFUL in 2s\n3 actionable tasks: 3 executed\n", 0),
+    ("gradle_testlogging_ok", "CalcTest > addTest() PASSED\nCalcTest > subTest() PASSED\n\nBUILD SUCCESSFUL in 2s\n", 2),
+    ("gradle_testlogging_fail", "CalcTest > addTest() PASSED\nCalcTest > subTest() FAILED\n\n2 tests completed, 1 failed\n\nBUILD FAILED in 3s\n", 2),
     # ---- pytest 原有形态不能被破坏（回归）
     ("pytest_ok", "===== 15 passed in 1.2s =====\n", 15),
     ("pytest_mixed", "2 failed, 3 passed in 0.5s\n", 5),
@@ -67,3 +73,8 @@ def test_go_all_failed_non_verbose_reads_zero_not_a_false_success():
     退出码非零本来就会判不通过；这里只守「不许凭空报数」。"""
     out = "FAIL\texample.com/pkg\t0.01s\nFAIL\n"
     assert parse_tests(out) == 0
+
+
+def test_gradle_failed_summary_counts_all_completed_tests():
+    """`3 tests completed, 1 failed` 是真跑了 3 个；通用 failed 规则会读成 1。"""
+    assert parse_tests("3 tests completed, 1 failed\n") == 3

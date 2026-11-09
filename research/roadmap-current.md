@@ -47,8 +47,9 @@
 - **候选隔离修复（2026-11-09，第二次真跑暴露）**：第一次分叉真跑的日志显示候选拿着绝对路径直接改主仓库、并 `cd` 进主仓库执行命令，两个候选的 worktree 等于没用，写回时 `patch does not apply`。根因有两个，都修了：一是 `auto` 模式下 `_check_write` / `_check_shell` 对工作区外路径**直接放行**（`mode == "auto"` 的提前返回在越界判断之前），候选继承了主会话的档位就能写任何地方；二是分叉复用的第一轮输入是用**主仓库** spec 构造的，开头一句「判据执行目录：主仓库」等于明确指挥模型去主仓库干活。现在：`allout.candidate_deny_rules()` 给候选追加精确的主仓库 deny 规则（`auto` 下也生效；实测不误伤 `repo2` 兄弟目录与候选自己的 worktree），候选的提示词按**它自己的 worktree** 重新构造。`test_allout_isolation.py`（9 例，含接线与盘符根边界）。第二次真跑：候选只改自己的目录，写回 `applied: True`，主仓库测试转绿。
 - **A/B 排序真跑（2026-11-09）**：构造一对都能通过判据、但质量不同的候选——诚实修复（改 `calc.py`）与改测试作弊（把断言放宽成 `is not None`）。同模型两轮位置对调评定都选中诚实修复，净胜票 **+2 / −2**，`pick` 选中 `cand-good`，界面理由为「通过了判据，且同模型 A/B 净胜 2 票」。验证了选择环节的区分度，不只是「都能过时随机挑」。
 - **修复轮真跑（2026-11-09）**：六处错误、六条测试的仓库，`max_steps=3` 让首轮不可能修完。首轮判定 `met=False`（5 个测试跑过仍红）→ `build_feedback` 把失败输出喂回 → 模型再修 → 判定 `met=True`（6 个测试通过）→ keep-policy `kept=True`（「修复后判据通过且测试数 6 ≥ 5，保留」）→ `how=repair`。34 秒、¥0.0202，「判红 → 批评修复 → 转绿」这条主路径在真模型下闭环。
+- **Gradle 计数解析（2026-11-09）**：原先 Gradle 项目的判据永远读到 0 个测试（成功时默认无汇总行），失败时 `3 tests completed, 1 failed` 还会被通用规则误读成 1 个。现在 `parse_tests` 先认 `N tests completed` 整行（失败场景），再认 `testLogging` 的逐条 `PASSED`/`FAILED` 行（`events 'passed', 'failed'` 配置后）；成功且未开 testLogging 时读 0 仍是保守方向，探测提示已改写为可直接照做的配置说明。`test_parse_tests_runners.py` 29 例、`test_probe.py` 15 例全绿。
 - **A/B 生产接线测试（2026-11-09）**：`_allout_rank` 用真实 git 仓库的两个候选 + 桩 `side_complete` 覆盖：位置对调两轮、按候选投票得 +2/−2、槽位偏差（每轮都投 A）抵消为 0:0、评定异常按平票不阻塞写回，另验选中理由写明「A/B 净胜 2 票」。4 例全绿（`ee/tests/test_allout_rank.py`）。
-- **未做**：分叉内「两个候选同时通过、由早退取消之外的路径进入 A/B」不会在真模型下自然触发（生产早退策略下第一个通过就取消其余，A/B 服务于候选几乎同时通过的场景与 bestof 手工比较）；这段生产接线现由 `test_allout_rank.py` 覆盖；Gradle 项目需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数。
+- **未做**：分叉内「两个候选同时通过、由早退取消之外的路径进入 A/B」不会在真模型下自然触发（生产早退策略下第一个通过就取消其余，A/B 服务于候选几乎同时通过的场景与 bestof 手工比较）；这段生产接线现由 `test_allout_rank.py` 覆盖；Gradle **成功时**仍需用户在 `build.gradle` 里开 `testLogging` 才能读出测试数（失败时的 `N tests completed, M failed` 汇总现已能解析）。
 
 ## 执行记录（2026-11-04，压缩后的信息黑洞：recall 工具）
 

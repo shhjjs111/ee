@@ -207,6 +207,5 @@ def probe(root: Path | str) -> ProbeResult:
         note = f"同时探测到 {rest}；默认用 {label} 的 {cmd}，不对可以在「目标」里改。"
     if cmd.startswith("./gradlew"):
         note = (note + " " if note else "") + \
-            "Gradle 默认不打印测试计数：需要在 build.gradle 里加 testLogging 显示 passed/failed，" \
-            "否则判据会因读不到测试数而判不通过。"
+            "Gradle 成功时默认不打印测试计数（失败时只有 `N tests completed, M failed` 汇总）：在 build.gradle 的 test 配置里加 testLogging { events 'passed', 'failed' }（build.gradle.kts 用双引号），ee 才能数出跑了多少个测试；否则判据会因读不到测试数而判不通过。"
     return ProbeResult(command=cmd, source=label, test_files=files, note=note)

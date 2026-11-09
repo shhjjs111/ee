@@ -137,6 +137,9 @@ _PHPUNIT_SUM = re.compile(r"Tests:\s*(\d+),\s*Assertions:", re.I)
 _BUN_PASS = re.compile(r"^\s*(\d+)\s+pass\s*$", re.M)
 _BUN_FAIL = re.compile(r"^\s*(\d+)\s+fail\s*$", re.M)
 _MAVEN = re.compile(r"Tests run:\s*(\d+)", re.I)
+_GRADLE_SUMMARY = re.compile(r"(\d+)\s+tests?\s+completed", re.I)   # 失败汇总：3 tests completed, 1 failed
+_GRADLE_LINE = re.compile(r"^.+?\s>\s.+?\s(?:PASSED|FAILED)\s*$", re.M)  # testLogging 逐条 PASSED/FAILED
+
 
 # 「Tests  1 failed | 11 passed (12)」/「Tests: 1 failed, 11 passed, 12 total」里的数字提取
 _NUM_PASSED = re.compile(r"(\d+)\s+passed", re.I)
@@ -166,7 +169,7 @@ def parse_tests(output: str) -> int:
       `2 failed, 3 passed` 表示跑了 5 个。只取 passed 会把失败那部分漏掉，
       在"修好一半"的场景里低估进度。
     - 其它 runner（go / dotnet / vitest / jest / mocha / rspec / phpunit / bun /
-      maven）按各自汇总行解析，口径同样是「通过 + 失败」。
+      maven / gradle）按各自汇总行解析，口径同样是「通过 + 失败」。
     - 否则 `collected N items`。
     - 都没有 → 0（读不出就当没跑，不假成功）。
 
@@ -182,6 +185,12 @@ def parse_tests(output: str) -> int:
         n = _from_vitest_jest(m.group(1))
         if n:
             return n
+    # Gradle 的失败汇总行 `3 tests completed, 1 failed`：`1 failed` 会被通用规则
+    # 读成只跑了 1 个，必须先认整行。成功且没开 testLogging 时 Gradle 什么都不打，
+    # 读 0 是保守方向（探测提示会要求用户开 testLogging）。
+    m = _GRADLE_SUMMARY.search(output)
+    if m:
+        return int(m.group(1))
     # 没有 Tests 行时，`Test Files  3 passed` 同样不能被通用规则当测试数。
     generic = re.sub(r"^.*Test Files.*$", "", output, flags=re.M)
     p = _PASSED.search(generic)
@@ -214,6 +223,9 @@ def parse_tests(output: str) -> int:
     m = _MAVEN.search(output)
     if m:
         return int(m.group(1))          # Tests run 已含 failures/errors，不能相加
+    gradle_lines = _GRADLE_LINE.findall(output)
+    if gradle_lines:
+        return len(gradle_lines)        # testLogging 的逐条 PASSED/FAILED
     m = _DOTNET.search(output)
     if m:
         return int(m.group(1)) + int(m.group(2))
