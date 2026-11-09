@@ -496,6 +496,12 @@ class Thread:
             if allout.get("enabled") and self.running:
                 # 运行中改跑法等于中途换策略：与 goal 的排队语义一致，明确拒绝。
                 raise ValueError("ee 正在工作，等这一回合结束再打开全力以赴")
+            if allout.get("enabled"):
+                # 只读 / 计划模式是硬边界（v2 §9）：allout 要改文件、并行跑多个候选，
+                # 最后还会把补丁写回主目录——这些模式下一律拒绝，不靠模型自觉。
+                eff = mode or getattr(self, "_pending_mode", None) or s.policy.mode
+                if readonly or eff in ("read-only", "plan"):
+                    raise ValueError("只读 / 计划模式下不能开全力以赴：它会改文件并并行跑候选")
             if not allout.get("enabled"):
                 allout = None            # 关着与不传等价：界面不显示、不落条目
         if images and self.running:
@@ -636,16 +642,33 @@ class Thread:
         self.plan_item = None
         reason = "error"
         try:
+            probe_denied = False
             if allout:
-                await self._plan_allout(allout, goal)
+                proj = await self._plan_allout(allout, goal)
+                if not goal and proj is not None and proj.command:
+                    if self._allout_goal_confirmed(proj.command):
+                        goal = {"command": proj.command, "max_rounds": 3}
+                    elif await self._confirm_probe_goal(proj):
+                        self._remember_allout_goal(proj.command)
+                        self._add({"type": "notice", "level": "info",
+                                   "text": f"全力以赴：已确认判据 {proj.command}"
+                                           f"（来自 {proj.source or '项目文件'}），以后这个项目不用再确认。"})
+                        goal = {"command": proj.command, "max_rounds": 3}
+                        # 重新推导并推一条 allout_plan：确认前的通知是降级版（单路、未验证），
+                        # 不重发的话界面会一直显示 1 路，与实际执行的路数不符。
+                        await self._plan_allout(allout, goal)
+                    else:
+                        probe_denied = True
             if allout and goal:
                 reason = await self._run_allout(text, images, goal, allout)
             elif allout:
                 # 降级路径（allout v2 §4）：没有客观判据就不存在「极限」，
                 # 按普通回合跑，并在对话里说清楚为什么没开火力。
                 self._add({"type": "notice", "level": "warn",
-                           "text": "全力以赴已开，但这一回合没有可执行的判据：按单路尝试，结果不保证正确性。"
-                                   "可以用「目标」填一条测试命令启用完整模式。"})
+                           "text": ("全力以赴：你这次没有确认探测到的判据，按单路跑，结果不保证正确性。"
+                                    if probe_denied else
+                                    "全力以赴已开，但这一回合没有可执行的判据：按单路尝试，结果不保证正确性。"
+                                    "可以用「目标」填一条测试命令启用完整模式。")})
                 async for ev in s.run_turn(text, images):
                     if isinstance(ev, TurnDone):
                         reason = ev.reason
@@ -688,8 +711,10 @@ class Thread:
                 self.notify("turn/completed", {"thread_id": self.id, "reason": "error", "duration_ms": 0,
                                                "usage": self.usage, "context_left": self.context_left})
 
-    async def _plan_allout(self, allout: dict, goal: dict | None) -> None:
+    async def _plan_allout(self, allout: dict, goal: dict | None):
         """全力以赴的推导与判据探测：只发通知，不执行任何命令。
+
+        返回探测结果（`ProbeResult` 或 None），供 `_consume` 决定是否需要用户确认。
 
         **为什么不在这里直接跑探测到的判据**：陌生仓库不能让 ee 自动执行它的
         测试脚本（allout v2 §9）。探测结果带 `confirmed=False` 推给界面，由用户
@@ -705,6 +730,9 @@ class Thread:
         assert s is not None
         has_goal = bool(goal and goal.get("command"))
         proj = None if has_goal else probe_project(self.cwd)
+        if proj is not None and proj.command:
+            # v2 §5：探测来的判据首次使用前要用户确认一次；确认过就不再问。
+            proj.confirmed = self._allout_goal_confirmed(proj.command)
         # 用户设的 candidates 作为上限参与推导（而不是事后截断）：否则 reasons 会写
         # 「并行 3 路」而实际只跑 2 路，界面自相矛盾（2026-11-09 真模型演练实测到）。
         plan = derive(config=s.config.data, profile=s.profile, has_goal=has_goal,
@@ -717,6 +745,39 @@ class Thread:
             "probe": proj.as_dict() if proj is not None else None,
             "candidates_cap": plan.candidates,
         })
+        return proj
+
+    def _allout_meta(self) -> dict:
+        m = self.meta.get("allout")
+        return dict(m) if isinstance(m, dict) else {}
+
+    def _allout_goal_confirmed(self, command: str) -> bool:
+        return self._allout_meta().get("goal_confirmed") == command
+
+    def _remember_allout_goal(self, command: str) -> None:
+        m = self._allout_meta()
+        m["goal_confirmed"] = command
+        self.meta["allout"] = m
+        self.save_meta()
+
+    async def _confirm_probe_goal(self, proj) -> bool:
+        """探测到的判据首次使用前问一次（v2 §5）。
+
+        走审批卡片而不是 ask_user：无人值守下 `auto_approve` 能按主会话档位
+        给出决定（ask_user 没有自动回答通路，会一直卡到超时）。
+        """
+        from ee.core.events import ApprovalRequest
+
+        fut = asyncio.get_running_loop().create_future()
+        ev = ApprovalRequest(
+            call_id=_new_id("ap"), tool="allout_probe",
+            title="全力以赴：用探测到的判据做闸门？",
+            detail=f"{proj.command}（来自 {proj.source or '项目文件'}）"
+                   + (f"\n\n{proj.note}" if getattr(proj, "note", "") else ""),
+            future=fut)
+        self._on_event(ev)
+        decision = await fut
+        return not str(getattr(decision, "choice", "deny")).startswith("deny")
 
     # ------------------------------------------------------------ 全力以赴（阶段 5）
 

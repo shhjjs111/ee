@@ -27,6 +27,35 @@ describe("applyItemNotification", () => {
     expect(t.status_text).toContain("3 路");
   });
 
+  it("allout_progress 把修复轮、候选、写回都写进状态（长跑不看起来卡死）", () => {
+    const start = applyItemNotification(base, "allout_progress", { phase: "start", candidates: 2 });
+    expect(start.status_text).toContain("2 路开始");
+
+    const judge = applyItemNotification(base, "allout_progress", { phase: "judge", met: false, tests: 5 });
+    expect(judge.status_text).toContain("未通过");
+    expect(judge.status_text).toContain("5 个测试");
+
+    const repair = applyItemNotification(base, "allout_progress", { phase: "repair", attempt: 1, kept: true });
+    expect(repair.status_text).toContain("第 1 轮修复");
+    expect(repair.status_text).toContain("已保留");
+
+    const cand = applyItemNotification(base, "allout_progress", { phase: "candidate", id: "cand-2", met: true });
+    expect(cand.status_text).toContain("cand-2");
+    expect(cand.status_text).toContain("通过判据");
+
+    const applied = applyItemNotification(base, "allout_progress", { phase: "apply", winner: "cand-1", result: { applied: true } });
+    expect(applied.status_text).toContain("已写回");
+
+    const skipped = applyItemNotification(base, "allout_progress", { phase: "fanout_skipped", why: "不是 git 仓库" });
+    expect(skipped.status_text).toContain("未分叉");
+    expect(skipped.status_text).toContain("不是 git 仓库");
+  });
+
+  it("allout_progress 的 done 不清状态，交给 turn/completed", () => {
+    const t = applyItemNotification({ ...base, status_text: "全力以赴：判据通过" }, "allout_progress", { phase: "done", how: "first_try" });
+    expect(t.status_text).toBe("全力以赴：判据通过");
+  });
+
   it("started → delta → updated → removed", () => {
     let t = applyItemNotification(base, "item/started", { item: { id: "a1", type: "assistant", text: "", reasoning: "" } });
     t = applyItemNotification(t, "item/delta", { item_id: "a1", field: "text", delta: "你好" });

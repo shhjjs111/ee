@@ -764,10 +764,15 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
                 items: (() => {
                   const ao = s.allout;
                   const on = ao.enabled;
+                  // 只读 / 计划模式下不能开（后端硬拒）；已开着时仍允许关掉。
+                  const blocked = (mode === "read-only" || mode === "plan") && !on;
                   return [{
                     label: on ? `已开启（上限 ${ao.candidates} 路）` : "全力以赴",
-                    desc: "先一次做好，失败按原因修，还不行才分头试；模型不变，多数任务不会多花一分钱",
+                    desc: blocked
+                      ? "只读 / 计划模式下不可用：全力以赴会改文件并并行跑候选"
+                      : "先一次做好，失败按原因修，还不行才分头试；模型不变，多数任务不会多花一分钱",
                     hint: on ? "当前" : undefined,
+                    disabled: blocked,
                     onSelect: () => {
                       s.setAllout({ enabled: !on });
                       s.showToast(on ? "已关闭全力以赴" : `全力以赴已开启（上限 ${ao.candidates} 路，可用「目标」填判据）`, "info");

@@ -236,6 +236,27 @@ describe("全力以赴开关", () => {
     useApp.getState().setAllout({ enabled: false });
     expect(useApp.getState().allout.enabled).toBe(false);
   });
+
+  it("只读 / 计划模式下开不了全力以赴（后端同样硬拒）", () => {
+    for (const mode of ["read-only", "plan"]) {
+      useApp.setState({
+        rpc: null, activeThreadId: "t", details: { t: { ...detail("t", "/A"), mode } },
+        allout: { enabled: false, candidates: 3 }, draftMode: "default",
+      });
+      useApp.getState().setAllout({ enabled: true });
+      expect(useApp.getState().allout.enabled, `${mode} 下不该打开`).toBe(false);
+    }
+  });
+
+  it("没有当前会话时看草稿模式；已开着时允许关掉", () => {
+    useApp.setState({ rpc: null, activeThreadId: null, details: {}, draftMode: "read-only", allout: { enabled: false, candidates: 3 } });
+    useApp.getState().setAllout({ enabled: true });
+    expect(useApp.getState().allout.enabled).toBe(false);
+
+    useApp.setState({ allout: { enabled: true, candidates: 3 } });
+    useApp.getState().setAllout({ enabled: false });
+    expect(useApp.getState().allout.enabled).toBe(false);
+  });
 });
 
 describe("发送失败", () => {

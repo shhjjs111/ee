@@ -40,6 +40,31 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
         ...t,
         status_text: `全力以赴 · ${p.plan?.candidates ?? 1} 路`,
       };
+    // 全力以赴的执行进度：修复轮、候选、写回都在这里。没有它，长跑只剩
+    // 「全力以赴 · 3 路」一行不动，用户看不出到底在修、在试、还是已经写回。
+    case "allout_progress": {
+      const phase = String(p.phase || "");
+      if (phase === "start") {
+        return { ...t, status_text: `全力以赴 · ${p.candidates ?? 1} 路开始` };
+      }
+      if (phase === "judge") {
+        const n = typeof p.tests === "number" && p.tests > 0 ? `（${p.tests} 个测试）` : "";
+        return { ...t, status_text: `全力以赴：判据${p.met ? "通过" : "未通过"}${n}` };
+      }
+      if (phase === "repair") {
+        return { ...t, status_text: `全力以赴：第 ${p.attempt ?? 1} 轮修复${p.kept ? "，已保留" : "，未保留"}` };
+      }
+      if (phase === "candidate") {
+        return { ...t, status_text: `全力以赴：候选 ${p.id ?? "?"}${p.met ? "通过判据" : "未通过"}` };
+      }
+      if (phase === "apply") {
+        return { ...t, status_text: p.result?.applied ? "全力以赴：候选补丁已写回" : "全力以赴：补丁写回失败" };
+      }
+      if (phase === "fanout_skipped") {
+        return { ...t, status_text: `全力以赴：未分叉（${p.why || "原因未知"}）` };
+      }
+      return t;   // done：交给 turn/completed 清空
+    }
     case "turn/status":
       return { ...t, status_text: p.text || "" };
     case "thread/usage":

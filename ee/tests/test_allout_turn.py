@@ -115,6 +115,37 @@ def test_enabled_recorded_on_user_item(ee_home, workspace):
     assert u["allout"]["candidates"] == 2
 
 
+def test_rejects_in_readonly_mode(ee_home, workspace):
+    """只读模式是硬边界：allout 要改文件、并行跑候选，直接拒绝。"""
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    th.set_mode("read-only")
+    with pytest.raises(ValueError):
+        th.start_turn("修好它", allout={"enabled": True})
+
+
+def test_rejects_in_plan_mode(ee_home, workspace):
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    th.set_mode("plan")
+    with pytest.raises(ValueError):
+        th.start_turn("修好它", allout={"enabled": True})
+
+
+def test_rejects_readonly_review_turn(ee_home, workspace):
+    """`/review` 这种临时只读回合同样不能开 allout。"""
+    th = _thread(ee_home, workspace)
+    with pytest.raises(ValueError):
+        th.start_turn("审查一下", readonly=True, allout={"enabled": True})
+
+
+def test_rejects_readonly_via_mode_param(ee_home, workspace):
+    """同一回合里指定的 mode 也要先于 allout 判断。"""
+    th = _thread(ee_home, workspace)
+    with pytest.raises(ValueError):
+        th.start_turn("修好它", mode="read-only", allout={"enabled": True})
+
+
 def test_rejects_when_running(ee_home, workspace):
     """运行中改 allout 等于中途换跑法：拒绝，和 goal 的排队语义一致。"""
     th = _thread(ee_home, workspace)
@@ -189,3 +220,16 @@ def test_plan_allout_user_cap_shrinks_shown_plan(ee_home, workspace):
     assert p["plan"]["candidates"] == 1, "显示的路数必须被用户上限钳住"
     assert len(p["plan"]["temperature_ladder"]) == 1, "温度阶梯要跟着截断"
     assert "并行 1 路" in " ".join(p["plan"]["reasons"]), "reasons 不能写与实际不符的路数"
+
+
+def test_plan_allout_probe_confirmed_after_remember(ee_home, workspace):
+    """用户确认过一次后，后续探测通知必须显示 confirmed=True（不再重复问）。"""
+    (workspace / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    th = _thread(ee_home, workspace)
+    notes = []
+    th.notify = lambda m, p: notes.append((m, p))
+    th.ensure_session()
+    th._remember_allout_goal("python -m pytest -q")
+    asyncio.run(th._plan_allout({"enabled": True, "candidates": 3}, None))
+    p = [x for m, x in notes if m == "allout_plan"][0]
+    assert p["probe"]["confirmed"] is True

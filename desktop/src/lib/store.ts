@@ -482,6 +482,16 @@ export const useApp = create<State & Actions>((set, get) => ({
   setAllout(v) {
     const cur = get().allout;
     const next = { enabled: v.enabled ?? cur.enabled, candidates: Math.max(1, Math.min(3, v.candidates ?? cur.candidates)) };
+    if (next.enabled) {
+      // 只读 / 计划模式是硬边界（后端 start_turn 同样会拒）：这里先拦，
+      // 免得用户开了开关、发出去才吃到一条「不能开」的错误。
+      const st = get();
+      const mode = (st.activeThreadId ? st.details[st.activeThreadId]?.mode : null) ?? st.draftMode;
+      if (mode === "read-only" || mode === "plan") {
+        get().showToast("只读 / 计划模式下不能开全力以赴：它会改文件并并行跑候选", "error");
+        return;
+      }
+    }
     set({ allout: next });
   },
 

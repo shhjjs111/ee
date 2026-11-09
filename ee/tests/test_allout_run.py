@@ -241,3 +241,77 @@ def test_candidate_approval_force_still_denied_under_auto(ee_home, workspace):
     decision, why = headless.auto_approve(th, ev, "auto")
     assert decision == "denied"
     assert fut.done() and fut.result().choice == "deny_with_reason"
+
+
+def _notify_with_answers(th, notes, answers, choice):
+    """收通知；遇到审批卡片就排一个回复。
+
+    必须用 call_soon 延后：`_on_event` 先 `_add()`（同步发 item/started 通知）
+    再登记 `self.approvals`，在通知回调里同步 `respond()` 会撞「已失效」。
+    延后的回调在 `_confirm_probe_goal` await future 让出控制权后执行，此时已登记。
+    """
+    def notify(m, p):
+        notes.append((m, p))
+        if m == "item/started" and p["item"].get("type") == "approval":
+            cid = p["item"]["call_id"]
+            answers.append(cid)
+            asyncio.get_running_loop().call_soon(th.respond, cid, choice)
+    th.notify = notify
+
+
+def _turn_end_reason(th) -> str:
+    ends = [it for it in th.items if it.get("type") == "turn_end"]
+    assert ends, "没有 turn_end 条目"
+    return ends[-1]["reason"]
+
+
+def test_probe_goal_asked_once_then_confirmed(ee_home, workspace, monkeypatch):
+    """没填目标时探测到判据：先弹一次确认，确认后走完整流程并写回 meta。"""
+    (workspace / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    th = _thread(ee_home, workspace)
+    _patch_judge(monkeypatch, [_Verdict(True, 3, "3 passed")])
+    _stub_turn(th, ["completed"])
+    notes, answers = [], []
+    _notify_with_answers(th, notes, answers, "once")
+
+    asyncio.run(th._consume("修好它", None, None, {"enabled": True, "candidates": 1}))
+
+    assert _turn_end_reason(th) == "met"
+    assert len(answers) == 1, "探测到的判据必须先问一次"
+    assert th.meta.get("allout", {}).get("goal_confirmed") == "python -m pytest -q"
+    plans = [p for m, p in notes if m == "allout_plan"]
+    assert plans[0]["probe"]["command"] == "python -m pytest -q"
+    # 确认前推的是降级版（单路、未验证）；确认后必须重新推导并再推一条完整版，
+    # 否则界面会一直显示「全力以赴 · 1 路」而实际按完整火力执行。
+    assert len(plans) == 2, f"确认后应重新推导并再推一条 allout_plan，实际 {len(plans)} 条"
+    assert plans[0]["plan"]["verified"] is False and plans[0]["plan"]["candidates"] == 1
+    assert plans[1]["plan"]["verified"] is True
+    assert plans[1]["goal"] == "python -m pytest -q"
+
+
+def test_probe_goal_denied_degrades_without_judge(ee_home, workspace, monkeypatch):
+    """用户这次不确认：按单路跑，不跑判据，也不写确认标记。"""
+    (workspace / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    th = _thread(ee_home, workspace)
+    import ee.core.goal as G
+
+    called = []
+
+    async def fake(spec, **_kw):
+        called.append(1)
+        return _Verdict(True, 1, "1 passed")
+
+    monkeypatch.setattr(G, "judge", fake)
+    _stub_turn(th, ["completed"])
+    notes, answers = [], []
+    _notify_with_answers(th, notes, answers, "deny")
+
+    asyncio.run(th._consume("修好它", None, None, {"enabled": True, "candidates": 1}))
+
+    assert _turn_end_reason(th) == "completed"
+    assert not called, "没确认判据就不能执行它"
+    assert th.meta.get("allout", {}).get("goal_confirmed") is None
+    notices = [p["item"]["text"] for m, p in notes if m == "item/started"
+               and p["item"].get("type") == "notice"]
+    assert any("没有确认" in x for x in notices), notices
+
