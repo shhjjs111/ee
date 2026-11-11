@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-11-08（文件与图片交互：拖入 PDF/Word 等文件插路径给模型自己读、图片灯箱看原图 + 多图切换/缩放/旋转/另存为；11-05~11-08 稳定性批次 118 提交 / 70 fix。见「执行记录（2026-11-08）」。更早的 11-02 条目见「执行记录（2026-11-02，桌面端接上 `electron-updater`…）」）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-11（稳定性与并发修复 + 类型清理：自动化会话泄漏、删除会话幽灵、RPC 分发/背压、summary 轻量扫描、LSP 并发锁、restart 等待旧后端、会话缓存淘汰、pyright 0/0。见「执行记录（2026-11-11）」与 `research/2026-11-11-type-cleanup-and-lifecycle.md`）。此前：2026-11-08 文件与图片交互（拖入 PDF/Word 等文件插路径给模型自己读、图片灯箱看原图 + 多图切换/缩放/旋转/另存为；11-05~11-08 稳定性批次 118 提交 / 70 fix）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -28,6 +28,19 @@
 | T10-e / 文件交接 | 迁移清单 + 逐字节核对 | **已完成并验证**（清单层 + RPC + 桌面端入口）；复制/切换/清理需用户确认，未做 | `ee\ee\core\handoff.py`、`server\handoff_rpc.py` 的 `handoff/manifest\|verify`、`desktop\src\components\HandoffDialog.tsx`（工作区菜单「交接清单…」）；`test_handoff.py`（12）、`test_handoff_rpc.py`（8）、`HandoffDialog.test.tsx`（5） |
 | allout / 全力以赴 | 模型固定为用户所选；判据门控 → 批评修复（keep-policy）→ 分叉（温度阶梯、判据串行）→ 同模型 A/B 排序 → 补丁写回，全程可选回归门（PASS_TO_PASS） | **已完成并验证**（阶段 0–5 + 真实模型演练 + 收尾接线：候选审批冒泡、worktree 隔离、只读/计划模式禁用、探测判据首次确认、前端执行进度与模式守卫、推理强度真正落到请求、**回归门接通**）。**保留边界**：Gradle 成功时需用户在 `build.gradle` 开 `testLogging` 才能读出测试数；分叉内「两个候选几乎同时通过」不会在真模型下自然触发（早退取消其余），该生产接线由 `test_allout_rank.py` 覆盖 | `ee\ee\core\goal.py`（`parse_tests`）、`core\probe.py`、`core\allout.py`、`core\bestof.py`、`server\threads.py` 的 `_plan_allout`/`_run_allout`/`_allout_fanout`/`_allout_rank`/`_confirm_probe_goal`、`server\app.py` 的 `turn/start(allout=)`、`config.py` 的 `allout` 默认项与项目层收紧、`desktop` 的 `store.ts`/`reduce.ts`/`Composer.tsx`/`BestofDialog.tsx`/`types.ts`；`test_parse_tests_runners.py`（29）、`test_probe.py`（15）、`test_allout.py`（27）、`test_allout_config.py`（9）、`test_allout_turn.py`（18）、`test_bestof_quality.py`（9）、`test_allout_engine.py`（14）、`test_allout_run.py`（20）、`test_allout_isolation.py`（9）、`test_allout_rank.py`（4）、`test_goal_turn.py` 的 `pass_to_pass` 校验；方案见 `plans\2026-11-09-allout-v2.md` |
 | 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下）；**客户端已接 `electron-updater`（2026-11-02，只后台下载、绝不自动重启）** | 正式发版后才有可更新的 Release（只剩预发布时 `/releases/latest` 是 404，检查必然失败） |
+| 2026-11-11 / 稳定性与并发 | 自动化会话泄漏、删除会话幽灵、RPC 分发/背压、summary 轻量扫描、LSP 并发锁、restart 等待旧后端、会话缓存淘汰、pyright 清零 | **已完成并验证**（后端 2516 passed / 前端 394 / ruff + pyright 0/0） | 交接：`research/2026-11-11-type-cleanup-and-lifecycle.md`；代码 `9138a3e` |
+
+## 执行记录（2026-11-11，稳定性与并发修复 + 类型清理）
+
+本轮从“用户长期使用后的体检”出发，修了三类问题：资源生命周期、RPC 分发、并发。完整交接与 backlog 见 `2026-11-11-type-cleanup-and-lifecycle.md`；代码提交 `9138a3e`。
+
+- **自动化会话泄漏**：每次运行结束从 `backend.threads` 摘掉并 `aclose`（原先后台线程与连接池只增不减）。`test_automations.py` 新增回归。
+- **删除会话幽灵**：`_finish` / 迟到事件在 `deleted` 时不再广播；前端加删除墓碑。`test_session_lifecycle.py` 新增双向用例（删除后不复活、未删除照常广播）。
+- **RPC 分发**：handler 内部 `TypeError` 不再伪装成“参数错误”；响应队列满按慢客户端断开；fire-and-forget 任务保存强引用并记录未取回的异常。`test_audit_rpc_dispatch.py`、`test_audit_ws_backpressure.py`。
+- **`summary` 轻量扫描**：`thread/list` 不再为每个会话 `load()` 全量解析；`test_store_summary.py`（7 例）守与 `load()` 的逐字段等价性。
+- **并发/重启**：LSP 启动锁 per-key 并在锁内重读池（`test_lsp.py` 并发用例）；`backend.restart` 先等旧进程退出（`backend.test.ts` 延迟退出用例）；`backend.threads` 上限 40 + 空闲淘汰（`test_session_lifecycle.py` 新增 2 例）。
+- **类型与排版**：pyright 清零（0/0，配置与口径见 `ee/docs/pyright.md`）；恢复手写排版，`.pi-lens.json` 禁用自动格式化/autofix。
+- **验证**：后端 `-n 8` **2516 passed / 16 skipped**；前端 65 文件 **394 passed**；`ruff` 通过；`tsc --noEmit` exit 0。已知并行 flake：`test_robustness::test_http_status_error_message`（单独跑通过）。
 
 ## 执行记录（2026-11-09，全力以赴 allout 阶段 0–5）
 
