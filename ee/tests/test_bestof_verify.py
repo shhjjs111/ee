@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 
 import pytest
 
@@ -27,6 +28,21 @@ def backend(tmp_path):
 
 def _call(backend, method, **params):
     return asyncio.run(backend.methods[method](**params))
+
+
+def _pytest(*args: str) -> str:
+    """判据命令用**当前解释器**：PATH 上的 `python` 可能是别的环境。
+
+    实测本机 `python` 解析到 pi-lens 的 pip-tools（No module named pytest），
+    判据因此 exit 1——这是环境假失败，不是被测逻辑的问题。
+
+    不带引号（路径没有空格时）：判据命令走 `run_command`，本机解析到的 shell 是
+    PowerShell，`"<盘符>:/.../python.exe" -m pytest` 会被当成表达式（`Unexpected token '-m'`），
+    PowerShell 里裸路径调用才等价于 bash/cmd 的写法。
+    """
+    exe = sys.executable
+    first = f'"{exe}"' if " " in exe else exe
+    return " ".join([first, "-m", "pytest", *args])
 
 
 def _git(args, cwd):
@@ -74,7 +90,7 @@ def test_verify_picks_the_green_worktree(tmp_path, backend):
     backend.home = home
 
     res = _call(backend, "bestof/verify",
-                goal={"command": "python -m pytest -q test_case.py", "timeout": 120},
+                goal={"command": _pytest("-q", "test_case.py"), "timeout": 120},
                 candidates=[
                     {"id": "a", "title": "候选 a", "worktree": wt_a["path"]},
                     {"id": "b", "title": "候选 b", "worktree": wt_b["path"]},
@@ -96,7 +112,7 @@ def test_verify_none_when_all_red(tmp_path, backend):
     backend.home = home
 
     res = _call(backend, "bestof/verify",
-                goal={"command": "python -m pytest -q test_case.py", "timeout": 120},
+                goal={"command": _pytest("-q", "test_case.py"), "timeout": 120},
                 candidates=[
                     {"id": "a", "worktree": wt_a["path"]},
                     {"id": "b", "worktree": wt_b["path"]},
@@ -118,7 +134,7 @@ def test_verify_refuses_unregistered_path(tmp_path, backend):
 
     with pytest.raises(RpcError) as ei:
         _call(backend, "bestof/verify",
-              goal={"command": "python -m pytest -q", "timeout": 30},
+              goal={"command": _pytest("-q"), "timeout": 30},
               candidates=[{"id": "x", "worktree": str(outside)}])
     assert "不是 ee 登记的 worktree" in str(ei.value)
 
@@ -146,7 +162,7 @@ def test_verify_ignores_self_reported_pass(tmp_path, backend):
     )
     backend.home = home
     res = _call(backend, "bestof/verify",
-                goal={"command": "python -m pytest -q test_case.py", "timeout": 120},
+                goal={"command": _pytest("-q", "test_case.py"), "timeout": 120},
                 candidates=[
                     {"id": "a", "worktree": wt_a["path"], "self_reported_ok": True},
                     {"id": "b", "worktree": wt_b["path"]},
