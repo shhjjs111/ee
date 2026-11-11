@@ -1,0 +1,18 @@
+# gitleaks 配置：只做一件事——放行测试夹具里的合成密钥。
+#
+# 为什么需要它：`ee/tests/` 里到处是 `sk-test-123456789` / `tvly-abcdefgh1234`
+# 这类假 key，generic-api-key 规则会把它们全报成「提交了密钥」。真正的密钥
+# 不会出现在这里（仓库是公开的，写入即泄漏），但报告一多，真的那次就淹在里面了。
+#
+# 为什么按目录放行、而不是逐个写死假值：测试夹具是持续新增的，写死值每加一个
+# 夹具就要改一次配置，实际结果是没人维护、报告重新变脏。代价是 `ee/tests/`
+# 里若混进**真**密钥，gitleaks 不再报——这一层由 code review 兜。
+#
+# `[extend] useDefault = true` 不能删：不写它时自定义配置会**整体替换**默认
+# 规则集，等于把扫描关掉（只剩这个 allowlist，什么都不会报）。
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "ee/tests 里的合成 API key / token 夹具（非真实凭据）"
+paths = ['''ee/tests/''']

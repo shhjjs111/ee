@@ -52,7 +52,22 @@
 
 保留边界：写盘失败状态只在内存里（盘写不了自然也无法从磁盘恢复），所以只有**正在运行的后端**能看到它；重启后界面不再提示「曾经失败过」，那部分记录也确实已经丢了。恢复后只清状态、不回填——失败期间没落盘的记录已经无法找回，提示文案里写明了这一点。`ee exec` / headless 这类没有 Thread 的入口仍只有日志（按 AGENTS.md 只发桌面版，不再为多入口加 UI 通路）。
 
-附：同轮把 `desktop/src/types.ts` 里两条存量 pi-lens 阻断项（`no-unsafe-dictionary-any`，`ToolItem.args` 与子代理 `usage` 的 `Record<string, any>`）改成 `Record<string, unknown>`。实际消费点全是 `String(a.x ?? "")` 式的收毅，`tsc` 与 398 例 vitest 均无改动即通过——说明那个 `any` 从来没有被用到过，改成 `unknown` 才是真实契约。其余 pi-lens 噪声（`threads.py` 内部 id 的 `int()`、两处行内 style）维持现状，已在交接文档 backlog 第 4 条记过。
+### 同一轮：把 pi-lens 的报告清成真信号
+
+报告一多，真的那条就滑掉了。这一轮按「能真修的真修、故意不修的证据留清楚」处理：
+
+| 类别 | 处理 |
+|---|---|
+| `no-unsafe-dictionary-any`（2 条阻断，`desktop/src/types.ts`） | `ToolItem.args` 与子代理 `usage` 的 `Record<string, any>` → `Record<string, unknown>`。消费点全是 `String(a.x ?? "")` 式的收敛，`tsc` 与 398 例 vitest 不改一行即通过——那个 `any` 从来没被用到 |
+| `unchecked-numeric-parse-python`（44 处：`threads.py` 25 + `session.py` 19） | 新增 `ee/core/coerce.py` 的 `as_int`/`as_float`，把这些「解析用户配置 / 会话文件 / RPC 参数」的裸 `int()`/`float()` 改为坏值退回默认值。顺手修好一个真缺陷：会话文件里 `seq: "abc"` 会让 `thread/get` 直接 500（已用反证确认：把 `as_int` 换回裸 `int` 后用例立刻报 `ValueError`）。`test_coerce.py`（4 例）守转换语义 + 两个真回归点 |
+| `generic-api-key`（11 条，`ee/tests/*`） | 全部是 `sk-test-123456789` / `tvly-abcdefgh1234` 这类合成夹具。新增 `.gitleaks.toml`：`[extend] useDefault = true` + 按目录放行 `ee/tests/`。双向验过：夹具 17→0（含 `.pyc`），而在产品代码里塞一个像真 key 的串仍然报（证明 `useDefault` 没把扫描关掉） |
+| `python-empty-except`（threads 8 / session 6）、`python-assert-production`（6）、`jscpd:duplicate`（3 对） | 不动。全是存量的有意写法（尽力而为的收尾 / 内部不变式 / 局部重复），改它们只是拿真代码换分析器安静；已记入交接文档 backlog 第 4 条 |
+| `unreachable-except`（2 条） | **假阳性**：分析器认为 `except asyncio.CancelledError` 能吃下后面的 `except Exception`/`BaseException`，实际 3.8+ 的 `CancelledError` 属 `BaseException`。已用 `lens_diagnostic_mark` 标 false-positive |
+| `inline-styles`（2 条 hint） | 不动：标题栏高度 / Logo path 依赖运行时值 |
+| pyright 在 `ee/tests/*` 上的 18 条阻断 | 产品口径本来就是「pyright 只查 `ee/ee`」（`pyrightconfig.json` 的 `exclude`），但 pi-lens 按文件问 LSP 会绕过它。`​.pi-lens.json` 给这五条 pyright 规则加了 `ignorePaths: ["ee/tests/**"]`；验证：那四个测试文件 18 条 → 0，而 `ee/ee` 照旧报。口径写进了 `ee/docs/pyright.md` |
+| `typos`（1 条 hint） | 真改了：`test_exa_unparseable_falls_back` → `…unparsable…`（函数名重命名，pytest 发现机制不变，20 例照旧通过） |
+
+结论：面板上的可行动项就剩上表里「不动」的那几类，它们的理由在 backlog；没有在 `.pi-lens.json` 里全局降级/禁用任何规则，新出现的同类照样会报（只有 `ee/tests/**` 上的那五条 pyright 规则和 `ee/tests/` 里的假密钥是显式豁免，两者都与文档口径一致）。
 
 ## 执行记录（2026-11-11，稳定性与并发修复 + 类型清理）
 

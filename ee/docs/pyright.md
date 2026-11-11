@@ -39,5 +39,25 @@ pyright ee/ee/mcp/config.py              # 只跑一个文件
 pyright --outputjson > out.json          # 机器可读，便于按规则统计
 ```
 
+## IDE / pi-lens 里的同一条口径
+
+本仓库的类型基线只覆盖 `ee/ee`。但 pi-lens 是按文件问 LSP 的，会绕过 `pyrightconfig.json`
+的 `exclude` 去查 `ee/tests/*`——那些测试替身本来就故意不合类型（`backend.threads[x]`、
+`x = None` 先赋值后注入），会把面板刷成十八九条阻断项。为了让面板和本文件的口径一致，
+根目录 `.pi-lens.json` 把这些 pyright 规则在 `ee/tests/**` 上关掉：
+
+```json
+"rules": {
+  "reportGeneralTypeIssues":     { "ignorePaths": ["ee/tests/**"] },
+  "reportOptionalMemberAccess":  { "ignorePaths": ["ee/tests/**"] },
+  "reportOptionalOperand":       { "ignorePaths": ["ee/tests/**"] },
+  "reportOperatorIssue":         { "ignorePaths": ["ee/tests/**"] },
+  "reportAttributeAccessIssue":  { "ignorePaths": ["ee/tests/**"] }
+}
+```
+
+这不是把 pyright 关掉：`ee/ee` 上的诊断照旧报（`pyrightconfig.json` 的 include 不变）。
+新出现的 pyright 规则仍会在测试里报一次——那说明它是新规则，判断后再决定要不要加进来。
+
 基线会随代码变化；上面的 0/0 是清完存量后的快照，不是长期承诺。新增诊断应当当次修复，
 不要把 override 加回去当止痛药。

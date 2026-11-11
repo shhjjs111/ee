@@ -4,5 +4,12 @@
   },
   "autofix": {
     "enabled": false
+  },
+  "rules": {
+    "reportGeneralTypeIssues": { "ignorePaths": ["ee/tests/**"] },
+    "reportOptionalMemberAccess": { "ignorePaths": ["ee/tests/**"] },
+    "reportOptionalOperand": { "ignorePaths": ["ee/tests/**"] },
+    "reportOperatorIssue": { "ignorePaths": ["ee/tests/**"] },
+    "reportAttributeAccessIssue": { "ignorePaths": ["ee/tests/**"] }
   }
 }

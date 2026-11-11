@@ -28,6 +28,7 @@ from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage,
 from ee.core.events import QuestionRequest, QueueDelivered, QueueReturned, SubagentEnd, SubagentStart, SubagentUpdate
 from ee.core.events import CaptureRequest
 from ee.core import queue as Q
+from ee.core.coerce import as_float, as_int
 from ee.core.permissions import MODES
 from ee.core.subagent import apply_event as apply_subagent_event
 from ee.core.session import Session
@@ -205,7 +206,11 @@ def usage_snapshot(usage: dict | None, spent_before: dict | None) -> dict:
     （`spent_before`）加上去，于是任一条快照都是「会话至今花了多少」。
     """
     out = dict(usage or {})
-    before = {str(k): float(v) for k, v in (spent_before or {}).items() if v}
+    before: dict[str, float] = {}
+    for cur, amount in (spent_before or {}).items():   # 来自会话文件：坏值按 0 跳过
+        value = as_float(amount)
+        if value:
+            before[str(cur)] = value
     current = spent_before_from_usage(out)
     total: dict[str, float] = dict(before)
     for cur, amount in current.items():
@@ -237,7 +242,7 @@ class Thread:
             elif it.get("type") == "tool":
                 _migrate_tool_item(it)
         self._by_id = {it["id"]: it for it in self.items}
-        self._seq = max([int(it.get("seq", 0)) for it in self.items] + [len(self.items)]) + 1
+        self._seq = max([as_int(it.get("seq", 0)) for it in self.items] + [len(self.items)]) + 1
         self.client_factory = client_factory
         self.persist = persist
         self.configure = configure     # 建会话前改配置的钩子（ee exec 用：关 ask_user、步数上限、额外规则）
@@ -292,9 +297,9 @@ class Thread:
             s.turns = sum(1 for it in self.items if it.get("type") == "user")
             self._pending_messages = []
             # 重启后恢复回合起点（编辑重发 / 回退用）：只认能对上原文的
-            s.turn_starts = sorted({int(it["hist"]) for it in self.items
+            s.turn_starts = sorted({as_int(it.get("hist")) for it in self.items
                                     if it.get("type") == "user" and isinstance(it.get("hist"), int)
-                                    and s.user_text_at(int(it["hist"])) is not None})
+                                    and s.user_text_at(as_int(it.get("hist"))) is not None})
         # 旧推理清理游标（重启后别退回全带 reasoning，那会让首包再翻一倍）
         to = self.meta.get("reasoning_strip_to")
         if isinstance(to, int) and to >= 0:
@@ -408,8 +413,8 @@ class Thread:
             if before_seq is not None:
                 # seq 不连续（条目可能被撤回），按第一个 >= before_seq 的位置切
                 end = next((i for i, it in enumerate(items)
-                            if int(it.get("seq") or 0) >= int(before_seq)), total)
-            start = max(0, end - int(tail)) if tail is not None else 0
+                            if as_int(it.get("seq")) >= as_int(before_seq)), total)
+            start = max(0, end - as_int(tail)) if tail is not None else 0
             # tail <= 0 表示“这一页不要任何条目”，不能退化成“返回全部”
             has_more = start > 0
             items = items[start:end]
@@ -805,8 +810,8 @@ class Thread:
         # 用户设的 candidates 作为上限参与推导（而不是事后截断）：否则 reasons 会写
         # 「并行 3 路」而实际只跑 2 路，界面自相矛盾（2026-11-09 真模型演练实测到）。
         plan = derive(config=s.config.data, profile=s.profile, has_goal=has_goal,
-                      max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
-                      max_candidates=int(allout.get("candidates") or 3))
+                      max_parallel=as_int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
+                      max_candidates=as_int(allout.get("candidates") or 3))
         # 推理强度是设计里最大的杠杆（v2 §1.1），必须真的落到请求参数上：
         # 推导结果原先只写进了 reasons，没写进会话——界面说「max」，请求仍是默认档。
         # 只在新会话应用：已有会话中途换档会断前缀缓存（session.py 的 effort_switch）。
@@ -874,12 +879,12 @@ class Thread:
         s = self.session
         assert s is not None
         spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
-                        min_tests=int(goal.get("min_tests") or 1),
-                        timeout=float(goal.get("timeout") or 300.0))
+                        min_tests=as_int(goal.get("min_tests") or 1),
+                        timeout=as_float(goal.get("timeout") or 300.0))
         pass_to_pass = str(goal.get("pass_to_pass") or "").strip() or None
         plan = A.derive(config=s.config.data, profile=s.profile, has_goal=True,
-                        max_parallel=int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
-                        max_candidates=int(allout.get("candidates") or 3))
+                        max_parallel=as_int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
+                        max_candidates=as_int(allout.get("candidates") or 3))
         cap = plan.candidates
         lock = getattr(self, "_allout_judge_lock", None)
         if lock is None:
@@ -1069,7 +1074,7 @@ class Thread:
                 data = copy.deepcopy(s.config.data)
                 alias = s.spec.alias
                 models = data.setdefault("models", {})
-                models[alias] = {**(models.get(alias) or {}), "temperature": float(plan.temperature_ladder[i])}
+                models[alias] = {**(models.get(alias) or {}), "temperature": as_float(plan.temperature_ladder[i])}
                 data.setdefault("subagent", {})["enabled"] = False      # 候选不嵌套
                 data["ask_user"] = False
                 cfg = copy.copy(s.config)
@@ -1122,14 +1127,14 @@ class Thread:
                                                     "id": rec["id"], "met": bool(getattr(rv, "met", False)),
                                                     "reason": rv.reason})
                 try:
-                    rec["cost"] = float(child.stats.totals().get("cost") or 0.0)
+                    rec["cost"] = as_float(child.stats.totals().get("cost") or 0.0)
                 except Exception:  # noqa: BLE001  费用读不到不影响判定
                     pass
                 await self._allout_merge_usage(s, child)
                 v_out = await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}", self.home)
-                rec["files"] = int(v_out.get("file_count") or 0)
-                rec["additions"] = int(v_out.get("additions") or 0)
-                rec["deletions"] = int(v_out.get("deletions") or 0)
+                rec["files"] = as_int(v_out.get("file_count") or 0)
+                rec["additions"] = as_int(v_out.get("additions") or 0)
+                rec["deletions"] = as_int(v_out.get("deletions") or 0)
                 rec["touched_tests"] = any(
                     _sub_touched(f.get("path", "")) for f in (v_out.get("files") or []))
                 self.notify("allout_progress", {"thread_id": self.id, "phase": "candidate",
@@ -1227,13 +1232,13 @@ class Thread:
                         wins.append(a["id"])
                     elif pick == "B":
                         wins.append(b["id"])
-                x["votes"] = int(x.get("votes") or 0) + A.net_votes(wins, x["id"], y["id"])
-                y["votes"] = int(y.get("votes") or 0) + A.net_votes(wins, y["id"], x["id"])
+                x["votes"] = as_int(x.get("votes") or 0) + A.net_votes(wins, x["id"], y["id"])
+                y["votes"] = as_int(y.get("votes") or 0) + A.net_votes(wins, y["id"], x["id"])
         cand_objs = [B.Candidate(id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
-                                 cost=float(c.get("cost") or 0.0), votes=int(c.get("votes") or 0),
+                                 cost=as_float(c.get("cost") or 0.0), votes=as_int(c.get("votes") or 0),
                                  regressed=bool(c.get("regressed")),
-                                 touched_tests=bool(c.get("touched_tests")), files=int(c.get("files") or 0),
-                                 additions=int(c.get("additions") or 0), deletions=int(c.get("deletions") or 0))
+                                 touched_tests=bool(c.get("touched_tests")), files=as_int(c.get("files") or 0),
+                                 additions=as_int(c.get("additions") or 0), deletions=as_int(c.get("deletions") or 0))
                      for c in passed]
         win = B.pick(cand_objs)
         if win is None:
@@ -1251,8 +1256,8 @@ class Thread:
         s = self.session
         assert s is not None
         spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
-                        min_tests=int(goal.get("min_tests") or 1),
-                        timeout=float(goal.get("timeout") or 300.0))
+                        min_tests=as_int(goal.get("min_tests") or 1),
+                        timeout=as_float(goal.get("timeout") or 300.0))
         round_no = {"n": 0}
 
         async def _one_turn(verdict=None) -> None:
@@ -1271,7 +1276,7 @@ class Thread:
             else:
                 from ee.core.goal_feedback import build_feedback
                 payload = build_feedback(verdict, spec, attempt=round_no["n"] - 1,
-                                         max_checks=int(goal.get("max_rounds") or 3))
+                                         max_checks=as_int(goal.get("max_rounds") or 3))
             async for ev in s.run_turn(payload, images):
                 self._on_event(ev)
 
@@ -1286,7 +1291,7 @@ class Thread:
             })
 
         result = await run_goal(spec, turn_runner=_one_turn,
-                                max_rounds=int(goal.get("max_rounds") or 3),
+                                max_rounds=as_int(goal.get("max_rounds") or 3),
                                 budget_exhausted=lambda: bool(getattr(s.budget, "stop_reason", None)),
                                 emit=_emit)
         self.notify("goal_done", {
@@ -1353,7 +1358,7 @@ class Thread:
             if it.get("type") == "tool" and it.get("status") == "running":
                 it["status"] = "interrupted"
                 self._update(it)
-        dur = int((time.monotonic() - self.turn_started_at) * 1000)
+        dur = as_int((time.monotonic() - self.turn_started_at) * 1000)
         self._add({"type": "turn_end", "reason": reason, "duration_ms": dur, "usage": self._usage_snapshot()})
         self.save_meta()
         self.notify("turn/completed", {"thread_id": self.id, "reason": reason, "duration_ms": dur,

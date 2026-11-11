@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator, Callable, cast
 
 from ee.config import Config, ee_home
 from ee.core import compaction as C
+from ee.core.coerce import as_float, as_int
 from ee.core import gitinfo
 from ee.core import hooks
 from ee.core.instructions import load_instructions
@@ -557,7 +558,7 @@ class Session:
 
     def session_spent(self, currency: str) -> float:
         root = self.budget_root or self
-        return float(root.spent_before.get(currency, 0.0)) + root.stats.spent(currency)
+        return as_float(root.spent_before.get(currency, 0.0)) + root.stats.spent(currency)
 
     async def _budget_check(self, emit) -> str | None:
         g = self.budget
@@ -1041,7 +1042,7 @@ class Session:
         # 失败才算完成」，实际把「一个都没连上」也算成了完成。
         self._mcp_done = any(st.status == "ready" for st in states)
         tools, seen = [], set(self.tool_map)
-        timeout = float(m.get("tool_timeout") or 120)
+        timeout = as_float(m.get("tool_timeout") or 120)
         for st in states:
             if st.status == "ready":
                 for spec in st.tools:
@@ -1222,7 +1223,7 @@ class Session:
             return
         cfg = self.config.data.get("agents_md", {}) or {}
         if cfg.get("enabled", True):
-            ins = await asyncio.to_thread(load_instructions, self.cwd, self.home, int(cfg.get("max_bytes", 32768)))
+            ins = await asyncio.to_thread(load_instructions, self.cwd, self.home, as_int(cfg.get("max_bytes", 32768), 32768))
             msg = ins.message()
             if msg is not None and not self.history:
                 self._append(msg)
@@ -1252,7 +1253,7 @@ class Session:
             return
         cfg = self.config.data.get("agents_md", {}) or {}
         if cfg.get("enabled", True):
-            ins = load_instructions(self.cwd, self.home, int(cfg.get("max_bytes", 32768)))
+            ins = load_instructions(self.cwd, self.home, as_int(cfg.get("max_bytes", 32768), 32768))
             msg = ins.message()
             if msg is not None:
                 self._append(msg)
@@ -1714,7 +1715,7 @@ class Session:
         out, trunc = truncate_output_info(res.output, self.home / "tool-output", name)
         self._results[cid] = out
         self._ok[cid] = res.ok
-        details = finalize_details(name, res, int((time.monotonic() - t0) * 1000), trunc)
+        details = finalize_details(name, res, as_int((time.monotonic() - t0) * 1000), trunc)
         emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, details))
         # LSP（D6-2 / T9）：写成功后同步文件变更，让下一次取诊断拿到新版本。
         # 只记日志、不影响工具结果——诊断失败不能反噬已经成功的写入。
@@ -1821,11 +1822,11 @@ class Session:
                 return ToolResult(msg, ok=False, meta={"denied": True, "by_user": True})
         ctx = ToolContext(cwd=self.cwd, state=self.state, output_dir=self.home / "tool-output", shell=self.shell,
                           emit=lambda s: emit(ToolOutput(cid, s)),
-                          timeout_default=int(self.config.data.get("bash_timeout", 120)),
+                          timeout_default=as_int(self.config.data.get("bash_timeout", 120), 120),
                           # 会话级硬上限：bash_timeout 只是默认值，模型可以在 tool call 里显式传更大的
                           # timeout（schema 允许到 600）。无人值守运行（评测 / 自动化）时一条跑不完的
                           # 命令就能吃掉 600 秒，把整轮耗时完全盖住。配了 shell_max_timeout 就封顶。
-                          max_timeout=int(self.config.data.get("shell_max_timeout") or 0),
+                          max_timeout=as_int(self.config.data.get("shell_max_timeout") or 0),
                           extra={"session": self, "emit_event": emit, "call_id": cid, "config": self.config,
                                  "home": self.home,
                                  # 指挥会话（D6-1）：窄接口与调用者身份都由所属 Thread 注入。
@@ -1928,13 +1929,13 @@ class Session:
         window = self.profile.context_window
         if window <= 0:
             return 0
-        limit = float(cfg.get("threshold", 0.8)) * window
+        limit = as_float(cfg.get("threshold", 0.8), 0.8) * window
         # 绝对上限：1M 窗口按百分比要等 80 万，而实测 15 万 token 首包就到 20 秒了
-        cap = int(cfg.get("max_tokens", 0) or 0)
+        cap = as_int(cfg.get("max_tokens", 0) or 0)
         if cap > 0:
-            limit = min(limit, int(cap * self._watermark_factor(cfg)))
+            limit = min(limit, as_int(cap * self._watermark_factor(cfg)))
         # 安全边界：自适应可能把水位抬到配置值以上，但任何情况下都不能逼近窗口上限。
-        return int(min(limit, 0.9 * window))
+        return as_int(min(limit, 0.9 * window))
 
     def _watermark_factor(self, cfg: dict) -> float:
         """根据最近主对话命中率微调压缩水位。
@@ -1955,7 +1956,8 @@ class Session:
             factor = 0.9
         else:
             factor = 1.0
-        lo, hi = float(cfg.get("watermark_min", 0.8)), float(cfg.get("watermark_max", 1.35))
+        lo = as_float(cfg.get("watermark_min", 0.8), 0.8)
+        hi = as_float(cfg.get("watermark_max", 1.35), 1.35)
         return max(lo, min(hi, factor))
 
     async def _maybe_auto_compact(self, emit) -> None:
@@ -2034,7 +2036,7 @@ class Session:
 
     async def _summarize_side(self, prev: tuple[int, str] | None = None) -> str:
         """兜底：历史渲染成文字（超长掐头留尾）走侧路请求。有上次摘要时只渲染之后的新内容 + <previous-summary>。"""
-        budget = max(4000, int(min(self.profile.context_window, self.role_spec("compact").profile.context_window) * 0.5))
+        budget = max(4000, as_int(min(self.profile.context_window, self.role_spec("compact").profile.context_window) * 0.5))
         if prev is not None:
             # 与主路一致：侧路要概括的是「摘要之后的全部」，含上次原样保留、还没进摘要的段。
             # 用 after_summary() 当起点会把保留段排除在外 → 它既不进摘要、也不进新历史，
@@ -2058,7 +2060,7 @@ class Session:
         window = self.profile.context_window
         caps = [C.RETENTION_TOKENS]
         if window > 0:
-            caps.append(int(window * 0.5))
+            caps.append(as_int(window * 0.5))
         limit = self._compact_limit()
         if limit > 0:
             # 整份「压缩后历史」必须明显小于水位，否则压完还是超阈 -> 下一次请求立刻
@@ -2068,7 +2070,7 @@ class Session:
             # 默认水位 140k 时这条给出 56k（略低于 64k 常量），收窄幅度很小；真正起作用的是
             # 「用户把水位调低」和「小窗口模型」这两类。实测水位 40k 下 0.25 比 0.4 更差
             # （74.67% vs 79.51%）：保留段越小，压完离水位越远，但压缩次数没减少。
-            caps.append(int(limit * 0.4))
+            caps.append(as_int(limit * 0.4))
         return max(0, min(caps))
 
     def _user_quote_budget(self, configured: int) -> int:
@@ -2081,7 +2083,7 @@ class Session:
         limit = self._compact_limit()
         if limit <= 0:
             return configured
-        return min(configured, int(limit * 0.15))
+        return min(configured, as_int(limit * 0.15))
 
     def _retrack_turn_start(self) -> None:
         """压缩重建历史后，把「本回合的起点」重新登记到新历史里。
@@ -2146,9 +2148,9 @@ class Session:
         # 的「压缩后摘要里仍说明当前风格」守的正是这条。
         self.updates.reset()
         appendix = self.updates.build(self._env_parts())
-        new = C.build_history(self.history, summary, appendix, int(cfg.get("keep_user_messages", 3)),
-                              self._user_quote_budget(int(cfg.get("keep_user_tokens", 20000))),
-                              keep_tools=int(cfg.get("keep_tools", 0) or 0),
+        new = C.build_history(self.history, summary, appendix, as_int(cfg.get("keep_user_messages", 3), 3),
+                              self._user_quote_budget(as_int(cfg.get("keep_user_tokens", 20000), 20000)),
+                              keep_tools=as_int(cfg.get("keep_tools", 0) or 0),
                               keep_tokens=self._retain_budget(before),
                               # 增量压缩：上次摘要之前的内容已经被概括过，保留段不能越过它，
                               # 否则等于把旧原文原样捞回来，压缩完历史反而更长。

@@ -295,7 +295,7 @@ def test_all_backends_fail(mock, tmp_path):
     assert "Exa 搜索失败" in str(ei.value) and "DuckDuckGo" not in str(ei.value)
 
 
-def test_exa_unparseable_falls_back(mock, tmp_path):
+def test_exa_unparsable_falls_back(mock, tmp_path):
     calls, h = mock
     h["mcp.exa.ai"] = lambda r: httpx.Response(200, text="<html>gateway</html>")
     h["html.duckduckgo.com"] = lambda r: httpx.Response(200, text=DDG_HTML)

@@ -53,8 +53,25 @@ cd desktop && npm run typecheck                                    # exit 0
    `desktop/src/components/SaveErrorBanner.test.tsx`（4）。详见 `roadmap-current.md`「执行记录（2026-11-12）」。
 2. `BLOCKING_RPCS` 是空集合，`Backend.call` 里的 `to_thread` 分支是死代码。
 3. 跨会话共享 LSP 进程：需要先把 `publishDiagnostics` 改成多订阅者，否则诊断互相覆盖。
-4. pi-lens 的 ast-grep 提示：部分 `int()` 无 try（多数在内部生成的 id 上，安全）、
-   Protocol 方法的 `...` 体（有意为之）。
+4. pi-lens 的提示（2026-11-12 部分处理）：~~部分 `int()` 无 try~~、~~Protocol 方法的 `...` 体（有意为之）~~。
+   `int()`/`float()` 那类已集中到 `ee/core/coerce.py` 的 `as_int`/`as_float`（`threads.py` + `session.py` 共 44 处），
+   并顺手修好一个真缺陷（会话文件里 `seq: "abc"` 会让 `thread/get` 500，`test_coerce.py` 有 RED 验证）。
+   剩下**不再动**的几类（全量扫描才会出，且都是存量、有意为之）：
+   - `python-empty-except`（threads 8 / session 6）：`except ...: pass` 全是尽力而为的收尾，
+     旁边已写明理由（如「影子记录失败绝不能影响真实回合」），改成 log 只会制造噪声；
+   - `python-assert-production`（6 处）：`assert self.session is not None` 这类内部不变式，
+     本产品不跑 `-O`，改成 raise 反而丢信息；
+   - `jscpd:duplicate`（3 对 6–9 行）：如 `_run_allout` 与 `_consume_goal` 的 GoalSpec 构造，
+     抽函数可以做，但不属于本轮；
+   - 2 条 `unreachable-except` 是**假阳性**（分析器认为 `except asyncio.CancelledError` 能吃掉
+     后面的 `except Exception`/`BaseException`，实际 3.8+ 的 `CancelledError` 属 `BaseException`），
+     已用 `lens_diagnostic_mark` 标为 false-positive。
+   - 剩两处 `inline-styles` 是 hint（标题栏高度 / Logo path），依赖运行时值，不动。
+   - `generic-api-key`（`ee/tests/*` 的 11 条）全是合成夹具，已新增根目录 `.gitleaks.toml`：
+     `[extend] useDefault = true` + 按目录放行 `ee/tests/`。双向验过（夹具 17→0；
+     在产品代码里放一个像真 key 的串仍然报），所以不是把扫描关了。
+   注：以上都是**局部处理**（真修 / 原那么注或不注），没有在 `.pi-lens.json` 里
+   全局降级/禁用任何规则——新出现的同一个规则照样会报。
 5. 如果觉得 40 太低，可把 `MAX_LOADED_THREADS` 做成配置项；目前是常量。
 
 ## 新会话开场建议
