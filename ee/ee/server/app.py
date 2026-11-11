@@ -96,15 +96,18 @@ async def _close_slow(ws) -> None:
 
 # 这些方法的 thread_id 是可选参数；显式传 None 表示“没有当前会话”。其余方法必须给合法 id。
 OPTIONAL_THREAD_ID = {"budget/status", "automations/mark_read", "loop/list"}
-# 同步做磁盘/索引 IO 的 RPC：放到工作线程，别卡事件循环。
-# 放进这里的**必须**是同步函数——async 函数经 to_thread 只会得到一个协程对象，
-# 函数体根本不执行，返回值还会被 json 序列化成 "<coroutine object ...>"。
-# 两个原成员都已移出，各自的原因写在这里，避免有人再放回去：
-#   thread/export：它是 async，且自己已经 await asyncio.to_thread(_thread_export, ...)，
-#       放进这里是双重 offload，导出内容永远是协程字符串（前端读 r.content.length 直接 TypeError）。
-#   thread/delete：需要事件循环（aclose 释放连接池、interrupt 取消在飞回合）。放进这里会在
-#       工作线程里调 get_running_loop() 必然失败，aclose 被静默跳过 → 每删一个会话漏一个连接池。
-BLOCKING_RPCS: set[str] = set()
+# 所有 RPC 处理函数必须是 `async def`：同步函数会被 `call` 直接在事件循环上执行，
+# 一次 git / 磁盘 IO 就卡住所有连接——通知、流式输出、别的会话的 RPC 全排在后面。
+# 需要阻塞的活在自己的 async 处理函数里 `await asyncio.to_thread(...)`，位置由它自己
+# 决定：offload 的粒度是那个具体调用，而不是整个方法。
+#
+# 历史上这里有一张 `BLOCKING_RPCS` 表（把整个方法丢进 to_thread）。它已经被拆掉，
+# 两个原成员各自暴露了「整方法 offload」的问题，留在这里当反例：
+#   thread/export：async 且内部已 await to_thread，双重 offload 让返回值变成协程字符串
+#       （前端读 r.content.length 直接 TypeError）。
+#   thread/delete：需要事件循环（aclose 释放连接池、interrupt 取消在飞回合），在工作线程里
+#       调 get_running_loop() 必然失败，aclose 被静默跳过 → 每删一个会话漏一个连接池。
+# 不变量由 tests/test_audit_rpc_dispatch.py::test_all_handlers_are_coroutine_functions 守着。
 
 
 def _thread_id_optional(fn) -> bool:
@@ -229,17 +232,11 @@ class Backend:
             if not (tid is None and (method in OPTIONAL_THREAD_ID or _thread_id_optional(fn))) and not is_thread_id(tid):
                 raise RpcError("参数错误：thread_id 不合法", -32602)
         try:
-            if method in BLOCKING_RPCS:
-                res = await asyncio.to_thread(fn, **params)
-                if asyncio.iscoroutine(res):
-                    # 兜底：表里的方法必须是同步函数。async 函数被 to_thread 包一层只会得到
-                    # 未执行的协程对象，而 json.dumps(default=str) 会把它序列化成字符串——
-                    # 调用方看到一个「成功」的响应，实际什么都没做。
-                    res = await res
-            else:
-                res = fn(**params)
-                if asyncio.iscoroutine(res):
-                    res = await res
+            # 处理函数都是 async；`iscoroutine` 只兼容测试 / 脚本临时注册的同步函数
+            # （它们不碰 IO，跑在循环上无害）。产品方法不靠这个分支。
+            res = fn(**params)
+            if asyncio.iscoroutine(res):
+                res = await res
         except TypeError as e:
             # 这里只能把「参数与函数签名不匹配」当参数错误。handler 内部抛的 TypeError
             # 也会被同一个 except 接住，原先一律报「参数错误」——真实的代码 bug 被伪装成

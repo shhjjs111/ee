@@ -51,7 +51,12 @@ cd desktop && npm run typecheck                                    # exit 0
    入口：`ee/core/store.py`、`ee/core/session.py`、`ee/server/threads.py`、
    `desktop/src/components/{Conversation,Sidebar}.tsx`；测试 `ee/tests/test_store_failure.py`（4）、
    `desktop/src/components/SaveErrorBanner.test.tsx`（4）。详见 `roadmap-current.md`「执行记录（2026-11-12）」。
-2. `BLOCKING_RPCS` 是空集合，`Backend.call` 里的 `to_thread` 分支是死代码。
+2. ~~`BLOCKING_RPCS` 是空集合，`Backend.call` 里的 `to_thread` 分支是死代码。~~
+   → **2026-11-12 已完成**：先审计了一遍（94 个 RPC 处理函数**全部**是 async，没有一个需要进表），
+   所以拆掉整张表与死分支，并在注释里留下两个反例（`thread/export` 双重 offload、
+   `thread/delete` 需事件循环）。新增不变量：
+   `test_audit_rpc_dispatch.py::test_all_handlers_are_coroutine_functions` —— 同步处理函数
+   会直接在事件循环上跑，一次 git/磁盘 IO 就卡住所有连接；忘了写 `async` 会被这条报出来。
 3. 跨会话共享 LSP 进程：需要先把 `publishDiagnostics` 改成多订阅者，否则诊断互相覆盖。
 4. pi-lens 的提示（2026-11-12 部分处理）：~~部分 `int()` 无 try~~、~~Protocol 方法的 `...` 体（有意为之）~~。
    `int()`/`float()` 那类已集中到 `ee/core/coerce.py` 的 `as_int`/`as_float`（`threads.py` + `session.py` 共 44 处），

@@ -69,6 +69,21 @@
 
 结论：面板上的可行动项就剩上表里「不动」的那几类，它们的理由在 backlog；没有在 `.pi-lens.json` 里全局降级/禁用任何规则，新出现的同类照样会报（只有 `ee/tests/**` 上的那五条 pyright 规则和 `ee/tests/` 里的假密钥是显式豁免，两者都与文档口径一致）。
 
+### 同一轮：拆掉 `BLOCKING_RPCS`（RPC 分发只剩一种写法）
+
+backlog 第 2 条：`BLOCKING_RPCS` 是空集合，`Backend.call` 里的 `to_thread` 分支是死代码。
+拆之前先审了一遍：**94 个 RPC 处理函数全部是 `async def`**，没有一个需要进表——现在的约定是
+「需要阻塞的活在自己的 async 处理函数里 `await asyncio.to_thread(...)`」，offload 的粒度是那次具体调用而不是整个方法。
+
+于是拆掉空集合与死分支，并把知识保在注释里：两个历史成员为什么不能放回去（`thread/export`
+双重 offload 会把返回值变成协程字符串；`thread/delete` 需要在事件循环上 `aclose`，放工作线程
+就漏连接池）。新增不变量 `test_all_handlers_are_coroutine_functions`：同步处理函数会被
+直接在事件循环上执行，一次 git / 磁盘 IO 就卡住所有连接与流式输出——忘了写 `async` 会被这条
+直接报出来（RED 验过：临时塞一个 `lambda` 进方法表，断言立刻报 `['test/sync']`）。
+
+响应性本身已有 `test_robustness::test_slow_git_does_not_block_other_rpcs` 守着（慢 git 时
+其他 RPC 仍在 1 秒内返回），这次没动那条。
+
 ## 执行记录（2026-11-11，稳定性与并发修复 + 类型清理）
 
 本轮从“用户长期使用后的体检”出发，修了三类问题：资源生命周期、RPC 分发、并发。完整交接与 backlog 见 `2026-11-11-type-cleanup-and-lifecycle.md`；代码提交 `9138a3e`。

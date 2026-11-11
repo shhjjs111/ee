@@ -3,13 +3,16 @@
 test_export_rpc.py 直接调 backend.methods[...]（绕过分发器），所以「BLOCKING_RPCS 把
 async 方法塞进 to_thread」这个坑一直没被发现：方法体从未执行，返回值是协程对象的字符串。
 这份用例一律走真实入口 Backend.call。
+
+那张表已经在 2026-11-12 拆掉（它最后是空集，to_thread 分支是死代码）：现在的不变量反过来——
+**所有处理函数都必须是 async**，阻塞的活由处理函数自己 `await asyncio.to_thread(...)`。
 """
 import asyncio
 import inspect
 
 import pytest
 
-from ee.server.app import BLOCKING_RPCS, Backend
+from ee.server.app import Backend
 
 
 @pytest.fixture
@@ -28,16 +31,20 @@ def _seed(home, tid, text="你好"):
     return tid
 
 
-def test_blocking_rpcs_must_be_sync(backend):
-    """放进 BLOCKING_RPCS 的必须是同步函数。
+def test_all_handlers_are_coroutine_functions(backend):
+    """所有 RPC 处理函数必须是 async。
 
-    to_thread(async_fn) 只调用一次得到协程对象就返回，函数体永远不执行；
-    json.dumps(default=str) 再把它序列化成 "<coroutine object ...>"，调用方看到的是成功。
+    同步处理函数会被 `Backend.call` 直接在事件循环上执行：一次 git / 磁盘 IO 就卡住
+    所有连接（通知、流式输出、其他会话的 RPC 全排它后面）。原先靠一张
+    `BLOCKING_RPCS` 把整个方法丢进 to_thread 绕开，但那样粒度太大且不能碰事件循环
+    （thread/delete 就是这么漏连接池的）。现在分工固定：处理函数 async，阻塞调用自己
+    `await asyncio.to_thread(...)`。加处理函数时忘了写 async，这条会直接报出来。
     """
-    for name in BLOCKING_RPCS:
-        fn = backend.methods[name]
-        assert not inspect.iscoroutinefunction(fn), (
-            f"{name} 是 async 函数，放不进 BLOCKING_RPCS：它自己应该 await asyncio.to_thread(...)")
+    sync = sorted(name for name, fn in backend.methods.items() if not inspect.iscoroutinefunction(fn))
+    assert not sync, (
+        f"这些 RPC 处理函数不是 async，会阻塞事件循环：{sync}。"
+        "请写成 async def，并把阻塞的调用包成 await asyncio.to_thread(...)")
+    assert len(backend.methods) > 50, "方法表好像没装配完，这条断言就失去意义了"
 
 
 def test_thread_export_through_dispatch_returns_real_content(backend):
@@ -83,6 +90,7 @@ def test_thread_delete_schedules_session_cleanup_on_the_loop(backend, monkeypatc
 
     修复前 thread/delete 在 BLOCKING_RPCS 里，整段跑在工作线程：
     asyncio.get_running_loop() 必然 RuntimeError，aclose 被 pass 吞掉，每删一个会话漏一个连接池。
+    （那张表已拆掉，用例保留——它是“别把整方法丢进 to_thread”的反例。）
     """
     tid = _seed(backend.home, "20261029-020205-ffffff")
     closed: list[str] = []
