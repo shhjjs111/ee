@@ -52,6 +52,8 @@
 
 保留边界：写盘失败状态只在内存里（盘写不了自然也无法从磁盘恢复），所以只有**正在运行的后端**能看到它；重启后界面不再提示「曾经失败过」，那部分记录也确实已经丢了。恢复后只清状态、不回填——失败期间没落盘的记录已经无法找回，提示文案里写明了这一点。`ee exec` / headless 这类没有 Thread 的入口仍只有日志（按 AGENTS.md 只发桌面版，不再为多入口加 UI 通路）。
 
+附：同轮把 `desktop/src/types.ts` 里两条存量 pi-lens 阻断项（`no-unsafe-dictionary-any`，`ToolItem.args` 与子代理 `usage` 的 `Record<string, any>`）改成 `Record<string, unknown>`。实际消费点全是 `String(a.x ?? "")` 式的收毅，`tsc` 与 398 例 vitest 均无改动即通过——说明那个 `any` 从来没有被用到过，改成 `unknown` 才是真实契约。其余 pi-lens 噪声（`threads.py` 内部 id 的 `int()`、两处行内 style）维持现状，已在交接文档 backlog 第 4 条记过。
+
 ## 执行记录（2026-11-11，稳定性与并发修复 + 类型清理）
 
 本轮从“用户长期使用后的体检”出发，修了三类问题：资源生命周期、RPC 分发、并发。完整交接与 backlog 见 `2026-11-11-type-cleanup-and-lifecycle.md`；代码提交 `9138a3e`。

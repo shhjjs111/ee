@@ -23,7 +23,7 @@ export type ToolItem = ItemBase & {
   type: "tool";
   call_id: string;
   name: string;
-  args: Record<string, any>;
+  args: Record<string, unknown>;   // 模型产出的工具参数：形状由各工具决定，读的地方统一 String(...) 收敛
   summary: string;
   status: ToolStatus;
   output: string;
@@ -382,7 +382,7 @@ export type SubagentRecord = {
   text: string;
   summary: string;
   notices?: string[];
-  usage?: Usage & Record<string, any>;
+  usage?: Usage & Record<string, unknown>;
   worktree?: SubagentWorktree; // 写型子代理在独立 git worktree 里并行时（D5-2）
   fork?: boolean; // 分叉子代理：继承主会话上下文（D5-10）
 };
