@@ -45,7 +45,12 @@ cd desktop && npm run typecheck                                    # exit 0
 
 ## 未完成 backlog（按优先级）
 
-1. `store.append` 写盘失败仍只写日志，界面无感知（磁盘满时对话看似正常）。
+1. ~~`store.append` 写盘失败仍只写日志，界面无感知（磁盘满时对话看似正常）。~~
+   → **2026-11-12 已完成**：`SessionStore` 记账 + `on_fail`/`on_write` 回调，`Thread` 变成
+   `summary()["save_error"]` + 对话内警告，桌面端横幅 + 左栏图标，恢复后自动撤掉。
+   入口：`ee/core/store.py`、`ee/core/session.py`、`ee/server/threads.py`、
+   `desktop/src/components/{Conversation,Sidebar}.tsx`；测试 `ee/tests/test_store_failure.py`（4）、
+   `desktop/src/components/SaveErrorBanner.test.tsx`（4）。详见 `roadmap-current.md`「执行记录（2026-11-12）」。
 2. `BLOCKING_RPCS` 是空集合，`Backend.call` 里的 `to_thread` 分支是死代码。
 3. 跨会话共享 LSP 进程：需要先把 `publishDiagnostics` 改成多订阅者，否则诊断互相覆盖。
 4. pi-lens 的 ast-grep 提示：部分 `int()` 无 try（多数在内部生成的 id 上，安全）、
