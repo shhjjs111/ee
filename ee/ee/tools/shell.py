@@ -146,7 +146,7 @@ async def _kill(proc) -> None:
         if IS_WINDOWS:
             await asyncio.to_thread(kill_tree, proc.pid)   # 不能在事件循环上同步跑 taskkill
         else:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGKILL)     # type: ignore[attr-defined]  POSIX-only
     except Exception:
         try:
             proc.kill()
@@ -233,7 +233,7 @@ class ShellTool(Tool):
                         _notice(ctx, f"这条命令会阻塞很久（{why}），已改走后台：用 shell_output 等待结果")
                         return await run_background(command, shell, cwd, ctx)
                     _notice(ctx, "这条命令要跑全量 pytest（串行约 17 分钟），已改走后台：用 shell_output 等待结果")
-                    return await run_background(command, shell, cwd, ctx, note=fp_hint)
+                    return await run_background(command, shell, cwd, ctx, note=fp_hint or "")
         t0 = time.monotonic()
         try:
             code, out, timed_out = await run_command(command, shell, cwd, timeout, ctx.emit, sandbox=sb)
@@ -548,7 +548,7 @@ def _notice(ctx: ToolContext, text: str, level: str = "info") -> None:
         ev(Notice(text, level))
 
 
-async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext, note: str = "") -> ToolResult:
+async def run_background(command: str, shell: ShellInfo, cwd, ctx: ToolContext, note: str | None = None) -> ToolResult:
     sess = ctx.extra.get("session")
     mgr = getattr(sess, "bg", None)
     if mgr is None:

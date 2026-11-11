@@ -219,10 +219,14 @@ class _TS:
             hit = self.langs.get(lang)
             if hit is not None:
                 return hit
+            ts, pack = self.ts, self.pack
+            if ts is None or pack is None:      # load() 成功后两者都非 None，这里只是窄化
+                self.missing.add(lang)
+                return None
             try:
-                language = self.pack.get_language(lang)
-                parser = self.ts.Parser(language)
-                query = self.ts.Query(language, QUERIES[lang])
+                language = pack.get_language(lang)
+                parser = ts.Parser(language)
+                query = ts.Query(language, QUERIES[lang])
                 hit = (parser, query)
                 self.langs[lang] = hit
                 return hit
@@ -232,8 +236,11 @@ class _TS:
                 return None
 
     def captures(self, query, node) -> dict:
+        ts = self.ts
+        if ts is None:
+            return {}
         try:
-            return self.ts.QueryCursor(query).captures(node)
+            return ts.QueryCursor(query).captures(node)
         except AttributeError:      # 旧版 py-tree-sitter：Query.captures 返回 [(node, name)]
             out: dict = defaultdict(list)
             for n, name in query.captures(node):
@@ -395,6 +402,9 @@ def list_files(root: Path, max_files: int) -> tuple[list[str], int]:
 # ------------------------------------------------------------------ 缓存
 
 def cache_path(home: Path, root: Path) -> Path:
+    # 只作 ~/.ee/cache/repomap/ 的文件名（不是安全边界）；换算法会让现有缓存失效，
+    # 虽然能重建，但没有必要为了一个非安全用途改目录键。
+    # pi-lens-ignore: python-weak-hash -- 非安全用途：仅作缓存文件名
     h = hashlib.sha1(str(root.resolve()).lower().encode("utf-8") if os.name == "nt"
                      else str(root.resolve()).encode("utf-8")).hexdigest()[:16]
     return Path(home) / "cache" / "repomap" / f"{h}.json"

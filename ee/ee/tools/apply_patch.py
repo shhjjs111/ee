@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult, rel
-from ee.tools.fileops import make_diff, read_text, write_text
+from ee.tools.fileops import TextFile, make_diff, read_text, write_text
 
 
 @dataclass
@@ -256,7 +256,7 @@ class ApplyPatchTool(Tool):
         patch = args.get("patch") or args.get("input") or ""
         ops = parse_patch(patch)
         # 先全部演算，任何一处失败都不落盘
-        plan: list[tuple[str, Path, Path | None, str, str, object]] = []
+        plan: list[tuple[str, Path, Path | None, str, str, TextFile]] = []
         staged: dict[Path, str] = {}     # 同一路径已有几段 Update 时，后一段基于前一段的结果演算
         for op in ops:
             p = ctx.resolve(op.path)

@@ -239,12 +239,13 @@ class Orchestrator:
                 ctl.release(child_id)
             raise
 
-        if not (prompt or "").strip():
+        prompt_text = prompt or ""
+        if not prompt_text.strip():
             ctl.release(child_id)             # 只建不跑：不占运行名额
             return {"thread": t.summary(), "started": False}
 
         try:
-            started = t.start_turn(prompt)
+            started = t.start_turn(prompt_text)
         except Exception:
             ctl.release(child_id)
             raise

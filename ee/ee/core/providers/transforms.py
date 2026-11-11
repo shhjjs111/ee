@@ -456,15 +456,17 @@ def parse_content_tool_calls(content: str, known: list[str]) -> tuple[list[dict]
                 v = json.loads(s2)
             except Exception:
                 v = None
-            items = []
+            items: list = []
             if isinstance(v, dict):
-                items = v.get("tool_calls") if isinstance(v.get("tool_calls"), list) else [v]
+                raw_calls = v.get("tool_calls")
+                items = raw_calls if isinstance(raw_calls, list) else [v]
             elif isinstance(v, list):
                 items = v
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                fn = it.get("function") if isinstance(it.get("function"), dict) else it
+                raw_fn = it.get("function")
+                fn = raw_fn if isinstance(raw_fn, dict) else it
                 name = fn.get("name") or fn.get("tool")
                 if not name:
                     continue

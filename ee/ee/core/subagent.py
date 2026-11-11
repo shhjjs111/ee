@@ -316,6 +316,10 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
                          "（isolation=worktree）。需要改文件请先让用户批准切换到默认或全自动模式；只读调研用 agent=explore。")
 
     fork = _wants_fork(args)
+    # 先给默认值：真正用到它们的两处都在 `if fork:` 里，运行时不会拿默认值；
+    # 但显式初始化让「可能未绑定」不再依赖阅读者的推理（也便于静态检查）。
+    fork_model = ""
+    fork_hist: list[dict] = []
     if fork:
         if kind not in FORK_AGENTS:
             raise ValueError(f"fork 模式只支持 {' / '.join(FORK_AGENTS)} 子代理（自定义子代理有自己的提示词和工具表，无法复用主会话上下文）")

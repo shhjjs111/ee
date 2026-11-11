@@ -36,6 +36,10 @@ _BEGIN, _END = "# >>> ee 自动排除（大文件）", "# <<< ee"
 
 def repo_key(worktree) -> str:
     """工作区对应的影子仓库目录名（真实路径小写的 sha1 前 16 位）。"""
+    # 这个哈希不是安全边界：只用来给 ~/.ee/snapshot/ 下的缓存目录起名。
+    # 选 sha1 也不是为了"够安全"，而是为了不改变**已有目录键**——换成 sha256 会让
+    # 升级后的用户看不到升级前的快照（/undo 与编辑重发的历史直接丢）。
+    # pi-lens-ignore: python-weak-hash -- 非安全用途：仅作缓存目录键，且必须与旧版本兼容
     return hashlib.sha1(str(os.path.realpath(worktree)).lower().encode("utf-8")).hexdigest()[:16]
 
 
@@ -385,7 +389,8 @@ class DiskSnapshot:
         """两个 tree 之间的 unified diff（字节按 utf-8 + surrogateescape 解码，\r 原样保留）。"""
         if not a or not b or a == b:
             return ""
-        _check_tree(a), _check_tree(b)
+        _check_tree(a)
+        _check_tree(b)
         args = [*self._DIFF_CFG, "diff", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv",
                 f"-U{int(context)}", a, b]
         if paths:
@@ -402,7 +407,8 @@ class DiskSnapshot:
         hit = self._numstat_cache.get(key)
         if hit is not None:
             return dict(hit)
-        _check_tree(a), _check_tree(b)
+        _check_tree(a)
+        _check_tree(b)
         with self._lock:
             out = self._run(*self._DIFF_CFG, "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", a, b)
         files = adds = dels = 0

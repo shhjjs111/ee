@@ -145,7 +145,13 @@ class ShellWriteTool(Tool):
             await mgr.write(p, data, close)
         except RuntimeError as e:
             raise ToolError(str(e))
-        wait = max(0, min(MAX_WAIT, int(args.get("wait") if args.get("wait") is not None else 2)))
+        raw_wait = args.get("wait")
+        try:
+            # isinstance 同时收窄类型并挡住非数字的字符串（模型可能传 "2" / "abc"）。
+            wait_s = int(raw_wait) if isinstance(raw_wait, (int, float, str)) else 2
+        except (TypeError, ValueError):
+            wait_s = 2
+        wait = max(0, min(MAX_WAIT, wait_s))
         if wait:
             await mgr.wait_output(p, wait)
         text, notes = mgr.read_new(p)

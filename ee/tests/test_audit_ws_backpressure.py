@@ -60,3 +60,28 @@ def test_handler_actually_uses_bounded_queue():
     src = inspect.getsource(A.serve)
     assert "asyncio.Queue(maxsize=SEND_QUEUE_MAX)" in src
     assert A.SEND_QUEUE_MAX > 0
+
+
+def test_response_queue_full_is_reported_not_raised():
+    """响应队列满不能抛 QueueFull 在一个没人 await 的任务里。
+
+    通知满了是丢通知（可接受），响应丢了客户端只能等 20 秒 RPC 超时，
+    所以 `_put_response` 返回 False 让调用方断开这条连接。
+    """
+    from ee.server.app import _put_response
+
+    q: asyncio.Queue = asyncio.Queue(maxsize=1)
+    assert _put_response(q, "ok") is True
+    assert _put_response(q, "second") is False          # 满了：明确告知，不抛异常
+    assert q.get_nowait() == "ok"
+
+
+def test_single_response_path_uses_put_response():
+    """接线断言：serve 里发响应必须走 `_put_response`（否则慢客户端会静默丢响应）。"""
+    import inspect
+
+    from ee.server import app as A
+
+    src = inspect.getsource(A.serve)
+    assert "_put_response(q, payload)" in src
+    assert "q.put_nowait(json.dumps(out" not in src

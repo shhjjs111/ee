@@ -61,6 +61,8 @@ def discount_for(cfg: dict | None, now: datetime, family: str | None = None) -> 
     if not cfg:
         return 1.0
     discount = cfg.get("offpeak_discount")
+    if not isinstance(discount, (int, float, str)):
+        return 1.0
     try:
         d = float(discount)
     except (TypeError, ValueError):

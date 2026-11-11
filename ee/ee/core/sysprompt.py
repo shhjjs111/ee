@@ -143,7 +143,8 @@ def allowed_ids(user_data: dict | None = None) -> set[str]:
             user_data = load_user_file()
         except Exception:  # noqa: BLE001
             return set()
-    sp = user_data.get(CFG_KEY) if isinstance(user_data.get(CFG_KEY), dict) else {}
+    raw = user_data.get(CFG_KEY)
+    sp = raw if isinstance(raw, dict) else {}
     return set(str(x) for x in (sp.get("allowed_project") or []))
 
 

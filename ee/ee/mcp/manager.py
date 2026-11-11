@@ -13,6 +13,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ee.mcp.client import McpError, make_client
 from ee.mcp.config import ServerConfig, load_servers, mcp_settings
@@ -51,7 +52,7 @@ class ServerState:
     status: str = "idle"          # idle | connecting | ready | error | disabled | needs_approval
     error: str = ""
     tools: list[dict] = field(default_factory=list)
-    client: object = None
+    client: Any = None              # mcp.client 的连接对象（stdio/HTTP/SSE）；类型上避免 manager→client 循环依赖
     server_info: dict = field(default_factory=dict)
     connected_at: float = 0.0
     handle: ConnectionHandle | None = None

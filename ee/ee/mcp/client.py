@@ -75,7 +75,8 @@ class _Base:
         if not isinstance(msg, dict):
             return
         if "id" in msg and ("result" in msg or "error" in msg) and "method" not in msg:
-            fut = self._pending.pop(msg.get("id"), None)
+            rid = msg.get("id")
+            fut = self._pending.pop(rid, None) if isinstance(rid, int) else None
             if fut is not None and not fut.done():
                 if "error" in msg:
                     err = msg["error"] or {}
@@ -126,7 +127,7 @@ class _Base:
             self._pending.pop(rid, None)
 
     async def notify(self, method: str, params: dict | None = None) -> None:
-        msg = {"jsonrpc": "2.0", "method": method}
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             msg["params"] = params
         await self._send(msg)
@@ -329,9 +330,12 @@ class HttpClient(_Base):
     async def _send(self, obj: dict) -> None:
         if self.closed:
             raise McpError("连接已关闭")
+        http = self._http
+        if http is None:
+            raise McpError("连接未启动")
         try:
-            r = await self._http.post(self.cfg.url, content=json.dumps(obj, ensure_ascii=False).encode("utf-8"),
-                                      headers=self._headers())
+            r = await http.post(self.cfg.url, content=json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                                headers=self._headers())
         except Exception as e:  # noqa: BLE001
             raise McpError(f"请求 {self.cfg.url} 失败：{type(e).__name__}: {e}") from None
         sid = r.headers.get("mcp-session-id")
@@ -392,9 +396,12 @@ class SseClient(_Base):
             raise McpError("等待 SSE endpoint 事件超时") from None
 
     async def _listen(self) -> None:
+        http = self._http
+        if http is None:
+            raise McpError("连接未启动")
         try:
-            async with self._http.stream("GET", self.cfg.url, headers={"Accept": "text/event-stream",
-                                                                       **self.cfg.headers}) as r:
+            async with http.stream("GET", self.cfg.url, headers={"Accept": "text/event-stream",
+                                                                 **self.cfg.headers}) as r:
                 if r.status_code >= 400:
                     raise McpError(f"HTTP {r.status_code}")
                 event, data = "message", []
@@ -430,8 +437,11 @@ class SseClient(_Base):
     async def _send(self, obj: dict) -> None:
         if self.closed or not self.endpoint:
             raise McpError("SSE 连接未就绪")
+        http = self._http
+        if http is None:
+            raise McpError("连接未启动")
         try:
-            r = await self._http.post(self.endpoint, json=obj, headers=self.cfg.headers)
+            r = await http.post(self.endpoint, json=obj, headers=self.cfg.headers)
         except Exception as e:  # noqa: BLE001
             raise McpError(f"请求失败：{e}") from None
         if r.status_code >= 400:

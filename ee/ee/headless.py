@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import Any, Callable, TextIO
 
 from ee.core.events import (ApprovalRequest, AssistantMessage, PlanUpdate, SubagentEnd, SubagentStart, TextDelta,
                             ToolEnd, ToolStart, TurnStart, Usage)
@@ -361,7 +361,9 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
 
     configure = unattended_configure(args.max_steps, args.allow, args.deny, getattr(args, "profile", None),
                                      getattr(args, "max_tool_timeout", None))
-    kw = dict(client_factory=client_factory, persist=not args.no_persist, configure=configure)
+    # 显式标 dict[str, Any]：dict(...) 会把值推成 callable|bool 的联合，
+    # 展开到 Thread(**kw) 的具名参数上会逐项报“类型不符”（运行时没问题）。
+    kw: dict[str, Any] = dict(client_factory=client_factory, persist=not args.no_persist, configure=configure)
     resumed = bool(args.resume or args.last)
     if resumed:
         sid = args.resume or _find_last(home, Path(args.cd or os.getcwd()).resolve())
@@ -446,8 +448,8 @@ async def _run(args, prompt: str, printer: Printer, home: Path, client_factory: 
 
             # 预算判据用真实的字段：BudgetGuard.stop_reason 在超限时被 record() 设成非 None
             # （core/budget.py:182 初始化、:184 record 里赋值）。别臆造 exceeded()。
-            budget_fn = (lambda: bool(getattr(th.session.budget, "stop_reason", None))) \
-                if th.session is not None else None
+            sess = th.session
+            budget_fn = (lambda: bool(getattr(sess.budget, "stop_reason", None))) if sess is not None else None
 
             goal_result = await run_goal(
                 spec, turn_runner=_one_turn, max_rounds=int(args.goal_max_rounds),

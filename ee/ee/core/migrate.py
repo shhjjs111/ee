@@ -96,7 +96,11 @@ def migrate_user_file(path: Path | None = None) -> bool:
         for dotted, value in writes:
             if dotted == STRIP_SECRETS:
                 from ee.core.atomic import write_text as atomic_write
-                atomic_write(path, strip_secret_lines(path.read_text(encoding="utf-8"), value))
+                # migrate 里 append 的就是 list[tuple[str, str]]；Writes 的值类型是 object，
+                # 这里显式构造一份精确类型的列表（运行时只是复制）。
+                moved = value if isinstance(value, list) else []
+                atomic_write(path, strip_secret_lines(path.read_text(encoding="utf-8"),
+                                                       [(str(a), str(b)) for a, b in moved]))
             else:
                 write_setting(dotted, value, path)
         write_setting("config_version", CURRENT_VERSION, path)

@@ -26,11 +26,15 @@ class Price:
         缓存读取价（cache_read）不打折——它已经是错峰前价格的 1/50，再打折会失准。"""
         if not self.known:
             return None
+        # 用 `or 0.0` 而不是依赖 self.known 的窄化：无论读者知不知道 known 保证非 None，
+        # 这里得到的都是 float（None 分支在上面已经 return，运行时走不到）。
+        inp = self.input or 0.0
+        outp = self.output or 0.0
         hit = hit or 0
         miss = max(0, prompt - hit)
-        cr = self.cache_read if self.cache_read is not None else self.input
+        cr = self.cache_read or inp
         d = min(1.0, max(0.0, discount))
-        return (miss * self.input * d + hit * cr + completion * self.output * d) / 1_000_000
+        return (miss * inp * d + hit * cr + completion * outp * d) / 1_000_000
 
 
 @dataclass

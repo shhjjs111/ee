@@ -91,10 +91,11 @@ def make_http_client(np: NetPlan):
 
 def _chain(e: BaseException) -> list[BaseException]:
     out, seen = [], set()
-    while e is not None and id(e) not in seen:
-        out.append(e)
-        seen.add(id(e))
-        e = e.__cause__ or e.__context__
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        out.append(cur)
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
     return out
 
 

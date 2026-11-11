@@ -14,6 +14,7 @@ import fnmatch
 import os
 import re
 import shlex
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -466,7 +467,8 @@ def _q(x: str) -> str:
     return f'"{x}"' if any(ch.isspace() for ch in x) else x
 
 
-def _strip_opts(w: list[str], value_opts: set[str] = frozenset()) -> list[str]:
+def _strip_opts(w: list[str], value_opts: Collection[str] = ()) -> list[str]:
+    # Collection：默认空元组，调用方传 set / frozenset / list 都行（只用来判 `in`）。
     while w and w[0].startswith("-") and w[0] != "-":
         w = w[2:] if w[0] in value_opts else w[1:]
     return w

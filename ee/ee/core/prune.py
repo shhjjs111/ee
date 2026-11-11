@@ -151,7 +151,8 @@ def plan(history: list[dict], cfg: dict) -> list[dict]:
     last_read: dict[str, int] = {}
     for i, m in enumerate(history):
         if m.get("role") == "tool":
-            name, args, _ = calls.get(m.get("tool_call_id"), ("", {}, ""))
+            cid = m.get("tool_call_id")
+            name, args, _ = calls.get(cid, ("", {}, "")) if isinstance(cid, str) else ("", {}, "")
             if name == "read" and args.get("path"):
                 last_read[_norm(str(args["path"]))] = i
     protected = cfg["keep_tokens"]
@@ -167,7 +168,8 @@ def plan(history: list[dict], cfg: dict) -> list[dict]:
         if protected > 0:                         # 最近的一段工具输出保留
             protected -= t
             continue
-        name, args, _ = calls.get(m.get("tool_call_id"), ("", {}, ""))
+        cid = m.get("tool_call_id")
+        name, args, _ = calls.get(cid, ("", {}, "")) if isinstance(cid, str) else ("", {}, "")
         if not name or not _tool_ok(name, cfg["tools"]) or t < cfg["min_output_tokens"]:
             continue
         if name == "read" and args.get("path"):

@@ -50,6 +50,12 @@ KEEPALIVE_PING = 20.0      # 秒：多久发一次 ping
 KEEPALIVE_TIMEOUT = 30.0   # 秒：这么久没有任何响应就认定连接已死并回收
 SEND_QUEUE_MAX = 256       # 每条连接的通知队列上限：满了说明客户端读不动，断开它
 
+# 内存里的会话缓存上限。会话文件在磁盘上，摘掉后下一次访问会按需重载。
+# 不淘汰的话，一天开几十个会话（加上自动化/子会话）就是几十份完整 history/items
+# 常驻，再加上各自的连接池与 LSP 进程。
+MAX_LOADED_THREADS = 40      # 常驻会话数上限（超过就淘汰最旧的空闲会话）
+THREAD_EVICT_MIN_IDLE = 60.0   # 空闲至少这么久才允许淘汰（刚打开的会话不能一转手就没了）
+
 def _enqueue_or_drop(conns: dict, msg: str) -> list:
     """把一条通知塞进每个连接的队列，返回「读不动」而需要断开的连接。
 
@@ -66,6 +72,20 @@ def _enqueue_or_drop(conns: dict, msg: str) -> list:
             conns.pop(ws, None)
             slow.append(ws)
     return slow
+
+
+def _put_response(q: asyncio.Queue, payload: str) -> bool:
+    """把一条 RPC 响应放进发送队列；队列满返回 False。
+
+    响应不能像通知那样丢：丢了客户端只能等到 20 秒 RPC 超时，而且看不出为什么。
+    返回 False 让调用方直接断开这条连接（客户端重连后会重新拉全量状态），
+    而不是把异常抛在一个没人 await 的任务里。
+    """
+    try:
+        q.put_nowait(payload)
+        return True
+    except asyncio.QueueFull:
+        return False
 
 
 async def _close_slow(ws) -> None:
@@ -159,6 +179,10 @@ class Backend:
             "git/diff": self.git_diff,
             "git/revert_file": self.git_revert_file,
         }
+        # 由 checkpoint_rpc.register 注入（非 git 项目的快照对比）。先声明成可空：
+        # 一是让静态检查看得到这个属性，二是注册顺序如果被改动，调用点会抛一条
+        # 明确的 RpcError，而不是 AttributeError（那个不走 RpcError，界面只能看到 500）。
+        self.snapshot_review_ctx: Callable[..., Any] | None = None
         memory_rpc.register(self.methods, self.home)   # memory/get|add|remove|save
         prompts_rpc.register(self.methods, self.home)  # prompts/list|expand
         branch.register(self.methods, self)            # thread/fork|edit_resend
@@ -217,7 +241,16 @@ class Backend:
                 if asyncio.iscoroutine(res):
                     res = await res
         except TypeError as e:
-            raise RpcError(f"参数错误：{e}", -32602)
+            # 这里只能把「参数与函数签名不匹配」当参数错误。handler 内部抛的 TypeError
+            # 也会被同一个 except 接住，原先一律报「参数错误」——真实的代码 bug 被伪装成
+            # 用户输入问题，日志里只剩一条 warning、没有栈，排查时会被坑。
+            # 判定方式：签名确实绑不上时 bind() 会再抛一次；handler 内部的 TypeError
+            # 在 bind 时不复现，按内部错误原样向上抛（_handle 会记 exc_info）。
+            try:
+                inspect.signature(fn).bind(**params)
+            except TypeError:
+                raise RpcError(f"参数错误：{e}", -32602) from e
+            raise
         return res
 
     # ------------------------------------------------------------ 持久化的小状态（工作区列表）
@@ -250,6 +283,7 @@ class Backend:
         self._check_thread_id(thread_id)
         t = self.threads.get(thread_id)
         if t is not None:
+            t.last_access = time.monotonic()
             return t
         locks = getattr(self, "_load_locks", None)
         if locks is None:
@@ -258,9 +292,49 @@ class Backend:
         async with lock:
             t = self.threads.get(thread_id)          # 等锁期间可能已被前一个请求建好
             if t is not None:
+                t.last_access = time.monotonic()
                 return t
             t = await asyncio.to_thread(self._thread, thread_id)
-            return self.threads.setdefault(thread_id, t)
+            t = self.threads.setdefault(thread_id, t)
+            t.last_access = time.monotonic()
+            self._evict_idle_threads(exclude=thread_id)
+            return t
+
+    def _evict_idle_threads(self, exclude: str = "") -> None:
+        """内存里的会话超过上限时，把最旧的一批空闲会话摘掉（磁盘上有，按需重载）。
+
+        不碰：运行中 / 压缩中 / 还有审批在等 / 被 /loop 占用的会话。淘汰只摘内存引用，
+        同时把它的模型连接池与 LSP 进程关掉——不关的话“摘掉”只是换了个地方泄漏。
+        """
+        extra = len(self.threads) - MAX_LOADED_THREADS
+        if extra <= 0:
+            return
+        now = time.monotonic()
+        busy: set[str] = set()
+        loops = getattr(self, "loops", None)
+        if loops is not None:
+            try:
+                busy = loops.active_threads()
+            except Exception:  # noqa: BLE001  淘汰是副业，不能因为查询失败把 RPC 搞挂
+                busy = set()
+        idle: list[tuple[float, str, Thread]] = []
+        for tid, t in self.threads.items():
+            if tid == exclude or tid in busy:
+                continue
+            if t.running or t.compacting or t.approvals:
+                continue
+            if now - getattr(t, "last_access", 0.0) < THREAD_EVICT_MIN_IDLE:
+                continue
+            idle.append((getattr(t, "last_access", 0.0), tid, t))
+        idle.sort(key=lambda x: x[0])
+        for _, tid, t in idle[:extra]:
+            self.threads.pop(tid, None)
+            log.info("淘汰空闲会话缓存：%s（当前常驻 %d 个）", tid, len(self.threads))
+            if t.session is not None:
+                try:
+                    asyncio.get_running_loop().create_task(t.session.aclose())
+                except RuntimeError:          # 没有事件循环：随进程退出释放
+                    pass
 
     def _thread(self, thread_id: str) -> Thread:
         self._check_thread_id(thread_id)
@@ -386,6 +460,7 @@ class Backend:
 
         t = await asyncio.to_thread(build)
         self.threads[t.id] = t
+        self._evict_idle_threads(exclude=t.id)
         log.info("新会话 %s cwd=%s 模型 %s", t.id, t.meta.get("cwd"), t.meta.get("model"))
         self.notify("thread/updated", {"thread": t.summary()})
         return {"thread": t.detail()}
@@ -975,6 +1050,8 @@ class Backend:
         res = await asyncio.to_thread(gitops.review, Path(cwd), self.home)
         if res["is_repo"] or not thread_id or not res["git_available"]:
             return res
+        if self.snapshot_review_ctx is None:
+            raise RpcError("快照审阅没有初始化（checkpoint_rpc 未注册）")
         t, s, d, base = await self.snapshot_review_ctx(thread_id)
         if d is None:
             ds = s._disk_obj
@@ -999,6 +1076,8 @@ class Backend:
             if is_repo or not thread_id:
                 res = await asyncio.to_thread(gitops.revert_file, Path(cwd), path)
             else:                          # 非 git 项目：恢复成会话开始时快照里的版本（D5-7）
+                if self.snapshot_review_ctx is None:
+                    raise RpcError("快照审阅没有初始化（checkpoint_rpc 未注册）")
                 t, s, d, base = await self.snapshot_review_ctx(thread_id)
                 if d is None or not base:
                     raise RpcError("这个会话还没有快照，无法撤销")
@@ -1073,9 +1152,28 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
 
     loop_thread = threading.get_ident()
 
+    # 后台任务集合：asyncio 只对任务持弱引用，不存强引用时任务可能在运行中被 GC；
+    # 同时把没人 await 的异常（例如给慢客户端写响应时撞上的 QueueFull）记下来，
+    # 而不是等 GC 时变成 “Task exception was never retrieved”。
+    bg: set[asyncio.Task] = set()
+
+    def _reap(t: asyncio.Task) -> None:
+        bg.discard(t)
+        if t.cancelled():
+            return
+        e = t.exception()
+        if e is not None:
+            log.error("后台连接任务异常", exc_info=(type(e), e, e.__traceback__))
+
+    def _spawn(coro) -> asyncio.Task:
+        t = asyncio.ensure_future(coro)
+        bg.add(t)
+        t.add_done_callback(_reap)
+        return t
+
     def _put_all(msg: str) -> None:
         for ws in _enqueue_or_drop(conns, msg):
-            loop.create_task(_close_slow(ws))
+            _spawn(_close_slow(ws))
 
     def broadcast(method: str, params: dict) -> None:
         # 线程安全：有的 RPC 在工作线程里跑（asyncio.to_thread），通知要切回事件循环再入队
@@ -1104,10 +1202,10 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
     async def handler(ws):
         q: asyncio.Queue = asyncio.Queue(maxsize=SEND_QUEUE_MAX)
         conns[ws] = q
-        w = asyncio.ensure_future(writer(ws, q))
+        w = _spawn(writer(ws, q))
         try:
             async for raw in ws:
-                asyncio.ensure_future(_handle(q, raw))
+                _spawn(_handle(q, raw, ws))
         except Exception:  # noqa: BLE001
             pass
         finally:
@@ -1118,12 +1216,26 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
                 pass
             await w
 
-    async def _handle(q: asyncio.Queue, raw):
+    def _respond(q: asyncio.Queue, ws, payload: str) -> None:
+        """把一条响应塞进发送队列。队列满 = 客户端读不动，和通知一样断开它。
+
+        原先这里是裸 `put_nowait`：满了就抛 QueueFull，而 `_handle` 是
+        fire-and-forget 的任务——客户端永远收不到这条响应（20 秒后前端报
+        “内核没有响应”），抛出的异常也无人 await。现在把队列满当成慢客户端：
+        从连接表里移除并关掉，客户端重连后会重新拉全量状态。
+        """
+        if _put_response(q, payload):
+            return
+        if conns.pop(ws, None) is not None:
+            log.warning("客户端读取过慢，响应队列已满，断开该连接")
+            _spawn(_close_slow(ws))
+
+    async def _handle(q: asyncio.Queue, raw, ws):
         try:
             req = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            q.put_nowait(json.dumps({"jsonrpc": "2.0", "id": None,
-                                     "error": {"code": -32700, "message": "JSON 解析失败"}}))
+            _respond(q, ws, json.dumps({"jsonrpc": "2.0", "id": None,
+                                        "error": {"code": -32700, "message": "JSON 解析失败"}}))
             return
         rid = req.get("id")
         method = req.get("method", "")
@@ -1141,7 +1253,7 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         if dt >= SLOW_RPC:
             log.warning("RPC %s 用时 %.1fs（慢）", method, dt)
         if rid is not None:
-            q.put_nowait(json.dumps(out, ensure_ascii=False, default=str))
+            _respond(q, ws, json.dumps(out, ensure_ascii=False, default=str))
 
     from ee.server import lifeline
 
@@ -1194,9 +1306,11 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
         backend.loops.start()                          # 会话内 /loop（D5-3，只在内存里）
         gc_task = asyncio.create_task(_snapshot_gc_later(backend), name="ee-snapshot-gc")
         out_gc_task = asyncio.create_task(_tool_output_gc_later(backend), name="ee-tool-output-gc")
+        cache_gc_task = asyncio.create_task(_thread_cache_gc(backend), name="ee-thread-cache-gc")
         await stop
     gc_task.cancel()
     out_gc_task.cancel()
+    cache_gc_task.cancel()
     watchdog.stop()
     await backend.automations.stop()
     await backend.loops.stop()
@@ -1226,6 +1340,24 @@ async def serve(host: str = "127.0.0.1", port: int = 0, token: str | None = None
             await asyncio.wait_for(asyncio.to_thread(lifeline.kill_descendants), 10)
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _thread_cache_gc(backend: Backend, interval: float = 300.0) -> None:
+    """定期擢掉内存里空闲的会话。
+
+    `_athread` 只在**加载新会话**时清理，而 thread/start、分支、orchestrator
+    子会话都直接往 backend.threads 里放；没有这个定期清理，批量建会话时
+    上限会一直超着，直到下一次有人打开旧会话。
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                backend._evict_idle_threads()
+            except Exception:  # noqa: BLE001  清理是副业，不能把进程搞挂
+                log.warning("会话缓存清理失败", exc_info=True)
+    except asyncio.CancelledError:
+        pass
 
 
 async def _snapshot_gc_later(backend: Backend, delay: float = 120.0) -> None:

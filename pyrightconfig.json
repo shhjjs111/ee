@@ -1,0 +1,24 @@
+{
+  "include": ["ee/ee"],
+  "exclude": [
+    "**/__pycache__",
+    "ee/scripts",
+    "desktop",
+    ".venv",
+    "node_modules",
+    "**/dist",
+    "**/dist-electron",
+    "**/build",
+    "**/release"
+  ],
+  "pythonVersion": "3.12",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic",
+  "executionEnvironments": [
+    {
+      "root": "ee",
+      "extraPaths": ["ee", "ee/tests"]
+    }
+  ]
+}

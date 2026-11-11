@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import os
+from typing import Any
 
 from ee.config import DEFAULTS, PROJECT_IGNORED, ROLES, deep_merge, load_user_file, normalize_roles, save_user_file, user_config_path
 from ee.core import queue as Q
@@ -585,8 +586,8 @@ def set_settings(new: dict) -> dict:
             cw = _num(m.get("context_window"))
             if cw:
                 entry["context_window"] = int(cw)
-            price = {k: _num((m.get("price") or {}).get(k)) for k in ("input", "output", "cache_read")}
-            price = {k: v for k, v in price.items() if v is not None}
+            raw_price = {k: _num((m.get("price") or {}).get(k)) for k in ("input", "output", "cache_read")}
+            price: dict[str, Any] = {k: v for k, v in raw_price.items() if v is not None}
             cur = ((m.get("price") or {}).get("currency") or "").strip()
             if price:
                 if cur:

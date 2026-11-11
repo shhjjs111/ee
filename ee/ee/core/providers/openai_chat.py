@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, cast
 
 from ee.core import latency
 from ee.core.providers import net
@@ -257,7 +257,7 @@ class ChatClient:
                     if ev[0] == "done":
                         if not emitted:
                             yield ("status", "")
-                        c = ev[1]
+                        c = cast(Completion, ev[1])   # 走到 done 时元组第二项一定是 Completion
                         if strip_reasoning:         # 去掉推理参数后成功：记住，以后不再发
                             st = self.state.get(self.key)
                             if effort == "off":

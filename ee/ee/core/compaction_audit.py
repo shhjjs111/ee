@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 # 从代码/命令/报错里抽「值得被摘要记住」的标识符。
 # 只收三类高信号：带下划线/驼峰的函数名、文件路径、shell 命令的第一个词。
@@ -235,7 +236,7 @@ def audit(messages: list[dict], usage_rows: list[dict] | None = None,
     records = list(records) if records else []
     digests = [rec.get("reads") for rec in records
                if rec.get("kind") == "compact" and rec.get("reads") is not None]
-    out = {"reread": reread_after_compaction(
+    out: dict[str, Any] = {"reread": reread_after_compaction(
         messages, before_reads=digests[-1] if digests else None)}
     cov = from_store(records) if records else None
     if cov and cov["count"]:

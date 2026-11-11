@@ -30,6 +30,11 @@ const SPLIT_UTF8 = script(
 );
 const GBK_ERR = script("gbk.js", `process.stderr.write(Buffer.from([0xcf,0xb5,0xcd,0xb3,0xd5,0xd2,0xb2,0xbb,0xb5,0xbd,0xd6,0xb8,0xb6,0xa8,0xb5,0xc4,0xce,0xc4,0xbc,0xfe]), () => process.exit(5));`);
 
+const SLOW_EXIT = script(
+  "slow-exit.js",
+  `process.stdout.write('EE_SERVE_READY {"port": 1234}\\n'); process.stdin.on('data', () => {}); process.stdin.on('end', () => setTimeout(() => process.exit(0), 500)); process.stdin.resume();`,
+);
+
 function opts(extra: Partial<BackendOptions> = {}): BackendOptions {
   return { isPackaged: false, resourcesPath: tmp, appRoot: tmp, logFile: path.join(tmp, "logs", "backend.log"), ...extra };
 }
@@ -77,8 +82,19 @@ describe("Backend（主进程拉起内核）", () => {
     await waitFor(() => !alive(second.pid));
   });
 
-  it("启动失败后再次 info() 会重新启动，而不是一直返回同一个失败", async () => {
-    let file = FAIL;
+  it("重启要等旧进程退出后再拉起新的（避免两个后端并存）", async () => {
+    const b = new Backend(opts({ command: node(SLOW_EXIT) }));
+    const first = await b.info();
+    const second = await b.restart();
+    // 旧后端收到 stdin EOF 后还要跑 500ms 清理；restart 必须先等它退出。
+    // 原先 stop() 只关 stdin 就 start()，这里会是 true（两个后端同时持有 ~/.ee）。
+    expect(alive(first.pid)).toBe(false);
+    expect(second.pid).not.toBe(first.pid);
+    b.stop();
+    await waitFor(() => !alive(second.pid));
+  });
+
+  it("启动失败后再次 info() 会重新启动，而不是一直返回同一个失败", async () => {    let file = FAIL;
     const b = new Backend(opts({ command: () => node(file)() }));
     await expect(b.info()).rejects.toThrow(/退出码 3/);
     file = GOOD;

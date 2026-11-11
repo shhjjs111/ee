@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, cast
 
 from ee.config import Config, ee_home
 from ee.core import compaction as C
@@ -120,8 +120,14 @@ class Session:
         # 指挥会话（D6-1）：子会话拿到的工具表里没有 thread_*（它不能再建子会话）；
         # 窄接口与调用者身份由所属 Thread 在构造后注入，普通会话保持 None。
         self.orchestrator_role = "child" if orchestrator_role == "child" else None
-        self.orchestrator = None
-        self.thread_id = None
+        self.orchestrator: Any = None   # 指挥会话的窄接口（server 注入）
+        self.thread_id: str | None = None
+        # 子代理在 build() 里注入的会话级标记（读的时候用 getattr 兜底）。
+        # 在这里声明默认值：它们本来只存在于子代理的赋值里，静态检查看不到，
+        # 也让「这个属性到底什么时候有」变成可读的事实。
+        self._lean_context = False          # 只读子代理：不加载 AGENTS.md / 记忆 / 技能清单
+        self.hooks_role = "main"            # main | subagent：子代理只跑部分 Hook 事件
+        self._fork_session_id: str | None = None   # fork 子代理沿用父会话 id 做缓存键
         self.tools = build_tools(self.spec.profile, config, agent=self.agent_profile,
                                  orchestrator_role=self.orchestrator_role)
         self.tool_map = {t.name: t for t in self.tools}
@@ -161,7 +167,7 @@ class Session:
         # 把 git 的 200ms+ 同步阻塞搬到了服务线程的热路径上——
         # test_robustness.py::test_slow_git_does_not_block_other_rpcs 立刻抓到（卡 1.6s）。
         # 保持构造时算好：那时还在建会话的路径上，之后的读取都是纯内存访问。
-        self._git: gitinfo.GitStatus | None = gitinfo.status(self.cwd)
+        self._git: gitinfo.GitStatus = gitinfo.status(self.cwd)
         self.gh = gitinfo.gh_exe() is not None
         self.queue = Q.InputQueue()          # 运行中排队的用户消息（插话 / 待追加）
         self.notes: list[str] = []           # 例如用户 !命令 的输出，随下一条消息发给模型
@@ -228,11 +234,11 @@ class Session:
         self._prefix_style: str | None = None      # 冻结进 system 的风格
         self._style_switched = False               # 会话中途切换过风格（之后用 <context-update> 子块说明当前风格）
         self._turn_role: str | None = None         # 本回合按哪个用途取模型（review）；计划模式自动用 plan
-        self._role_clients: dict = {}
+        self._role_clients: dict[str, ChatClient] = {}
         self._closing: list = []                   # 换模型时丢下的旧 client，等 aclose() 统一释放
         self.budget = BudgetGuard(config.data, self.home)
         self.budget_owner = True                   # 子代理共用主会话的 BudgetGuard，不负责回合重置
-        self.budget_root = None                    # 子代理：主会话（会话花费按主会话合计算）
+        self.budget_root: Session | None = None    # 子代理：主会话（会话花费按主会话合计算）
         self.spent_before: dict[str, float] = {}   # 重启前这个会话已花的钱（按币种），会话上限要算上
         # MCP（D3-A）：首次冻结前缀前连接服务器，工具追加在工具表末尾，会话内不变
         self.mcp_enabled = True
@@ -280,7 +286,7 @@ class Session:
         sid = session_id or getattr(getattr(self, "store", None), "id", "") or ""
         return sid
 
-    def client(self):
+    def client(self) -> ChatClient:
         if self._client is None:
             # fork 子代理继承主会话的前缀与历史 → 用父会话的 session id，
             # 否则前缀对得上、session id 对不上，服务端缓存照样用不上。
@@ -295,13 +301,16 @@ class Session:
                 self._client = ChatClient(self.spec, state_path=self.home / "state" / "quirks.json",
                                           network=self.config.data.get("network"), headers=headers or None,
                                           session_id=cache_key)
-        return self._client
+        c = self._client
+        if c is None:                      # 上面三个分支必然赋值；这里只是窄化类型
+            raise RuntimeError("模型客户端初始化失败")
+        return c
 
-    async def ensure_client(self):
+    async def ensure_client(self) -> ChatClient:
         """在线程里构造客户端（解析系统代理可能查 DNS、建 TLS 上下文较慢），不卡事件循环。"""
         if self._client is None:
             await asyncio.to_thread(self.client)
-        return self._client
+        return self.client()
 
     def set_model(self, name: str) -> str:
         spec = self.config.resolve_model(name)
@@ -444,7 +453,7 @@ class Session:
         except ValueError:
             return self.spec
 
-    def role_client(self, spec):
+    def role_client(self, spec) -> ChatClient:
         """按用途取模型客户端（压缩 / 标题 / 审查）。同模型直接复用主客户端。
 
         侧路也要带上会话级缓存键：把 roles.compact 配成别的模型时，压缩请求仍然是
@@ -469,7 +478,7 @@ class Session:
             self._role_clients[spec.alias] = c
         return c
 
-    async def ensure_role_client(self, spec):
+    async def ensure_role_client(self, spec) -> ChatClient:
         if spec.alias == self.spec.alias:
             return await self.ensure_client()
         if spec.alias not in self._role_clients:
@@ -962,9 +971,11 @@ class Session:
         self.lsp_manager = mgr
         self.lsp_store = store
         self.lsp_notifier = notifier
-        # 工具表里的 LspTool 是无参构造的，把真实能力补给它。
+        # 工具表里的 LspTool 是无参构造的，把真实能力补给它。只改 LspTool
+        # （按类型判，不按名字），否则“给任意 Tool 塞 manager 属性”只能靠动态属性。
+        from ee.tools.lsp import LspTool
         for t in self.tools:
-            if t.name == "lsp":
+            if isinstance(t, LspTool):
                 t.manager = mgr
                 t.store = store
                 t.root = str(self.cwd)
@@ -1037,7 +1048,7 @@ class Session:
         self._git = gitinfo.status(self.cwd)
 
     @property
-    def git(self):
+    def git(self) -> gitinfo.GitStatus:
         """当前 git 状态（构造时就算好，refresh_git 刷新）。读它永远是纯内存访问。
 
         别改成惰性求值：那会把 git 子进程挪到第一个访问者身上，
@@ -1046,7 +1057,7 @@ class Session:
         return self._git
 
     @git.setter
-    def git(self, v) -> None:
+    def git(self, v: gitinfo.GitStatus) -> None:
         self._git = v
 
     def context_left(self) -> float:
@@ -1150,7 +1161,7 @@ class Session:
         if self.notes:
             body = "\n\n".join(self.notes) + "\n\n" + text
             self.notes = []
-        msg = {"role": "user", "content": body + "\n\n" + appendix}
+        msg: dict[str, Any] = {"role": "user", "content": body + "\n\n" + appendix}
         # read(as_image=true) 登记的图片（方案 A）：本轮工具产出，下一轮注入视觉上下文。
         pending = getattr(self.state, "pending_images", None) or []
         if pending:
@@ -1578,7 +1589,7 @@ class Session:
                     entry = (tc, tool, {}, f"错误：{err}。请用合法的 JSON 重新调用 {name}。")
                     sig = signature(name, tc["function"].get("arguments"))
                 else:
-                    args = T.repair_args(args, tool.parameters)
+                    args = T.repair_args(args or {}, tool.parameters)
                     entry = (tc, tool, args, None)
                     sig = signature(name, args)
             sigs[tc["id"]] = sig
@@ -1646,7 +1657,7 @@ class Session:
             tc = p[0]
             try:
                 async with gate.hold(kind):
-                    await self._exec_one(*p, emit)
+                    await self._exec_one(p[0], p[1], p[2], p[3], emit)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001  某个调用出了意外：只记它自己的结果
@@ -1762,7 +1773,9 @@ class Session:
         if pre is None:
             pre = await hooks.pre_tool_use(self, cid, tool, args, emit)   # D5-4 Hooks：可拦截 / 改参数 / 免审批
         if pre.result is not None:
-            return pre.result
+            # hooks.PreResult.result 声明为 object（避免 core.hooks 反向依赖 tools）；
+            # 实际写入的永远是 ToolResult，这里只是给类型检查一个明确的形状。
+            return cast(ToolResult, pre.result)
         args = pre.args
         d: Decision = self.policy.check(tool.name, args, info={"read_only": bool(getattr(tool, "read_only", False)),
                                                               "trusted": bool(getattr(tool, "trusted", False))})

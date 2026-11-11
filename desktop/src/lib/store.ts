@@ -217,6 +217,7 @@ export const useApp = create<State & Actions>((set, get) => ({
 
   async init(rpc) {
     set({ rpc });
+    deletedIds.clear();   // 新连接会重新拉全量列表；删除过的 id 不会再出现
     let wasOpen = false;
     // 内核重启后会换一个新的 RpcClient：旧连接迟到的状态 / 通知一律丢弃，
     // 否则旧连接重连失败的 "failed" 会把界面标成断线、甚至再触发一次自动重启
@@ -936,6 +937,20 @@ export function consumeReturned(id: string, ids?: string[]) {
   });
 }
 
+/** 已删除的会话 id。后端删除**正在跑**的会话时，收尾任务（`Thread._finish`）
+ *  仍可能在那之后发出一条 `thread/updated`；后端已经尽量不发，但两侧都守一道：
+ *  只靠后端的话，旧版本后端/旧对话边缘路径仍会把会话重新插回左栏。
+ *  会话 id 永不复用，集合可以一直留着（限长防止无限增长）。 */
+const deletedIds = new Set<string>();
+
+function markDeleted(id: string) {
+  deletedIds.add(id);
+  if (deletedIds.size > 500) {
+    const first = deletedIds.values().next().value;
+    if (first) deletedIds.delete(first);
+  }
+}
+
 /** 会话删除后统一清理：列表、详情、后台命令、计时缓存都不留幽灵数据。 */
 function forgetThread(id: string) {
   useApp.setState((s) => {
@@ -1040,6 +1055,7 @@ export function onNotification(method: string, p: any) {
   }
   if (method === "thread/updated") {
     const t = p.thread as ThreadSummary;
+    if (deletedIds.has(t.id)) return;      // 删除后迟到的更新：不能把会话重新插回左栏
     const prev = st.threads.find((x) => x.id === t.id);
     if (t.status) {
       const n = approvalNotice(t.id, prev?.status, t.status, t.title || prev?.title || "", st.details[t.id]?.items);
@@ -1074,7 +1090,9 @@ export function onNotification(method: string, p: any) {
     return;
   }
   if (method === "thread/deleted") {
-    // 列表从任何地方删掉都要一致：详情/后台命令/计时缓存不能留着（否则会显示已删会话的数据）
+    // 列表从任何地方删掉都要一致：详情/后台命令/计时缓存不能留着（否则会显示已删会话的数据），
+    // 并且记下墓碑——收尾任务迟到的那条 thread/updated 不能再把它插回来。
+    markDeleted(p.thread_id);
     forgetThread(p.thread_id);
     return;
   }

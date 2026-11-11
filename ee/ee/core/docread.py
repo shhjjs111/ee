@@ -341,7 +341,7 @@ def _xlsx(path: Path, pages=None, sheet=None, budget: _Budget | None = None) -> 
                 dim = "?"
             sheets.append({"name": n, "dimension": dim, "rows": w.max_row, "cols": w.max_column})
         header = "工作表：" + "；".join(f"{i}. {s['name']}（{s['dimension']}）" for i, s in enumerate(sheets, 1))
-        rows_out: list[str] = []
+        rows_out: list[tuple[int, list[str]]] = []
         shown = 0
         more = 0
         max_c = 0
@@ -395,10 +395,14 @@ def _pptx(path: Path, pages=None, sheet=None, budget: _Budget | None = None) -> 
         budget.tick()
         texts = []
         for shape in slide.shapes:
-            if getattr(shape, "has_text_frame", False) and shape.text_frame.text.strip():
-                texts.append(_tidy(shape.text_frame.text))
+            tf = getattr(shape, "text_frame", None)
+            if getattr(shape, "has_text_frame", False) and tf is not None and tf.text.strip():
+                texts.append(_tidy(tf.text))
             elif getattr(shape, "has_table", False):
-                rows = [[_cell(c.text) for c in r.cells] for r in shape.table.rows]
+                table = getattr(shape, "table", None)
+                if table is None:
+                    continue
+                rows = [[_cell(c.text) for c in r.cells] for r in table.rows]
                 if rows:
                     texts.append("\n".join("| " + " | ".join(r) + " |" for r in rows))
         notes = ""

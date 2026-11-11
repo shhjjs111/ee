@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
+from typing import Any
 
 from ee.core import gitinfo
 from ee.proc import run_capture
@@ -107,7 +108,7 @@ def tree(cwd: str, path: str = "", show_ignored: bool = False) -> dict:
         except OSError:
             continue
         rel = _rel(root, Path(e.path))
-        ent = {"name": name, "path": rel, "type": "dir" if is_dir else "file"}
+        ent: dict[str, Any] = {"name": name, "path": rel, "type": "dir" if is_dir else "file"}
         if not is_dir:
             try:
                 ent["size"] = e.stat().st_size

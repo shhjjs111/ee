@@ -159,7 +159,7 @@ class GlobTool(Tool):
         root = ctx.resolve(args.get("path") or ".")
         if not root.is_dir():
             raise ToolError(f"目录不存在：{root}")
-        files: list[Path] = []
+        files: list[Path] | None = []
         if shutil.which("rg"):
             _, out = await _rg(["--files", "--hidden", "-g", "!.git", "-g", pattern], root)
             files = [root / l for l in out.splitlines() if l]

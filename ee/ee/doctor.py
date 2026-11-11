@@ -46,6 +46,8 @@ async def run_doctor(config, model: str | None) -> int:
         t0 = time.monotonic()
         try:
             chunks, comp = await call(msgs, tools)
+            if comp is None:                 # 流里没收到 done：不能拿 None 当“全部通过”
+                raise RuntimeError("模型没有返回结束事件（done）")
         except Exception as e:  # noqa: BLE001
             print(f"✗ {name}：{type(e).__name__}: {str(e)[:200]}")
             results[name] = {"ok": False, "error": str(e)[:500]}

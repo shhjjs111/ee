@@ -20,7 +20,7 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ee.proc import IS_WINDOWS, child_environ, kill_tree
 
@@ -56,7 +56,7 @@ class BgProc:
     _changed: asyncio.Event | None = None
     _pump: asyncio.Task | None = None
     _script: Path | None = None
-    _log = None
+    _log: Any = None
 
     # ---- 输出缓冲
     def _append(self, s: str) -> None:
@@ -370,7 +370,7 @@ def _kill_pid(pid: int | None) -> None:
         kill_tree(pid)
     else:
         try:
-            os.killpg(pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)          # type: ignore[attr-defined]  POSIX-only（Windows 走上面的 kill_tree）
         except (OSError, ProcessLookupError):
             pass
 

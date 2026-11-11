@@ -19,8 +19,11 @@ from ee import __version__
 def _fix_windows_console() -> None:
     if sys.platform.startswith("win"):
         for s in (sys.stdout, sys.stderr):
+            reconfigure = getattr(s, "reconfigure", None)
+            if reconfigure is None:
+                continue
             try:
-                s.reconfigure(encoding="utf-8", errors="replace")
+                reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
 

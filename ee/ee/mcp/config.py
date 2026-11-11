@@ -22,8 +22,10 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 DEFAULT_MCP = {"enabled": True, "startup_timeout": 20, "tool_timeout": 120, "project_json": True,
                "allowed_project": []}
@@ -31,7 +33,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
-def expand_vars(v, env: dict | None = None):
+def expand_vars(v, env: Mapping[str, str] | None = None) -> Any:
+    """递归展开 ${VAR} / ${VAR:-默认值}。返回类型跟输入走（str/list/dict 原样），
+    这里标 Any 是因为 parse_server 要把它当 dict 访问，而展开器本身是通用的。"""
     env = os.environ if env is None else env
     if isinstance(v, str):
         return _VAR.sub(lambda m: env.get(m.group(1)) or (m.group(2) or ""), v)

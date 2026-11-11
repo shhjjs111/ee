@@ -85,8 +85,15 @@ export class Backend {
     return this.ready;
   }
 
-  restart(): Promise<BackendInfo> {
-    this.stop();
+  /**
+   * 重启：先等旧进程真正退出（最多 stopGraceMs），再拉起新的。
+   *
+   * 原先 `stop()` 只关 stdin 就立刻 `start()`，旧后端还要跑完自己的清理
+   * （结束后台命令 / MCP / 连接池，最长几秒），这段窗口里两个后端同时持有
+   * 同一个 ~/.ee——会话文件、desktop.json、settings 都可能被两边同时读写。
+   */
+  async restart(): Promise<BackendInfo> {
+    await this.stopAndWait(this.opts.stopGraceMs ?? 5000);
     this.ready = this.track(this.start());
     return this.ready;
   }

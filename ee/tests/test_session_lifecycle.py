@@ -118,11 +118,13 @@ def test_reload_config_releases_old_client(ee_home, workspace):
         t = b.threads[th["id"]]
         s = await t.ensure_session_async()
         first = s.client()                   # TrackedClient（工厂创建）
-        assert not first.closed
+        assert not getattr(first, "closed", True)
 
         t.reload_config()                    # 等价于保存设置后的刷新
         await s.aclose()
-        assert first.closed, "reload_config 丢掉了旧 client 的引用，连接池没释放"
+        assert getattr(first, "closed", False), (
+            "reload_config 丢掉了旧 client 的引用，连接池没释放"
+        )
 
     asyncio.run(go())
 
@@ -250,8 +252,8 @@ def test_aclose_releases_lsp_manager(ee_home, workspace):
             calls.append(("shutdown", None))
 
     s, _ = make_session(workspace, [text_chunks("好") + finish("stop")])
-    s.lsp_manager = FakeMgr()
-    s._lsp_handle = object()
+    s.lsp_manager = FakeMgr()  # type: ignore[assignment]  假管理器，只验 release/shutdown 被调用
+    s._lsp_handle = object()  # type: ignore[assignment]
     asyncio.run(s.aclose())
     kinds = [c[0] for c in calls]
     assert "release" in kinds and "shutdown" in kinds, f"LSP 没被释放：{kinds}"
@@ -333,3 +335,111 @@ def test_sessionstore_load_fills_orphan_tool_calls(tmp_path):
     msgs = SessionStore.load(p)["messages"]
     assert any(m.get("role") == "tool" and m.get("tool_call_id") == "call_x" for m in msgs), \
         f"生产路径没补孤儿：{[m.get('role') for m in msgs]}"
+
+
+def test_deleted_thread_finish_and_late_events_do_not_broadcast(ee_home, workspace):
+    """删除正在跑的会话后，收尾与迟到事件不能再广播。
+
+    磁盘上的「复活」已有用例守着，但通知这条腿没守：前端 `thread/updated` 的
+    「不存在就插入」分支会把 id 不在列表里的会话重新插回左栏——用户删了它，
+    几秒后又出现，点开报「会话不存在」。删除时 `_consume` 的 finally 一定会走到
+    `_finish`，所以要在这里拦住。
+    """
+    from ee.core.events import Notice
+
+    async def go():
+        b = Backend(home=ee_home, persist=True)
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        tid = th["id"]
+        t = b.threads[tid]
+        await t.ensure_session_async()
+
+        def _who(p: dict) -> str | None:      # thread/updated 把 id 放在 p.thread 里
+            return p.get("thread_id") or (p.get("thread") or {}).get("id")
+
+        seen: list[str] = []
+        b.listeners.append(lambda m, p: seen.append(m) if _who(p) == tid else None)
+
+        await b.call("thread/delete", {"thread_id": tid})
+        seen.clear()                                  # 只关心删除之后的迟到广播
+        t._finish("interrupted")
+        t._on_event(Notice("迟到的提示"))
+        assert seen == [], f"删除后仍广播了 {seen}"
+
+        # 对照：没删除的会话收尾照常广播（守卫不能一刀切）
+        th2 = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        t2 = b.threads[th2["id"]]
+        await t2.ensure_session_async()
+        seen2: list[str] = []
+        b.listeners.append(lambda m, p: seen2.append(m) if _who(p) == th2["id"] else None)
+        t2._finish("completed")
+        assert "turn/completed" in seen2 and "thread/updated" in seen2
+
+    asyncio.run(go())
+
+
+def test_loaded_threads_are_evicted_when_over_the_cache_limit(ee_home, workspace, monkeypatch):
+    """内存里的会话超过上限时淘汰最旧的空闲会话（磁盘上有，按需重载）。
+
+    自动化与日常使用会让 backend.threads 一直涨；每份都是一个完整 Session
+    （history/items + 连接池 + 可能的 LSP 进程）。淘汰时必须 aclose，
+    否则只是把泄漏从"常驻内存"换成"常驻连接池"。
+    """
+    from ee.core.session import Session
+    from ee.core.store import SessionStore
+    from ee.server import app as A
+
+    closed: list[str] = []
+    orig = Session.aclose
+
+    async def spy(self):
+        closed.append(self.store.id)
+        await orig(self)
+
+    monkeypatch.setattr(Session, "aclose", spy)
+
+    async def go():
+        b = Backend(home=ee_home, persist=True)
+        total = A.MAX_LOADED_THREADS + 6
+        ids = [f"20261026-11{i:04d}-aaaaaa" for i in range(total)]
+        for sid in ids:
+            st = SessionStore(ee_home, sid)
+            st.meta({"cwd": str(workspace), "title": sid, "updated": 1.0})
+            st.message({"role": "user", "content": sid})
+
+        for sid in ids[:-1]:                      # 先加载到超过上限
+            await b.call("thread/get", {"thread_id": sid})
+        for t in b.threads.values():              # 让它们都算“空闲超过 60 秒”
+            t.last_access -= 120
+        await b.call("thread/get", {"thread_id": ids[-1]})   # 这一下触发淘汰
+
+        assert len(b.threads) <= A.MAX_LOADED_THREADS, len(b.threads)
+        assert closed, "淘汰后要 aclose 释放连接池"
+        evicted = next(sid for sid in ids if sid not in b.threads)
+        assert evicted in closed
+        # 磁盘上还在：重新打开能加载回来
+        assert (await b.call("thread/get", {"thread_id": evicted}))["thread"]["id"] == evicted
+
+    asyncio.run(go())
+
+
+def test_busy_threads_are_not_evicted(ee_home, workspace):
+    """运行中 / 压缩中的会话不能被淘汰（对象被换掉会让两个 Thread 写同一个会话）。"""
+    from ee.core.store import SessionStore
+    from ee.server import app as A
+
+    async def go():
+        b = Backend(home=ee_home, persist=True)
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        busy = b.threads[th["id"]]
+        busy.compacting = True                    # 压缩中也算忙
+        total = A.MAX_LOADED_THREADS + 4
+        ids = [f"20261026-12{i:04d}-bbbbbb" for i in range(total)]
+        for sid in ids:
+            st = SessionStore(ee_home, sid)
+            st.meta({"cwd": str(workspace), "title": sid, "updated": 1.0})
+        for sid in ids:
+            await b.call("thread/get", {"thread_id": sid})
+        assert th["id"] in b.threads, "忙的会话被淘汰了"
+        busy.compacting = False
+    asyncio.run(go())

@@ -295,10 +295,8 @@ def project_files(cwd: Path | None) -> list[Path]:
 def _project_table(p: Path) -> dict:
     with open(p, "rb") as f:
         data = tomllib.load(f)
-    if p.name == "hooks.toml":
-        t = data.get("hooks") if isinstance(data.get("hooks"), dict) else data
-    else:
-        t = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    raw = data.get("hooks")
+    t: dict = raw if isinstance(raw, dict) else (data if p.name == "hooks.toml" else {})
     return events_table(t)
 
 
@@ -578,7 +576,8 @@ def interpret(run: HookRun, out: Outcome) -> None:
         if ev in PLAIN_CONTEXT and run.stdout.strip():
             out.context.append(run.stdout.strip())
         return
-    spec = d.get("hookSpecificOutput") if isinstance(d.get("hookSpecificOutput"), dict) else {}
+    raw_spec = d.get("hookSpecificOutput")
+    spec: dict = raw_spec if isinstance(raw_spec, dict) else {}
     ctx = d.get("additionalContext") or spec.get("additionalContext")
     if ctx:
         out.context.append(str(ctx).strip())
@@ -878,7 +877,8 @@ async def test_hook(hook: HookDef, cwd: Path, shell: str = "auto") -> dict:
 
 
 def settings_out(data: dict) -> dict:
-    h = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    raw_hooks = data.get("hooks")
+    h: dict = raw_hooks if isinstance(raw_hooks, dict) else {}
     events: dict[str, list] = {}
     for ev in EVENTS:
         rows = []

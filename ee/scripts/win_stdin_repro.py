@@ -22,8 +22,13 @@ def child(variant: str) -> None:
 
     def run():
         try:
-            kw = {"stdin": subprocess.DEVNULL} if variant == "devnull" else {}
-            p = subprocess.run([git, "--version"], capture_output=True, timeout=5, **kw)
+            cmd = [git or "git", "--version"]
+            # 显式分支而不是 **kw：`{"stdin": subprocess.DEVNULL}` 会被推成 dict[str,int]，
+            # 展开到 run() 的具名参数上会误导类型检查（运行时本来就是对的）。
+            if variant == "devnull":
+                p = subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            else:
+                p = subprocess.run(cmd, capture_output=True, timeout=5)
             res["out"] = f"rc={p.returncode} {p.stdout.decode(errors='replace').strip()}"
         except subprocess.TimeoutExpired:
             res["out"] = "TimeoutExpired（git 5 秒没返回）"
@@ -49,7 +54,8 @@ def main() -> int:
             p.kill()
             bad = True
         try:
-            p.stdin.close()
+            if p.stdin:
+                p.stdin.close()
         except Exception:  # noqa: BLE001
             pass
     return 1 if bad else 0

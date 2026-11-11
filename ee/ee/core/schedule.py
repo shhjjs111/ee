@@ -136,15 +136,19 @@ def normalize(sched) -> dict:
         raise ScheduleError("调度设置缺失")
     kind = sched.get("kind")
     if kind == "interval":
+        raw = sched.get("minutes")
+        if raw is None:
+            raise ScheduleError("间隔分钟数要是整数")
         try:
-            n = int(sched.get("minutes"))
+            n = int(raw)
         except (TypeError, ValueError):
             raise ScheduleError("间隔分钟数要是整数")
         if not (MIN_INTERVAL <= n <= MAX_INTERVAL):
             raise ScheduleError(f"间隔要在 {MIN_INTERVAL}–{MAX_INTERVAL} 分钟之间")
         return {"kind": "interval", "minutes": n}
     if kind == "daily":
-        h, mi = _parse_hhmm(sched.get("time"))
+        t = sched.get("time")
+        h, mi = _parse_hhmm(t if isinstance(t, str) else "")
         days = sched.get("weekdays") or []
         if not isinstance(days, list):
             raise ScheduleError("星期几要是列表")

@@ -236,16 +236,16 @@ class LspClient:
 
     async def _dispatch(self, msg: dict) -> None:
         rid = msg.get("id")
-        if rid is not None and msg.get("method") is None:
+        method = msg.get("method")
+        if rid is not None and method is None:
             fut = self._pending.pop(int(rid), None)
             if fut is not None and not fut.done():
                 fut.set_result(msg)
             return
-        if rid is not None and msg.get("method"):
+        if rid is not None and method:
             # 服务器反向请求：本项目 MVP 不支持，按协议回 MethodNotFound 而不是静默丢弃
-            await self._notify_quietly_reply(rid, msg.get("method"))
+            await self._notify_quietly_reply(rid, method)
             return
-        method = msg.get("method")
         if method:
             cb = self.on_notification.get(method)
             if cb is not None:

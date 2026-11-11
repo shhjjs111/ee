@@ -30,10 +30,12 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 from ee.core import schedule as SC
 from ee.core.permissions import MODES
+
+T = TypeVar("T")
 
 if TYPE_CHECKING:  # pragma: no cover
     from ee.server.app import Backend
@@ -123,7 +125,7 @@ class AutomationStore:
                         raise
                     time.sleep(0.05)
 
-    def update(self, fn: Callable[[dict], object]):
+    def update(self, fn: Callable[[dict], T]) -> T:
         """读-改-写（同一把锁内）。fn 返回值原样返回。"""
         with self._lock:
             d = self.load()
@@ -501,6 +503,7 @@ class Automations:
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(run["started"]))
         label = W._slug(a.get("name") or "")[:24].rstrip("-.") or a["id"][3:9]
         base = f"auto-{label}-{stamp}"
+        wt: dict | None = None
         for i in range(1, 10):
             name = base if i == 1 else f"{base}-{i}"
             try:
@@ -509,6 +512,8 @@ class Automations:
             except W.WorktreeError as e:
                 if "已存在" not in str(e) or i == 9:
                     raise
+        if wt is None:                      # 循环正常结束只有 i==9 那条 raise 一条路，这里只是窄化类型
+            raise W.WorktreeError(f"创建 worktree 失败：{base}")
         self.active_wt[run["id"]] = (wt["path"], a.get("name") or "")
         run["worktree"] = {"path": wt["path"], "branch": wt["branch"], "name": wt["name"], "repo": wt["repo"],
                            "state": "running"}
@@ -662,6 +667,15 @@ class Automations:
                     await asyncio.wait_for(th.session.bg.close(), 8)     # 不留后台命令
                 except BaseException:  # noqa: BLE001
                     th.session.bg.kill_all_sync()
+            if th is not None:
+                # 必须在 _finish 之前摘：_finish 不再需要 Session，而释放连接池
+                # 越晚越容易和下一轮运行抢资源。取消路径下 await 可能被再次打断，
+                # 用 BaseException 兜住，保证 _finish 一定执行。
+                try:
+                    await self._release_thread(th)
+                except BaseException:  # noqa: BLE001
+                    self.backend.threads.pop(th.id, None)
+                    log.info("释放自动化会话失败（忽略）", exc_info=True)
             if run.get("worktree"):
                 try:
                     await asyncio.shield(asyncio.to_thread(self._wt_summary, run, status))
@@ -669,6 +683,28 @@ class Automations:
                     log.warning("worktree 收尾失败", exc_info=True)
             self.active_wt.pop(run["id"], None)
             self._finish(a, run, status, text, note)
+
+    async def _release_thread(self, th) -> None:
+        """自动化跑完：从内存缓存里摘掉，并释放这个会话占的连接池 / LSP 进程。
+
+        为什么必须摘：自动化按设计每次运行新建一个会话，原先把 Thread 塞进
+        backend.threads 后就再也没人删——每小时跑一次，一天就是几十份完整的
+        Session（history/items + AsyncOpenAI 连接池）常驻到进程退出，而
+        backend.threads 也只在「用户手动删除会话」时才 pop。会话已经落盘，
+        界面之后再打开它时 `Backend._athread` 会按需从 jsonl 重载，摘掉不丢数据。
+
+        回合还在收尾时（取消 / 超时路径）不能立刻 aclose：那会把正在用的客户端
+        关掉。等它的 task 结束再释放。
+        """
+        s = th.session
+        # 先同步摘掉：即使下面的 await 被取消，列表也不会留下幽灵会话。
+        self.backend.threads.pop(th.id, None)
+        if s is None:
+            return
+        if th.running and th.task is not None:
+            th.task.add_done_callback(lambda _t: _close_soon(s))
+            return
+        await _close_quietly(s)
 
     def _finish(self, a: dict, run: dict, status: str, text: str, note: str) -> None:
         full = ((note + "\n") if note else "") + (text or "")
@@ -704,6 +740,22 @@ class Automations:
         t0 = time.monotonic()
         while self.tasks and time.monotonic() - t0 < timeout:
             await asyncio.gather(*list(self.tasks.values()), return_exceptions=True)
+
+
+async def _close_quietly(session) -> None:
+    """关掉一个会话的模型客户端 / LSP；失败只记日志，不影响自动化收尾。"""
+    try:
+        await session.aclose()
+    except Exception:  # noqa: BLE001
+        log.info("关闭自动化会话资源失败（忽略）", exc_info=True)
+
+
+def _close_soon(session) -> None:
+    """在回合结束的回调里安排一次异步关闭（回调本身是同步的）。"""
+    try:
+        asyncio.get_running_loop().create_task(_close_quietly(session))
+    except RuntimeError:                    # 事件循环已经停了：随进程退出释放
+        pass
 
 
 def _patch_run(d: dict, run: dict) -> None:

@@ -395,6 +395,21 @@ describe("删除会话", () => {
     expect(st.details.t9).toBeUndefined();
     expect(st.bgProcs.t9).toBeUndefined();
   });
+
+  it("删除后迟到的 thread/updated 不会把会话插回左栏", async () => {
+    // 后端删一个正在跑的会话时，收尾任务可能在那之后发一条 thread/updated。
+    // 前端没有墓碑的话会走「不存在就插入」分支，删除等于没删。
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: null, threads: [], details: {} });
+    void useApp.getState().init(f.rpc);
+    f.emitNotif("thread/deleted", { thread_id: "t1" });
+    f.emitNotif("thread/updated", { thread: { id: "t1", title: "已删除", status: "idle" } });
+    expect(useApp.getState().threads.map((t) => t.id)).not.toContain("t1");
+    expect(useApp.getState().details.t1).toBeUndefined();
+    // 别的会话不受影响
+    f.emitNotif("thread/updated", { thread: { id: "t2", title: "还在", status: "idle" } });
+    expect(useApp.getState().threads.map((t) => t.id)).toContain("t2");
+  });
 });
 
 describe("长操作不用 20 秒默认超时", () => {

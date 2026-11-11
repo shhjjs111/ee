@@ -577,3 +577,28 @@ def test_settings_lsp_coexists_with_repo_map():
     out = {"repo_map": {"enabled": True}}
     _d2_in({"lsp": {"enabled": True}}, out)
     assert (out.get("repo_map") or {}).get("enabled") is True
+
+
+def test_concurrent_acquire_starts_one_process():
+    """并发 acquire 只能启动一个进程。
+
+    锁挂在 Entry 上时，`_spawn` 成功会把 pool 换成新 Entry（新锁），等锁的后来者
+    拿到的是旧锁、旧 Entry.client 仍是 None → 会再启动一个进程，并把前一个从
+    pool 里顶掉（泄漏）。锁必须挂在 manager 上、按 key 复用，锁内重读 pool。
+    """
+    from ee.core.lsp import manager as M
+
+    started = []
+
+    async def go():
+        mgr = M.LspManager(client_factory=_counting_factory(started))
+        handles = await asyncio.gather(
+            *[mgr.acquire("root1", "python", "pyright", spec=_spec()) for _ in range(5)]
+        )
+        assert len(started) == 1, f"并发启动了 {len(started)} 个语言服务器进程"
+        assert len(mgr._pool) == 1
+        for h in handles:
+            await mgr.release(h)
+        await mgr.shutdown()
+
+    run(go())

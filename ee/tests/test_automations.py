@@ -188,6 +188,39 @@ def test_scheduled_run_creates_automation_session(ee_home, workspace):
     asyncio.run(main())
 
 
+def test_finished_run_releases_thread_from_memory(ee_home, workspace, monkeypatch):
+    """自动化跑完不能把整个会话留在 backend.threads 里。
+
+    自动化按设计每次运行新建一个会话；只塞进内存不摘的话，每小时跑一次就是
+    一天几十份完整 Session（history/items + AsyncOpenAI 连接池）常驻到进程退出。
+    会话已经落盘，摘掉后 thread/list / thread/get 仍能从 jsonl 重新加载。
+    """
+    from ee.core.session import Session
+
+    closed: list[str] = []
+    orig = Session.aclose
+
+    async def spy(self):
+        closed.append(self.store.id)
+        await orig(self)
+
+    monkeypatch.setattr(Session, "aclose", spy)
+
+    async def main():
+        b, fake, clock = make_backend(ee_home, [text_chunks("完成") + finish("stop")])
+        a = (await b.call("automations/create", {"automation": new_auto(b, workspace)}))["automation"]
+        await b.call("automations/run_now", {"id": a["id"]})
+        await b.automations.wait_idle()
+        tid = (await b.call("automations/runs", {}))["runs"][0]["thread_id"]
+        assert tid not in b.threads, "跑完的自动化会话应从内存缓存摘掉"
+        assert tid in closed, "摘掉时要释放连接池（Session.aclose）"
+        # 磁盘上还在：列表照常显示，也能重新打开（会按需重新加载）
+        assert [t["id"] for t in (await b.call("thread/list", {}))["threads"]] == [tid]
+        d = (await b.call("thread/get", {"thread_id": tid}))["thread"]
+        assert d["id"] == tid and b.threads[tid].session is not None
+    asyncio.run(main())
+
+
 def test_no_concurrent_runs_skip_recorded(ee_home, workspace):
     async def main():
         b, fake, clock = make_backend(ee_home, [text_chunks("慢慢完成了这次检查", n=2) + finish("stop")], delay=0.15)

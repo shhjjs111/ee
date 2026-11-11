@@ -167,12 +167,12 @@ def kill_descendants(pid: int | None = None) -> int:
     desc = _descendants(root)
     for c in desc:
         try:
-            if os.getpgid(c) == c:                     # 进程组长（start_new_session 起的）：整组杀
-                os.killpg(c, signal.SIGKILL)
+            if os.getpgid(c) == c:                     # type: ignore[attr-defined]  POSIX-only（Windows 在上面的分支已返回）
+                os.killpg(c, signal.SIGKILL)           # type: ignore[attr-defined]
         except OSError:
             pass
         try:
-            os.kill(c, signal.SIGKILL)
+            os.kill(c, signal.SIGKILL)                 # type: ignore[attr-defined]
         except OSError:
             pass
     return len(desc)

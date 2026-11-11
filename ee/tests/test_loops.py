@@ -170,3 +170,17 @@ def test_loop_scheduler_task_runs(ee_home, workspace):
             await b.loops.stop()
             await idle(b, tid)
     asyncio.run(main())
+
+
+def test_active_threads_lists_loop_owners(ee_home, workspace):
+    """有循环的会话不能被内存淘汰（淘汰会让下一次 _fire 拿到一个新 Thread）。"""
+    async def main():
+        b, fake, clock = make_backend(ee_home, [])
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        assert b.loops.active_threads() == set()
+        await b.call("loop/create", {"thread_id": th["id"], "text": "10m 检查一下"})
+        assert b.loops.active_threads() == {th["id"]}
+        await b.call("loop/stop", {"thread_id": th["id"], "id": "all"})
+        assert b.loops.active_threads() == set()
+
+    asyncio.run(main())

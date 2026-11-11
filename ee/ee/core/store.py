@@ -217,8 +217,69 @@ class SessionStore:
 
     @staticmethod
     def summary(path: Path) -> dict:
-        d = SessionStore.load(path)
-        meta = d["meta"]
+        """只扫 summary 真正用到的字段，不构造 messages / 全部 items。
+
+        `load()` 会逐行解析并把每条消息、每个条目都建成对象；而 thread/list
+        最多要对几百个会话文件逐个调 summary()（app.py 的 `_thread_list` /
+        `_thread_search`），大仓库里这一步就是几十 MB 的 JSON 解析。
+        这里只跟踪：时间戳、meta 记录、用户条目的 seq/文本（标题回退用）。
+        结果与 `load()` 派生出的 summary 逐字段一致（见 test_store_summary.py）。
+        """
+        meta: dict = {}
+        first_t = last_t = None
+        cut = 0
+        item_seqs: dict[str, int] = {}      # 所有条目的 id → seq（只判“有没有条目”）
+        users: dict[str, dict] = {}         # 用户条目：同 id 后写的覆盖先写的
+        first_msg: tuple[int, str] | None = None   # 老会话（无 item 记录）的标题回退
+        n_msg = 0
+        for rec in SessionStore._records(path):
+            t = rec.get("t")
+            if t is not None:
+                first_t = t if first_t is None else first_t
+                last_t = t
+            kind = rec.get("kind")
+            if kind == "message":
+                m = rec.get("message")
+                if isinstance(m, dict):
+                    if m.get("role") == "user" and first_msg is None:
+                        text = strip_context(m.get("content") or "")
+                        if not text.startswith("[系统提示]"):
+                            first_msg = (n_msg, text)
+                    n_msg += 1
+            elif kind == "reset":
+                meta.pop("reasoning_strip_to", None)
+                first_msg, n_msg = None, 0
+            elif kind == "rewind":
+                to = _int(rec.get("to"), n_msg)
+                meta.pop("reasoning_strip_to", None)
+                n_msg = min(n_msg, to)
+                if first_msg is not None and first_msg[0] >= to:
+                    first_msg = None
+            elif kind == "item":
+                it = rec.get("item")
+                if isinstance(it, dict) and it.get("id"):
+                    seq = _int(it.get("seq"), 0)
+                    item_seqs[it["id"]] = seq
+                    if it.get("type") == "user":
+                        users[it["id"]] = it
+            elif kind == "truncate":
+                cut = _int(rec.get("from_seq"), 0)
+                item_seqs = {k: v for k, v in item_seqs.items() if v < cut}
+                users = {k: v for k, v in users.items() if _int(v.get("seq"), 0) < cut}
+            elif kind == "meta":
+                if isinstance(rec.get("meta"), dict):
+                    meta.update(rec["meta"])
+        meta.setdefault("created", first_t)
+        meta["updated"] = last_t
+        _close_stale_runs(meta)
+        if not meta.get("title"):
+            # 与 load() 的标题回退一致：有条目就看首个用户条目，完全没有条目
+            # （终端版老会话）才从 messages 还原。
+            if item_seqs:
+                first_user = min(users.values(), key=lambda it: _int(it.get("seq"), 0), default=None)
+                meta["title"] = _title(first_user.get("text") or "") if first_user else "新对话"
+            else:
+                meta["title"] = _title(first_msg[1]) if first_msg else "新对话"
         return {"id": path.stem, "title": meta.get("title") or "新对话", "cwd": meta.get("cwd", ""),
                 "model": meta.get("model", ""), "mode": meta.get("mode", ""),
                 "created": meta.get("created"), "updated": meta.get("updated") or path.stat().st_mtime,
@@ -374,7 +435,8 @@ def _items_from_messages(messages: list[dict]) -> list[dict]:
                 tools[tc.get("id")] = it
                 items.append(it)
         elif role == "tool":
-            it = tools.get(m.get("tool_call_id"))
+            cid = m.get("tool_call_id")
+            it = tools.get(cid) if isinstance(cid, str) else None
             if it is not None:
                 it["output"] = m.get("content") or ""
     # 补 seq（显示顺序）。没有它，`detail(tail=N)` 切出来的那一页条目都缺游标，

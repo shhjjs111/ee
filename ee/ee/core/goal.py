@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+from typing import Any
 from dataclasses import dataclass, field
 
 # 停止原因的取值（U2 用，这里先定义好避免两边字面量漂移）
@@ -269,6 +270,9 @@ async def judge(spec: GoalSpec, *, runner=None) -> Verdict:
 
     cwd = Path(spec.cwd) if spec.cwd else Path.cwd()
 
+    # 注入 runner 时不解析 shell（runner 自己决定怎么跑）；给 Any 让类型检查知道
+    # “这个参数只在 run_command 分支里有意义”，不必在每个调用点写 ignore。
+    shell: Any
     if runner is None:
         from ee.tools.shell import run_command
         from ee.tools.shellenv import resolve_shell

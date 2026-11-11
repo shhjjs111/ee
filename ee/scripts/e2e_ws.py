@@ -283,7 +283,8 @@ async def main(cmd, hole=False):
         except Exception as e:
             log("!!! 失败", repr(e)); ok = False
         rt.cancel()
-    p.stdin.close()
+    if p.stdin:
+        p.stdin.close()
     try: p.wait(10)
     except Exception: p.kill()
     fake.kill()

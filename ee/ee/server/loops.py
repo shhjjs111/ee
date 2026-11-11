@@ -51,6 +51,10 @@ class Loops:
         out = [lp for lp in self.loops.values() if not thread_id or lp["thread_id"] == thread_id]
         return [self.view(lp) for lp in sorted(out, key=lambda x: int(x["id"]))]
 
+    def active_threads(self) -> set[str]:
+        """有循环（含排队中的）的会话 id：这些会话不能被内存淘汰。"""
+        return {str(lp["thread_id"]) for lp in self.loops.values()}
+
     # ---------------------------------------------------------- 增删
     def create(self, thread_id: str, text: str) -> dict:
         spec = LS.parse(text)

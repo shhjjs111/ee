@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ee.config import load_config
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Error, Notice, PlanUpdate,
@@ -251,6 +251,7 @@ class Thread:
         self.context_left: float | None = None
         self.compacting = False
         self.deleted = False           # 已删除：迟到的条目/元数据不能再写回磁盘
+        self.last_access = time.monotonic()   # 最后一次被后端访问（内存淘汰用它判“空闲”）
         self.status_text = ""          # 临时状态（正在连接模型…），不落盘
         self.orchestrator = orchestrator   # 指挥会话（D6-1）：回合结束要回收名额
 
@@ -328,7 +329,10 @@ class Thread:
         async with lock:
             if self.session is None:
                 await asyncio.to_thread(self.ensure_session)
-        return self.session
+        s = self.session
+        if s is None:                            # ensure_session 要么建好、要么抛；这里只是窄化类型
+            raise RuntimeError("会话初始化失败")
+        return s
 
     def reload_config(self) -> None:
         if self.session is None or self.session.running:
@@ -515,7 +519,7 @@ class Thread:
             raise ValueError("ee 正在工作，等这一回合结束再开始审查")
         if effort is not None or style is not None:
             self.set_options(effort, style)
-        user_item = {"type": "user", "text": display or text}
+        user_item: dict[str, Any] = {"type": "user", "text": display or text}
         if kind:
             user_item["kind"] = kind
         if goal:
@@ -804,7 +808,7 @@ class Thread:
         （allout v2 §0）。判据串行执行（§4）：并发抢 CPU 会造出假失败。
         """
         from ee.core import allout as A
-        from ee.core.goal import GoalSpec, judge
+        from ee.core.goal import GoalSpec, Verdict, judge
         from ee.core.goal_feedback import build_feedback, build_first_turn
 
         s = self.session
@@ -821,7 +825,7 @@ class Thread:
         if lock is None:
             lock = self._allout_judge_lock = asyncio.Lock()
 
-        async def judge_serial(cwd: str | None = None) -> object:
+        async def judge_serial(cwd: str | None = None) -> Verdict:
             sp = spec if cwd is None else GoalSpec(command=spec.command, cwd=cwd,
                                                    min_tests=spec.min_tests, timeout=spec.timeout)
             async with lock:                      # 串行：判据命令本身吃 CPU
@@ -831,7 +835,7 @@ class Thread:
                                             "tests": v.tests, "cwd": cwd})
             return v
 
-        async def p2p_judge(cwd: str | None = None) -> object:
+        async def p2p_judge(cwd: str | None = None) -> Verdict:
             """跑回归命令（PASS_TO_PASS）。只有在用户填了 pass_to_pass 时才会调用。
 
             与目标判据同样串行；min_tests=1（回归命令通常只覆盖一部分测试，
@@ -1263,6 +1267,20 @@ class Thread:
                 self.orchestrator.release(self.id)
             except Exception:  # noqa: BLE001  回收失败不能拖垮回合收尾
                 log.warning("回收子会话名额失败（%s）", self.id, exc_info=True)
+        # 先把等着的审批/提问解开：即使会话已删除，也不能让 future 悬着
+        for cid, (fut, it) in list(self.approvals.items()):
+            it["status"] = "cancelled"
+            if not self.deleted:
+                self._update(it)
+            if not fut.done():
+                fut.cancel()
+        self.approvals.clear()
+        if self.deleted:
+            # 已删除：磁盘写入已经由 `deleted` 门控住，但**通知没有**。前端没有墓碑，
+            # 收到 thread/updated 会把 id 不在列表里的会话重新插回左栏——删除等于没删。
+            # 删除正在跑的会话时 `thread_delete` 先 mark_deleted 再 interrupt，这里一定会走到。
+            log.info("回合结束（会话 %s 已删除）：%s", self.id, reason)
+            return
         if self.status_text:
             self.status_text = ""
             self.notify("turn/status", {"thread_id": self.id, "text": ""})
@@ -1275,12 +1293,6 @@ class Thread:
             if it.get("type") == "tool" and it.get("status") == "running":
                 it["status"] = "interrupted"
                 self._update(it)
-        for cid, (fut, it) in list(self.approvals.items()):
-            it["status"] = "cancelled"
-            self._update(it)
-            if not fut.done():
-                fut.cancel()
-        self.approvals.clear()
         dur = int((time.monotonic() - self.turn_started_at) * 1000)
         self._add({"type": "turn_end", "reason": reason, "duration_ms": dur, "usage": self._usage_snapshot()})
         self.save_meta()
@@ -1313,6 +1325,8 @@ class Thread:
 
     async def _ai_title(self, first: str, reply: str, old: str | None) -> None:
         s = self.session
+        if s is None:
+            return
         try:
             from ee.core.context import load_prompt
             prompt = f"用户的第一条消息：\n{first[:2000]}\n\n助手的回答开头：\n{reply[:800]}"
@@ -1321,6 +1335,9 @@ class Thread:
             log.info("生成标题失败（会话 %s）：%s", self.id, e)
             return
         title = clean_title(title)
+        if self.deleted:
+            # 标题是异步生成的，生成期间会话可能已被删除：删了就别再广播（前端会复活它）。
+            return
         if not title or self.meta.get("title") != old:      # 生成期间被改过名就不覆盖
             return
         self.meta["title"] = title
@@ -1388,6 +1405,11 @@ class Thread:
             "detail": _clip(detail or "", 2000), "prefix": prefix})
 
     def _on_event(self, ev) -> None:
+        if self.deleted:
+            # 删除后的迟到事件：条目和通知都不再改。删除时后端已经把 Thread 从
+            # backend.threads 摘掉，前端也没有墓碑——再广播一条 thread/updated
+            # 就会把会话重新插回左栏。
+            return
         if isinstance(ev, Status):
             if ev.text != self.status_text:
                 self.status_text = ev.text

@@ -120,3 +120,34 @@ def test_thread_delete_schedules_session_cleanup_on_the_loop(backend, monkeypatc
     assert asyncio.run(go())
     assert "aclose" in closed, "会话的 aclose 没有被调度（连接池泄漏）"
     assert "bg" in closed, "后台命令没有被关闭"
+
+
+def test_internal_typeerror_is_not_masked_as_bad_params(backend):
+    """handler 内部抛的 TypeError 不能被伪装成「参数错误」。
+
+    Backend.call 原先统一 `except TypeError` → RpcError(-32602)：真实的代码 bug
+    会被报成用户输入问题，日志里也只剩一条没有栈的 warning。现在用
+    inspect.signature().bind() 区分：签名绑不上才是参数错误，其余原样抛出。
+    """
+    from ee.server.app import RpcError
+
+    async def boom(x: int = 0) -> dict:
+        from typing import Any
+        value: Any = None                    # 运行时的 TypeError；标 Any 以免静态检查先把它拦下
+        return {"n": len(value)}             # TypeError: object of type 'NoneType' has no len()
+
+    async def fine(x: int = 0) -> dict:
+        return {"x": x}
+
+    backend.methods["test/boom"] = boom
+    backend.methods["test/fine"] = fine
+
+    async def go():
+        with pytest.raises(TypeError):
+            await backend.call("test/boom", {})
+        with pytest.raises(RpcError) as e:
+            await backend.call("test/fine", {"y": 1})
+        assert e.value.code == -32602 and "参数错误" in str(e.value)
+        assert (await backend.call("test/fine", {"x": 2})) == {"x": 2}
+
+    asyncio.run(go())

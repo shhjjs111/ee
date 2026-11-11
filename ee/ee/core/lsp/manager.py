@@ -1,14 +1,12 @@
-"""语言服务器的生命周期：按 key 复用、引用计数、空闲回收。
+"""语言服务器的生命周期：池内按 key 复用、引用计数、空闲回收。
 
-**为什么要引用计数而不是「会话结束就关掉」**：
-同一个工作区的两个会话（比如父会话和子会话）会用同一个 pyright。按「会话结束关全部」
-做，子会话一结束就把父会话正在用的服务器杀了，父会话下一次取诊断就会莫名其妙地
-等一轮重启。所以管理键 = 工作区根目录 + 语言 + 命令身份，关闭只减计数，
-计数归零并且空闲超过 TTL 才真正回收。
+**当前接线**：每个会话（`Session._attach_lsp`）各自 `new` 一个 LspManager，所以池只服务
+这一个会话；跨会话共享还没做——每个客户端只有**一个** `publishDiagnostics` 回调槽，
+两个会话共享进程会互相覆盖诊断。等回调改成多订阅者再共享。
 
-**为什么 key 里要有根目录和命令身份**：pyright 的配置按项目走（pyproject.toml、
-tsconfig.json），不同项目共用一个进程会拿到对方的诊断；命令身份进去是为了避免
-用户改了启动命令之后复用旧进程。
+**池内按 key 复用**：key = 工作区根目录 + 语言 + 命令身份。同一会话里多个工具/多轮取
+诊断复用同一个进程；命令身份进 key 是为了避免用户改了启动命令之后复用旧进程。
+关闭只减计数，计数归零且空闲超过 TTL 才真正回收。
 """
 from __future__ import annotations
 
@@ -39,7 +37,6 @@ class Entry:
         self.refs = 0
         self.last_used = time.monotonic()
         self.initialized = False
-        self.start_lock = asyncio.Lock()
 
     @property
     def dead(self) -> bool:
@@ -52,6 +49,10 @@ class LspManager:
     def __init__(self, *, client_factory=None, idle_ttl: float = DEFAULT_IDLE_TTL,
                  init_timeout: float = 20.0):
         self._pool: dict[tuple, Entry] = {}
+        # 启动锁挂在 manager 上、按 key 复用：不能挂在 Entry 上——_spawn 成功后
+        # pool 里会被换成新 Entry（新锁），后来者拿到的是旧锁，而旧 Entry.client
+        # 仍是 None，于是会再启动一个进程，还把前一个从 pool 里顶掉（泄漏）。
+        self._start_locks: dict[tuple, asyncio.Lock] = {}
         self._client_factory = client_factory or _default_factory
         self.idle_ttl = idle_ttl
         self.init_timeout = init_timeout
@@ -69,12 +70,12 @@ class LspManager:
             entry = None
 
         if entry is None:
-            entry = Entry(key, None, spec)
-            self._pool[key] = entry
-            # 用 per-entry 的锁保证并发 acquire 只启动一次
-            async with entry.start_lock:
-                if entry.client is None:
-                    entry = await self._spawn(key, spec, entry)
+            lock = self._start_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                # 锁内重读：等锁期间可能已经被前一个 acquire 建好了
+                entry = self._pool.get(key)
+                if entry is None or entry.dead:
+                    entry = await self._spawn(key, spec, entry or Entry(key, None, spec))
                     self._pool[key] = entry
         entry.refs += 1
         entry.last_used = time.monotonic()
@@ -102,6 +103,7 @@ class LspManager:
             self._reaper = None
         for key in list(self._pool):
             await self._close_entry(key)
+        self._start_locks.clear()
 
     def stats(self) -> list[dict]:
         """给设置页 / 诊断用：当前有哪些服务器在跑。"""

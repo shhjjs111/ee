@@ -56,7 +56,7 @@ def kill_tree(pid: int) -> None:
             pass
     else:
         try:
-            os.killpg(pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)          # type: ignore[attr-defined]  POSIX-only（Windows 走上面的 kill_tree）
         except (OSError, ProcessLookupError):
             pass
 
@@ -75,17 +75,23 @@ def run_capture(argv: list[str], cwd: str | os.PathLike | None = None, timeout: 
     except OSError as e:
         return 127, b"", str(e).encode("utf-8", "replace")
     try:
-        out, err = p.communicate(input=input, timeout=timeout)
-        return p.returncode, out or b"", err or b""
+        # 非 text 模式：input 是 bytes。Popen 的 AnyStr 会被 argv（list[str]）推成 str，
+        # 但实际读写是字节；用 isinstance 收窄返回值，避免依赖泛型推断。
+        out, err = p.communicate(input=input, timeout=timeout)   # type: ignore[arg-type]
+        out_b = out if isinstance(out, bytes) else b""
+        err_b = err if isinstance(err, bytes) else b""
+        rc = p.returncode
+        return (rc if rc is not None else 124), out_b, err_b
     except subprocess.TimeoutExpired:
         kill_tree(p.pid)
         try:
             p.kill()
         except OSError:
             pass
-        out = b""
+        out_b = b""
         try:
-            out, _ = p.communicate(timeout=3)
+            out2, _ = p.communicate(timeout=3)
+            out_b = out2 if isinstance(out2, bytes) else b""
         except (subprocess.TimeoutExpired, ValueError, OSError):
             for f in (p.stdout, p.stderr, p.stdin):
                 try:
@@ -93,4 +99,4 @@ def run_capture(argv: list[str], cwd: str | os.PathLike | None = None, timeout: 
                         f.close()
                 except OSError:
                     pass
-        return 124, out or b"", b"timeout"
+        return 124, out_b, b"timeout"

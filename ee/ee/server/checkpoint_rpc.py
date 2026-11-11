@@ -198,6 +198,8 @@ def register(methods: dict, backend) -> None:
             if not cur:
                 raise RpcError("抓取当前工作区快照失败")
         a, b = a or cur, b or cur
+        if not a or not b:                 # 窄化类型（上面 capture 失败已 raise，这里只是显式兜底）
+            raise RpcError("抓取当前工作区快照失败")
         _require_alive(d, [a, b], "这个检查点")
         files = gitops.split_diff(hunks.display(d.diff_text(a, b)))
         for f in files:
