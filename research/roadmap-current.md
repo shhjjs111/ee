@@ -29,7 +29,7 @@
 | allout / 全力以赴 | 模型固定为用户所选；判据门控 → 批评修复（keep-policy）→ 分叉（温度阶梯、判据串行）→ 同模型 A/B 排序 → 补丁写回，全程可选回归门（PASS_TO_PASS） | **已完成并验证**（阶段 0–5 + 真实模型演练 + 收尾接线：候选审批冒泡、worktree 隔离、只读/计划模式禁用、探测判据首次确认、前端执行进度与模式守卫、推理强度真正落到请求、**回归门接通**）。**保留边界**：Gradle 成功时需用户在 `build.gradle` 开 `testLogging` 才能读出测试数；分叉内「两个候选几乎同时通过」不会在真模型下自然触发（早退取消其余），该生产接线由 `test_allout_rank.py` 覆盖 | `ee\ee\core\goal.py`（`parse_tests`）、`core\probe.py`、`core\allout.py`、`core\bestof.py`、`server\threads.py` 的 `_plan_allout`/`_run_allout`/`_allout_fanout`/`_allout_rank`/`_confirm_probe_goal`、`server\app.py` 的 `turn/start(allout=)`、`config.py` 的 `allout` 默认项与项目层收紧、`desktop` 的 `store.ts`/`reduce.ts`/`Composer.tsx`/`BestofDialog.tsx`/`types.ts`；`test_parse_tests_runners.py`（29）、`test_probe.py`（15）、`test_allout.py`（27）、`test_allout_config.py`（9）、`test_allout_turn.py`（18）、`test_bestof_quality.py`（9）、`test_allout_engine.py`（14）、`test_allout_run.py`（20）、`test_allout_isolation.py`（9）、`test_allout_rank.py`（4）、`test_goal_turn.py` 的 `pass_to_pass` 校验；方案见 `plans\2026-11-09-allout-v2.md` |
 | 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下）；**客户端已接 `electron-updater`（2026-11-02，只后台下载、绝不自动重启）** | 正式发版后才有可更新的 Release（只剩预发布时 `/releases/latest` 是 404，检查必然失败） |
 | 2026-11-11 / 稳定性与并发 | 自动化会话泄漏、删除会话幽灵、RPC 分发/背压、summary 轻量扫描、LSP 并发锁、restart 等待旧后端、会话缓存淘汰、pyright 清零 | **已完成并验证**（后端 2516 passed / 前端 394 / ruff + pyright 0/0） | 交接：`research/2026-11-11-type-cleanup-and-lifecycle.md`；代码 `9138a3e` |
-| 2026-11-12 / 写盘失败可见 | 会话记录写不进去（磁盘满 / 文件被占用）时，界面不再“看起来一切正常”：对话内警告 + 左栏图标 + 摘要字段，恢复后自动撤掉 | **已完成并验证**（后端 2520 passed / 16 skipped / 0 failed；前端 398 passed；ruff 通过；pyright 0/0；tsc 通过） | `ee/core/store.py`、`ee/core/session.py`、`ee/server/threads.py`、`desktop/src/components/Conversation.tsx`、`Sidebar.tsx`；`ee/tests/test_store_failure.py`（4 例）、`desktop/src/components/SaveErrorBanner.test.tsx`（4 例） |
+| 2026-11-12 / 写盘失败可见 | 会话记录写不进去（磁盘满 / 文件被占用）时，界面不再“看起来一切正常”：对话内警告 + 左栏图标 + 摘要字段，恢复后自动撤掉 | **已完成并验证**（后端 2520 passed / 16 skipped / 0 failed；前端 398 passed；ruff 通过；pyright 0/0；tsc 通过；真机 e2e 35 passed / 2 skipped） | `ee/core/store.py`、`ee/core/session.py`、`ee/server/threads.py`、`desktop/src/components/Conversation.tsx`、`Sidebar.tsx`；`ee/tests/test_store_failure.py`（4 例）、`desktop/src/components/SaveErrorBanner.test.tsx`（4 例）、`desktop/e2e/save-error.spec.ts`（真机） |
 
 ## 执行记录（2026-11-12，写盘失败不再静默）
 
@@ -51,6 +51,8 @@
 - `test_robustness::test_http_status_error_message` —— `-n 8` 下的已知并行 flake（本地假服务器争用），最终那一轮自己绿了；单独跑一直通过。
 
 保留边界：写盘失败状态只在内存里（盘写不了自然也无法从磁盘恢复），所以只有**正在运行的后端**能看到它；重启后界面不再提示「曾经失败过」，那部分记录也确实已经丢了。恢复后只清状态、不回填——失败期间没落盘的记录已经无法找回，提示文案里写明了这一点。`ee exec` / headless 这类没有 Thread 的入口仍只有日志（按 AGENTS.md 只发桌面版，不再为多入口加 UI 通路）。
+
+真机验收（补做）：jsdom 只能证明字段接进了组件，横幅会不会被滚动区挤掉是另一回事。新增 `desktop/e2e/save-error.spec.ts`：真 Electron 里把 `<EE_HOME>/sessions` 换成同名文件造成真 OSError，再改一次标题，断言横幅可见且在视口内、左栏行上有标记、对话里也有一条说明。全量 e2e：**35 passed / 2 skipped**（1.2 分钟）。
 
 ### 同一轮：把 pi-lens 的报告清成真信号
 
