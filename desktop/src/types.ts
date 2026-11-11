@@ -382,7 +382,7 @@ export type SubagentRecord = {
   text: string;
   summary: string;
   notices?: string[];
-  usage?: Usage & Record<string, unknown>;
+  usage?: Usage;   // 后端传的就是 Usage（多给的字段没人读，不必再 & Record<string, unknown>）
   worktree?: SubagentWorktree; // 写型子代理在独立 git worktree 里并行时（D5-2）
   fork?: boolean; // 分叉子代理：继承主会话上下文（D5-10）
 };

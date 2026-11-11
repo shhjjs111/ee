@@ -58,7 +58,7 @@
 
 | 类别 | 处理 |
 |---|---|
-| `no-unsafe-dictionary-any`（2 条阻断，`desktop/src/types.ts`） | `ToolItem.args` 与子代理 `usage` 的 `Record<string, any>` → `Record<string, unknown>`。消费点全是 `String(a.x ?? "")` 式的收敛，`tsc` 与 398 例 vitest 不改一行即通过——那个 `any` 从来没被用到 |
+| `no-unsafe-dictionary-any`（2 条阻断，`desktop/src/types.ts`） | `ToolItem.args` 的 `Record<string, any>` → `Record<string, unknown>`；子代理 `usage` 更直接——去掉尾巴、就是 `Usage`（多给的字段没人读）。消费点全是 `String(a.x ?? "")` 式的收敛，`tsc` 与 398 例 vitest 不改一行即通过——那个 `any` 从来没被用到。`args` 上仍留一条 `no-unsafe-dictionary-unknown` 的 hint：它确实是运行时才知道形状的模型产出，写不出真实类型 |
 | `unchecked-numeric-parse-python`（44 处：`threads.py` 25 + `session.py` 19） | 新增 `ee/core/coerce.py` 的 `as_int`/`as_float`，把这些「解析用户配置 / 会话文件 / RPC 参数」的裸 `int()`/`float()` 改为坏值退回默认值。顺手修好一个真缺陷：会话文件里 `seq: "abc"` 会让 `thread/get` 直接 500（已用反证确认：把 `as_int` 换回裸 `int` 后用例立刻报 `ValueError`）。`test_coerce.py`（4 例）守转换语义 + 两个真回归点 |
 | `generic-api-key`（11 条，`ee/tests/*`） | 全部是 `sk-test-123456789` / `tvly-abcdefgh1234` 这类合成夹具。新增 `.gitleaks.toml`：`[extend] useDefault = true` + 按目录放行 `ee/tests/`。双向验过：夹具 17→0（含 `.pyc`），而在产品代码里塞一个像真 key 的串仍然报（证明 `useDefault` 没把扫描关掉） |
 | `python-empty-except`（threads 8 / session 6）、`python-assert-production`（6）、`jscpd:duplicate`（3 对） | 不动。全是存量的有意写法（尽力而为的收尾 / 内部不变式 / 局部重复），改它们只是拿真代码换分析器安静；已记入交接文档 backlog 第 4 条 |
