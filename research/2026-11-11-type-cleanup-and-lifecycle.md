@@ -57,7 +57,13 @@ cd desktop && npm run typecheck                                    # exit 0
    `thread/delete` 需事件循环）。新增不变量：
    `test_audit_rpc_dispatch.py::test_all_handlers_are_coroutine_functions` —— 同步处理函数
    会直接在事件循环上跑，一次 git/磁盘 IO 就卡住所有连接；忘了写 `async` 会被这条报出来。
-3. 跨会话共享 LSP 进程：需要先把 `publishDiagnostics` 改成多订阅者，否则诊断互相覆盖。
+3. ~~跨会话共享 LSP 进程：需要先把 `publishDiagnostics` 改成多订阅者，否则诊断互相覆盖。~~
+   → **2026-11-12 重新评估：先不做共享**。审计发现真正的成本是「每会话常驻」而不是
+   「没共享」：`_attach_lsp` 在**第一个回合**就 acquire 并握到 `aclose`（refs 恒为 1），
+   所以 manager 的 120s 空闲 TTL 实际永不生效，会话缓存上限 40 → 最多 40 个常驻进程。
+   共享还要额外解决「同一 URI 的文档所有权」（两个会话各自 didOpen 同一文件、内容不同时
+   会拿到别人的版本的诊断），没有安全的默认答案。方案见 `plans/2026-11-12-lsp-lazy-acquire.md`：
+   改成按需 acquire + 用完 release（不查诊断的会话零进程），实施待下一轮。
 4. pi-lens 的提示（2026-11-12 部分处理）：~~部分 `int()` 无 try~~、~~Protocol 方法的 `...` 体（有意为之）~~。
    `int()`/`float()` 那类已集中到 `ee/core/coerce.py` 的 `as_int`/`as_float`（`threads.py` + `session.py` 共 44 处），
    并顺手修好一个真缺陷（会话文件里 `seq: "abc"` 会让 `thread/get` 500，`test_coerce.py` 有 RED 验证）。
