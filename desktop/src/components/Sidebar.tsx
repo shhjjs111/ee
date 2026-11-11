@@ -18,6 +18,7 @@ import {
   Settings as SettingsIcon,
   SquarePen,
   Trash2,
+  AlertTriangle,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -93,6 +94,11 @@ function ThreadRow({ t, active }: { t: ThreadSummary; active: boolean }) {
         </>
       )}
       {t.status === "running" && <Spinner size={12} className="shrink-0 text-muted" />}
+      {t.save_error && (
+        <Tip label={`保存失败（${t.save_error.error}）：磁盘可能已满或文件被别的程序占用，关掉 ee 会丢掉最近的对话`}>
+          <AlertTriangle size={12} className="shrink-0 text-danger" data-testid="thread-save-error" />
+        </Tip>
+      )}
       {t.status === "waiting_approval" && (
         <Tip label="等待批准">
           <span className="h-2 w-2 shrink-0 rounded-full bg-warn" />

@@ -168,7 +168,13 @@ export type ThreadSummary = {
   effort?: Effort | string; // D5-9：会话级推理强度
   effort_support?: EffortSupport | null;
   style?: string; // D5-9：会话级回答风格
+  /** 会话记录写盘失败（磁盘满 / 文件被占用）：{count, error, at}。
+   *  后端只能放在内存里（盘写不进去），所以这是「现在保存不了」的实时状态，不是落盘字段。 */
+  save_error?: SaveError | null;
 };
+
+/** 会话记录写入失败的状态（Thread._on_store_fail）。count 是累计失败次数。 */
+export type SaveError = { count: number; error: string; at: number };
 
 export type ThreadDetail = ThreadSummary & {
   items: Item[];

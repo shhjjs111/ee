@@ -19,6 +19,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 log = logging.getLogger("ee.store")
 
@@ -38,6 +39,16 @@ def _ends_with_newline(path: Path) -> bool:
 
 class SessionStore:
     _tail_checked = False          # 本进程第一次追加前检查过文件末尾是否有没写完的半行
+    # 写失败的观测状态也做成类属性默认值：有调用方（含测试）用 `__new__` 绕过 __init__，
+    # 只设 enabled/root/path 就写；实例属性默认值必须能在那条路径上也成立。
+    failed = 0
+    last_error: str | None = None
+    on_fail: Callable[[SessionStore, OSError], None] | None = None
+    on_write: Callable[[SessionStore], None] | None = None
+
+    # 日志节流：磁盘满时每条记录都会失败，逐条打 error 会把日志撑爆，但也不能只报一次
+    # （用户看日志时该知道还在失败）。第 1 次必报，之后每这么多次报一次。
+    LOG_EVERY = 50
 
     def __init__(self, root: Path, session_id: str | None = None, enabled: bool = True):
         self.root = root / "sessions"
@@ -45,6 +56,14 @@ class SessionStore:
         self.enabled = enabled
         self.path = self.root / f"{self.id}.jsonl"
         self._tail_checked = False
+        # 写失败的可观测状态：failed 是累计次数，last_error 是最后一次的原因。
+        # on_fail(store, 异常) 让上层（会话 / 界面）能立刻反应，而不是等有人来查这个属性。
+        self.failed = 0
+        self.last_error: str | None = None
+        self.on_fail: Callable[[SessionStore, OSError], None] | None = None
+        # 写成功一次就回调（不是“从失败恢复”）：上层据此把上一次的失败状态清掉。
+        # 上层自己做成幂等的（已无失败状态就直接 return），所以这里每次都叫一声。
+        self.on_write: Callable[[SessionStore], None] | None = None
 
     def append(self, kind: str, data: dict) -> None:
         if not self.enabled:
@@ -62,10 +81,31 @@ class SessionStore:
                 f.write(line)
         except OSError as e:
             # 不能静默：磁盘满 / 杀软占用 / 权限问题时，对话看起来正常但没落盘，
-            # 重启即丢，用户完全不知道。这里记日志，并让调用方能通过 failed 属性感知。
-            self.failed = getattr(self, "failed", 0) + 1
-            log.error("会话记录写入失败（第 %d 次）：%s：%s；这条记录没落盘，重启后会丢",
-                      self.failed, self.path.name, e)
+            # 重启即丢，用户完全不知道。记日志 + 记次数，并通知挂上来的上层（on_fail）；
+            # threads 会把这件事变成界面上的提示（见 Thread._on_store_fail）。
+            self.failed += 1
+            self.last_error = f"{type(e).__name__}: {e}"[:300]
+            if self.failed == 1 or self.failed % self.LOG_EVERY == 0:
+                log.error("会话记录写入失败（第 %d 次）：%s：%s；这条记录没落盘，重启后会丢",
+                          self.failed, self.path.name, e)
+            cb = self.on_fail
+            if cb is not None:
+                try:
+                    cb(self, e)
+                except Exception:  # noqa: BLE001  上报本身出问题不能连累写入方的其他逻辑
+                    log.warning("会话写盘失败的上报回调出错", exc_info=True)
+        else:
+            if self.failed:
+                # 之前失败过、这次写成功了（用户清了磁盘 / 关掉了占着文件的程序）：
+                # 失败状态必须能自己消失，否则界面上那条「保存不了」会永远挂着。
+                self.failed = 0
+                self.last_error = None
+            cb_ok = self.on_write
+            if cb_ok is not None:
+                try:
+                    cb_ok(self)
+                except Exception:  # noqa: BLE001
+                    log.warning("会话写盘成功的回调出错", exc_info=True)
 
     def message(self, msg: dict) -> None:
         self.append("message", {"message": msg})

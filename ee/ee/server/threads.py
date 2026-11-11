@@ -37,6 +37,7 @@ log = logging.getLogger("ee.thread")
 
 UI_OUTPUT_LIMIT = 30_000          # 发给界面的单个工具输出上限（模型侧另有截断规则）
 RUNS_KEEP = 5                     # meta 里只留最近几次派发（防止会话元数据无限长）
+SAVE_FAIL_NOTICE_EVERY = 20       # 写盘一直失败时，每这么多次再往界面报一次（一次失败报一次太吵）
 # 首屏/局部回包只给尾部这么多条。桌面端 store.ts 的 FIRST_PAGE 与它对齐：
 # 一次全量返回 5215 条是 7MB，传输 + JSON.parse 就要一秒以上（实测 15MB 会话 3 秒）。
 PAGE_SIZE = 120
@@ -253,6 +254,11 @@ class Thread:
         self.deleted = False           # 已删除：迟到的条目/元数据不能再写回磁盘
         self.last_access = time.monotonic()   # 最后一次被后端访问（内存淘汰用它判“空闲”）
         self.status_text = ""          # 临时状态（正在连接模型…），不落盘
+        # 会话记录写盘失败（磁盘满 / 文件被占用）：磁盘写不了，元数据也跟着写不进去，
+        # 所以只能靠内存里的这个字段告诉界面“这段对话现在保存不了”。
+        self.save_error: dict | None = None
+        self._save_fail_count = 0      # 本会话累计写失败次数（跨多个 store 实例累加：save_meta 每次都新建一个）
+        self._save_notice_at = 0       # 上一次上报时的累计次数（用于节流，不重复刷提示）
         self.orchestrator = orchestrator   # 指挥会话（D6-1）：回合结束要回收名额
 
     # ------------------------------------------------------------ 内核会话（懒加载）
@@ -278,7 +284,9 @@ class Thread:
         # 指挥会话（D6-1）：工具只拿到窄接口与本会话 id，拿不到 Backend，也就碰不到别的会话
         s.orchestrator = self.orchestrator
         s.thread_id = self.id
-        s.store = SessionStore(self.home, session_id=self.id, enabled=self.persist)
+        s.store = self._store(enabled=self.persist)
+        s.on_store_fail = self._on_store_fail      # new() / 切 persist 重建 store 时也带上钩子
+        s.on_store_write = self._on_store_write
         if self._pending_messages:
             s.history = list(self._pending_messages)
             s.turns = sum(1 for it in self.items if it.get("type") == "user")
@@ -374,6 +382,9 @@ class Thread:
                 "effort": self.session.effort if self.session else self.meta.get("effort", ""),   # D5-9
                 "effort_support": self.session.effort_support() if self.session else None,
                 "style": self.session.style if self.session else (self.meta.get("style") or "default"),
+                # 会话记录写盘失败时的状态（内存态，磁盘写不进去自然也无法从磁盘恢复）：
+                # {count, error, at}。界面据此显示“保存不了”的警告。
+                "save_error": self.save_error,
                 "workspace": (self.meta.get("worktree") or {}).get("repo") or self.meta.get("cwd", "")}
 
     def detail(self, tail: int | None = None, before_seq: int | None = None) -> dict:
@@ -424,14 +435,63 @@ class Thread:
     def save_meta(self) -> None:
         self.meta["updated"] = time.time()
         if self.persist and not self.deleted:
-            SessionStore(self.home, session_id=self.id).meta(self.meta)
+            self._store().meta(self.meta)
+
+    # ------------------------------------------------------------ 落盘与写失败
+    def _store(self, enabled: bool = True) -> SessionStore:
+        """本会话专用的落盘对象（带上写失败的上报钩子）。
+
+        不直接用 `SessionStore(...)`：写失败要能走到界面上，钩子只能在建对象时挂，
+        散落的构造点（save_meta / _store_item / ensure_session）很容易漏一个。
+        """
+        st = SessionStore(self.home, session_id=self.id, enabled=enabled)
+        st.on_fail = self._on_store_fail
+        st.on_write = self._on_store_write
+        return st
+
+    def _on_store_fail(self, store: SessionStore, err: OSError) -> None:
+        """会话记录没落盘：让用户在界面上看得见。
+
+        原来只记一条 error 日志：磁盘满时对话看起来一切正常，重启才发现整段丢了。
+        现在记在内存里（`summary()` 带出去 → 会话详情/左栏能显示），并往对话里
+        插一条警告提示。**提示条目不落盘**——盘写不了，只能活着看；也因此要节流：
+        一直失败时每条记录都会触发，逐条弹会把界面淹掉。
+        """
+        self._save_fail_count += 1
+        n = self._save_fail_count
+        self.save_error = {"count": n, "error": (store.last_error or str(err))[:300],
+                           "at": time.time()}
+        if not self.deleted:
+            self.notify("thread/updated", {"thread": self.summary()})
+        if self._save_notice_at and n - self._save_notice_at < SAVE_FAIL_NOTICE_EVERY:
+            return
+        self._save_notice_at = n
+        self._add({"type": "notice", "level": "warn",
+                   "text": f"这段对话没能保存到磁盘（{self.save_error['error']}）。"
+                           "磁盘可能已满，或会话文件被别的程序占用——现在重启会丢掉最近的对话。"},
+                  persist=False)
+
+    def _on_store_write(self, store: SessionStore) -> None:
+        """又能写盘了：撤掉界面上的失败状态，并告诉用户现在关掉也不会丢。
+
+        只清内存状态——失败期间没落盘的记录已经丢了，不能假装补上。
+        """
+        if self.save_error is None:
+            return
+        self.save_error = None
+        self._save_notice_at = 0
+        self._add({"type": "notice", "level": "info",
+                   "text": "会话已经能正常保存了。之前没能写盘的记录已经无法找回，之后的都正常落盘。"},
+                  persist=False)
+        if not self.deleted:
+            self.notify("thread/updated", {"thread": self.summary()})
 
     # ------------------------------------------------------------ 条目
     def _store_item(self, it: dict) -> None:
         if self.deleted:
             return                     # 会话已删除：运行中的回合收尾也不重建文件
         if self.persist:
-            (self.session.store if self.session else SessionStore(self.home, session_id=self.id)).item(it)
+            (self.session.store if self.session else self._store()).item(it)
 
     def _add(self, it: dict, persist: bool = True) -> dict:
         it.setdefault("id", _new_id(it["type"][:2]))

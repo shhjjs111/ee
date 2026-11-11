@@ -122,6 +122,11 @@ class Session:
         self.orchestrator_role = "child" if orchestrator_role == "child" else None
         self.orchestrator: Any = None   # 指挥会话的窄接口（server 注入）
         self.thread_id: str | None = None
+        # 会话记录写盘失败时的上报钩子（server 层的 Thread 会挂上，变成界面提示）。
+        # 签名与服务对应：on_store_fail(store, OSError)。
+        self.on_store_fail: Callable[[SessionStore, OSError], None] | None = None
+        # 写盘恢复时的上报钩子（用户清了磁盘）：失败状态要能自己消失。
+        self.on_store_write: Callable[[SessionStore], None] | None = None
         # 子代理在 build() 里注入的会话级标记（读的时候用 getattr 兜底）。
         # 在这里声明默认值：它们本来只存在于子代理的赋值里，静态检查看不到，
         # 也让「这个属性到底什么时候有」变成可读的事实。
@@ -182,7 +187,7 @@ class Session:
         self.last_undo_tree: str | None = None
         import uuid
         self.snap_epoch = uuid.uuid4().hex[:8]   # 内存快照层号只在本次进程内有效（重启后层号会撞）
-        self.store = SessionStore(self.home, enabled=persist)
+        self.store = self._make_store(enabled=persist)
         self._task: asyncio.Task | None = None
         self._stop_why: str = ""             # 中断原因：空 = 用户点了停止（见 interrupt()）
         self._prefix_drift_sha: str = ""     # 已提醒过的前缀 sha：同一个值只提醒一次
@@ -247,6 +252,17 @@ class Session:
         self._mcp_done = False
 
     # ------------------------------------------------------------ 配置切换
+    def _make_store(self, enabled: bool) -> SessionStore:
+        """建会话的落盘对象，并把写失败的上报钩子挂上。
+
+        为什么集中一处：`new()` 与切 persist 都会重建 store，分散写 `SessionStore(...)`
+        很容易漏挂钩子——漏掉的那个 store 写失败就退回“只记日志”，界面又看不见了。
+        """
+        st = SessionStore(self.home, enabled=enabled)
+        st.on_fail = self.on_store_fail
+        st.on_write = self.on_store_write
+        return st
+
     @property
     def profile(self):
         return self.spec.profile
@@ -632,7 +648,7 @@ class Session:
         self._fresh_usage = False
         self._reasoning_strip_to = -1
         self._reasoning_strip_disabled = False     # /new 后重新允许清推理（否则一次 400 会永久生效）
-        self.store = SessionStore(self.home, enabled=self.store.enabled)
+        self.store = self._make_store(enabled=self.store.enabled)
 
     def _invalidate_read_refs(self, why: str) -> None:
         """历史被改写后，作废"已返回过引用"的记账，下次 read 给全文。

@@ -1,6 +1,6 @@
 import { openPath } from "../lib/openPath";
 import clsx from "clsx";
-import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose } from "lucide-react";
+import { BookText, ChevronDown, FolderOpen, FolderPlus, GitBranch, PanelRight, PanelRightClose, AlertTriangle } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatDuration, groupBlocks, shortPath, type Block } from "../lib/reduce";
 import { splitQueued } from "../lib/queue";
@@ -322,6 +322,18 @@ export function Conversation() {
     // 真正根因待坏状态再次出现时用现场 DevTools 数据定位。
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
       <Header />
+      {d.save_error && (
+        <div
+          data-testid="save-error-banner"
+          className="flex shrink-0 items-start gap-2 border-b border-line bg-del-bg px-6 py-2 text-[12.5px] text-warn"
+        >
+          <AlertTriangle size={13} className="mt-[3px] shrink-0" />
+          <span className="min-w-0">
+            这段对话没能保存到磁盘（{d.save_error.error}，已失败 {d.save_error.count} 次）。
+            磁盘可能已满，或会话文件被别的程序占用——现在关掉 ee 会丢掉最近的对话。
+          </span>
+        </div>
+      )}
       <div
         ref={scroller}
         data-testid="conversation-scroller"
