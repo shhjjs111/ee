@@ -154,6 +154,29 @@ path 没登记时正好取到 `_clients[""]`。**旧路径能工作，但靠的�
 测试：`ee/tests/test_lsp_store.py`（5 例：LRU 上限与最近使用、淘汰后读作 not_open 且不留旧诊断、
 `change` 刷新使用序、默认上限为正、工具层淘汰后重新取而不是拿旧结果）。
 
+### 6.2 实测：不查诊断的会话真的零进程（顺带修掉一个孤儿进程 bug）
+
+新增探针 `ee/scripts/lsp_process_probe.py`（数的是操作系统里的真进程，不是 `LspManager.stats()`
+自己的账本）。本机实测（Windows，`pyright-langserver.CMD`）：
+
+| 时点 | pyright 进程数 |
+|---|---|
+| 基线 | 0 |
+| 5 个会话接线后（都开了 LSP，**没查诊断**） | **0**（旧行为：5） |
+| 第一次 `lsp` 调用拿到 fresh 诊断后 | 1 |
+| 空闲超过 TTL（探针里调到 2s） | **0** |
+| 全部 `aclose()` 后 | 0 |
+
+**探针顺带暴露了另一个真缺陷**：第一次跑完发现一个 `node.exe ... langserver.index.js` 留在
+系统里，父进程是 `cmd.exe /d /s /c "...pyright-langserver.cmd" --stdio`——`LspClient.close()`
+原先只 `terminate()` 这个 cmd 壳，真正的 node 服务是它的子进程，于是成为孤儿。
+以前每会话一个服务器，泄漏慢；改成按需取用后**每次调用都可能启一个**，杀不干净会变成进程堆积。
+
+修法：`close()` 改用仓内已有的 `ee.proc.kill_tree(pid)`（Windows `taskkill /F /T`，POSIX 杀
+进程组；`popen_kwargs()` 已经给 POSIX 了 `start_new_session`）。回归用例
+`test_lsp_integration.py::test_close_kills_the_wrapped_server_not_just_the_cmd_shell`：
+拿 `.CMD` 包装器的子进程 pid，`shutdown()` 后断言它们全部消失（Windows-only，真 pyright）。
+
 **仍未做**：§4 的跨会话共享（文档所有权那一步没动）；设置页展示 `LspManager.stats()`。单个 `pyright-langserver` 的真实 RSS 没量到（本机 `pyright-langserver`
 是 `.cmd` 包装器，`tasklist` 拿到的是 cmd 的 8.3MB，node 子进程的统计没取到）——下次要量就用
 「跑 10 个会话各发一次 `lsp`，对比改造前后的进程数与总内存」这种端到端口径。

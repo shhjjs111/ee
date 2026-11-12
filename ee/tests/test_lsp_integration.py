@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -229,16 +231,87 @@ def test_production_wiring_gets_diagnostics_without_a_resident_server(tmp_path):
 
         tool = s.tool_map["lsp"]
         try:
-            r = await tool.run({"path": str(f)}, dctx)
-        except Exception as e:  # noqa: BLE001
-            if os.environ.get("CI"):
-                raise AssertionError(f"真实 pyright 走生产接线失败（CI 环境固定，属代码缺陷）：{e}") from e
-            pytest.skip(f"pyright-langserver 起不来（本地环境问题）：{e}")
-            return
-        assert r.meta.get("status") == "fresh", r.output
-        assert r.meta.get("clean") is False and "未取得诊断" not in r.output
-        stats = mgr.stats()
-        assert stats and stats[0]["refs"] == 0, "调用结束没有归还引用（服务器会一直常驻）"
-        await s.aclose()
+            try:
+                r = await tool.run({"path": str(f)}, dctx)
+            except Exception as e:  # noqa: BLE001
+                if os.environ.get("CI"):
+                    raise AssertionError(f"真实 pyright 走生产接线失败（CI 环境固定，属代码缺陷）：{e}") from e
+                pytest.skip(f"pyright-langserver 起不来（本地环境问题）：{e}")
+                return
+            assert r.meta.get("status") == "fresh", r.output
+            assert r.meta.get("clean") is False and "未取得诊断" not in r.output
+            stats = mgr.stats()
+            assert stats and stats[0]["refs"] == 0, "调用结束没有归还引用（服务器会一直常驻）"
+        finally:
+            # 断言失败也要收：否则这台机器上会留一个语言服务器，下一次测量/用例就带着脏基线
+            await s.aclose()
+
+    run(go())
+
+
+def _ps() -> str | None:
+    import shutil
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _child_pids(pid: int) -> list[int]:
+    """Windows：列出 pid 的直接子进程（.CMD 包装器下面才是真的 node 服务）。"""
+    exe = _ps()
+    if not exe:
+        return []
+    ps = f"Get-CimInstance Win32_Process -Filter \"ParentProcessId={pid}\" | Select-Object -ExpandProperty ProcessId"
+    out = subprocess.run([exe, "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                         timeout=30).stdout
+    return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
+def _pid_alive(pid: int) -> bool:
+    exe = _ps()
+    if not exe:
+        return False
+    ps = f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ '1' }}"
+    out = subprocess.run([exe, "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                         timeout=30).stdout.strip()
+    return out == "1"
+
+
+@needs_pyright
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="只在 Windows 上有 .CMD 包装器这一层")
+def test_close_kills_the_wrapped_server_not_just_the_cmd_shell(tmp_path):
+    """`close()` 必须杀整棵进程树。
+
+    Windows 上 `pyright-langserver` 是 `.CMD`，我们起的是 `cmd.exe /c ...`，真正的 node
+    服务是它的子进程。原先只 `terminate()` cmd：cmd 退出、node 留下——实测池都关完了
+    还有一个 `node.exe ... langserver.index.py --stdio` 在跑。改成 `lsp` 按需取用之后，
+    每次调用都可能启一个，“杀不干净”会直接变成进程堆积。
+    """
+    from ee.core.lsp import manager as M
+    from ee.core.lsp.servers import Spec
+    from ee.proc import kill_tree  # noqa: F401  与被测实现同一套机制
+
+    assert PYRIGHT is not None
+    d = tmp_path / "probe"
+    d.mkdir()
+
+    argv = list(PYRIGHT or [])
+
+    async def go():
+        mgr = M.LspManager(idle_ttl=0)
+        handle = await mgr.acquire(str(d), "python", "probe", spec=Spec("python", command=argv, available=True))
+        wrapper = handle.entry.client.proc
+        assert wrapper is not None
+        children = _child_pids(wrapper.pid)
+        assert children, "没拿到 .CMD 包装器的子进程，这条用例就失去意义了"
+        await mgr.shutdown()
+        assert wrapper.returncode is not None
+        for _ in range(20):                      # 给 taskkill 一点时间
+            if not any(_pid_alive(c) for c in children):
+                break
+            await asyncio.sleep(0.25)
+        alive = [c for c in children if _pid_alive(c)]
+        assert not alive, f"close() 之后子进程还活着（孤儿语言服务器）：{alive}"
+        # 兜底清理，避免断言失败时给后续用例留脏进程
+        for c in alive:
+            kill_tree(c)
 
     run(go())

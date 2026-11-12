@@ -126,7 +126,18 @@ class LspClient:
                        asyncio.create_task(self._read_err(), name=f"{self.name}-err")]
 
     async def close(self) -> None:
-        """关闭：取消等待中的请求、结束读任务、终止进程。可重复调用。"""
+        """关闭：取消等待中的请求、结束读任务、终止**整棵进程树**。可重复调用。
+
+        为什么不能只 `terminate()`：Windows 上 `pyright-langserver` 解析到的是
+        `.CMD` 包装器（`spawn_argv` 因此包了一层 `cmd.exe`），真正的 node 服务是
+        cmd 的子进程。只杀 cmd 会留下一个孤儿 node——工厂探针实测到过：会话/池都
+        关完了，`node.exe ... langserver.index.js` 还在跑。以前每个会话一个服务器，
+        泄漏慢；现在每次 `lsp` 调用都可能启一个，“杀不干净”会直接变成进程堆积。
+
+        `kill_tree` 是仓内已有的同一套机制（`shell` / `bgproc` / `run_capture` 都用它）：
+        Windows 下 `taskkill /F /T /PID`，POSIX 下杀进程组（`popen_kwargs` 已经
+        `start_new_session`，pid 就是 pgid）。
+        """
         if self._closing:
             return
         self._closing = True
@@ -139,10 +150,12 @@ class LspClient:
         self._tasks = []
         p = self.proc
         if p is not None and p.returncode is None:
+            from ee.proc import kill_tree
+
             try:
-                p.terminate()
-            except ProcessLookupError:
-                pass
+                kill_tree(p.pid)
+            except Exception as e:  # noqa: BLE001  杀不掉也要继续收尾
+                log.info("%s kill_tree 失败（忽略）：%s", self.name, e)
             try:
                 await asyncio.wait_for(p.wait(), 5)
             except asyncio.TimeoutError:

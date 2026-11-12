@@ -63,6 +63,20 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 `version` 原先坏值会抛在 `on_publish` 里、把整条通知链路打断。
 测试：`ee/tests/test_lsp_store.py`（5 例）。
 
+### 实测与一个孤儿进程 bug
+
+新增探针 `ee/scripts/lsp_process_probe.py`（数操作系统里的真进程，不靠 `stats()` 自证）。
+本机 Windows 实测：基线 0 → **5 个会话接线后仍 0**（旧行为 5）→ 第一次 `lsp` 调用 1 →
+空闲过 TTL 回 0 → 全部 `aclose()` 后 0。
+
+探针跑完发现一个 `node.exe ... langserver.index.js` 留在系统里：`LspClient.close()` 只
+`terminate()` 了 `cmd.exe /c "...pyright-langserver.cmd"` 这层壳，真正的 node 服务是它的
+子进程（Windows 的 `.CMD` 包装器）。以前每会话一个服务器、泄漏慢；改成按需取用后每次
+调用都可能启一个，“杀不干净”会变成进程堆积。
+修法：`close()` 改用仓内已有的 `ee.proc.kill_tree(pid)`（`taskkill /F /T` / POSIX 杀进程组），
+并用真 pyright 的用例 `test_close_kills_the_wrapped_server_not_just_the_cmd_shell` 钉住
+（拿 `.CMD` 的子进程 pid，`shutdown()` 后断言全部消失）。
+
 ### 顺带修掉的：用户级配置被当成项目级配置
 
 全量跑 `test_skills.py` 出现 3 条红（`profile` 变成 lean、子代理拿不到 `skill` 工具）。
@@ -77,8 +91,9 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 
 验证：后端全量 `-n 8` **2536 passed / 16 skipped / 0 failed**（144 秒；同轮另一次全量的
 唯一红是已知并行 flake `test_robustness::test_http_status_error_message`，单独跑通过）；
-`ruff check ee/` 通过；`pyright` 0/0。新增 `test_lsp_lazy.py`（5）、`test_lsp_store.py`（5）、
-`test_lsp_integration.py` 生产接线用例（真 pyright）、`test_config_scope.py` 的 `_BOOT_HOME` 契约用例。
+`ruff check ee/` 通过；`pyright` 0/0；`ee/scripts/lsp_process_probe.py` 实测 0→0→1→0→0。
+新增 `test_lsp_lazy.py`（5）、`test_lsp_store.py`（5）、`test_lsp_integration.py` 生产接线 +
+`.CMD` 进程树两个用例（真 pyright）、`test_config_scope.py` 的 `_BOOT_HOME` 契约用例。
 
 保留边界：跨会话共享进程（`plans/...` §4）没做——同一 URI 的文档所有权没有安全默认值；
 `DiagStore` 的 LRU 上限、设置页展示 `LspManager.stats()` 也留到以后；单个 `pyright-langserver`
