@@ -109,7 +109,7 @@ class ThinkSplitter:
 # ---------------------------------------------------------------- 请求消息变换
 
 def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1,
-                  elide_min_chars: int = 0) -> list[dict]:
+                  elide_min_chars: int = 0, missing_images: set[str] | None = None) -> list[dict]:
     """历史（内部格式）→ 发给服务端的消息。总是复制，绝不原地改历史。
 
     内部 assistant 消息可带 "reasoning" 键（推理全文），这里按回传规则决定是否变成
@@ -148,7 +148,8 @@ def wire_messages(history: list[dict], profile, strip_reasoning_to: int = -1,
                 w.pop("tool_calls", None)
         elif role == "user" and m.get("_images"):
             from ee.core.attachments import wire_content
-            w["content"] = wire_content(w.get("content") or "", list(m["_images"]), bool(profile.vision))
+            w["content"] = wire_content(w.get("content") or "", list(m["_images"]), bool(profile.vision),
+                                        missing=missing_images)
         elif role == "tool":
             if not w.get("tool_call_id"):
                 # 必须确定性：这一层每次请求都会重跑，随机 id 会让整段历史字节变化，

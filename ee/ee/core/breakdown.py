@@ -116,11 +116,10 @@ def for_session(s) -> dict:
             s._sys_src = None
     history = list(s.history)
     actual_used = s.stats.last_prompt + s.stats.last_completion
-    from ee.core.providers import transforms as T
     d = compute(prefix.system["content"], prefix.tools, history, s.profile, s.profile.context_window,
                 used=actual_used or None, actual=actual_used > 0, stats=s.stats,
                 strip_reasoning_to=getattr(s, "_reasoning_strip_to", -1),
-                elide_min_chars=T.elide_min_chars(s.config.data))
+                elide_min_chars=s.elide_min_chars())
     d["compactions"] = int(getattr(s, "compactions", 0) or 0)
     d["frozen"] = s.prefix is not None
     # T19：缓存命中要带覆盖率。hit_rate 的分母只含"返回了 hit 字段的请求"，
@@ -140,6 +139,18 @@ def for_session(s) -> dict:
         "main_hit_coverage": totals.get("main_hit_coverage"),
         "main_requests": totals.get("main_requests"),
     }
+    # 冷启动和已知原因不一定体现在命中率里，但用户需要知道它们发生过；
+    # 走和 ee usage 同一套 summarize，避免界面与 CLI 口径分叉。
+    try:
+        from ee.core.cache_report import summarize
+        roll = summarize(s.stats.records)
+        d["cache"].update({
+            "cold": int(roll["cold"]["count"]),
+            "cold_legacy": int(roll["cold"]["legacy"]),
+            "causes": dict(roll["causes"]["by_reason"]),
+        })
+    except Exception:  # noqa: BLE001  统计异常不影响查看上下文构成
+        pass
     cfg = s.config.data.get("compact", {}) or {}
     from ee.core import prune as P
     pcfg = P.settings(s.config.data)

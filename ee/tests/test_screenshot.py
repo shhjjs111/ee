@@ -9,6 +9,7 @@ import asyncio
 import base64
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -119,7 +120,9 @@ def test_tool_saves_png_and_registers_for_next_step(workspace, ee_home):
     path = next(iter(s.screen.root.iterdir()))
     assert path.read_bytes() == _png(640, 360)
     assert str(path) in res.output and "640×360" in res.output
-    assert ctx.state.pending_images == [str(path)], "截图要登记进待看队列"
+    snap = ctx.state.pending_images[0]
+    assert Path(snap).read_bytes() == _png(640, 360), "截图要先快照到会话目录再进待看队列"
+    assert snap != str(path) and str(ee_home) in snap
     assert res.details["kind"] == "screenshot" and res.details["width"] == 640
     assert events and events[0].request_id.startswith("shot_"), \
         "没把 CaptureRequest 发出去（界面就永远不知道要截图）"

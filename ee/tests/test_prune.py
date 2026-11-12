@@ -67,6 +67,8 @@ def test_prune_triggers_and_protects(ee_home, workspace):
     assert "_pruned" not in json.dumps(req)
     # 用量统计里有修剪节省量
     assert s.stats.totals().get("pruned", 0) > 1500
+    # 修剪改了历史中段：下一次主对话请求必须留下 prune 归因，不能只剩 unknown。
+    assert any(r.get("cause") == "prune" or r.get("break") == "prune" for r in s.stats.records)
 
 
 def test_prefix_stable_after_prune(ee_home, workspace):

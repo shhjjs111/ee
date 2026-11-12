@@ -13,12 +13,17 @@ from __future__ import annotations
 
 import base64
 import binascii
+import threading
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 MAX_IMAGES = 8
 MAX_BYTES = 20 * 2**20          # 单张解码后上限（DeepSeek 内联上限 32 MiB，留余量）
 MAX_THUMB = 64 * 1024           # 界面缩略图 data URL 上限
+# 会话级快照预算：read(as_image)/截图会复制外部图片进来；没有上限时一个长会话
+# 可以把整个磁盘塞满。超过预算不复制，保留原路径（发送时仍会给出明确提示）。
+MAX_SESSION_ATTACHMENT_BYTES = 512 * 2**20
 
 
 class AttachmentError(ValueError):
@@ -89,6 +94,36 @@ def save_all(home: Path, thread_id: str, items: list[dict]) -> tuple[list[str], 
     return paths, meta
 
 
+# data URL 缓存：同一条历史里的图片每轮都会重新走 wire_content。源文件（尤其是已快照到
+# 会话目录的图片）不会变，重复读盘 + base64 是纯浪费；但 base64 字符串很大，不能无限缓存。
+# 按 (路径, mtime_ns, size) 命中，超过预算按最久未用淘汰。
+_URL_CACHE: OrderedDict[tuple[str, int, int], str] = OrderedDict()
+_URL_CACHE_BYTES = 0
+_URL_CACHE_LIMIT = 64 * 1024 * 1024
+_URL_CACHE_LOCK = threading.Lock()
+
+
+def _cache_get(key: tuple[str, int, int]) -> str | None:
+    with _URL_CACHE_LOCK:
+        url = _URL_CACHE.get(key)
+        if url is not None:
+            _URL_CACHE.move_to_end(key)
+        return url
+
+
+def _cache_put(key: tuple[str, int, int], url: str) -> None:
+    global _URL_CACHE_BYTES
+    with _URL_CACHE_LOCK:
+        old = _URL_CACHE.pop(key, None)
+        if old is not None:
+            _URL_CACHE_BYTES -= len(old)
+        _URL_CACHE[key] = url
+        _URL_CACHE_BYTES += len(url)
+        while _URL_CACHE_BYTES > _URL_CACHE_LIMIT and _URL_CACHE:
+            _, dropped = _URL_CACHE.popitem(last=False)
+            _URL_CACHE_BYTES -= len(dropped)
+
+
 def data_url(path: str) -> str | None:
     """图片 → data URL；读不到、或文件头不是 JPEG/PNG/GIF/WebP 时返回 None。
 
@@ -97,28 +132,43 @@ def data_url(path: str) -> str | None:
     这条坏消息会让会话从此永久卡死（实测 2026-11-06：一个叫 _page1.png 的 XPS）。
     宁可少发一张图。
     """
+    p = Path(path)
     try:
-        data = Path(path).read_bytes()
+        st = p.stat()
+    except OSError:
+        return None
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    try:
+        data = p.read_bytes()
     except OSError:
         return None
     mime = sniff(data)
     if mime is None:
         return None
-    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+    url = f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+    _cache_put(key, url)
+    return url
 
 
 def no_vision_note(n: int) -> str:
     return f"[用户附了 {n} 张图片，但当前模型不支持看图，你看不到图片内容；需要时请让用户换支持图像的模型或用文字描述]"
 
 
-def wire_content(text: str, images: list[str], vision: bool):
-    """用户消息 content：vision 时为分块数组，否则为文字。"""
+def wire_content(text: str, images: list[str], vision: bool, missing: set[str] | None = None):
+    """用户消息 content：vision 时为分块数组，否则为文字。
+
+    missing：调用方传入集合时，把找不到的图片绝对路径填进去，供会话层记
+    `attachment_missing` 断点原因（只读路径，不改变消息内容）。
+    """
     if not images:
         return text
     if not vision:
         return text + "\n\n" + no_vision_note(len(images))
     parts: list[dict] = [{"type": "text", "text": text}]
-    missing: list[str] = []
+    missing_names: list[str] = []
     unsupported: list[str] = []
     for p in images:
         url = data_url(p)
@@ -127,12 +177,14 @@ def wire_content(text: str, images: list[str], vision: bool):
             if Path(p).exists():
                 unsupported.append(name)
             else:
-                missing.append(name)
+                missing_names.append(name)
+                if missing is not None:
+                    missing.add(str(p))
             continue
         parts.append({"type": "image_url", "image_url": {"url": url}})
     notes: list[str] = []
-    if missing:
-        notes.append(f"[有 {len(missing)} 张图片文件已被删除，无法发送]")
+    if missing_names:
+        notes.append(f"[有 {len(missing_names)} 张图片文件已被删除，无法发送]")
     if unsupported:
         shown = "、".join(unsupported[:3])
         notes.append(f"[有 {len(unsupported)} 个文件不是可用的图片（只支持 JPEG、PNG、GIF、WebP），"

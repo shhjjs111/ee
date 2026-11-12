@@ -272,8 +272,23 @@ class StdioClient(_Base):
                     proc.kill()
                 except ProcessLookupError:
                     pass
+                try:
+                    await asyncio.wait_for(proc.wait(), 1.5)
+                except asyncio.TimeoutError:
+                    pass
+        # 读 stdout/stderr 的任务先取消并等它们退出，再关底层 transport。
+        # 只 cancel 不 await 时，Windows proactor 上仍可能留下未关闭的管道，
+        # 进程对象被 GC 时才报 “I/O operation on closed pipe”。
         for t in self._tasks:
             t.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        transport = getattr(proc, "_transport", None) if proc is not None else None
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:  # noqa: BLE001
+                pass
         self._fail_all("连接已关闭")
 
 

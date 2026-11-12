@@ -286,6 +286,15 @@ def _print_usage(d: dict, *, title: str) -> None:
     g = d["normal_gap"]
     if g["count"]:
         print(f"  正常回合未命中：中位 {g['median']} · p90 {g['p90']} · 最大 {g['max']} token")
+    cold = d.get("cold") or {}
+    if cold.get("count"):
+        legacy = cold.get("legacy") or 0
+        extra = f"，其中旧账本推断 {legacy} 次" if legacy else ""
+        print(f"  冷启动/无基线：{cold['count']} 次（未命中 {cold.get('gap', 0):,}，不计入正常回合{extra}）")
+    causes = d.get("causes") or {}
+    if causes.get("count"):
+        detail = "，".join(f"{k} {v}" for k, v in sorted((causes.get("by_reason") or {}).items()))
+        print(f"  已知原因：{detail}（不一定达到断点阈值）")
     for b in d["buckets"]:
         if b["requests"]:
             print(f"    {b['label']:<9} {_pct(b['hit_rate']):>7} · {b['requests']} 次")

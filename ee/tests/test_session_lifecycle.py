@@ -145,6 +145,63 @@ def test_reload_config_uses_same_path_as_set_model(ee_home, workspace):
     asyncio.run(go())
 
 
+def test_reload_config_model_change_marks_switch_and_drops_prefix(ee_home, workspace, monkeypatch):
+    """同别名换了底层模型：必须走 set_model 的路径，记 model_switch 并作废旧前缀。"""
+    from ee.config import load_config
+
+    cfg = load_config(workspace)
+    alias = cfg.default_model
+    monkeypatch.setattr("ee.server.threads.load_config", lambda cwd: cfg)
+
+    async def go():
+        b = Backend(home=ee_home, persist=False, client_factory=TrackedClient)
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        t = b.threads[th["id"]]
+        s = await t.ensure_session_async()
+        s.prefix = s.current_prefix()
+        old_sha = s.prefix.sha256
+
+        entry = dict(cfg.data["models"][alias])
+        entry["model"] = "gpt-5"           # 同 alias 换底层模型
+        entry["edit_style"] = "apply_patch"
+        cfg.data["models"][alias] = entry
+
+        t.reload_config()
+        assert s.spec.model == "gpt-5"
+        assert s.prefix is None, "模型和工具形状都变了，旧前缀不能继续发"
+        assert s.prefix is None or s.prefix.sha256 != old_sha
+        assert s._take_break() == "model_switch"
+        assert "apply_patch" in [x.name for x in s.tools]
+        assert t.meta["model"] == s.spec.alias
+
+    asyncio.run(go())
+
+
+def test_reload_config_price_only_keeps_prefix_and_does_not_mark_break(ee_home, workspace, monkeypatch):
+    """只改价格/key：换 client 即可，不要重置前缀，也不要把账本记成断点。"""
+    from ee.config import load_config
+
+    cfg = load_config(workspace)
+    alias = cfg.default_model
+    monkeypatch.setattr("ee.server.threads.load_config", lambda cwd: cfg)
+
+    async def go():
+        b = Backend(home=ee_home, persist=False, client_factory=TrackedClient)
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        t = b.threads[th["id"]]
+        s = await t.ensure_session_async()
+        s.prefix = s.current_prefix()
+        before = s.prefix.sha256
+
+        cfg.data["models"][alias]["price"] = {"input": 1.0, "output": 2.0, "cache_read": 0.1}
+        t.reload_config()
+
+        assert s._take_break() is None
+        assert s.prefix is not None and s.prefix.sha256 == before
+
+    asyncio.run(go())
+
+
 # ------------------------------------------------------------------ 孤儿 tool_calls
 
 def _write_jsonl(path, recs):

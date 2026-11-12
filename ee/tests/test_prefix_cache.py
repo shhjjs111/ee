@@ -74,6 +74,89 @@ def test_prefix_tamper_detected():
     assert not fp.verify()
 
 
+def test_restore_prefix_rejects_a_changed_model_under_the_same_alias(ee_home, workspace):
+    """compat（agent|prompt_patch|edit_style）相同也不够：存盘前缀属于另一个模型时不能复用。"""
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.core.store import SessionStore
+
+    cfg = load_config(workspace)
+    alias = cfg.default_model
+    s = Session(cfg, cwd=workspace, persist=True, home=ee_home)
+    s.history = [{"role": "user", "content": "hi"}]
+    s._elide_min_chars = 120
+    s.prefix = s.current_prefix()
+    s._save_prefix()
+    sid = s.store.id
+
+    cfg2 = load_config(workspace)
+    cfg2.data["models"][alias]["model"] = "deepseek-v4.1-pro"
+    s2 = Session(cfg2, cwd=workspace, persist=True, home=ee_home)
+    s2.store = SessionStore(ee_home, session_id=sid, enabled=True)
+    s2.history = [{"role": "user", "content": "hi"}]
+
+    assert s2._restore_prefix() is False, "换了底层模型还复用旧前缀"
+    assert s2._take_break() == "model_switch"
+
+    # 同一个模型恢复时，连同发送口径（elide 阈值）一起沿用。
+    s3 = Session(cfg, cwd=workspace, persist=True, home=ee_home)
+    s3.store = SessionStore(ee_home, session_id=sid, enabled=True)
+    s3.history = [{"role": "user", "content": "hi"}]
+    assert s3._restore_prefix() is True
+    assert s3.elide_min_chars() == 120
+
+
+def test_elide_threshold_is_frozen_with_the_prefix(ee_home, workspace):
+    """会话中途改 elide.min_chars 不能改已发历史的中段字节。"""
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.core.providers import transforms as T
+
+    cfg = load_config(workspace)
+    cfg.data["elide_args"] = {"enabled": True, "min_chars": 150}
+    s = Session(cfg, cwd=workspace, persist=False, home=ee_home)
+    s._ensure_prefix(lambda ev: None)
+    assert s.elide_min_chars() == 150
+
+    hist = [{"role": "assistant", "content": "", "tool_calls": [{
+        "id": "c1", "type": "function",
+        "function": {"name": "write", "arguments": json.dumps({"path": "a.txt", "content": "x" * 120})},
+    }]}]
+    wire = T.wire_messages(hist, s.profile, -1, s.elide_min_chars())
+    assert "x" * 120 in json.dumps(wire, ensure_ascii=False), "150 阈值下 120 字符不该被省略"
+
+    s.config.data["elide_args"]["min_chars"] = 100
+    assert s.elide_min_chars() == 150, "设置页改了阈值，已开始的会话不能跟着变"
+    assert "x" * 120 in json.dumps(T.wire_messages(hist, s.profile, -1, s.elide_min_chars()), ensure_ascii=False)
+
+    s._break_reason = "prune"
+    s.new()
+    assert s.elide_min_chars() == 100, "新对话应按当前配置重新定口径"
+    assert s._break_reason is None, "上一段对话的断点原因不能带进新对话"
+
+
+def test_legacy_prefix_is_not_reused(ee_home, workspace):
+    """旧 prefix 没有 provider/base_url/elide：不复用，重新冻结一次并记原因。"""
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.core.store import SessionStore
+
+    cfg = load_config(workspace)
+    s = Session(cfg, cwd=workspace, persist=True, home=ee_home)
+    s.history = [{"role": "user", "content": "hi"}]
+    s.prefix = s.current_prefix()
+    s.store.append("prefix", {"sha256": s.prefix.sha256, "model": s.spec.model,
+                              "compat": s._prefix_compat(), "style": "default",
+                              "system": s.prefix.system, "tools": s.prefix.tools})
+    sid = s.store.id
+
+    s2 = Session(cfg, cwd=workspace, persist=True, home=ee_home)
+    s2.store = SessionStore(ee_home, session_id=sid, enabled=True)
+    s2.history = [{"role": "user", "content": "hi"}]
+    assert s2._restore_prefix() is False
+    assert s2._take_break() == "prefix_migrated"
+
+
 def test_model_switch_refreezes(ee_home, workspace):
     s, fake = make_session(workspace, [text_chunks("a") + finish("stop"), text_chunks("b") + finish("stop")])
     run(collect(s, "一"))

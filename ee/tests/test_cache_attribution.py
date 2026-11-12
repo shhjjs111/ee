@@ -254,3 +254,79 @@ def test_side_request_never_reports_a_break():
     r = s.records[-1]
     assert "gap" not in r and "break" not in r
     assert s.last_wire_tokens == 0, "侧路不动主对话的 wire 游标"
+
+
+def test_no_baseline_is_marked_cold_and_keeps_the_known_cause():
+    """首次请求/重启首发要留下明确的 cold 标记；已知原因不能因为没基线就丢掉。"""
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 10, "hit": 0}, _price(), model="m", role="main",
+          break_reason="model_switch")
+    r = s.records[-1]
+    assert r["baseline"] == 0 and r["cold"] is True
+    assert r["cause"] == "model_switch"
+    assert "break" not in r, "没有基线时不能凭 gap 断言断点，但原因必须留下"
+
+
+def test_cold_requests_do_not_enter_the_watermark_sample():
+    """冷启动的整段未命中不能当成「前缀不稳」；否则一次重启就把水位因子压到 0.9。"""
+    s = UsageStats()
+    s.note_wire(200_000)
+    s.add({"prompt": 200_000, "completion": 10, "hit": 0}, _price(), model="m", role="main")
+    for _ in range(6):
+        s.note_wire(201_000)
+        s.add({"prompt": 201_000, "completion": 10, "hit": 200_500}, _price(), model="m", role="main")
+    # 排除 cold 后是 200_500/201_000；把 cold 算进来会掉到约 0.83。
+    assert s.recent_main_hit_rate() == pytest.approx(200_500 / 201_000)
+
+
+def test_known_cause_with_small_gap_is_kept_but_not_called_a_break():
+    """原因已知但服务端仍命中时：记 cause，不硬造 break。"""
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 10, "hit": 99_000}, _price(), model="m", role="main")
+    s.note_wire(101_000)
+    s.add({"prompt": 101_000, "completion": 10, "hit": 100_500}, _price(), model="m", role="main",
+          break_reason="model_switch")
+    r = s.records[-1]
+    assert r["cause"] == "model_switch"
+    assert "break" not in r
+
+
+def test_server_prompt_delta_beats_the_wire_estimate():
+    """wire 只涨 1000、服务端 prompt 涨 10000 时，不能拿 1000 当新增量误判断点。"""
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 10, "hit": 99_000}, _price(), model="m", role="main")
+    s.note_wire(101_000)                       # 估算只涨 1000
+    s.add({"prompt": 110_000, "completion": 10, "hit": 100_000}, _price(), model="m", role="main")
+    r = s.records[-1]
+    assert r["new"] == 1_000
+    assert r["server_new"] == 10_000
+    assert r["gap"] == 10_000
+    assert "break" not in r, "gap 约等于服务端新增量，是正常追加"
+
+
+def test_wire_shrink_is_marked_but_not_cold():
+    """wire 估算变小会产生 new==0，但它不是冷启动，单独记 shrink。"""
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 10, "hit": 99_000}, _price(), model="m", role="main")
+    s.note_wire(50_000)
+    s.add({"prompt": 50_000, "completion": 10, "hit": 49_000}, _price(), model="m", role="main")
+    r = s.records[-1]
+    assert r["new"] == 0 and r["shrink"] is True
+    assert not r.get("cold")
+
+
+def test_server_new_does_not_get_reset_by_a_missing_usage_record():
+    """usage_missing 的 prompt=0 不能抹掉上一次服务端基线，否则下一条又退回 wire 估算。"""
+    s = UsageStats()
+    s.note_wire(10_000)
+    s.add({"prompt": 10_000, "completion": 10, "hit": 9_000}, _price(), model="m", role="main")
+    s.note_wire(11_000)
+    s.add(None, _price(), model="m", role="main")
+    assert s.last_server_prompt == 10_000
+    s.note_wire(12_000)
+    s.add({"prompt": 12_000, "completion": 10, "hit": 10_000}, _price(), model="m", role="main")
+    assert s.records[-1]["server_new"] == 2_000

@@ -99,3 +99,37 @@ def test_old_records_without_role_count_as_main():
     d = summarize(rows)
     assert d["main"]["requests"] == 1
     assert d["main"]["hit_rate"] == 0.99
+
+
+def test_cold_start_is_not_a_normal_gap():
+    """没有 wire 基线的首发不进 normal_gap，但仍在用户看到的总命中率里。"""
+    rows = [_r(100_000, 0, cold=True, baseline=0, gap=100_000, new=0),
+            _r(101_000, 100_000, gap=1_000, new=1_000)]
+    d = summarize(rows)
+    assert d["normal_gap"]["count"] == 1
+    assert d["normal_gap"]["max"] == 1_000
+    assert d["cold"]["count"] == 1 and d["cold"]["gap"] == 100_000
+    assert d["cold"]["legacy"] == 0
+    assert d["main"]["requests"] == 2
+    assert d["main"]["hit_rate"] == 100_000 / 201_000, "总口径不能把首发的整段未命中藏掉"
+
+
+def test_legacy_cold_is_inferred_conservatively():
+    """旧账本没有 cold：只把 new==0 且 hit==0/gap 很大的行当冷启动，不能吃掉 wire 变小的正常回合。"""
+    rows = [_r(100_000, 0, new=0, gap=100_000),          # 旧版冷启动
+            _r(101_000, 100_500, new=0, gap=495)]         # wire 变小，但服务端几乎全命中
+    d = summarize(rows)
+    assert d["cold"]["count"] == 1 and d["cold"]["legacy"] == 1
+    assert d["normal_gap"]["count"] == 1
+    assert d["normal_gap"]["max"] == 495
+
+
+def test_known_causes_are_summarized_even_without_break():
+    """cause 可能没有达到断点阈值：单独计数，不能只在 breaks 里找。"""
+    rows = [_r(10_000, 9_900, cause="model_switch"),
+            _r(10_000, 9_900, cause="compact"),
+            _r(10_000, 9_900)]
+    d = summarize(rows)
+    assert d["causes"]["count"] == 2
+    assert d["causes"]["by_reason"] == {"model_switch": 1, "compact": 1}
+    assert d["breaks"]["count"] == 0

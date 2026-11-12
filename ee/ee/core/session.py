@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -240,6 +241,12 @@ class Session:
         self.style = sdef if ST.exists(self.home, sdef) else "default"
         self._prefix_style: str | None = None      # 冻结进 system 的风格
         self._style_switched = False               # 会话中途切换过风格（之后用 <context-update> 子块说明当前风格）
+        # 上一次发送时缺失的图片路径（排序后的 tuple）。只在集合变化时记 cause，
+        # 避免同一张缺失图每轮都刷一个 attachment_missing。
+        self._missing_images: tuple[str, ...] = ()
+        # 发送口径：elide 阈值在首次冻结前缀时定下，之后改配置不影响本会话已发出的历史。
+        # None = 还没冻结（预览时按当前配置算，但不锁定）。
+        self._elide_min_chars: int | None = None
         self._turn_role: str | None = None         # 本回合按哪个用途取模型（review）；计划模式自动用 plan
         self._role_clients: dict[str, ChatClient] = {}
         self._closing: list = []                   # 换模型时丢下的旧 client，等 aclose() 统一释放
@@ -252,6 +259,9 @@ class Session:
         self.mcp_tools: list = []
         self.mcp_states: list[dict] = []
         self._mcp_done = False
+        # 上一次成功/失败尝试时的配置指纹：相同就不再每回合重连；
+        # 设置页新增/删除服务器会改变指纹，从而触发一次热插拔。
+        self._mcp_sig = ""
 
     # ------------------------------------------------------------ 配置切换
     def _make_store(self, enabled: bool) -> SessionStore:
@@ -330,19 +340,39 @@ class Session:
             await asyncio.to_thread(self.client)
         return self.client()
 
+    def _spec_key(self, spec=None) -> tuple:
+        """决定「是不是换了模型 / 前缀形状」的身份。
+
+        价格、key、超时这类配置变化不算：它们只影响计价与连接，不改变请求前缀。
+        alias/provider/model/base_url 任一变化都算换模型；prompt_patch/edit_style
+        变化会改 system/tools，也按换了前缀处理。
+        """
+        s = spec or self.spec
+        p = s.profile
+        return (s.alias, s.provider, s.model, s.base_url, p.prompt_patch, p.edit_style)
+
+    def spec_changed(self, spec) -> bool:
+        """这个 spec 与当前会话相比，是否会改变模型或前缀形状。"""
+        return self._spec_key(spec) != self._spec_key()
+
     def set_model(self, name: str) -> str:
         spec = self.config.resolve_model(name)
+        switched = self.spec_changed(spec)
         same_prefix = (spec.profile.prompt_patch == self.spec.profile.prompt_patch and
                        spec.profile.edit_style == self.spec.profile.edit_style)
-        switched = spec.alias != self.spec.alias or spec.model != self.spec.model
         self.spec = spec
         self.tools = build_tools(spec.profile, self.config, agent=self.agent_profile,
                                  orchestrator_role=self.orchestrator_role)
         self.tool_map = {t.name: t for t in self.tools}
         self._install_mcp()
+        self._wire_lsp_tools()
         self._drop_client()          # 旧 client 的连接池要释放，不能只丢引用
         self._client = None
-        if not same_prefix:
+        tools_changed = self.prefix is not None and [t.schema() for t in self.tools] != list(self.prefix.tools)
+        if not same_prefix or tools_changed:
+            # prompt_patch/edit_style 相同也可能因为工具表变化（例如 apply_patch 出现、
+            # MCP 工具顺序变了）让冻结前缀里的 tools 过期。旧实现只看两个 profile 字段，
+            # 会把旧 tools 继续发给模型：模型看不到新工具，tool_map 里却有它。
             self.prefix = None
         # 换模型必然作废服务端缓存：updates.reset() 会让下一条请求重新带上全量环境附录，
         # 前缀字节整体变了。把原因记下来，账本里才能把「换模型」和真正说不清的断点分开——
@@ -350,7 +380,10 @@ class Session:
         # 长得一模一样（真实会话里就这么误判过一次）。
         if switched:
             self._break_reason = "model_switch"
-        self.updates.reset()
+        elif tools_changed:
+            self._break_reason = "tools_changed"
+        if switched or not same_prefix:
+            self.updates.reset()
         # 换模型只按新模型的支持范围规整当前档位（会话里选的始终生效），不回落到全局默认
         self.effort = RZ.canonical(spec.profile, self.effort)
         return (f"已切换到 {spec.alias}（{spec.model}，家族 {spec.profile.family}）。"
@@ -650,7 +683,14 @@ class Session:
         self._fresh_usage = False
         self._reasoning_strip_to = -1
         self._reasoning_strip_disabled = False     # /new 后重新允许清推理（否则一次 400 会永久生效）
+        self._break_reason = None                   # 上一段对话的待归因原因不能带进新对话
+        self._missing_images = ()
+        # prefix 保留（system+tools 不变，仍然能命中），但发送口径按当前配置重新定；
+        # 同时把新口径写回 prefix 记录，重启恢复时不会退回旧会话的 elide。
+        self._elide_min_chars = T.elide_min_chars(self.config.data)
         self.store = self._make_store(enabled=self.store.enabled)
+        if self.prefix is not None:
+            self._save_prefix()
 
     def _invalidate_read_refs(self, why: str) -> None:
         """历史被改写后，作废"已返回过引用"的记账，下次 read 给全文。
@@ -926,6 +966,31 @@ class Session:
         self.tools = [t for t in self.tools if not t.name.startswith("mcp__")] + list(self.mcp_tools)
         self.tool_map = {t.name: t for t in self.tools}
 
+    def _wire_lsp_tools(self) -> None:
+        """把已有的 LSP 能力接回当前工具表。
+
+        `set_model()` / `reload_config()` 会重建工具对象；`_attach_lsp()` 只在会话第一次
+        回合跑一次，不补这一步的话，换模型之后 LspTool 又变成无参构造的空壳。
+        """
+        mgr = getattr(self, "lsp_manager", None)
+        if mgr is None:
+            return
+        from ee.tools.lsp import LspTool
+        store = getattr(self, "lsp_store", None)
+        notifier = getattr(self, "lsp_notifier", None)
+        spec = getattr(self, "lsp_spec", None)
+        language = getattr(self, "_lsp_language", "")
+        root = getattr(self, "_lsp_root", str(self.cwd))
+        for t in self.tools:
+            if isinstance(t, LspTool):
+                t.manager = mgr
+                if store is not None:
+                    t.store = store
+                t.notifier = notifier
+                t.spec = spec
+                t.language = language
+                t.root = root
+
     # ------------------------------------------------------------ LSP 接线（D6-2 / T9 U5）
     async def _attach_lsp(self, emit) -> None:
         """首次回合把 LSP 管理器 / 诊断缓存 / 变更通知接到会话上（只做一次）。
@@ -983,61 +1048,79 @@ class Session:
         self._lsp_root = str(self.cwd)
         # 工具表里的 LspTool 是无参构造的，把真实能力补给它。只改 LspTool
         # （按类型判，不按名字），否则“给任意 Tool 塞 manager 属性”只能靠动态属性。
-        from ee.tools.lsp import LspTool
-        for t in self.tools:
-            if isinstance(t, LspTool):
-                t.manager = mgr
-                t.store = store
-                t.notifier = notifier      # didOpen / didChange / uri→client 绑定
-                t.spec = spec              # 按需 acquire 需要的启动规格
-                t.language = language
-                t.root = str(self.cwd)
+        self._wire_lsp_tools()
+
+    @staticmethod
+    def _mcp_signature(servers, errors) -> str:
+        """MCP 配置指纹：服务器增删、命令/参数/URL/允许状态变化都会变。"""
+        blob = json.dumps([[getattr(s, "name", ""), getattr(s, "key", ""), bool(getattr(s, "enabled", True))]
+                           for s in servers] + sorted(str(e) for e in errors),
+                          ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     async def _attach_mcp(self, emit) -> None:
-        """首次冻结前缀前连接 MCP 服务器；失败只出提示，不影响回合。
+        """按配置指纹连接/刷新 MCP 服务器；失败只出提示，不影响回合。
 
-        _mcp_done 只在**成功**后置位。原来是「先置位再连接」，任何失败
-        （服务器还没起来、配置临时读失败、连接超时）都会让这个会话此后
-        再也连不上 MCP，只能新开会话（报告 P1-12）。现在失败会留下 _mcp_tried
-        供诊断，但下一回合仍会重试。
+        不是只连一次：设置页新增第二个服务器、项目 .mcp.json 变化、或首个服务器
+        晚启动，都需要重新尝试。配置没变时直接返回，避免每回合重连。
+        _mcp_done 只在**成功**后置位；失败会保留，下一回合仍会重试。
         """
-        if not _should_attach_mcp(done=self._mcp_done, enabled=self.mcp_enabled,
-                                  has_prefix=self.prefix is not None, tool_names=self.tool_map):
+        if not self.mcp_enabled:
             return
-        self._mcp_tried = getattr(self, "_mcp_tried", 0) + 1
         from ee.mcp.config import load_servers, mcp_settings
-        data = self.config.data
-        m = mcp_settings(data)
+        m = mcp_settings(self.config.data)
         if not m.get("enabled", True):
-            self._mcp_done = True          # 用户明确关掉：不必再试
+            self._mcp_done = True
+            self._mcp_sig = ""          # 重新启用时要重新读配置/连接
+            if self.mcp_tools:
+                # 用户中途关掉 MCP：把旧工具也从前缀里拿掉，不能继续发给模型。
+                self.mcp_tools = []
+                self._install_mcp()
+                if self.prefix is not None and [t.schema() for t in self.tools] != list(self.prefix.tools):
+                    self._refreeze_prefix("mcp_change")
             return
         try:
-            servers, errors = await asyncio.to_thread(load_servers, data, self.cwd)
+            servers, errors = await asyncio.to_thread(load_servers, self.config.data, self.cwd)
         except Exception as e:  # noqa: BLE001
             emit(Notice(f"读取 MCP 配置失败：{e}", "warn"))
             return
+        sig = self._mcp_signature(servers, errors)
+        if self._mcp_done and sig == self._mcp_sig:
+            return
+        self._mcp_sig = sig
+        self._mcp_tried = getattr(self, "_mcp_tried", 0) + 1
         for err in errors:
             emit(Notice(f"MCP 配置：{err}", "warn"))
         if not servers:
             self._mcp_done = True          # 没有配置任何服务器：不必再试
+            if self.mcp_tools:
+                self.mcp_tools = []
+                self._install_mcp()
+                if self.prefix is not None and [t.schema() for t in self.tools] != list(self.prefix.tools):
+                    self._refreeze_prefix("mcp_change")
             return
         from ee.mcp.manager import get_manager
         from ee.mcp.tool import McpTool
+        had_prefix = self.prefix is not None
+        had_tools = list(self.prefix.tools) if self.prefix is not None else []
+        had_mcp = any(str(n).startswith("mcp__") for n in self.tool_map)
         if any(sc.enabled for sc in servers):
             emit(Status("正在连接 MCP 服务器…"))
         mgr = get_manager()
         try:
-            states = await mgr.connect_all(data, self.cwd)
+            states = await mgr.connect_all(self.config.data, self.cwd)
         except BaseException:
             # 含 CancelledError：连到一半被取消时不能让 _mcp_done 永久为真。
             # 状态条要先清掉，否则界面会一直显示"正在连接 MCP 服务器…"。
             emit(Status(""))
             raise
         emit(Status(""))
-        # 全都连不上时**不置位**：下一回合还要重试。原来无条件置真，注释写「成功或部分
-        # 失败才算完成」，实际把「一个都没连上」也算成了完成。
+        # 全都连不上时**不置位**：下一回合还要重试。
         self._mcp_done = any(st.status == "ready" for st in states)
-        tools, seen = [], set(self.tool_map)
+        # 注意：这里是「重建完整 MCP 工具表」，不是「只追加新工具」。
+        # _install_mcp() 会先删掉所有 mcp__ 再追加；如果 seen 带上旧 tool_map，
+        # 旧服务器的工具会被跳过，热插拔第二个服务器时第一个就消失了。
+        tools, seen = [], set()
         timeout = as_float(m.get("tool_timeout") or 120)
         for st in states:
             if st.status == "ready":
@@ -1051,11 +1134,17 @@ class Session:
                 first = (st.error or "").splitlines()[0][:300] if st.error else "未知错误"
                 emit(Notice(f"MCP 服务器 {st.cfg.name} 连接失败：{first}", "warn"))
             elif st.status == "needs_approval":
-                emit(Notice(f"项目 .mcp.json 里的 MCP 服务器 {st.cfg.name} 还没被允许，在 设置 → MCP 里允许后，新对话生效。",
+                emit(Notice(f"项目 .mcp.json 里的 MCP 服务器 {st.cfg.name} 还没被允许，在 设置 → MCP 里允许后生效。",
                             "info"))
         self.mcp_states = [st.summary() for st in states]
         self.mcp_tools = tools
         self._install_mcp()
+        # 配置变化（晚到/新增/删除服务器）会改变工具表。_sample() 发的是 prefix.tools，
+        # 不重新冻结就还在发旧 schema；这是真实断点，必须明确记因。
+        if had_prefix and [t.schema() for t in self.tools] != had_tools:
+            reason = "mcp_change" if had_mcp else "mcp_attach"
+            self._refreeze_prefix(reason)
+            emit(Notice("MCP 工具已更新；前缀会重新冻结一次，本次请求可能需要整段重算。", "info"))
 
     def refresh_git(self) -> None:
         self._git = gitinfo.status(self.cwd)
@@ -1077,11 +1166,37 @@ class Session:
         return 1.0 - self.stats.context_used(self.profile.context_window)
 
     # ------------------------------------------------------------ 前缀
-    def current_prefix(self) -> FrozenPrefix:
-        style = self._prefix_style if (self.prefix is not None and self._prefix_style is not None) else self.style
+    def current_prefix(self, style: str | None = None) -> FrozenPrefix:
+        if style is None:
+            style = self._prefix_style if (self.prefix is not None and self._prefix_style is not None) else self.style
         seg = ST.system_segment(ST.get(self.home, style))
         return FrozenPrefix.freeze(system_prompt(self.profile, seg, self.system_sources(), self.tools, self.agent_profile),
                                    [t.schema() for t in self.tools])
+
+    def _save_prefix(self) -> None:
+        """把当前冻结前缀完整落盘；重启恢复时逐字节复用。"""
+        if self.prefix is None:
+            return
+        self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model,
+                                     "provider": self.spec.provider, "base_url": self.spec.base_url,
+                                     "compat": self._prefix_compat(), "style": self._prefix_style,
+                                     "elide": self._elide_min_chars,
+                                     "system": self.prefix.system, "tools": self.prefix.tools})
+
+    def _refreeze_prefix(self, reason: str) -> FrozenPrefix:
+        """按当前工具表重新冻结前缀。工具表真的变了才记断点原因。
+
+        用到它的场景是 MCP 晚到：第一回合服务器没起来，前缀先按无 MCP 工具冻结；
+        后续回合连上后必须把新 tools 发出去，否则 tool_map 里有、模型永远看不到。
+        """
+        old = self.prefix
+        style = self._prefix_style if self._prefix_style is not None else self.style
+        self.prefix = self.current_prefix(style)
+        self._save_prefix()
+        if old is None or old.sha256 != self.prefix.sha256:
+            self._break_reason = reason
+            log.info("会话 %s：前缀因 %s 重新冻结（%s）", self.store.id, reason, self.prefix.sha256[:12])
+        return self.prefix
 
     def system_sources(self) -> SP.SystemSources:
         """自定义系统提示词来源：会话里第一次用到时解析，之后不变（改文件 / 信任从新对话生效）。"""
@@ -1093,6 +1208,17 @@ class Session:
         """决定 system/tools 形状的会话属性；恢复会话时只复用同一组属性下冻结的前缀。"""
         p = self.spec.profile
         return f"{self.agent_profile}|{p.prompt_patch}|{p.edit_style}"
+
+    def elide_min_chars(self) -> int:
+        """本会话发送历史时使用的大字段省略阈值。
+
+        首次冻结前缀时锁定，之后设置页改 elide_args 不影响本会话：历史里已经发过的
+        edit/write 参数如果突然改变，会从那条消息起整段缓存失效，而账本上只会记 unknown。
+        还没冻结前缀（预览）时按当前配置算，不提前锁定。
+        """
+        if self._elide_min_chars is not None:
+            return self._elide_min_chars
+        return T.elide_min_chars(self.config.data)
 
     def _restore_prefix(self) -> bool:
         """重启后恢复会话：复用会话存盘里最后一次冻结的 system+tools（逐字节），而不是按当前文件 / 风格 / MCP 重算。
@@ -1106,6 +1232,27 @@ class Session:
         rec = SessionStore.last_prefix(self.store.path, self._prefix_compat())
         if not rec:
             return False
+        # 同一个 alias 的底层模型/provider 可能被设置页改过。旧实现只看 compat
+        # （agent|prompt_patch|edit_style），会把上一个模型的前缀恢复给新模型；
+        # 服务端按模型分缓存，字节再一样也命不中，而且工具表可能已经不同。
+        stored_model = rec.get("model")
+        stored_provider = rec.get("provider")
+        stored_base = rec.get("base_url")
+        if (isinstance(stored_model, str) and stored_model and stored_model != self.spec.model) \
+                or (isinstance(stored_provider, str) and stored_provider and stored_provider != self.spec.provider) \
+                or (isinstance(stored_base, str) and stored_base and stored_base != self.spec.base_url):
+            self._break_reason = "model_switch"
+            log.info("会话 %s：存盘前缀属于 %s/%s@%s，当前是 %s/%s@%s，不复用", self.store.id,
+                     stored_provider or "?", stored_model or "?", stored_base or "?",
+                     self.spec.provider, self.spec.model, self.spec.base_url)
+            return False
+        # 旧版 prefix 记录没有 provider / base_url / elide。前两个决定服务端缓存路由，
+        # 第三个决定历史消息的发送口径；缺少时无法证明复用是安全的。不回填历史记录，
+        # 而是让这个会话重新冻结一次（一次性冷启动），新记录会带齐字段。
+        if not all(k in rec for k in ("provider", "base_url", "elide")):
+            self._break_reason = "prefix_migrated"
+            log.info("会话 %s：旧版 prefix 缺少 provider/base_url/elide，重新冻结", self.store.id)
+            return False
         try:
             fp = FrozenPrefix(dict(rec["system"]), list(rec["tools"]), str(rec["sha256"]))
         except (KeyError, TypeError, ValueError):
@@ -1116,6 +1263,10 @@ class Session:
         style = rec.get("style")
         self._prefix_style = style if isinstance(style, str) and style else "default"
         self._style_switched = False
+        elide = rec.get("elide")
+        self._elide_min_chars = elide if isinstance(elide, int) and elide >= 0 else None
+        if self._elide_min_chars is None:
+            self._elide_min_chars = T.elide_min_chars(self.config.data)
         log.info("恢复会话 %s：沿用存盘里冻结的前缀 %s", self.store.id, fp.sha256[:12])
         return True
 
@@ -1125,11 +1276,11 @@ class Session:
         if self.prefix is None:
             self._prefix_style = self.style          # 风格段随 system 冻结；之后切换走 <context-update>
             self._style_switched = False
+            if self._elide_min_chars is None:
+                self._elide_min_chars = T.elide_min_chars(self.config.data)
             self.prefix = self.current_prefix()
             # 整个前缀落盘：重启恢复会话时逐字节复用（_restore_prefix），保住前缀缓存
-            self.store.append("prefix", {"sha256": self.prefix.sha256, "model": self.spec.model,
-                                         "compat": self._prefix_compat(), "style": self._prefix_style,
-                                         "system": self.prefix.system, "tools": self.prefix.tools})
+            self._save_prefix()
             if getattr(self, "hooks_role", "main") != "subagent":
                 for text, level in self.system_sources().notices():
                     emit(Notice(text, level))
@@ -1201,6 +1352,62 @@ class Session:
             emit(Notice(f"当前模型 {self.spec.alias} 不支持看图，这 {len(pending)} 张图片没有发给模型（换支持图像的模型，例如 deepseek-flash）。", "warn"))
             return
         self._append({"role": "user", "content": MIDTURN_IMAGE_NOTE, "_kind": "note", "_images": pending})
+
+    def snapshot_image(self, path: str) -> str:
+        """把外部图片复制进本会话自己的 attachments 目录，返回稳定路径。
+
+        为什么必须快照：`_images` 是历史中段，`wire_content()` 每次请求都会重新读文件。
+        如果这里存的是工作区里的原图，用户之后替换/删除它，消息字节就会变，从那条起
+        整段前缀失效；账本上又只会记 unknown。read(as_image=true) 和截图保存的路径
+        都不在会话目录里，所以它们进入待看队列前先落到本会话目录。
+
+        同内容用 sha256 命名，重复 read 同一张图不会堆副本；读不到或不是支持的图片时
+        原样返回，由发送时的 wire_content() 给出明确提示。
+        """
+        src = Path(path)
+        try:
+            from ee.core.attachments import (EXT, MAX_BYTES, MAX_SESSION_ATTACHMENT_BYTES,
+                                             attachments_dir, sniff)
+            d = attachments_dir(self.home, self.store.id)
+            try:
+                src.resolve().relative_to(d.resolve())
+                return str(src)          # 已经是本会话的附件：不再复制
+            except ValueError:
+                pass
+            data = src.read_bytes()
+            mime = sniff(data)
+            if mime is None:
+                return str(src)
+            if len(data) > MAX_BYTES:
+                log.warning("图片超过单张上限，未快照：%s（%d MiB）", src, len(data) // 2**20)
+                return str(src)
+            dest = d / f"{hashlib.sha256(data).hexdigest()[:16]}.{EXT[mime]}"
+            if dest.exists():
+                return str(dest)
+            used = sum(f.stat().st_size for f in d.iterdir() if f.is_file()) if d.is_dir() else 0
+            if used + len(data) > MAX_SESSION_ATTACHMENT_BYTES:
+                log.warning("会话附件目录超过预算，未快照：%s", src)
+                return str(src)
+            d.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            return str(dest)
+        except OSError:
+            return str(src)
+
+    def _note_missing_images(self, missing: set[str]) -> None:
+        """图片缺失集合变化时，把下一次请求归因为 attachment_missing。
+
+        只记一次：同一张图一直缺失，每轮都设 cause 会把真实断点原因冲掉；
+        文件恢复时集合变空，也会记一次（内容从提示文本变回图片）。
+        """
+        current = tuple(sorted(missing))
+        if current == self._missing_images:
+            return
+        self._missing_images = current
+        if self._break_reason is None:
+            self._break_reason = "attachment_missing"
+        if current:
+            log.info("会话 %s：缺失图片 %d 张，下一次请求记 attachment_missing", self.store.id, len(current))
 
     async def _ensure_instructions_async(self) -> None:
         if self._sys_src is None and self.prefix is None:   # 文件读取放到线程里，别卡事件循环
@@ -1509,9 +1716,11 @@ class Session:
         # 回退重试、overflow 重试都绕过那里，只有这里能保证“每一次真实发送”都同步过。
         from ee.core import prune as _prune
         _prune.sync_reasoning(self, profile=spec.profile)
-        elide = T.elide_min_chars(self.config.data)
+        elide = self.elide_min_chars()
+        missing_images: set[str] = set()
         messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to,
-                                                    elide)
+                                                    elide, missing_images=missing_images)
+        self._note_missing_images(missing_images)
         # 断点归因：记下这次要发的输入规模。下一次主对话请求的新增量 = 本次 wire − 上次 wire，
         # 未命中远超新增量就说明中间有东西被改写（压缩 / 换模型 / 修剪），由 UsageStats 判定。
         self.stats.note_wire(C.estimate_tokens(prefix.system["content"]) +
@@ -1983,7 +2192,7 @@ class Session:
                     [self.history[prev[0]]] + self.history[cut:])
         instr = C.compact_update_prompt() if prev is not None else C.compact_prompt()
         messages = ([prefix.system] + T.wire_messages(hist, spec.profile, self._reasoning_strip_to,
-                                                      T.elide_min_chars(self.config.data)) +
+                                                      self.elide_min_chars()) +
                     [{"role": "user", "content": instr}])
         if spec.alias != self.spec.alias and C.estimate_messages(messages) > 0.85 * spec.profile.context_window:
             raise RuntimeError(f"历史放不进压缩模型 {spec.alias} 的上下文窗口")

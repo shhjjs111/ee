@@ -354,11 +354,21 @@ class Thread:
         self.session.config = cfg
         alias = self.session.spec.alias
         try:
-            self.session.spec = cfg.resolve_model(alias)   # 例如价格 / key 改了
-            self.session._drop_client()                    # 旧连接池要登记待释放，不能只丢引用
+            spec = cfg.resolve_model(alias)
         except ValueError:
             self.session.set_model(cfg.default_model)
             self.meta["model"] = self.session.spec.alias
+            return
+        if self.session.spec_changed(spec):
+            # 同别名换了底层模型 / provider / 前缀形状：必须走和用户切模型同一条路径。
+            # 直接给 self.session.spec 赋值会漏掉 model_switch、旧前缀作废和工具表重建，
+            # 真实会话里就出现过 prompt=29375 的模型切换在账上只剩 "unknown"。
+            self.session.set_model(alias)
+            self.meta["model"] = self.session.spec.alias
+        else:
+            # 只是价格 / key / 超时等配置：原地换 spec 和 client，不动前缀、工具与上下文附录。
+            self.session.spec = spec
+            self.session._drop_client()                    # 旧连接池要登记待释放，不能只丢引用
 
     # ------------------------------------------------------------ 状态
     @property

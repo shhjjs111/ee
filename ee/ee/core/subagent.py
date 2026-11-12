@@ -607,6 +607,7 @@ def _merge_usage(parent, child, merged: list | None = None) -> None:
     st, cs = parent.stats, child.stats
     store = getattr(parent, "store", None)
     lp, lc = st.last_prompt, st.last_completion
+    lsp = st.last_server_prompt
     for r in cs.records[merged[0]:]:
         # 按条复制：花费是子代理当时按它实际用的模型单价算好的。
         # role 必须改写成 "subagent"：子代理的前缀和历史都与主对话无关（fork 除外），
@@ -625,3 +626,4 @@ def _merge_usage(parent, child, merged: list | None = None) -> None:
         st.usage_missing += miss
         merged[1] = cs.usage_missing
     st.last_prompt, st.last_completion = lp, lc
+    st.last_server_prompt = lsp

@@ -59,6 +59,14 @@ export function cacheLine(d: ContextBreakdown): string | null {
   const cov = main ? c.main_hit_coverage : c.hit_coverage;
   const label = main ? "主对话缓存命中" : "服务端缓存命中";
   const pct = `${Math.round(rate * 100)}%`;
-  if (cov == null) return `${label} ${pct}`;
-  return `${label} ${pct} · 覆盖 ${Math.round(cov * 100)}% 输入`;
+  const parts = cov == null ? [`${label} ${pct}`] : [`${label} ${pct} · 覆盖 ${Math.round(cov * 100)}% 输入`];
+  // 冷启动/已知原因不计入命中率时，也要让用户知道它们发生过；
+  // 否则重启、换模型、压缩造成的账本变化只能靠 ee usage 看出来。
+  if (c.cold != null && c.cold > 0) {
+    const legacy = c.cold_legacy != null && c.cold_legacy > 0 ? `（旧账本 ${c.cold_legacy}）` : "";
+    parts.push(`冷启动 ${c.cold} 次${legacy}`);
+  }
+  const causes = Object.entries(c.causes ?? {}).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b));
+  if (causes.length) parts.push(`已知原因 ${causes.map(([k, n]) => `${k} ${n}`).join("、")}`);
+  return parts.join(" · ");
 }

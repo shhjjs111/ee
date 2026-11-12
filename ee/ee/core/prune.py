@@ -309,6 +309,10 @@ async def maybe_prune(session, emit) -> int:
     items = plan(session.history, cfg)
     if items:
         apply(session.history, items)
+        # 修剪改的是历史中段：其后所有内容都要重算。不记原因的话，账本上只会剩下
+        # "unknown"，看起来和“有东西在偷偷改写前缀”一样。和 compact 一样，原因只
+        # 生效一次，由下一次主对话请求的 _take_break() 消费。
+        session._break_reason = "prune"
         session.store.append("prune", {"items": [{k: x[k] for k in ("i", "id", "content", "chars", "tokens")}
                                                  for x in items]})
         part = sum(x["tokens"] - C.estimate_tokens(x["content"]) for x in items)

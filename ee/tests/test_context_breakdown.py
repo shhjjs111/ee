@@ -102,6 +102,9 @@ def test_session_breakdown_exposes_cache_hit_and_coverage(ee_home, workspace):
     cache = d["cache"]
     # 服务端没给 hit 字段 → hit_rate/coverage 都应是 None（未知），不是 0
     assert cache["hit"] == 0 and cache["hit_rate"] is None and cache["hit_coverage"] is None
+    # 首条请求没有 baseline：界面要能看到它被算作冷启动，而不是偷偷丢进命中率
+    assert cache.get("cold") == 1
+    assert cache.get("causes") == {}
     # 会话还没开始时（无 stats 记录）也必须是这个形状，不能 KeyError
     d0 = B.for_session(s)
     assert "cache" in d0 and d0["cache"]["hit_rate"] is None

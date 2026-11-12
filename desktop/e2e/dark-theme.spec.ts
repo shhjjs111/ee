@@ -9,6 +9,8 @@
 //   - 正文文字与背景的对比度要够（用 luminance 算，不靠眼估）
 
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
 import { launchIsolated, type IsolatedApp } from "./launch";
 
 let app: ElectronApplication;
@@ -52,14 +54,26 @@ test.beforeAll(async () => {
   win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
-  // 固定为深色，并清掉偏好让首屏是对话优先
+  // 固定为深色，并清掉偏好让首屏是对话优先。
+  // 不能只改 localStorage + class：ee 启动后会 settings/get 后端配置，
+  // 并用其中的 ui.theme 覆盖 store/class。隔离 home 默认是 system，
+  // 然后 applyTheme(system) 会把 .dark 切掉——采样恰好撞上就是 composer 的白底。
+  // 所以先把隔离 home 的配置写成 dark，再 reload，让 store 真正以 dark 初始化。
+  fs.writeFileSync(
+    path.join(iso.home, "config.toml"),
+    'config_version = 2\n\n[ui]\ntheme = "dark"\n',
+    "utf8",
+  );
   await win.evaluate(() => {
     localStorage.removeItem("ee.layout");
     localStorage.removeItem("ee.right");
-    localStorage.setItem("ee.theme", "dark");
-    document.documentElement.classList.add("dark");
   });
-  await win.waitForTimeout(600);
+  await win.reload();
+  await win.waitForLoadState("domcontentloaded");
+  await win.locator("[data-testid=app-shell]").waitFor({ state: "visible", timeout: 60_000 });
+  await win.waitForFunction(() => document.documentElement.classList.contains("dark"), null, { timeout: 10_000 });
+  // 给 transition-colors 一点时间落定，再采样背景色
+  await win.waitForTimeout(300);
 });
 
 test.afterAll(async () => {

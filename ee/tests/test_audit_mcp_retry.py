@@ -37,3 +37,120 @@ def test_retries_before_any_prefix_exists():
 def test_no_retry_after_success_or_when_disabled():
     assert _should_attach_mcp(done=True, enabled=True, has_prefix=False, tool_names=[]) is False
     assert _should_attach_mcp(done=False, enabled=False, has_prefix=False, tool_names=[]) is False
+
+
+def test_late_mcp_attach_refreezes_prefix(ee_home, workspace, monkeypatch):
+    """首回合连不上、次回合连上：新工具必须真的进入下一次请求的 tools。
+
+    只修 `_should_attach_mcp` 不够：它让第二次连接发生了，但 `_sample()` 发的仍是
+    第一回合冻结的 `prefix.tools`，模型收不到 mcp__* schema，这个会话等于白连。
+    """
+    from conftest import collect, finish, make_session, run, text_chunks
+
+    class Cfg:
+        name = "fake"
+        trusted = True
+
+    class Handle:
+        server = "fake"
+        conn_id = "fake:1"
+
+    class State:
+        def __init__(self, status, tools=None):
+            self.status = status
+            self.error = "down" if status == "error" else ""
+            self.tools = tools or []
+            self.handle = Handle()
+            self.cfg = Cfg()
+
+        def summary(self):
+            return {"name": "fake", "status": self.status, "tools": [], "server_info": {},
+                    "conn_id": self.handle.conn_id, "cwd": ""}
+
+    class Mgr:
+        def __init__(self):
+            self.calls = 0
+
+        async def connect_all(self, data, cwd):
+            self.calls += 1
+            if self.calls == 1:
+                return [State("error")]
+            return [State("ready", [{"name": "echo", "description": "回声",
+                                      "inputSchema": {"type": "object", "properties": {}}}] )]
+
+    mgr = Mgr()
+    monkeypatch.setattr("ee.mcp.manager.get_manager", lambda: mgr)
+    monkeypatch.setattr("ee.mcp.config.load_servers",
+                        lambda data, cwd: ([type("S", (), {"enabled": True, "name": "fake", "trusted": True})()], []))
+
+    s, fake = make_session(workspace, [
+        text_chunks("一") + finish("stop", prompt=100_000, hit=0),
+        text_chunks("二") + finish("stop", prompt=105_000, hit=0),
+    ])
+    run(collect(s, "一"))
+    assert not any(n.startswith("mcp__") for n in s.tool_map)
+
+    run(collect(s, "二"))
+    names = [t["function"]["name"] for t in fake.calls[-1]["tools"]]
+    assert "mcp__fake__echo" in names, "第二次请求仍发旧 prefix.tools，MCP 工具对模型不可用"
+    assert "mcp__fake__echo" in [t["function"]["name"] for t in s.prefix.tools]
+    rec = s.stats.records[-1]
+    assert rec.get("break") == "mcp_attach" or rec.get("cause") == "mcp_attach"
+
+
+def test_new_mcp_server_hot_plugs(ee_home, workspace, monkeypatch):
+    """会话已有 MCP 工具后，设置里新增第二个服务器也应生效，不必新开对话。"""
+    from conftest import collect, finish, make_session, run, text_chunks
+
+    servers = ["first"]
+
+    class Srv:
+        def __init__(self, name):
+            self.name = name
+            self.key = name
+            self.enabled = True
+            self.trusted = True
+
+    class Handle:
+        def __init__(self, name):
+            self.server = name
+            self.conn_id = name + ":1"
+
+    class State:
+        def __init__(self, name):
+            self.status = "ready"
+            self.error = ""
+            self.tools = [{"name": "echo", "description": name,
+                           "inputSchema": {"type": "object", "properties": {}}}]
+            self.handle = Handle(name)
+            self.cfg = Srv(name)
+
+        def summary(self):
+            return {"name": self.cfg.name, "status": self.status, "tools": [], "server_info": {},
+                    "conn_id": self.handle.conn_id, "cwd": ""}
+
+    class Mgr:
+        async def connect_all(self, data, cwd):
+            return [State(name) for name in servers]
+
+    monkeypatch.setattr("ee.mcp.manager.get_manager", lambda: Mgr())
+    monkeypatch.setattr("ee.mcp.config.load_servers",
+                        lambda data, cwd: ([Srv(name) for name in servers], []))
+
+    s, fake = make_session(workspace, [
+        text_chunks("一") + finish("stop", prompt=1_000, hit=0),
+        text_chunks("二") + finish("stop", prompt=1_100, hit=900),
+        text_chunks("三") + finish("stop", prompt=1_200, hit=1_000),
+    ])
+    run(collect(s, "一"))
+    assert "mcp__first__echo" in s.tool_map
+
+    servers.append("second")
+    run(collect(s, "二"))
+    names = [t["function"]["name"] for t in fake.calls[-1]["tools"]]
+    assert "mcp__second__echo" in names
+    assert "mcp__first__echo" in names, "热插拔第二个服务器不能把第一个丢掉"
+    assert "mcp__second__echo" in [t["function"]["name"] for t in s.prefix.tools]
+    assert "mcp__first__echo" in [t["function"]["name"] for t in s.prefix.tools]
+    rec = s.stats.records[-1]
+    assert rec.get("cause") == "mcp_change" or rec.get("break") == "mcp_change"

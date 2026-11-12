@@ -178,6 +178,9 @@ class UsageStats:
     cost_known: bool = True
     last_prompt: int = 0
     last_completion: int = 0
+    # 上一次主对话的服务端 prompt（只由拿到了 usage 的请求更新）。用来算 server_new：
+    # 服务端计数的相邻差分，比 wire 估算更接近「这次真正新增了多少」。
+    last_server_prompt: int = 0
     usage_missing: int = 0
     currency: str = "¥"
     # 断点归因（P0-1）：上一次主对话请求估算的输入 token 数，以及本次请求待消费的那份。
@@ -220,13 +223,32 @@ class UsageStats:
         baseline = self.last_wire_tokens
         new = max(0, wire - baseline) if baseline > 0 else 0
         self.last_wire_tokens = wire
-        extra: dict = {"wire": wire, "new": new}
+        extra: dict = {"wire": wire, "new": new, "baseline": baseline}
+        if baseline > 0 and wire < baseline:
+            # new==0 的另一种来源：历史/估算变小（取消、失败重试、上次 note_wire 没落账）。
+            # 它不等于冷启动，但仍值得标出来，避免和“真的没有新增 token”混在一起。
+            extra["shrink"] = True
+        if baseline <= 0:
+            # 不能只留下 new==0：它和“wire 估算变小”长得一模一样。显式记 cold，
+            # cache_report 与压缩水位据此排除，才不会把一次重启当成“前缀不稳”。
+            extra["cold"] = True
+        if break_reason:
+            # 已知原因始终留下。原来 baseline==0 或 gap 没超过阈值时，
+            # model_switch / compact / prune 会被静默丢掉，账上只剩 unknown 或什么都没有。
+            extra["cause"] = break_reason
         if hit is not None and prompt:
             gap = max(0, int(prompt) - int(hit))
             extra["gap"] = gap
+            # new 是 wire 估算差；服务端 prompt 的相邻差分更准（没有 tokenizer 偏差）。
+            # 有上一次主对话的服务端 prompt 时优先用它，没有才退回 wire。
+            server_new = None
+            if self.last_server_prompt > 0:
+                server_new = max(0, int(prompt) - int(self.last_server_prompt))
+                extra["server_new"] = server_new
+            growth = server_new if server_new is not None else new
             # 没有基线时不断点：续跑/重启后的首请求与服务端缓存是否还热无关己，
             # 两者无法区分，此时硬判会把“进程刚起”记成 ee 自己造的断点。
-            if baseline > 0 and gap > new * 1.5 + 1000:
+            if baseline > 0 and gap > growth * 1.5 + 1000:
                 extra["break"] = break_reason or "unknown"
                 if not break_reason:
                     # 归因未命中原因时最需要的一项：hit 只有很小一块，说明服务端在最前面
@@ -278,6 +300,10 @@ class UsageStats:
         # 没有 role 的老记录按主对话处理（保持本字段引入时的行为）。
         if (r.get("role") or "main") == "main":
             self.last_prompt, self.last_completion = p, c
+            # usage_missing 的 prompt=0 不能把上一次的服务端基线抹掉：否则下一条请求
+            # 又退回到 wire 估算，断点判定跟着抖。
+            if p > 0:
+                self.last_server_prompt = p
         if h is not None:
             self.hit += h
             self.hit_known_prompt += p
@@ -323,10 +349,12 @@ class UsageStats:
         不是「前缀稳不稳」的证据。把它算进来会让水位调节变成正反馈——压缩造成断点 → 命中率
         看起来低 → 水位下调 → 压缩更频繁 → 更多断点。实测真实 DeepSeek 会话的同一段历史：
         含断点 93.01%、排除断点 99.48%，对应水位 126k 与 168k，差一整次压缩。
+        没有 wire 基线的冷启动（`cold`）也排除：首次请求 / 重启首发与「前缀是否稳定」无关，
+        把它算进来会让一次长会话重启直接把水位压到 0.9。
         样本不足时返回 None，调用方据此「不动」。
         """
         recs = [r for r in reversed(self.records)
-                if (r.get("role") or "main") == "main" and not r.get("break")][:max(1, window)]
+                if (r.get("role") or "main") == "main" and not r.get("break") and not r.get("cold")][:max(1, window)]
         known = [r for r in recs if r.get("hit") is not None]
         if len(known) < 5:
             return None

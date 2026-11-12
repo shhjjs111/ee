@@ -29,7 +29,10 @@ class ScreenshotTool(Tool):
         except CaptureUnavailable as e:
             raise ToolError(str(e))
         path = await asyncio.to_thread(hub.save, png)
-        ctx.state.pending_images.append(str(path))
+        # 截图目录会被保留策略清理；进入历史前先复制到会话自己的 attachments，
+        # 保证这条消息以后每轮发送的字节不变。
+        snap = getattr(sess, "snapshot_image", None)
+        ctx.state.pending_images.append(snap(str(path)) if snap is not None else str(path))
         w, h = png_size(png)
         size = f"{w}×{h}" if w and h else "尺寸未知"
         return ToolResult(

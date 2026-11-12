@@ -647,6 +647,11 @@ export type ContextBreakdown = {
     main_hit_rate?: number | null;
     main_hit_coverage?: number | null;
     main_requests?: number;
+    /** 冷启动/无基线请求数；legacy 是旧账本推断出来的那部分。 */
+    cold?: number;
+    cold_legacy?: number;
+    /** 已知断点原因计数：compact / prune / mcp_attach / mcp_change / model_switch / prefix_migrated... */
+    causes?: Record<string, number>;
   };
   compactions: number;
   frozen: boolean;

@@ -304,7 +304,9 @@ def test_close_kills_the_wrapped_server_not_just_the_cmd_shell(tmp_path):
         assert children, "没拿到 .CMD 包装器的子进程，这条用例就失去意义了"
         await mgr.shutdown()
         assert wrapper.returncode is not None
-        for _ in range(20):                      # 给 taskkill 一点时间
+        # 给 taskkill / Windows 进程退出留足时间。并行跑全量时机器负载高，
+        # taskkill 返回后子进程仍可能在退出中；5 秒窗口偶发误报，15 秒不影响正常路径。
+        for _ in range(60):
             if not any(_pid_alive(c) for c in children):
                 break
             await asyncio.sleep(0.25)

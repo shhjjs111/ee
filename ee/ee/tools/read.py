@@ -124,7 +124,11 @@ class ReadTool(Tool):
                         f"{path} 不能作为图片发送：文件头是{_describe_head(head)}，"
                         f"不是 JPEG/PNG/GIF/WebP（扩展名 {path.suffix} 说明不了格式）。"
                         "要发图请先转成 PNG 或 JPEG；如果它其实是文档，直接用 read（不带 as_image）读文字。")
-                ctx.state.pending_images.append(str(path))
+                # 快照到会话目录：这张图会成为历史中段，之后工作区里的源文件被替换/删除
+                # 不能让消息字节跟着变（否则从那条起整段前缀失效）。
+                sess = (ctx.extra or {}).get("session")
+                snap = getattr(sess, "snapshot_image", None)
+                ctx.state.pending_images.append(snap(str(path)) if snap is not None else str(path))
                 return ToolResult(
                     f"[图片已登记] {path} 将在下一轮作为图片内容发送给模型。"
                     "（当前这一轮模型只能看到这段文字，下一轮才能真正看到图片。）",

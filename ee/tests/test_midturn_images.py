@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
-from conftest import collect, finish, make_session, run, text_chunks, tool_chunks
+from conftest import FakeClient, collect, finish, make_session, run, text_chunks, tool_chunks
 
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
@@ -62,6 +63,58 @@ def test_no_image_block_when_model_has_no_vision(workspace):
 
     assert _image_blocks(fake.calls[1]) == [], "不支持看图的模型不该收到 image 块"
     assert any("不支持看图" in (getattr(e, "text", "") or "") for e in events)
+
+
+def test_source_image_can_disappear_without_changing_history_bytes(workspace, ee_home):
+    """图片进入历史后源文件被删：消息字节不能变，否则从那里起整段前缀失效。"""
+    from ee.config import load_config
+    from ee.core.session import Session
+
+    png = workspace / "shot.png"
+    png.write_bytes(PNG)
+    script = [
+        tool_chunks(0, "c1", "read", {"path": str(png), "as_image": True}) + finish("tool_calls", prompt=1_000),
+        text_chunks("看完了") + finish("stop", prompt=1_200, hit=1_000),
+        text_chunks("继续") + finish("stop", prompt=1_300, hit=1_100),
+    ]
+    fake = FakeClient(script)
+    s = Session(load_config(workspace), cwd=workspace, client=fake, persist=False, home=ee_home)
+
+    run(collect(s, "读一下这张图"))
+    meta = [m for m in s.history if m.get("_images")][-1]
+    snap = Path(meta["_images"][0])
+    assert snap.exists() and snap.read_bytes() == PNG
+    assert str(snap).startswith(str(ee_home)), "外部图片没有快照到会话目录"
+
+    png.unlink()                                  # 源文件消失
+    run(collect(s, "继续"))
+    blocks = _image_blocks(fake.calls[-1])
+    url = next(b["image_url"]["url"] for b in blocks[0] if b.get("type") == "image_url")
+    assert base64.b64decode(url.split(",", 1)[1]) == PNG, "源文件删除改变了历史中的图片字节"
+
+
+def test_missing_image_is_attributed(workspace):
+    """历史里的图片缺失时，下一次真实请求要记 attachment_missing，而不是落成 unknown。"""
+    s, _ = make_session(workspace, [text_chunks("ok") + finish("stop")])
+    missing = workspace / "deleted.png"
+    s.history.append({"role": "user", "content": "看这张图", "_images": [str(missing)]})
+
+    run(collect(s, "继续"))
+    rec = s.stats.records[-1]
+    assert rec.get("cause") == "attachment_missing"
+
+
+def test_snapshot_respects_session_budget(workspace, ee_home, monkeypatch):
+    """会话附件预算满了就不复制，避免长会话把磁盘塞满。"""
+    from ee.core import attachments as A
+    from ee.config import load_config
+    from ee.core.session import Session
+
+    png = workspace / "shot.png"
+    png.write_bytes(PNG)
+    monkeypatch.setattr(A, "MAX_SESSION_ATTACHMENT_BYTES", 1)
+    s = Session(load_config(workspace), cwd=workspace, persist=False, home=ee_home)
+    assert s.snapshot_image(str(png)) == str(png)
 
 
 def test_two_images_share_one_meta_message(workspace):

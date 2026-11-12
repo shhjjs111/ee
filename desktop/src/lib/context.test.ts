@@ -77,4 +77,17 @@ describe("context", () => {
       "主对话缓存命中 97%",
     );
   });
+
+  it("展示冷启动和已知原因，不把它们塞进命中率", () => {
+    expect(
+      cacheLine(
+        bd({
+          cache: {
+            hit: 500, hit_rate: 0.5, hit_coverage: 0.8, cold: 2, cold_legacy: 1,
+            causes: { model_switch: 1, compact: 2 },
+          },
+        }),
+      ),
+    ).toBe("服务端缓存命中 50% · 覆盖 80% 输入 · 冷启动 2 次（旧账本 1） · 已知原因 compact 2、model_switch 1");
+  });
 });
