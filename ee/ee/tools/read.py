@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ee.core.coerce import as_int
 from ee.tools.base import Tool, ToolContext, ToolError, ToolResult, rel
 from ee.tools.fileops import read_text
 
@@ -40,7 +41,7 @@ def _scan_window(path, offset: int, limit: int) -> tuple[list[str], int]:
     from ee.tools.textdecode import _utf8_prefix
     out: list[str] = []
     total = 0
-    with open(path, "rb") as f:
+    with open(path, "rb") as f:  # pi-lens-ignore: python-path-traversal, unchecked-throwing-call-python -- path 已由 ToolContext.resolve 约束，读取错误由工具层统一处理
         head = f.read(65536)
         if b"\x00" in head[:8192]:
             raise ToolError(f"{path} 看起来是二进制文件，不能按文本读")
@@ -107,8 +108,8 @@ class ReadTool(Tool):
             more = f"\n…（共 {len(items)} 项，只列前 500）" if len(items) > 500 else ""
             return ToolResult("\n".join(lines) + more, summary=f"List {rel(path, ctx.cwd)}",
                               meta={"kind": "list", "path": rel(path, ctx.cwd), "files": lines[:200], "total": len(items)})
-        offset = max(1, int(args.get("offset") or 1))
-        limit = max(1, int(args.get("limit") or DEFAULT_LIMIT))
+        offset = max(1, as_int(args.get("offset"), 1))
+        limit = max(1, as_int(args.get("limit"), DEFAULT_LIMIT))
         # 图片：默认提示用 as_image=true 读视觉内容；显式传参则登记进待看队列，
         # 下一轮作为 image_url 块注入 user 消息（tool 结果是字符串，无法本轮带图）。
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
@@ -117,7 +118,7 @@ class ReadTool(Tool):
                 # _page1.png 的 XPS 会被当成 png 发出，上游回 400 拒整条请求，而这条
                 # 消息随历史每轮重发，会话从此永久卡死。所以发送前按字节验一次。
                 from ee.core.attachments import sniff
-                with open(path, "rb") as fh:
+                with open(path, "rb") as fh:  # pi-lens-ignore: python-path-traversal, unchecked-throwing-call-python -- 工具显式读取用户指定文件，path 已存在检查
                     head = fh.read(HEAD_BYTES)
                 if sniff(head) is None:
                     raise ToolError(

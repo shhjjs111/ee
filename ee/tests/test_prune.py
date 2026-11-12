@@ -139,13 +139,13 @@ def test_reasoning_strip_cursor_survives_reload(ee_home, workspace):
         {"kind": "message", "message": {"role": "assistant", "content": "", "reasoning": "r2"}},
         {"kind": "reasoning_strip", "to": 2},
     ]
-    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")  # pi-lens-ignore: python-path-traversal -- pytest tmp_path
     d = SessionStore.load(path)
     assert d["meta"]["reasoning_strip_to"] == 2
     # 历史重建（压缩 / 回退 / 截断）后旧游标必须作废，否则会指向不存在的消息
     for kind in ({"kind": "reset"}, {"kind": "rewind", "to": 1}, {"kind": "truncate", "from_seq": 1}):
         with_extra = recs + [kind]
-        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in with_extra) + "\n", encoding="utf-8")
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in with_extra) + "\n", encoding="utf-8")  # pi-lens-ignore: python-path-traversal -- pytest tmp_path
         assert "reasoning_strip_to" not in SessionStore.load(path)["meta"], kind["kind"]
 
 

@@ -207,7 +207,7 @@ def test_reload_config_price_only_keeps_prefix_and_does_not_mark_break(ee_home, 
 def _write_jsonl(path, recs):
     import json
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")  # pi-lens-ignore: python-path-traversal -- pytest tmp_path
 
 
 def test_load_messages_fills_orphan_tool_calls(tmp_path):

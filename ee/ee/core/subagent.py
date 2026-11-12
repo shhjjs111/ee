@@ -36,6 +36,7 @@ from ee.core.agents import AgentDef, load_agents
 from ee.core.events import (ApprovalRequest, AssistantMessage, Error, Notice, StepStart, SubagentEnd, SubagentStart,
                             SubagentUpdate, ToolEnd, ToolStart, TurnDone, Usage)
 from ee.core import parallel
+from ee.core.coerce import as_int
 from ee.core.permissions import READONLY_MODES, PermissionPolicy
 from ee.tools.base import Tool, ToolError, ToolResult, ToolState
 
@@ -125,10 +126,10 @@ def fork_history(history: list[dict], call_id: str) -> list[dict]:
 
 def subagent_config(data: dict | None) -> dict:
     sc = {**DEFAULT_SUBAGENT, **((data or {}).get("subagent") or {})}
-    try:
-        sc["max_parallel"] = max(1, min(MAX_PARALLEL_LIMIT, int(sc.get("max_parallel") or 1)))
-    except (TypeError, ValueError):
-        sc["max_parallel"] = DEFAULT_SUBAGENT["max_parallel"]
+    raw = sc.get("max_parallel")
+    # 缺省/空串沿用旧行为（1）；非数字坏值退回默认 3，而不是被当成 1。
+    want = 1 if raw in (None, "") else as_int(raw, DEFAULT_SUBAGENT["max_parallel"])
+    sc["max_parallel"] = max(1, min(MAX_PARALLEL_LIMIT, want))
     sc["worktree"] = bool(sc.get("worktree", True))
     return sc
 
@@ -287,7 +288,7 @@ def subagent_semaphore(parent, sc: dict) -> asyncio.Semaphore:
     单步内成立：第 1 步派了 3 个还没结束，第 2 步又派 3 个，实际 6 个同时跑。
     闸门必须挂在 Session 上，只建一次；max_parallel 变了才重建。
     """
-    want = max(1, int(sc.get("max_parallel") or 1))
+    want = max(1, as_int(sc.get("max_parallel"), 1))
     cur = getattr(parent, "_subagent_sem", None)
     if cur is not None and getattr(parent, "_subagent_sem_limit", None) == want:
         return cur
@@ -331,12 +332,12 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
                              "需要别的模型请去掉 fork")
         fork_hist = fork_history(parent.history, call_id)
 
-    limit = max(1, int(sc.get("max_steps_limit") or 100))
+    limit = max(1, as_int(sc.get("max_steps_limit"), 100))
     # 优先级：调用时显式指定 > 这个 agent 自己定义 > 全局 [subagent].max_steps > 30。
     # 内置 agent 也要读 adef.max_steps——否则「general 给 60 步」这类按类型区分不生效
     # （原来的 kind not in BUILTIN 条件让内置 agent 永远拿全局默认值 30）。
     steps = args.get("max_steps") or adef.max_steps or sc.get("max_steps") or 30
-    steps = max(1, min(limit, int(steps)))
+    steps = max(1, min(limit, as_int(steps, 30)))
 
     read_only = is_read_only(parent, args, adef)
     # 模型：调用时指定 > 子代理定义 > 只读子代理用 roles.explore（D5-9）> 主会话的模型

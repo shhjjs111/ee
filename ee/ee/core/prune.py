@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 
 from ee.core import compaction as C
+from ee.core.coerce import as_float, as_int
 from ee.core.events import Notice
 from ee.core.paths import norm_rel
 
@@ -58,8 +59,8 @@ def settings(data: dict | None) -> dict:
     s = {**DEFAULTS, **((data or {}).get("prune") or {})}
     # 压缩阈值现在也可能是绝对值（compact.max_tokens）：阈值比较按同一尺度做。
     comp_cfg = (data or {}).get("compact") or {}
-    comp = float(comp_cfg.get("threshold", 0.8) or 0.8)
-    comp_cap = int(comp_cfg.get("max_tokens", 0) or 0)
+    comp = as_float(comp_cfg.get("threshold"), 0.8)
+    comp_cap = as_int(comp_cfg.get("max_tokens"))
     try:
         th = float(s.get("threshold") or DEFAULTS["threshold"])
     except (TypeError, ValueError):
@@ -190,7 +191,7 @@ def apply(history: list[dict], items: list[dict]) -> int:
     """把占位写进历史（换新 dict，不原地改；只认 tool_call_id 对得上的）。返回实际修剪条数。用于重放。"""
     n = 0
     for x in items:
-        i = int(x.get("i", -1))
+        i = as_int(x.get("i"), -1)
         if not (0 <= i < len(history)):
             continue
         m = history[i]

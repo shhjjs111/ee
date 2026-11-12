@@ -720,7 +720,8 @@ class Thread:
     async def _consume(self, text: str, images: list[str] | None = None,
                        goal: dict | None = None, allout: dict | None = None) -> None:
         s = self.session
-        assert s is not None
+        if s is None:
+            raise RuntimeError("会话未初始化")
         self.turn_started_at = time.monotonic()
         self.cur_assistant = None
         self.plan_item = None
@@ -811,7 +812,8 @@ class Thread:
         from ee.core.probe import probe as probe_project
 
         s = self.session
-        assert s is not None
+        if s is None:
+            raise RuntimeError("会话未初始化")
         has_goal = bool(goal and goal.get("command"))
         proj = None if has_goal else probe_project(self.cwd)
         if proj is not None and proj.command:
@@ -887,7 +889,8 @@ class Thread:
         from ee.core.goal_feedback import build_feedback, build_first_turn
 
         s = self.session
-        assert s is not None
+        if s is None:
+            raise RuntimeError("会话未初始化")
         spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
                         min_tests=as_int(goal.get("min_tests") or 1),
                         timeout=as_float(goal.get("timeout") or 300.0))
@@ -916,7 +919,8 @@ class Thread:
             与目标判据同样串行；min_tests=1（回归命令通常只覆盖一部分测试，
             不能套用目标判据的 min_tests，否则会把正常的回归子集误判为失败）。
             """
-            assert pass_to_pass
+            if not pass_to_pass:
+                raise RuntimeError("pass_to_pass 未设置")
             sp = GoalSpec(command=pass_to_pass, cwd=cwd or spec.cwd, min_tests=1, timeout=spec.timeout)
             async with lock:
                 v = await judge(sp)
@@ -1065,7 +1069,8 @@ class Thread:
         from ee.core.goal import judge
 
         s = self.session
-        assert s is not None
+        if s is None:
+            raise RuntimeError("会话未初始化")
         if getattr(s.budget, "stop_reason", None):
             return []
         ok, why = await asyncio.to_thread(W.agent_eligible, self.cwd)
@@ -1223,7 +1228,8 @@ class Thread:
         for c in passed:
             diffs[c["id"]] = await asyncio.to_thread(_diff, c)
         s = self.session
-        assert s is not None
+        if s is None:
+            raise RuntimeError("会话未初始化")
         for i in range(len(passed)):
             for j in range(i + 1, len(passed)):
                 x, y = passed[i], passed[j]
@@ -1264,7 +1270,8 @@ class Thread:
         from ee.core.goal import GoalSpec, run_goal
 
         s = self.session
-        assert s is not None
+        if s is None:
+            raise RuntimeError("会话未初始化")
         spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
                         min_tests=as_int(goal.get("min_tests") or 1),
                         timeout=as_float(goal.get("timeout") or 300.0))
