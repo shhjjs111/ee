@@ -139,11 +139,13 @@ def test_real_pyright_returns_fresh_diagnostics_for_current_version(tmp_path):
     d.mkdir()
     f = d / "有错.py"
     f.write_text("x: int = 'hello'\ny = undefined_name\n", encoding="utf-8")
+    assert PYRIGHT is not None            # 运行时由 needs_pyright 保证；这里给静态检查看
 
     async def go():
         mgr = M.LspManager()
         store = D.DiagStore()
         notifier = N.Notifier(store)
+        assert PYRIGHT is not None        # 静态检查窄化不进嵌套函数，这里再声明一次
         spec = Spec("python", command=list(PYRIGHT), available=True)
         try:
             handle = await mgr.acquire(str(d), "python", spec.identity, spec=spec)
@@ -190,5 +192,53 @@ def test_real_pyright_returns_fresh_diagnostics_for_current_version(tmp_path):
             assert "未取得诊断" not in r.output
         finally:
             await mgr.shutdown()
+
+    run(go())
+
+
+@needs_pyright
+def test_production_wiring_gets_diagnostics_without_a_resident_server(tmp_path):
+    """生产接线端到端：`_attach_lsp` 只接线、不启动；`lsp` 工具按需取一次诊断。
+
+    为什么这条比上一条更接近真实缺陷：上一条手工把 manager/notifier 接好，还自己
+    `notifier.default_client = client`——那正是生产代码漏掉的那一行。这里走**生产路径**
+    （`Session._attach_lsp` 接线 → 工具表里那个无参构造的 LspTool），断言：
+    1. 接线后没有任何语言服务器进程；
+    2. 第一次 `lsp` 调用才启动，并且真的拿到本版本诊断；
+    3. 调用结束引用归零（服务器不常驻的前提）。
+    """
+    from ee.config import load_config
+    from ee.core.session import Session
+    from ee.tools.base import ToolContext, ToolState
+
+    d = tmp_path / "接线目录"
+    d.mkdir()
+    f = d / "有错.py"
+    f.write_text("x: int = 'hello'\n", encoding="utf-8")
+
+    cfg = load_config(d)
+    cfg.data.setdefault("lsp", {})["enabled"] = True
+    s = Session(cfg, cwd=d, persist=False)
+    dctx = ToolContext(cwd=d, state=ToolState(), output_dir=d / ".out", extra={"session": s})
+
+    async def go():
+        await s._attach_lsp(lambda _e: None)
+        mgr = s.lsp_manager
+        assert mgr is not None, "LSP 没有接线"
+        assert mgr.stats() == [], "接线阶段就启动了语言服务器（会话常驻的老行为）"
+
+        tool = s.tool_map["lsp"]
+        try:
+            r = await tool.run({"path": str(f)}, dctx)
+        except Exception as e:  # noqa: BLE001
+            if os.environ.get("CI"):
+                raise AssertionError(f"真实 pyright 走生产接线失败（CI 环境固定，属代码缺陷）：{e}") from e
+            pytest.skip(f"pyright-langserver 起不来（本地环境问题）：{e}")
+            return
+        assert r.meta.get("status") == "fresh", r.output
+        assert r.meta.get("clean") is False and "未取得诊断" not in r.output
+        stats = mgr.stats()
+        assert stats and stats[0]["refs"] == 0, "调用结束没有归还引用（服务器会一直常驻）"
+        await s.aclose()
 
     run(go())

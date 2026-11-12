@@ -1,6 +1,6 @@
 # ee 当前路线与实施状态
 
-更新：2026-11-12（会话写盘失败可见：`SessionStore` 记账 + 回调，`Thread` 变成对话内警告 + `summary()["save_error"]`，桌面端横幅与左栏图标；恢复写盘后状态自动清除。见「执行记录（2026-11-12）」）。此前：2026-11-11 稳定性与并发修复 + 类型清理（自动化会话泄漏、删除会话幽灵、RPC 分发/背压、summary 轻量扫描、LSP 并发锁、restart 等待旧后端、会话缓存淘汰、pyright 0/0。见「执行记录（2026-11-11）」与 `research/2026-11-11-type-cleanup-and-lifecycle.md`）；2026-11-08 文件与图片交互（拖入 PDF/Word 等文件插路径给模型自己读、图片灯箱看原图 + 多图切换/缩放/旋转/另存为；11-05~11-08 稳定性批次 118 提交 / 70 fix）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
+更新：2026-11-12（LSP 服务器不再常驻：接线只备管理器，`lsp` 调用时按磁盘内容现取现还；会话写盘失败可见：`SessionStore` 记账 + 回调，`Thread` 变成对话内警告 + `summary()["save_error"]`，桌面端横幅与左栏图标；恢复写盘后状态自动清除。见「执行记录（2026-11-12）」）。此前：2026-11-11 稳定性与并发修复 + 类型清理（自动化会话泄漏、删除会话幽灵、RPC 分发/背压、summary 轻量扫描、LSP 并发锁、restart 等待旧后端、会话缓存淘汰、pyright 0/0。见「执行记录（2026-11-11）」与 `research/2026-11-11-type-cleanup-and-lifecycle.md`）；2026-11-08 文件与图片交互（拖入 PDF/Word 等文件插路径给模型自己读、图片灯箱看原图 + 多图切换/缩放/旋转/另存为；11-05~11-08 稳定性批次 118 提交 / 70 fix）。产品定位：Windows 桌面 AI 编程 Agent；Python 内核 + Electron/React，只支持 OpenAI Chat Completions 协议，不恢复 TUI。
 
 ## 当前执行范围
 
@@ -30,6 +30,49 @@
 | 后置 | 发布 | **tag 发布链路已落地（2026-11-02）**：`release.yml` 推 `v*` tag 即校验版本号→打包→SHA256→建 Release；代码签名明确**不做**（理由见下）；**客户端已接 `electron-updater`（2026-11-02，只后台下载、绝不自动重启）** | 正式发版后才有可更新的 Release（只剩预发布时 `/releases/latest` 是 404，检查必然失败） |
 | 2026-11-11 / 稳定性与并发 | 自动化会话泄漏、删除会话幽灵、RPC 分发/背压、summary 轻量扫描、LSP 并发锁、restart 等待旧后端、会话缓存淘汰、pyright 清零 | **已完成并验证**（后端 2516 passed / 前端 394 / ruff + pyright 0/0） | 交接：`research/2026-11-11-type-cleanup-and-lifecycle.md`；代码 `9138a3e` |
 | 2026-11-12 / 写盘失败可见 | 会话记录写不进去（磁盘满 / 文件被占用）时，界面不再“看起来一切正常”：对话内警告 + 左栏图标 + 摘要字段，恢复后自动撤掉 | **已完成并验证**（后端 2520 passed / 16 skipped / 0 failed；前端 398 passed；ruff 通过；pyright 0/0；tsc 通过；真机 e2e 35 passed / 2 skipped） | `ee/core/store.py`、`ee/core/session.py`、`ee/server/threads.py`、`desktop/src/components/Conversation.tsx`、`Sidebar.tsx`；`ee/tests/test_store_failure.py`（4 例）、`desktop/src/components/SaveErrorBanner.test.tsx`（4 例）、`desktop/e2e/save-error.spec.ts`（真机） |
+| 2026-11-12 / LSP 按需取用 | 语言服务器不再常驻：接线只备管理器，`lsp` 调用时 acquire → didOpen 磁盘当前内容 → 等本版本诊断 → release；缓存按内容指纹校验。顺手修掉「用户级 `~/.ee/config.toml` 被当成项目级配置」对测试的污染 | **已完成并验证**（后端 2531 passed / 16 skipped / 0 failed；ruff 通过；pyright 0/0） | `ee/core/session.py` 的 `_attach_lsp`、`ee/tools/lsp.py`、`ee/config.py` 的 `_BOOT_HOME`；`ee/tests/test_lsp_lazy.py`（5）、`test_lsp_integration.py`（新增生产接线 + 真 pyright 1 例）、`test_config_scope.py`（+1）；方案与实施记录 `plans/2026-11-12-lsp-lazy-acquire.md` |
+
+## 执行记录（2026-11-12，LSP 按需取用：服务器不再常驻）
+
+backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真正的成本是**每会话常驻**——
+`_attach_lsp` 在第一个回合就 acquire 并把句柄握到 `aclose`（refs 恒为 1），manager 的
+120 秒空闲回收永远等不到归零，会话缓存上限 40 就等于最多 40 个语言服务器进程，哪怕模型
+一次诊断都没要过。方案与取舍见 `plans/2026-11-12-lsp-lazy-acquire.md`。
+
+| 改动 | 内容 |
+|---|---|
+| `_attach_lsp` | 只建 manager / store / notifier 并接进 `LspTool`（含 `spec`、`language`），**不 acquire** |
+| `LspTool` | `_current` 先按磁盘内容指纹校验缓存；不命中则 `_refresh`：acquire → 按 uri 绑定 client + `didOpen`/`didChange` 当前内容 → 等本版本诊断（120s 上限）→ `finally` detach + release |
+| 写路径 | 删掉 `_notify_lsp`：服务器不常驻，写后没有 client 可发；下一次 `lsp` 调用按磁盘最新内容自己开 |
+| 顺手 | `lsp.py` 里 5 处裸 `int()` → `as_int`（与同日数字解析口径一致） |
+
+**是否修掉了「服务器不常驻 → 缓存可能是旧内容」**：这是本次最危险的一点，所以缓存命中要求
+`doc.fp == fingerprint(磁盘内容)`。用反证验过：把该条件临时去掉，
+`test_file_changed_on_disk_invalidates_the_cache` 立刻红（返回旧诊断、不再启动进程）。
+
+**行为差异**（设计内）：不查诊断的会话零进程；第一次 `lsp` 调用多付 1–2 秒启动；编辑后
+不再主动推 `didChange`，诊断总是在调用时按磁盘内容现算。
+
+### 顺带修掉的：用户级配置被当成项目级配置
+
+全量跑 `test_skills.py` 出现 3 条红（`profile` 变成 lean、子代理拿不到 `skill` 工具）。
+用 `git stash` 在 HEAD 上复跑确认与本次改动无关：根因是 `test_skills` 的 `uhome` 夹具改了
+`HOME`/`USERPROFILE`，于是 `user_ee_dirs()` 里 `os.path.expanduser("~")` 指向假主目录，
+**真实** `C:\Users\<用户>\.ee` 掉出了排除集 → `load_config` 往上走时把真实
+`~/.ee/config.toml` 当成项目级配置叠了进来（里面正好有 `profile = "lean"`）。
+
+修法：`config.py` 在**导入时**记下 `_BOOT_HOME`，并永远把 `_BOOT_HOME/.ee` 算进用户级目录
+（`conftest` 里那条 autouse 隔离的注释也提到过这个坑）。这既修好了测试污染，也修掉了生产里
+「改过 HOME 的包装脚本/启动器会让用户配置漏成项目配置」的同类风险。
+
+验证：后端全量 `-n 8` **2531 passed / 16 skipped / 0 failed**（131 秒）；`ruff check ee/` 通过；
+`pyright` 0/0。新增 `test_lsp_lazy.py`（5）、`test_lsp_integration.py` 生产接线用例（真 pyright）、
+`test_config_scope.py` 的 `_BOOT_HOME` 契约用例。
+
+保留边界：跨会话共享进程（`plans/...` §4）没做——同一 URI 的文档所有权没有安全默认值；
+`DiagStore` 的 LRU 上限、设置页展示 `LspManager.stats()` 也留到以后；单个 `pyright-langserver`
+的真实 RSS 没量到（`.cmd` 包装器挡了一层），要用「10 个会话各调一次 `lsp`，对比改造前后的
+进程数与总内存」的端到端口径量。
 
 ## 执行记录（2026-11-12，写盘失败不再静默）
 

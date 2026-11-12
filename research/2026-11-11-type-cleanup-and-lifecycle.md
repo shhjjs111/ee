@@ -63,7 +63,12 @@ cd desktop && npm run typecheck                                    # exit 0
    所以 manager 的 120s 空闲 TTL 实际永不生效，会话缓存上限 40 → 最多 40 个常驻进程。
    共享还要额外解决「同一 URI 的文档所有权」（两个会话各自 didOpen 同一文件、内容不同时
    会拿到别人的版本的诊断），没有安全的默认答案。方案见 `plans/2026-11-12-lsp-lazy-acquire.md`：
-   改成按需 acquire + 用完 release（不查诊断的会话零进程），实施待下一轮。
+   改成按需 acquire + 用完 release（不查诊断的会话零进程）。
+   → **2026-11-12 已实施并验证**：`_attach_lsp` 只接线、`lsp` 工具按需取并 `didOpen`
+   磁盘当前内容、结束 `release`；缓存按内容指纹校验（文件被别的途径改过就重新取）。
+   删掉了写路径上的 `_notify_lsp`（服务器不常驻，写后没有 client 可发；下一次调用自己开）。
+   测试：`ee/tests/test_lsp_lazy.py`（5）+ `test_lsp_integration.py` 新增生产接线用例（真 pyright）。
+   细节见 `plans/2026-11-12-lsp-lazy-acquire.md` §6。
 4. pi-lens 的提示（2026-11-12 部分处理）：~~部分 `int()` 无 try~~、~~Protocol 方法的 `...` 体（有意为之）~~。
    `int()`/`float()` 那类已集中到 `ee/core/coerce.py` 的 `as_int`/`as_float`（`threads.py` + `session.py` 共 44 处），
    并顺手修好一个真缺陷（会话文件里 `seq: "abc"` 会让 `thread/get` 500，`test_coerce.py` 有 RED 验证）。

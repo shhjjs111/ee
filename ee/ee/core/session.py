@@ -215,6 +215,7 @@ class Session:
         self.lsp_store = None
         self.lsp_notifier = None
         self.lsp_manager = None
+        self.lsp_spec = None            # 启动规格；工具按需 acquire 时用（服务器不常驻）
         self._lsp_done = False
         self._lsp_handle = None
         self._lsp_root = ""
@@ -930,9 +931,8 @@ class Session:
         """首次回合把 LSP 管理器 / 诊断缓存 / 变更通知接到会话上（只做一次）。
 
         为什么必须有这一步：`LspTool` 在工具表里是**无参构造**的，它的 manager 和
-        store 都为空；`_store_from_ctx` 从 `session.lsp_store` 取，而 `_notify_lsp`
-        又要 `session.lsp_notifier`。这三者原先只在 `__init__` 里被置成 None，
-        全仓没有赋值点——工具永远报「没有启用」，写后通知永远在第一行 return。
+        store 都为空；`_store_from_ctx` 从 `session.lsp_store` 取。三者原先只在
+        `__init__` 里被置成 None，全仓没有赋值点——工具永远报「没有启用」。
         **假服务器测试测不到这一层**，因为它们手工 `LspTool(manager=..., store=store)`。
 
         失败一律只出提示，不影响回合：诊断是辅助信息，缺了它编辑仍要能正常干活。
@@ -971,23 +971,16 @@ class Session:
         store = D.DiagStore()
         notifier = N.Notifier(store)
 
-        if spec.available:
-            try:
-                handle = await mgr.acquire(str(self.cwd), language, spec.identity, spec=spec)
-                client = handle.entry.client
-                # 这一行是整条链的接口：没有它就永远收不到诊断。
-                client.on_notification["textDocument/publishDiagnostics"] = (
-                    lambda params: store.on_publish(params))
-                self._lsp_handle = handle
-                self._lsp_root = str(self.cwd)
-                self._lsp_language = language
-                notifier.attach("", client)      # 占位，真正的 uri 在首次通知时绑
-            except Exception as e:  # noqa: BLE001
-                emit(Notice(f"LSP 启动失败（忽略，编辑不受影响）：{e}", "warn"))
-
+        # **不在这里 acquire**：服务器按需取、用完就还（见 tools/lsp.py 的 _refresh）。
+        # 原先首个回合就启动一个进程并握到 aclose，让 manager 的 120 秒空闲回收永远
+        # 等不到 refs 归零——会话缓存上限 40 时最多 40 个常驻语言服务器，哪怕模型
+        # 一次诊断都没要。启动失败的提示改在工具调用时给出（那时才知道真用得到）。
         self.lsp_manager = mgr
         self.lsp_store = store
         self.lsp_notifier = notifier
+        self.lsp_spec = spec
+        self._lsp_language = language
+        self._lsp_root = str(self.cwd)
         # 工具表里的 LspTool 是无参构造的，把真实能力补给它。只改 LspTool
         # （按类型判，不按名字），否则“给任意 Tool 塞 manager 属性”只能靠动态属性。
         from ee.tools.lsp import LspTool
@@ -995,6 +988,9 @@ class Session:
             if isinstance(t, LspTool):
                 t.manager = mgr
                 t.store = store
+                t.notifier = notifier      # didOpen / didChange / uri→client 绑定
+                t.spec = spec              # 按需 acquire 需要的启动规格
+                t.language = language
                 t.root = str(self.cwd)
 
     async def _attach_mcp(self, emit) -> None:
@@ -1717,42 +1713,12 @@ class Session:
         self._ok[cid] = res.ok
         details = finalize_details(name, res, as_int((time.monotonic() - t0) * 1000), trunc)
         emit(ToolEnd(cid, name, res.ok, res.output, res.summary or summary, res.diff, details))
-        # LSP（D6-2 / T9）：写成功后同步文件变更，让下一次取诊断拿到新版本。
-        # 只记日志、不影响工具结果——诊断失败不能反噬已经成功的写入。
-        if res.ok and name in ("write", "edit", "apply_patch"):
-            try:
-                await self._notify_lsp(args, res)
-            except Exception as e:  # noqa: BLE001
-                log.info("LSP 变更通知失败（忽略）：%s", e)
+        # LSP 诊断的同步已不在写路径上：服务器不常驻，下一次 `lsp` 调用会按磁盘当前
+        # 内容自己 didOpen，拿到的永远是新版本（见 tools/lsp.py 的 _current）。
         if res.meta.get("kind") == "plan":
             emit(PlanUpdate(res.meta.get("items", [])))
         if res.ok and res.meta.get("end_turn"):
             self._end_turn = True
-
-    async def _notify_lsp(self, args: dict, res) -> None:
-        """把写成功后的文件内容同步给语言服务器（didOpen / didChange）。
-
-        没启用 LSP、没绑到服务器、文件读不出来——都直接返回，不抛。
-        调用方已经把它们包在 try 里了，这里再稳一层：诊断是辅助信息，
-        不能因为同步失败就让用户以为"文件没写成功"。
-        """
-        if self.lsp_notifier is None:
-            return
-        from ee.tools.lsp import uri_for
-
-        raw = (res.meta or {}).get("path") or args.get("path") or ""
-        if not raw:
-            return
-        path = self.cwd / raw if not Path(raw).is_absolute() else Path(raw)
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return
-        uri = uri_for(path)
-        lang = _language_of(path)
-        if self.lsp_notifier.client_for(path=str(path), uri=uri) is None:
-            return
-        await self.lsp_notifier.changed(str(path), uri, text, language=lang)
 
     async def _run_watched(self, cid: str, name: str, tool, args: dict, emit, pre) -> ToolResult:
         """跑一个工具调用，并在它长时间不返回时给界面发进度（P0-2）。
@@ -2230,14 +2196,6 @@ def _friendly_error_raw(e: Exception) -> str:
 
 
 # 扩展名 → LSP languageId。只覆盖 MVP 支持的语言（python / typescript）。
-_LANG_BY_SUFFIX = {
-    ".py": "python", ".pyi": "python",
-    ".ts": "typescript", ".tsx": "typescriptreact",
-    ".js": "javascript", ".jsx": "javascriptreact",
-    ".json": "json",
-}
-
-
 def _attach_suggestion(ev, *, decision=None, tool: str = "", args: dict | None = None,
                        mode: str = "default", config: dict | None = None):
     """把自动审批的**建议**挂到 ApprovalRequest 上（T10-c）。
@@ -2263,10 +2221,6 @@ def _attach_suggestion(ev, *, decision=None, tool: str = "", args: dict | None =
     except Exception as e:  # noqa: BLE001  建议失败不影响审批
         log.info("自动审批建议计算失败（忽略）：%s", e)
     return ev
-
-
-def _language_of(path: Path) -> str:
-    return _LANG_BY_SUFFIX.get(path.suffix.lower(), "plaintext")
 
 
 # LSP 只支持 python / typescript（方案明确「不扩泛语言框架」）。

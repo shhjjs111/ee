@@ -1,6 +1,6 @@
 # LSP：从「每个会话常驻一个进程」改成按需取用
 
-状态：**设计，未实现**。
+状态：**已实施并验证**（2026-11-12，见文末「实施记录」）。
 日期：2026-11-12
 相关：`roadmap-current.md`（2026-11-12 执行记录）、`2026-11-11-type-cleanup-and-lifecycle.md` 的 backlog 第 3 条、`2026-10-29-d6-2-lsp-tasks.md`、`ee/ee/core/lsp/{manager,diagnostics,notify}.py`、`ee/ee/tools/lsp.py`
 
@@ -107,3 +107,40 @@ backlog 原写的是「跨会话共享 LSP 进程」，审计后结论要改：*
 时序变化；同时 `test_lsp_integration.py` 依赖真实 `pyright-langserver`，本机有、CI 靠
 `npm i -g pyright`，两边行为要分别确认。先落方案，下一轮按 §3.3 的表逐条做，避免把
 「LSP 不再常驻」和「诊断语义变了」混在一次改动里。
+
+---
+
+## 6. 实施记录（2026-11-12）
+
+按 §3.1 落地，三处改动：
+
+| 文件 | 改了什么 |
+|---|---|
+| `ee/ee/core/session.py` | `_attach_lsp` 不再 acquire：只建 manager / store / notifier，并把 `spec`、`language`、`notifier` 一起接进工具表里的 `LspTool`。删掉 `_notify_lsp` 与它在写路径上的调用（服务器不常驻，写后没有 client 可发；下一次 `lsp` 调用按磁盘内容自己 `didOpen`）。 |
+| `ee/ee/tools/lsp.py` | 新增 `_current`（先比对磁盘内容指纹，命中才用缓存）/ `_refresh`（acquire → attach + didOpen/didChange → 等本版本 → `finally` detach + release）/ `_wait`。等待上限 `WAIT_SECONDS=120`、轮询 0.15s。顺手把 5 处裸 `int()` 换成 `as_int`（与 2026-11-12 的数字解析口径一致）。 |
+| `ee/ee/core/lsp/manager.py` | 未改：per-key 锁与 `refs` 回收逻辑照旧，只是现在 refs 真能归零了。 |
+
+**一个差点写错的结论**：审计时我以为旧生产接线漏了 `notifier.default_client = client`，导致
+`didOpen` 从没发出去（集成测试自己设了它）。实测否决了这个判断——`attach("", client)` 把 client
+存在空 uri 键上，而 `client_for` 的 path 分支是 `self._clients.get(self._paths.get(path, ""))`，
+path 没登记时正好取到 `_clients[""]`。**旧路径能工作，但靠的是这个空字符串巧合**；集成测试
+（直接 `attach(uri, client)`）反而必须手动设 `default_client`。现在按 uri 显式绑定并设
+`default_client`，两条分支都不再依赖巧合。
+
+**行为差异**（都是设计内的）：
+- 不查诊断的会话：零进程（旧行为是第一个回合就起）。
+- 第一次 `lsp` 调用：多付 1–2 秒启动；同一回合的第二次调用命中缓存或复用池。
+- 编辑后不主动推 `didChange`：`lsp` 调用时按磁盘当前内容开，拿到的永远是新版本。
+
+**测试**（`ee/tests/test_lsp_lazy.py` 5 例 + 集成 1 例）：
+- 接线不启动进程；首次调用才启动且结束即回收；
+- 内容没变 → 不重新启动（缓存命中）；
+- **文件在别的途径被改过 → 旧 fresh 作废、重新取**（把指纹校验临时去掉，这条立刻红——已验）；
+- 启动失败 → `unavailable`，不抛、不泄漏引用；
+- 真 pyright 走**生产接线**（`Session._attach_lsp` → 工具表里的无参 `LspTool`）拿到诊断，
+  且 `stats()[0]["refs"] == 0`。
+
+**仍未做**：§4 的跨会话共享（文档所有权那一步没动）；`DiagStore` 的 LRU 上限；设置页展示
+`LspManager.stats()`。单个 `pyright-langserver` 的真实 RSS 没量到（本机 `pyright-langserver`
+是 `.cmd` 包装器，`tasklist` 拿到的是 cmd 的 8.3MB，node 子进程的统计没取到）——下次要量就用
+「跑 10 个会话各发一次 `lsp`，对比改造前后的进程数与总内存」这种端到端口径。
