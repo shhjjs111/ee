@@ -170,7 +170,7 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 | `unreachable-except`（2 条） | **假阳性**：分析器认为 `except asyncio.CancelledError` 能吃下后面的 `except Exception`/`BaseException`，实际 3.8+ 的 `CancelledError` 属 `BaseException`。已用 `lens_diagnostic_mark` 标 false-positive |
 | `inline-styles`（2 条 hint） | 不动：标题栏高度 / Logo path 依赖运行时值 |
 | pyright 在 `ee/tests/*` 上的 18 条阻断 | 产品口径本来就是「pyright 只查 `ee/ee`」（`pyrightconfig.json` 的 `exclude`），但 pi-lens 按文件问 LSP 会绕过它。`​.pi-lens.json` 给这五条 pyright 规则加了 `ignorePaths: ["ee/tests/**"]`；验证：那四个测试文件 18 条 → 0，而 `ee/ee` 照旧报。口径写进了 `ee/docs/pyright.md` |
-| `typos`（1 条 hint） | 真改了：`test_exa_unparseable_falls_back` → `…unparsable…`（函数名重命名，pytest 发现机制不变，20 例照旧通过） |
+| `typos`（1 条 hint） | 真改了：测试函数名里那个拼错的词改成 `unparsable`（函数名重命名，pytest 发现机制不变，20 例照旧通过；旧名见 git 历史） |
 
 结论：面板上的可行动项就剩上表里「不动」的那几类，它们的理由在 backlog；没有在 `.pi-lens.json` 里全局降级/禁用任何规则，新出现的同类照样会报（只有 `ee/tests/**` 上的那五条 pyright 规则和 `ee/tests/` 里的假密钥是显式豁免，两者都与文档口径一致）。
 
