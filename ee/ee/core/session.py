@@ -387,11 +387,11 @@ class Session:
         await self._close_lsp()
 
     async def _close_lsp(self) -> None:
-        """释放 LSP 子进程。
+        """收掉本会话的 LSP 管理器（会话销毁 / 服务退出时）。
 
-        每个会话都 new 一个 LspManager 并 acquire 一个语言服务器进程，但 release /
-        shutdown 原本全仓无调用：每个会话泄漏一个 lsp 子进程（报告 P1-11）。
-        会话销毁 / 服务退出时在这里收掉；重复调用安全。
+        服务器不再常驻（`lsp` 工具每次调用 acquire → 用完 release，见 tools/lsp.py），
+        所以这里主要是安全网：把可能残留的池子与 reaper 关掉。`_lsp_handle` 那条分支
+        留给「将来又改成常驻持有」的情况，release 幂等，不影响现状。重复调用安全。
         """
         mgr = getattr(self, "lsp_manager", None)
         handle = getattr(self, "_lsp_handle", None)
