@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 from ee.core import compaction as C
+from ee.core.coerce import as_float, as_int
 
 IMAGE_TOKENS = 1000          # 每张图片的估算 token（各家按分辨率计费，这里取 2048px 长边的大致量级）
 
@@ -85,15 +86,15 @@ def compute(system: str, tools: list[dict], history: list[dict], profile, window
         items.append({"key": k, "label": label, "tokens": counts[k],
                       "percent": round(100.0 * counts[k] / total, 1) if total else 0.0})
     per_tool.sort(key=lambda x: -x["tokens"])
-    savings = {"pruned": int(getattr(stats, "pruned_tokens", 0) or 0),
-               "prunes": int(getattr(stats, "prunes", 0) or 0),
+    savings = {"pruned": as_int(getattr(stats, "pruned_tokens", 0)),
+               "prunes": as_int(getattr(stats, "prunes", 0)),
                "pruned_outputs": pruned_now,
-               "compacted": int(getattr(stats, "compacted_tokens", 0) or 0),
+               "compacted": as_int(getattr(stats, "compacted_tokens", 0)),
                # 已清掉的旧推理；reasoning_cut 是当前历史里因游标而不被发送的推理（实时状态）
-               "reasoning_cut": int(getattr(stats, "reasoning_tokens", 0) or 0),
+               "reasoning_cut": as_int(getattr(stats, "reasoning_tokens", 0)),
                "reasoning": reasoning_cut}
-    return {"items": items, "tools": per_tool, "total": total, "window": int(window or 0),
-            "used": int(used if used is not None else total), "actual": bool(actual),
+    return {"items": items, "tools": per_tool, "total": total, "window": as_int(window),
+            "used": as_int(used if used is not None else total), "actual": bool(actual),
             "images": images, "messages": len(history), "savings": savings, "estimated": True}
 
 
@@ -102,7 +103,7 @@ def _prune_on(pcfg: dict) -> bool:
 
     关掉时不要在界面上报阈值：否则会显示「60% 时修剪」，而实际永远不修剪。
     """
-    return bool(pcfg.get("enabled", True)) and int(pcfg.get("max_tokens", 0) or 0) > 0
+    return bool(pcfg.get("enabled", True)) and as_int(pcfg.get("max_tokens", 0)) > 0
 
 
 def for_session(s) -> dict:
@@ -120,7 +121,7 @@ def for_session(s) -> dict:
                 used=actual_used or None, actual=actual_used > 0, stats=s.stats,
                 strip_reasoning_to=getattr(s, "_reasoning_strip_to", -1),
                 elide_min_chars=s.elide_min_chars())
-    d["compactions"] = int(getattr(s, "compactions", 0) or 0)
+    d["compactions"] = as_int(getattr(s, "compactions", 0))
     d["frozen"] = s.prefix is not None
     # T19：缓存命中要带覆盖率。hit_rate 的分母只含"返回了 hit 字段的请求"，
     # 会漏掉没报 hit 的请求；hit_coverage 摊到全部输入 token，两者都要给，
@@ -130,7 +131,7 @@ def for_session(s) -> dict:
     except Exception:  # noqa: BLE001  统计异常不影响查看上下文构成
         totals = {}
     d["cache"] = {
-        "hit": int(totals.get("hit", 0) or 0),
+        "hit": as_int(totals.get("hit", 0)),
         "hit_rate": totals.get("hit_rate"),
         "hit_coverage": totals.get("hit_coverage"),
         # 主对话口径（P0-1）：侧路请求（标题 / commit / 压缩 / 子代理）命中恒 0 或前缀独立，
@@ -154,13 +155,13 @@ def for_session(s) -> dict:
     cfg = s.config.data.get("compact", {}) or {}
     from ee.core import prune as P
     pcfg = P.settings(s.config.data)
-    d["thresholds"] = {"compact": float(cfg.get("threshold", 0.8)) if cfg.get("auto", True) else None,
-                       "compact_tokens": int(cfg.get("max_tokens", 0) or 0)
-                       if cfg.get("auto", True) and int(cfg.get("max_tokens", 0) or 0) > 0 else None,
-                       "prune": float(pcfg["threshold"]) if pcfg.get("enabled", True) else None,
+    d["thresholds"] = {"compact": as_float(cfg.get("threshold"), 0.8) if cfg.get("auto", True) else None,
+                       "compact_tokens": as_int(cfg.get("max_tokens", 0))
+                       if cfg.get("auto", True) and as_int(cfg.get("max_tokens", 0)) > 0 else None,
+                       "prune": as_float(pcfg["threshold"]) if pcfg.get("enabled", True) else None,
                        # 绝对上限：1M 窗口下百分比永远到不了，界面要按 token 数说真话。
                        # 消息级修剪默认关（max_tokens=0）时报 None，否则界面会写「60% 时修剪」
                        # 而实际永远不修剪。
-                       "prune_tokens": int(pcfg["max_tokens"]) if _prune_on(pcfg) else None}
+                       "prune_tokens": as_int(pcfg["max_tokens"]) if _prune_on(pcfg) else None}
     d["model"] = s.spec.alias
     return d

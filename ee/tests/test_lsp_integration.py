@@ -52,7 +52,7 @@ def test_publish_with_lowercase_drive_still_accepted():
     """
     st = D.DiagStore()
     ours = "file:///E%3A/proj/a.py"
-    st.open(D.Doc(uri=ours, version=1, text="x: int = 'bad'\n"))
+    st.open(D.Doc(uri=ours, version=1, text="x: int = 'bad'\n"))  # pi-lens-ignore: python-path-traversal -- 测试固定 URI，不读写文件
     theirs = "file:///e%3a/proj/a.py"
     accepted = st.on_publish({"uri": theirs, "version": 1,
                               "diagnostics": [{"message": "类型错误", "severity": 1}]})
@@ -78,7 +78,7 @@ def test_lsp_tool_reads_store_injected_after_construction():
         f.write_text("x: int = 1\n", encoding="utf-8")
         store = D.DiagStore()
         u = uri_for(f)
-        store.open(D.Doc(uri=u, version=1, text="x: int = 1\n"))
+        store.open(D.Doc(uri=u, version=1, text="x: int = 1\n"))  # pi-lens-ignore: python-path-traversal -- 测试临时文件 URI
         store.on_publish({"uri": u, "version": 1, "diagnostics": [
             {"message": "接线后的诊断", "severity": 1,
              "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}]})

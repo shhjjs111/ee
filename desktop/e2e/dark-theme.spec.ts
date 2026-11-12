@@ -17,6 +17,13 @@ let app: ElectronApplication;
 let iso: IsolatedApp;
 let win: Page;
 
+// win.evaluate 的返回值在 Playwright 类型里是 unknown；这里给出测试实际读取的字段，
+// 避免 e2e 不在 tsconfig 时被推断成 unknown/{}。
+type DarkScan = { bg: string; body: string; nearWhite: { cls: string; c: string; area: number }[] };
+type ContrastScan = { ratio: number | null; fg: string; bg: string };
+type SidebarScan = { c: string; lum: number | null } | null;
+type PageScan = { c: string; lum: number | null; dark: boolean };
+
 /** 在页面里跑：把颜色转成相对亮度，算对比度。支持 #rgb / #rrggbb / rgb() / rgba()。 */
 const CONTRAST_FN = `
 function rgbOf(c) {
@@ -81,7 +88,7 @@ test.afterAll(async () => {
 });
 
 test("深色下主背景是深色，且没有大面积写死的近白块", async () => {
-  const r = await win.evaluate(`(() => {
+  const r = (await win.evaluate(`(() => {
     ${CONTRAST_FN}
     const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
     const body = getComputedStyle(document.body).backgroundColor;
@@ -96,32 +103,32 @@ test("深色下主背景是深色，且没有大面积写死的近白块", async
       if (l !== null && l > 0.6) nearWhite.push({ cls: (el.className || "").toString().slice(0, 50), c, area: Math.round(box.width * box.height) });
     }
     return { bg, body, nearWhite: nearWhite.slice(0, 5) };
-  })()`);
+  })()`)) as DarkScan;
 
   expect(r.bg).toBe("#181818");
   expect(r.nearWhite, `深色主题下出现近白大块：${JSON.stringify(r.nearWhite)}`).toHaveLength(0);
 });
 
 test("会话页正文对比度达标（≥ 4.5:1）", async () => {
-  const r = await win.evaluate(`(() => {
+  const r = (await win.evaluate(`(() => {
     ${CONTRAST_FN}
     const root = getComputedStyle(document.documentElement);
     const fg = root.getPropertyValue("--fg").trim();
     const bg = root.getPropertyValue("--bg").trim();
     return { ratio: contrast(fg, bg), fg, bg };
-  })()`);
+  })()`)) as ContrastScan;
   expect(r.ratio).not.toBeNull();
   expect(r.ratio!).toBeGreaterThanOrEqual(4.5);
 });
 
 test("侧栏在深色下也是深色背景（不是亮灰）", async () => {
-  const r = await win.evaluate(`(() => {
+  const r = (await win.evaluate(`(() => {
     ${CONTRAST_FN}
     const sb = document.querySelector("[data-testid=shell-sidebar]");
     if (!sb) return null;
     const c = getComputedStyle(sb.firstElementChild || sb).backgroundColor;
     return { c, lum: lum(c) };
-  })()`);
+  })()`)) as SidebarScan;
   expect(r).not.toBeNull();
   // 深色主题侧栏亮度必须很低
   expect(r!.lum!).toBeLessThan(0.2);
@@ -133,12 +140,12 @@ test("切到设置页后仍是深色，没有回退到浅色", async () => {
     b?.click();
   });
   await win.waitForTimeout(1200);
-  const r = await win.evaluate(`(() => {
+  const r = (await win.evaluate(`(() => {
     ${CONTRAST_FN}
     const el = document.querySelector("main") || document.body;
     const c = getComputedStyle(el).backgroundColor;
     return { c, lum: lum(c), dark: document.documentElement.classList.contains("dark") };
-  })()`);
+  })()`)) as PageScan;
   expect(r.dark).toBe(true);
   // 设置页背景要么透明（继承），要么是深色
   if (r.c !== "rgba(0, 0, 0, 0)") expect(r.lum!).toBeLessThan(0.3);
@@ -150,12 +157,12 @@ test("切到自动化页后仍是深色", async () => {
     b?.click();
   });
   await win.waitForTimeout(1200);
-  const r = await win.evaluate(`(() => {
+  const r = (await win.evaluate(`(() => {
     ${CONTRAST_FN}
     const el = document.querySelector("main") || document.body;
     const c = getComputedStyle(el).backgroundColor;
     return { c, lum: lum(c), dark: document.documentElement.classList.contains("dark") };
-  })()`);
+  })()`)) as PageScan;
   expect(r.dark).toBe(true);
   if (r.c !== "rgba(0, 0, 0, 0)") expect(r.lum!).toBeLessThan(0.3);
 });

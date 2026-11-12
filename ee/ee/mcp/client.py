@@ -53,9 +53,14 @@ class _Base:
         self.instructions = ""
 
     # ---- 子类实现
-    async def start(self) -> None: ...
-    async def _send(self, obj: dict) -> None: ...
-    async def close(self) -> None: ...
+    async def start(self) -> None:
+        raise NotImplementedError
+
+    async def _send(self, obj: dict) -> None:
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        raise NotImplementedError
 
     def stderr_tail(self) -> str:
         return ""
@@ -209,7 +214,8 @@ class StdioClient(_Base):
         self._tasks = [asyncio.create_task(self._read_out()), asyncio.create_task(self._read_err())]
 
     async def _read_out(self) -> None:
-        assert self.proc and self.proc.stdout
+        if self.proc is None or self.proc.stdout is None:
+            return
         try:
             while True:
                 line = await self.proc.stdout.readline()
@@ -232,7 +238,8 @@ class StdioClient(_Base):
             self._fail_all("MCP 服务器进程已退出" + (f"：\n{tail[-1500:]}" if tail else ""))
 
     async def _read_err(self) -> None:
-        assert self.proc and self.proc.stderr
+        if self.proc is None or self.proc.stderr is None:
+            return
         try:
             while True:
                 line = await self.proc.stderr.readline()

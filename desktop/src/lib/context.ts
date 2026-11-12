@@ -1,4 +1,5 @@
 // 上下文构成视图的纯函数（A12）。
+// pi-lens-ignore: find-import-file-without-extension -- Vite/TS bundler 解析，项目统一不写扩展名
 import type { ContextBreakdown } from "../types";
 
 export function fmtTokens(n: number): string {
