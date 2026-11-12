@@ -21,6 +21,8 @@ import asyncio
 import inspect
 import re
 from typing import Any
+
+from ee.core.coerce import as_float, as_int
 from dataclasses import dataclass, field
 
 # 停止原因的取值（U2 用，这里先定义好避免两边字面量漂移）
@@ -60,7 +62,7 @@ class Verdict:
             return False
         # tests 为 None（读不出计数）在这里统一按 0 处理：保守方向
         n = self.tests if isinstance(self.tests, int) else 0
-        return n >= max(1, int(self.min_tests))
+        return n >= max(1, as_int(self.min_tests))
 
     @property
     def reason(self) -> str:
@@ -72,7 +74,7 @@ class Verdict:
         if self.exit != 0:
             return f"exit={self.exit}：命令以非零退出"
         n = self.tests if isinstance(self.tests, int) else 0
-        need = max(1, int(self.min_tests))
+        need = max(1, as_int(self.min_tests))
         if n < need:
             if n == 0:
                 return ("zero_tests：命令成功但没收集到任何测试"
@@ -153,13 +155,13 @@ def _from_vitest_jest(line: str) -> int:
     p = _NUM_PASSED.search(line)
     f = _NUM_FAILED.search(line)
     if p and f:
-        return int(p.group(1)) + int(f.group(1))
+        return as_int(p.group(1)) + as_int(f.group(1))
     if p:
-        return int(p.group(1))
+        return as_int(p.group(1))
     if f:
-        return int(f.group(1))
+        return as_int(f.group(1))
     t = _NUM_TOTAL.search(line)
-    return int(t.group(1)) if t else 0
+    return as_int(t.group(1)) if t else 0
 
 
 def parse_tests(output: str) -> int:
@@ -191,28 +193,28 @@ def parse_tests(output: str) -> int:
     # 读 0 是保守方向（探测提示会要求用户开 testLogging）。
     m = _GRADLE_SUMMARY.search(output)
     if m:
-        return int(m.group(1))
+        return as_int(m.group(1))
     # 没有 Tests 行时，`Test Files  3 passed` 同样不能被通用规则当测试数。
     generic = re.sub(r"^.*Test Files.*$", "", output, flags=re.M)
     p = _PASSED.search(generic)
     f = _FAILED.search(generic)
     if p and f:
-        return int(p.group(1)) + int(f.group(1))
+        return as_int(p.group(1)) + as_int(f.group(1))
     if p:
-        return int(p.group(1))
+        return as_int(p.group(1))
     if f:
-        return int(f.group(1))
+        return as_int(f.group(1))
     c = _COLLECTED.search(output)
     if c:
         # collected 含 skipped。全 skipped 时「收集到 3 个」不等于「跑了 3 个」：
         # 扣掉 skip 数，一个都没真跑就返回 0——宁可多跑几轮，不可假成功。
-        total = int(c.group(1))
+        total = as_int(c.group(1))
         s = _SKIPPED.search(output)
-        skipped = int(s.group(1)) if s else 0
+        skipped = as_int(s.group(1)) if s else 0
         return max(0, total - skipped)
     r = _RAN.search(output)
     if r:
-        return int(r.group(1))
+        return as_int(r.group(1))
 
     # ---- 其它 runner（顺序无关，形态互不重叠；但 vitest/jest 必须在 go 之前判，
     # 否则 `Tests  ... passed` 不会被命中，也不冲突。放在一起按最具体的先查。）
@@ -223,30 +225,30 @@ def parse_tests(output: str) -> int:
             return n
     m = _MAVEN.search(output)
     if m:
-        return int(m.group(1))          # Tests run 已含 failures/errors，不能相加
+        return as_int(m.group(1))          # Tests run 已含 failures/errors，不能相加
     gradle_lines = _GRADLE_LINE.findall(output)
     if gradle_lines:
         return len(gradle_lines)        # testLogging 的逐条 PASSED/FAILED
     m = _DOTNET.search(output)
     if m:
-        return int(m.group(1)) + int(m.group(2))
+        return as_int(m.group(1)) + as_int(m.group(2))
     m = _RSPEC.search(output)
     if m:
-        return int(m.group(1))          # examples 已含 failures
+        return as_int(m.group(1))          # examples 已含 failures
     m = _PHPUNIT_OK.search(output)
     if m:
-        return int(m.group(1))
+        return as_int(m.group(1))
     m = _PHPUNIT_SUM.search(output)
     if m:
-        return int(m.group(1))
+        return as_int(m.group(1))
     m = _MOCHA_PASS.search(output)
     if m:
-        passes = int(m.group(1))
+        passes = as_int(m.group(1))
         fail = re.search(r"(\d+)\s+failing", output, re.I)
-        return passes + (int(fail.group(1)) if fail else 0)
+        return passes + (as_int(fail.group(1)) if fail else 0)
     bp, bf = _BUN_PASS.search(output), _BUN_FAIL.search(output)
     if bp:
-        return int(bp.group(1)) + (int(bf.group(1)) if bf else 0)
+        return as_int(bp.group(1)) + (as_int(bf.group(1)) if bf else 0)
     go_fail = bool(_GO_FAIL_SUMMARY.search(output)) or bool(_GO_FAIL.search(output))
     passes = len(_GO_OK.findall(output)) + len(_GO_PASS.findall(output))
     if passes:
@@ -285,7 +287,7 @@ async def judge(spec: GoalSpec, *, runner=None) -> Verdict:
 
     try:
         code, output, timed_out = await run(
-            spec.command, shell, cwd, float(spec.timeout), lambda _s: None, None)
+            spec.command, shell, cwd, as_float(spec.timeout), lambda _s: None, None)
     except Exception as e:  # noqa: BLE001  启动失败也是「没拿到退出码」，不是崩溃
         return Verdict(exit=None, tests=0, timed_out=False,
                        output=f"启动判据命令失败：{type(e).__name__}: {e}",
@@ -334,7 +336,7 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
     """
     jf = judge_fn or judge
     result = GoalResult(stop_reason=ERROR)
-    rounds = max(1, int(max_rounds))
+    rounds = max(1, as_int(max_rounds))
 
     for i in range(rounds):
         v = await jf(spec)
@@ -346,6 +348,7 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
                 if asyncio.iscoroutine(r):
                     await r
             except Exception:  # noqa: BLE001  观感回调出错不影响判定
+                # pi-lens-ignore: python-empty-except -- 观感回调失败不能影响判定
                 pass
         if v.met:
             result.stop_reason = MET
