@@ -74,3 +74,27 @@ def test_project_config_loaded_once_from_subdir(tmp_path):
     target = (proj / ".ee" / "config.toml").resolve()
     assert [p.resolve() for p in cfg.sources if p.name == "config.toml"].count(target) == 1
     assert cfg.data["shell"] == "git-bash"
+
+
+def test_boot_home_is_always_in_user_ee_dirs(tmp_path, monkeypatch):
+    """进程启动后再改 HOME/USERPROFILE：启动时的那个主目录的 `.ee` 仍要算用户级。
+
+    为什么需要这条：`test_skills` 的 uhome 夹具会把 HOME/USERPROFILE 指到临时目录。
+    改完之后 `os.path.expanduser("~")` 指向假主目录，真实 `~/.ee` 就掉出了排除集——
+    于是 `~/.ee/config.toml` 被当成**项目级配置**叠进会话（实测让 3 条技能用例失败：
+    用户配置里的 `profile = "lean"` 把工具集砍成了只读那套）。
+
+    这里只钉契约（启动时的主目录永远在排除集里），不去写真实主目录：
+    行为层的「真配置不会被叠」由上面的 test_real_user_config_not_treated_as_project_config 守。
+    """
+    real = tmp_path / "realhome"
+    (real / ".ee").mkdir(parents=True)
+    fake = tmp_path / "fakehome"
+    fake.mkdir()
+    monkeypatch.setattr("ee.config._BOOT_HOME", real)
+    monkeypatch.setenv("HOME", str(fake))
+    monkeypatch.setenv("USERPROFILE", str(fake))
+
+    dirs = user_ee_dirs()
+
+    assert (real / ".ee").resolve() in dirs, "启动时的主目录掉出了用户级排除集"

@@ -141,6 +141,13 @@ DEFAULTS: dict = {
 }
 
 
+# 进程启动时的主目录。之后 HOME/USERPROFILE 可能被改写（测试、包装脚本、PYTHONHOME），
+# 那时 os.path.expanduser("~") 会指向别处，真实主目录就掉出了「用户级目录」排除集——
+# 于是 ~/.ee/config.toml 被当成**项目级配置**再叠一遍（它的 profile / 键会盖掉用户层）。
+# 在导入时记下真的那个，排除集里永远算它一份。
+_BOOT_HOME = Path(os.path.expanduser("~"))
+
+
 def ee_home() -> Path:
     env = os.environ.get("EE_HOME")
     return Path(env) if env else Path.home() / ".ee"
@@ -157,7 +164,7 @@ def user_ee_dirs() -> set[Path]:
     静默当成项目级配置再叠一遍。
     """
     out: set[Path] = set()
-    cands = [ee_home(), Path.home() / ".ee"]
+    cands = [ee_home(), Path.home() / ".ee", _BOOT_HOME / ".ee"]
     try:
         cands.append(Path(os.path.expanduser("~")) / ".ee")      # 不受 Path.home 补丁影响
     except (OSError, RuntimeError):
@@ -620,6 +627,9 @@ def load_user_file(path: Path | None = None) -> dict:
     if not path.is_file():
         return {}
     migrate_user_file(path)
+    # 解析错误故意往上抛（不在这里吞）：设置页据此告诉用户 config.toml 坏在哪；
+    # 静默降级成默认值会让「设置没保存」看起来像没事。
+    # pi-lens-ignore: unchecked-throwing-call-python
     with open(path, "rb") as f:
         data = tomllib.load(f)
     return migrate_data(data)[0]
