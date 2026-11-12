@@ -61,3 +61,20 @@ def test_max_steps_segments_roundtrip_and_bounds(ee_home, workspace):
             run(b.call("settings/set", {"settings": {"max_steps_segments": bad}}))
     # 被拒后旧值保持不变
     assert run(b.call("settings/get", {}))["settings"]["max_steps_segments"] == 1
+
+
+def test_session_cache_limits_roundtrip_and_bounds(ee_home):
+    """会话缓存上限：默认 40 / 60 秒，可读写，保存后热更新到正在跑的后端；越界被拒。"""
+    b = Backend(home=ee_home, persist=False)
+    st = run(b.call("settings/get", {}))["settings"]
+    assert st["session"] == {"max_loaded_threads": 40, "evict_idle_seconds": 60}
+
+    st = run(b.call("settings/set", {"settings": {
+        "session": {"max_loaded_threads": 12, "evict_idle_seconds": 120}}}))["settings"]
+    assert st["session"] == {"max_loaded_threads": 12, "evict_idle_seconds": 120}
+    assert (b.max_loaded_threads, b.evict_min_idle) == (12, 120.0), "保存后没热更新到后端"
+
+    for bad in ({"max_loaded_threads": 3}, {"max_loaded_threads": 501},
+                {"evict_idle_seconds": 5}, {"evict_idle_seconds": 4000}):
+        with pytest.raises(Exception, match="."):
+            run(b.call("settings/set", {"settings": {"session": bad}}))

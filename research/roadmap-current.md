@@ -102,6 +102,20 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 的真实 RSS 没量到（`.cmd` 包装器挡了一层），要用「10 个会话各调一次 `lsp`，对比改造前后的
 进程数与总内存」的端到端口径量。
 
+### 同轮收尾：会话缓存上限变成用户级配置
+
+`MAX_LOADED_THREADS = 40` / `THREAD_EVICT_MIN_IDLE = 60` 从常量变成用户级配置
+`[session] max_loaded_threads` / `evict_idle_seconds`（夹到 4～500 / 10～3600）：
+
+- `Backend` 启动时读一次（`_session_limits`），`settings/set` 保存后热更新，不用重启后端；
+- **项目层不能改**：`PROJECT_DROP_TOP` 里加了 `session`——这是这台机器的内存预算，不是项目属性，
+  陌生仓库不该决定你进程里常驻多少份 history/items；
+- 设置页「会话缓存」两个数字输入，文案写清「超过上限淘汰最久没用的空闲会话，磁盘上不丢」。
+
+验证：`test_session_lifecycle.py` 新增 2 例（读用户配置生效 / 越界值夹回区间）、
+`test_server_d2.py` 新增 1 例（往返 + 热更新 + 4 类越界拒绝）、`AgentSettings.test.tsx` 新增 1 例。
+前端全量 401 passed，真机 e2e `settings-scroll` + `segments-setting` 4 passed。
+
 ## 执行记录（2026-11-12，写盘失败不再静默）
 
 来自 `2026-11-11` 交接的 backlog 第 1 条：`store.append` 写盘失败只写日志，界面无感知——磁盘满 / 杀软占用时对话看起来一切正常，重启才发现整段丢了。

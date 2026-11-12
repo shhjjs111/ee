@@ -443,3 +443,44 @@ def test_busy_threads_are_not_evicted(ee_home, workspace):
         assert th["id"] in b.threads, "忙的会话被淘汰了"
         busy.compacting = False
     asyncio.run(go())
+
+
+def test_loaded_thread_limit_comes_from_user_config(ee_home, workspace):
+    """会话缓存上限可以由用户级配置改（`[session] max_loaded_threads`），并夹到安全区间。
+
+    为什么要有这个开关：40 对大内存机器可能太低（每次切会话都重载），对小内存机器又太高。
+    为什么只认用户层：这是这台机器的内存预算，项目层写了也会被 PROJECT_DROP_TOP 丢掉。
+    """
+    from ee.core.store import SessionStore
+    from ee.server.app import Backend
+
+    (ee_home / "config.toml").write_text("[session]\nmax_loaded_threads = 6\n", encoding="utf-8")
+    ids = [f"20261026-13{i:04d}-cccccc" for i in range(10)]
+    for sid in ids:
+        st = SessionStore(ee_home, sid)
+        st.meta({"cwd": str(workspace), "title": sid, "updated": 1.0})
+
+    async def go():
+        b = Backend(home=ee_home, persist=True)
+        assert b.max_loaded_threads == 6, f"没读到用户配置：{b.max_loaded_threads}"
+        for sid in ids:
+            await b.call("thread/get", {"thread_id": sid})
+        for t in b.threads.values():                # 让它们都算「空闲够久」
+            t.last_access -= 3600
+        # 再打开一个没在内存里的会话：加载路径会走到淘汰（已在内存的会话直接早退）
+        extra = "20261026-140000-dddddd"
+        SessionStore(ee_home, extra).meta({"cwd": str(workspace), "title": extra, "updated": 1.0})
+        await b.call("thread/get", {"thread_id": extra})
+        assert len(b.threads) <= 6, f"上限 6 却常驻了 {len(b.threads)} 个"
+
+    asyncio.run(go())
+
+
+def test_clamped_session_limits_ignore_absurd_values(ee_home, workspace):
+    """配置里写 0 / 100000 也不能让缓存失效或无限常驻。"""
+    from ee.server.app import _session_limits
+
+    (ee_home / "config.toml").write_text(
+        "[session]\nmax_loaded_threads = 100000\nevict_idle_seconds = 0\n", encoding="utf-8")
+    limit, idle = _session_limits(ee_home)
+    assert (limit, idle) == (500, 10.0), f"没有夹到区间：{limit}, {idle}"

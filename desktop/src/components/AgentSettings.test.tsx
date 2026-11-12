@@ -49,6 +49,19 @@ async function mount(init: Partial<Settings>) {
   return { host, root };
 }
 
+/** 按行标签找数字输入框（Row 的结构：标签 div + 控件）。 */
+function inputAfter(host: HTMLElement, label: string): HTMLInputElement {
+  const row = [...host.querySelectorAll("div")].find((d) => d.textContent?.startsWith(label) && d.querySelector("input"));
+  return row!.querySelector("input") as HTMLInputElement;
+}
+
+/** 受控输入框改值：直接赋 .value 不会触发 React 的 onChange，要走原型 setter + input 事件。 */
+function typeInto(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function switchAfter(host: HTMLElement, label: string): HTMLButtonElement {
   const row = [...host.querySelectorAll("div")].find((d) => d.textContent?.startsWith(label) && d.querySelector("[role=switch]"));
   return row!.querySelector("[role=switch]") as HTMLButtonElement;
@@ -110,6 +123,24 @@ describe("语言服务器快照（lsp/servers）", () => {
     expect(text).toContain("修复登录");
     expect(text).toContain("/w/repo");
     expect(text).toContain("引用 0");
+    await act(async () => root.unmount());
+  });
+});
+
+describe("会话缓存设置（[session]）", () => {
+  it("默认 40 个会话 / 60 秒，改数字写回草稿且不互相覆盖", async () => {
+    const { host, root } = await mount({});
+    const limit = inputAfter(host, "最多常驻会话数");
+    const idle = inputAfter(host, "空闲多久才淘汰（秒）");
+    expect(limit.value).toBe("40");
+    expect(idle.value).toBe("60");
+
+    await act(async () => typeInto(limit, "12"));
+    expect(latest?.session?.max_loaded_threads).toBe(12);
+
+    await act(async () => typeInto(idle, "120"));
+    expect(latest?.session?.evict_idle_seconds).toBe(120);
+    expect(latest?.session?.max_loaded_threads).toBe(12);
     await act(async () => root.unmount());
   });
 });

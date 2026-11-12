@@ -259,6 +259,8 @@ export type Settings = {
   sandbox?: SandboxSettings;
   memory?: MemorySettings;
   skills?: SkillsSettings;
+  /** 内存里的会话缓存（用户级配置，项目层不能改）：超过上限就淘汰最久没用的空闲会话。 */
+  session?: { max_loaded_threads?: number; evict_idle_seconds?: number };
   /** 精简模式：full 完整（默认）/ lean 只有 read/write/edit/shell + 短提示词；新对话生效 */
   profile?: "full" | "lean";
   todo?: boolean;

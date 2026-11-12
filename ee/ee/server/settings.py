@@ -217,6 +217,7 @@ def _d2_out(data: dict) -> dict:
                    "max_bytes": int(mem.get("max_bytes", 8192)),
                    "inject": bool(mem.get("inject", True)), "tool": bool(mem.get("tool", True))},
         "skills": _skills_out(data),
+        "session": _session_out(data),                         # 内存会话缓存上限（用户级）
         "profile": _agent_profile(data),                       # 精简模式 full / lean（新对话生效）
         "todo": bool(data.get("todo", True)),
         "present_plan": bool(data.get("present_plan", True)),
@@ -249,6 +250,13 @@ def _skills_in(n: dict, out: dict) -> None:
     out["skills"] = sk
 
 
+def _session_out(data: dict) -> dict:
+    """内存会话缓存的两个上限（用户级配置；项目层会被 PROJECT_DROP_TOP 丢掉）。"""
+    s = {**DEFAULTS.get("session", {}), **(data.get("session") or {})}
+    return {"max_loaded_threads": int(s.get("max_loaded_threads") or 40),
+            "evict_idle_seconds": int(s.get("evict_idle_seconds") or 60)}
+
+
 def _agent_profile(data: dict) -> str:
     from ee.tools import agent_profile
     return agent_profile(data)
@@ -266,6 +274,20 @@ def _d2_in(new: dict, out: dict, deletes: list | None = None) -> None:
             out[k] = bool(new[k])
     # LSP 诊断（D6-2 / T9）：设置页只能开/关。**不接受 command**——指定可执行文件
     # 等于提权，那个只能写在用户自己的配置里（且项目层也只能收紧）。
+    if isinstance(new.get("session"), dict):
+        n = new["session"]
+        cur = dict(out.get("session") or {})
+        for k, lo, hi in (("max_loaded_threads", 4, 500), ("evict_idle_seconds", 10, 3600)):
+            if n.get(k) in (None, ""):
+                continue
+            try:
+                v = int(float(n[k]))
+            except (TypeError, ValueError):
+                raise ValueError(f"session.{k} 必须是数字") from None
+            if not lo <= v <= hi:
+                raise ValueError(f"session.{k} 必须在 {lo}～{hi} 之间")
+            cur[k] = v
+        out["session"] = cur
     if isinstance(new.get("lsp"), dict):
         cur = dict(out.get("lsp") or {})
         if new["lsp"].get("enabled") is not None:

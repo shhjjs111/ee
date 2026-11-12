@@ -125,6 +125,9 @@ DEFAULTS: dict = {
     # 余量）；关掉 lsp 它就会回来。memory 不受影响。
     # 服务器路径来自用户配置；项目配置只能关闭或收紧，不能指定可执行文件。
     "lsp": {"enabled": False},
+    # 内存里的会话缓存（资源上限，不是安全项）：只允许用户级配置，
+    # 项目层不能改——一个陌生仓库不该决定你进程里常驻多少份会话。
+    "session": {"max_loaded_threads": 40, "evict_idle_seconds": 60},
     # 模型请求的网络：proxy = system（跟随系统/环境变量）| direct（直连）| 代理地址；超时单位秒
     # 命令沙箱（D5-8，仅 Windows 隔离写入）：enabled = shell 前台/后台命令在受限令牌里跑，只能写工作区和沙箱临时目录；
     # network=false = 用环境变量拦截联网（代理指向死端口、包管理器离线），尽力而为
@@ -220,7 +223,9 @@ def normalize_roles(data: dict) -> dict:
 #   context_policy —— 压缩/保留策略，等于让仓库替用户调参。
 # 顶层 `shell` 不在这里：它同时决定 shell 工具的执行器和权限判定用的语法
 # （session.py 的 shell_name 与 policy.shell 同源），换执行器不会让判定对着错误的语法。
-PROJECT_DROP_TOP = ("providers", "hooks", "context_policy")
+# session：内存缓存上限。它是**用户机器**的资源，不是项目属性；一个陌生仓库把
+# max_loaded_threads 调到 500 就等于让你多背几十份 history/items。
+PROJECT_DROP_TOP = ("providers", "hooks", "context_policy", "session")
 _MODE_RANK = {"read-only": 0, "plan": 0, "default": 1, "auto": 2}
 _KEYISH = re.compile(r"(api_key|api_key_env|base_url|_url|headers|proxy)$")
 

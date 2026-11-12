@@ -219,6 +219,7 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
   const s = useApp();
   const web = { ...DEFAULT_WEB, ...(draft.web ?? {}) };
   const sub = { max_parallel: 3, worktree: true, ...(draft.subagent ?? { enabled: true, max_steps: 30 }) };
+  const cached = { max_loaded_threads: 40, evict_idle_seconds: 60, ...(draft.session ?? {}) };
   const sb = { enabled: false, network: true, ...(draft.sandbox ?? {}) };
   const mem = draft.memory ?? { enabled: true, workspace: true, max_bytes: 8192 };
   const setWeb = (p: Partial<WebSettings>) => up({ web: { ...web, ...p } });
@@ -296,6 +297,27 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
         </Row>
       </Card>
       <LspServers />
+      <Card
+        title="会话缓存"
+        desc="内存里最多常驻几个会话（每个是一份完整 history/items + 模型连接池）。超过上限时淘汰最久没用的空闲会话——磁盘上不丢，下次打开按需重载。改完立即生效。"
+      >
+        <Row label="最多常驻会话数" desc="4～500。调低省内存，调高换来更多会话免重载">
+          <Input
+            className="w-24 text-right"
+            inputMode="numeric"
+            value={cached.max_loaded_threads}
+            onChange={(e) => up({ session: { ...cached, max_loaded_threads: Number(e.target.value) || 0 } })}
+          />
+        </Row>
+        <Row label="空闲多久才淘汰（秒）" desc="10～3600。刚打开过的会话在这段时间内不会被踢掉">
+          <Input
+            className="w-24 text-right"
+            inputMode="numeric"
+            value={cached.evict_idle_seconds}
+            onChange={(e) => up({ session: { ...cached, evict_idle_seconds: Number(e.target.value) || 0 } })}
+          />
+        </Row>
+      </Card>
       <Card title="命令沙箱" desc="开启后，shell 和后台命令只能写当前工作区和沙箱临时目录，写其它位置会被系统拒绝；读文件不受限制。不是完整的安全边界，配合权限审批使用。对之后执行的命令生效（运行中的回合结束后）。">
         <Row label="启用沙箱" desc={sb.supported === false ? "当前系统不支持（仅 Windows 生效），开启后命令照常运行并提示未生效" : "Windows 受限令牌 + 工作区写权限 + 作业对象，命令结束时连同子进程一起清理"}>
           <Toggle on={sb.enabled} onChange={(v) => up({ sandbox: { ...sb, enabled: v } })} />

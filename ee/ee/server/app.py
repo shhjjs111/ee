@@ -56,6 +56,27 @@ SEND_QUEUE_MAX = 256       # 每条连接的通知队列上限：满了说明客
 MAX_LOADED_THREADS = 40      # 常驻会话数上限（超过就淘汰最旧的空闲会话）
 THREAD_EVICT_MIN_IDLE = 60.0   # 空闲至少这么久才允许淘汰（刚打开的会话不能一转手就没了）
 
+
+def _session_limits(home: Path) -> tuple[int, float]:
+    """从**用户级**配置读会话缓存的上限，并夹到安全区间。
+
+    为什么只读用户层：这两个值是这台机器的内存预算，不是项目属性。项目层就算写了
+    `[session]`，`config.PROJECT_DROP_TOP` 也会把它丢掉——一个陌生仓库不该决定你进程里
+    常驻多少份 history/items。（`load_user_file` 的默认路径就是 `ee_home()/config.toml`；
+    这里显式传 `home/config.toml`，测试注入的 home 才生效。）
+    """
+    from ee.config import load_user_file
+    from ee.core.coerce import as_float, as_int
+
+    try:
+        raw = (load_user_file(home / "config.toml") or {}).get("session") or {}
+    except Exception:  # noqa: BLE001  配置坏了是设置页要报的事，不该让后端起不来
+        log.warning("读取会话缓存上限失败（用默认值）", exc_info=True)
+        raw = {}
+    limit = max(4, min(500, as_int(raw.get("max_loaded_threads"), MAX_LOADED_THREADS)))
+    idle = max(10.0, min(3600.0, as_float(raw.get("evict_idle_seconds"), THREAD_EVICT_MIN_IDLE)))
+    return limit, idle
+
 def _enqueue_or_drop(conns: dict, msg: str) -> list:
     """把一条通知塞进每个连接的队列，返回「读不动」而需要断开的连接。
 
@@ -131,6 +152,8 @@ class Backend:
     def __init__(self, home: Path | None = None, client_factory: Callable | None = None, persist: bool = True,
                  user_home: Path | None = None):
         self.home = home or ee_home()
+        # 会话缓存上限（用户级配置，见 _session_limits）：settings/set 保存后热更新
+        self.max_loaded_threads, self.evict_min_idle = _session_limits(self.home)
         # 真实主目录（技能兼容目录 ~/.agents/skills、~/.claude/skills 从这里找）。
         # 测试注入隔离目录，避免开发机上装的技能影响会话开头注入的消息数量。
         self.user_home = Path(user_home) if user_home is not None else Path.home()
@@ -304,7 +327,7 @@ class Backend:
         不碰：运行中 / 压缩中 / 还有审批在等 / 被 /loop 占用的会话。淘汰只摘内存引用，
         同时把它的模型连接池与 LSP 进程关掉——不关的话“摘掉”只是换了个地方泄漏。
         """
-        extra = len(self.threads) - MAX_LOADED_THREADS
+        extra = len(self.threads) - self.max_loaded_threads
         if extra <= 0:
             return
         now = time.monotonic()
@@ -321,7 +344,7 @@ class Backend:
                 continue
             if t.running or t.compacting or t.approvals:
                 continue
-            if now - getattr(t, "last_access", 0.0) < THREAD_EVICT_MIN_IDLE:
+            if now - getattr(t, "last_access", 0.0) < self.evict_min_idle:
                 continue
             idle.append((getattr(t, "last_access", 0.0), tid, t))
         idle.sort(key=lambda x: x[0])
@@ -879,6 +902,8 @@ class Backend:
         except ValueError as e:
             raise RpcError(str(e))
         log.info("设置已保存：默认模型 %s", (res.get("settings") or {}).get("default_model"))
+        # 会话缓存上限改了要立刻生效（否则用户得重启后端才看到效果）
+        self.max_loaded_threads, self.evict_min_idle = _session_limits(self.home)
         for t in self.threads.values():
             t.reload_config()
         self.notify("settings/changed", res)

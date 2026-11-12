@@ -88,7 +88,12 @@ cd desktop && npm run typecheck                                    # exit 0
      在产品代码里放一个像真 key 的串仍然报），所以不是把扫描关了。
    注：以上都是**局部处理**（真修 / 原那么注或不注），没有在 `.pi-lens.json` 里
    全局降级/禁用任何规则——新出现的同一个规则照样会报。
-5. 如果觉得 40 太低，可把 `MAX_LOADED_THREADS` 做成配置项；目前是常量。
+5. ~~如果觉得 40 太低，可把 `MAX_LOADED_THREADS` 做成配置项；目前是常量。~~
+   → **2026-11-12 已完成**：新增用户级 `[session] max_loaded_threads` / `evict_idle_seconds`
+   （默认 40 / 60，夹到 4～500 / 10～3600），`Backend` 启动时读、`settings/set` 保存后热更新。
+   项目层写了也无效——`PROJECT_DROP_TOP` 里有 `session`，陌生仓库不该决定你进程里常驻多少会话；
+   设置页「会话缓存」两个输入框可直接改。测试：`test_session_lifecycle.py`（读配置 / 夹区间）、
+   `test_server_d2.py`（往返 + 热更新 + 越界拒绝）、`AgentSettings.test.tsx`（输入回写）。
 
 ## 新会话开场建议
 
