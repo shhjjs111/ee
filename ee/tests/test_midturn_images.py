@@ -111,7 +111,7 @@ def test_snapshot_respects_session_budget(workspace, ee_home, monkeypatch):
     from ee.core.session import Session
 
     png = workspace / "shot.png"
-    png.write_bytes(PNG)
+    png.write_bytes(PNG)  # pi-lens-ignore: python-path-traversal -- 测试临时文件
     monkeypatch.setattr(A, "MAX_SESSION_ATTACHMENT_BYTES", 1)
     s = Session(load_config(workspace), cwd=workspace, persist=False, home=ee_home)
     assert s.snapshot_image(str(png)) == str(png)
@@ -121,8 +121,8 @@ def test_two_images_share_one_meta_message(workspace):
     """同一段里登记了两张图：合成一条消息，不拆成一堆用户发言。"""
     a = workspace / "a.png"
     b = workspace / "b.png"
-    a.write_bytes(PNG)
-    b.write_bytes(PNG)
+    a.write_bytes(PNG)  # pi-lens-ignore: python-path-traversal -- 测试临时文件
+    b.write_bytes(PNG)  # pi-lens-ignore: python-path-traversal -- 测试临时文件
     script = [
         tool_chunks(0, "c1", "read", {"path": str(a), "as_image": True})
         + tool_chunks(1, "c2", "read", {"path": str(b), "as_image": True}) + finish("tool_calls"),

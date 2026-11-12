@@ -54,12 +54,15 @@ class _Base:
 
     # ---- 子类实现
     async def start(self) -> None:
+        # pi-lens-ignore: no-raise-not-implemented -- 抽象基类，子类实现
         raise NotImplementedError
 
     async def _send(self, obj: dict) -> None:
+        # pi-lens-ignore: no-raise-not-implemented -- 抽象基类，子类实现
         raise NotImplementedError
 
     async def close(self) -> None:
+        # pi-lens-ignore: no-raise-not-implemented -- 抽象基类，子类实现
         raise NotImplementedError
 
     def stderr_tail(self) -> str:

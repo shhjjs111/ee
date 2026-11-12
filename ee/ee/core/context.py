@@ -17,6 +17,7 @@ from importlib import resources
 from pathlib import Path
 
 from ee.core import gitinfo
+from ee.core.coerce import as_float, as_int
 
 
 def load_prompt(rel_path: str) -> str:
@@ -204,7 +205,7 @@ class UsageStats:
         侧路请求（标题 / commit / 压缩）不调它：它们的消息和主对话没有公共前缀，
         拿它们的 wire 大小去比主对话，会把主对话的断点全部算错。
         """
-        self._wire_pending = max(0, int(tokens or 0))
+        self._wire_pending = max(0, as_int(tokens))
 
     def _wire_extra(self, role: str, prompt: int | None, hit: int | None, break_reason: str | None) -> dict:
         """把「本次新增了多少 / 实际未命中多少 / 是不是断点」写进 record。
@@ -237,13 +238,13 @@ class UsageStats:
             # model_switch / compact / prune 会被静默丢掉，账上只剩 unknown 或什么都没有。
             extra["cause"] = break_reason
         if hit is not None and prompt:
-            gap = max(0, int(prompt) - int(hit))
+            gap = max(0, as_int(prompt) - as_int(hit))
             extra["gap"] = gap
             # new 是 wire 估算差；服务端 prompt 的相邻差分更准（没有 tokenizer 偏差）。
             # 有上一次主对话的服务端 prompt 时优先用它，没有才退回 wire。
             server_new = None
             if self.last_server_prompt > 0:
-                server_new = max(0, int(prompt) - int(self.last_server_prompt))
+                server_new = max(0, as_int(prompt) - as_int(self.last_server_prompt))
                 extra["server_new"] = server_new
             growth = server_new if server_new is not None else new
             # 没有基线时不断点：续跑/重启后的首请求与服务端缓存是否还热无关己，
@@ -254,7 +255,7 @@ class UsageStats:
                     # 归因未命中原因时最需要的一项：hit 只有很小一块，说明服务端在最前面
                     # 就匹配不上了（不是「尾巴改了」）。真实会话实测到的孤立断点就是这个形态：
                     # prompt 只比上一条多 224，hit 却从 128,384 掉到 2,560。
-                    extra["prefix_hit"] = int(hit)
+                    extra["prefix_hit"] = as_int(hit)
         elif break_reason:
             extra["break"] = break_reason
         return extra
@@ -290,7 +291,7 @@ class UsageStats:
 
     def add_record(self, r: dict) -> None:
         self.requests += 1
-        p, c, h = int(r["prompt"]), int(r["completion"]), r.get("hit")
+        p, c, h = as_int(r["prompt"]), as_int(r["completion"]), r.get("hit")
         self.prompt += p
         self.completion += c
         # 「上次上下文大小」只由主对话更新：侧路请求（title / commit / compact，以及
@@ -308,7 +309,7 @@ class UsageStats:
             self.hit += h
             self.hit_known_prompt += p
         if r.get("reasoning") is not None:
-            self.reasoning += int(r["reasoning"])
+            self.reasoning += as_int(r["reasoning"])
             self.reasoning_known = True
         cost = r.get("cost")
         if cost is None:
@@ -323,7 +324,7 @@ class UsageStats:
             b["requests"] += 1
             b["prompt"] += p
             b["completion"] += c
-            b["reasoning"] += int(r.get("reasoning") or 0)
+            b["reasoning"] += as_int(r.get("reasoning"))
             if cost is None:
                 b["cost_known"] = False
             else:
@@ -332,7 +333,7 @@ class UsageStats:
 
     def spent(self, currency: str) -> float:
         """某币种的已知花费合计（预算判断用）。"""
-        return sum(float(r["cost"]) for r in self.records
+        return sum(as_float(r["cost"]) for r in self.records
                    if r.get("cost") is not None and (r.get("currency") or "¥") == currency)
 
     @property
@@ -358,10 +359,10 @@ class UsageStats:
         known = [r for r in recs if r.get("hit") is not None]
         if len(known) < 5:
             return None
-        total = sum(int(r.get("prompt") or 0) for r in known)
+        total = sum(as_int(r.get("prompt")) for r in known)
         if total <= 0:
             return None
-        return sum(int(r["hit"]) for r in known) / total
+        return sum(as_int(r["hit"]) for r in known) / total
 
     def context_used(self, window: int) -> float:
         if window <= 0:

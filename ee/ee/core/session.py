@@ -1170,6 +1170,7 @@ class Session:
         if style is None:
             style = self._prefix_style if (self.prefix is not None and self._prefix_style is not None) else self.style
         seg = ST.system_segment(ST.get(self.home, style))
+        # pi-lens-ignore: python-cross-language-method -- FrozenPrefix.freeze 是类构造器
         return FrozenPrefix.freeze(system_prompt(self.profile, seg, self.system_sources(), self.tools, self.agent_profile),
                                    [t.schema() for t in self.tools])
 
@@ -1389,7 +1390,7 @@ class Session:
                 log.warning("会话附件目录超过预算，未快照：%s", src)
                 return str(src)
             d.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            dest.write_bytes(data)  # pi-lens-ignore: python-path-traversal -- dest 由 sha256 + 固定扩展名生成
             return str(dest)
         except OSError:
             return str(src)

@@ -88,7 +88,7 @@ def save_all(home: Path, thread_id: str, items: list[dict]) -> tuple[list[str], 
     for name, data, mime, thumb in decoded:
         aid = uuid.uuid4().hex[:12]
         p = d / f"{aid}.{EXT[mime]}"
-        p.write_bytes(data)
+        p.write_bytes(data)  # pi-lens-ignore: python-path-traversal -- p 由 uuid + 固定扩展名生成，在会话附件目录内
         paths.append(str(p))
         meta.append({"id": aid, "name": name, "mime": mime, "size": len(data), "thumb": thumb})
     return paths, meta
