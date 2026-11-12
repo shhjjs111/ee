@@ -53,6 +53,16 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 **行为差异**（设计内）：不查诊断的会话零进程；第一次 `lsp` 调用多付 1–2 秒启动；编辑后
 不再主动推 `didChange`，诊断总是在调用时按磁盘内容现算。
 
+### 同轮补上：`DiagStore` 的 LRU 上限
+
+`Doc.text` 是整份文件文本，原先 `_docs` 只增不减——长会话里模型每查一个文件的诊断就多留
+一份全文副本。现在 `DiagStore(max_docs=50)` 按「最近还在看」淘汰（`open` / `change` / `doc` /
+`get` / `on_publish` 都算使用），淘汰时连同 `_results` 一起删（否则会残留一条属于已淘汰
+文档的 fresh 诊断）。工具侧无需改动：`doc(uri) is None` 本来就会触发重新 `didOpen`。
+顺带把 `diagnostics.py` 里 3 处裸 `int()/float()` 换成 `as_int`/`as_float`，其中服务器回的
+`version` 原先坏值会抛在 `on_publish` 里、把整条通知链路打断。
+测试：`ee/tests/test_lsp_store.py`（5 例）。
+
 ### 顺带修掉的：用户级配置被当成项目级配置
 
 全量跑 `test_skills.py` 出现 3 条红（`profile` 变成 lean、子代理拿不到 `skill` 工具）。
@@ -65,9 +75,10 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 （`conftest` 里那条 autouse 隔离的注释也提到过这个坑）。这既修好了测试污染，也修掉了生产里
 「改过 HOME 的包装脚本/启动器会让用户配置漏成项目配置」的同类风险。
 
-验证：后端全量 `-n 8` **2531 passed / 16 skipped / 0 failed**（131 秒）；`ruff check ee/` 通过；
-`pyright` 0/0。新增 `test_lsp_lazy.py`（5）、`test_lsp_integration.py` 生产接线用例（真 pyright）、
-`test_config_scope.py` 的 `_BOOT_HOME` 契约用例。
+验证：后端全量 `-n 8` **2536 passed / 16 skipped / 0 failed**（144 秒；同轮另一次全量的
+唯一红是已知并行 flake `test_robustness::test_http_status_error_message`，单独跑通过）；
+`ruff check ee/` 通过；`pyright` 0/0。新增 `test_lsp_lazy.py`（5）、`test_lsp_store.py`（5）、
+`test_lsp_integration.py` 生产接线用例（真 pyright）、`test_config_scope.py` 的 `_BOOT_HOME` 契约用例。
 
 保留边界：跨会话共享进程（`plans/...` §4）没做——同一 URI 的文档所有权没有安全默认值；
 `DiagStore` 的 LRU 上限、设置页展示 `LspManager.stats()` 也留到以后；单个 `pyright-langserver`

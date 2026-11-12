@@ -140,7 +140,20 @@ path 没登记时正好取到 `_clients[""]`。**旧路径能工作，但靠的�
 - 真 pyright 走**生产接线**（`Session._attach_lsp` → 工具表里的无参 `LspTool`）拿到诊断，
   且 `stats()[0]["refs"] == 0`。
 
-**仍未做**：§4 的跨会话共享（文档所有权那一步没动）；`DiagStore` 的 LRU 上限；设置页展示
-`LspManager.stats()`。单个 `pyright-langserver` 的真实 RSS 没量到（本机 `pyright-langserver`
+### 6.1 `DiagStore` 的 LRU 上限（同轮补上）
+
+`Doc.text` 是整份文件文本，原先 `_docs` 只增不减：长会话里模型每查一个文件的诊断就多留
+一份全文副本。现在 `DiagStore(max_docs=50)` 按「最近还在看」淘汰（`open` / `change` /
+`doc` / `get` / `on_publish` 都算使用），淘汰时连同 `_results` 一起删——否则会残留一条
+属于已淘汰文档的 fresh 诊断。工具侧无需改动：`doc(uri) is None` 本来就会触发重新 `didOpen`。
+
+顺带把 `diagnostics.py` 里 3 处裸 `int()/float()` 换成 `as_int`/`as_float`（`max_docs`、
+服务器回的 `version`、`Deadline` 的秒数）——其中 `version` 来自服务器，坏值原先会抛在
+`on_publish` 里、把整条通知链路打断。
+
+测试：`ee/tests/test_lsp_store.py`（5 例：LRU 上限与最近使用、淘汰后读作 not_open 且不留旧诊断、
+`change` 刷新使用序、默认上限为正、工具层淘汰后重新取而不是拿旧结果）。
+
+**仍未做**：§4 的跨会话共享（文档所有权那一步没动）；设置页展示 `LspManager.stats()`。单个 `pyright-langserver` 的真实 RSS 没量到（本机 `pyright-langserver`
 是 `.cmd` 包装器，`tasklist` 拿到的是 cmd 的 8.3MB，node 子进程的统计没取到）——下次要量就用
 「跑 10 个会话各发一次 `lsp`，对比改造前后的进程数与总内存」这种端到端口径。

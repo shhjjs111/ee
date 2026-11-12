@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from ee.core.coerce import as_float, as_int
+
 # 状态取值
 FRESH = "fresh"              # 本版本的服务器结果（可信）
 STALE = "stale"              # 收到过，但版本/指纹与当前文档不符（已丢弃）
@@ -31,6 +33,10 @@ NOT_OPEN = "not_open"        # 没打开过（未发起请求）
 
 # 只有这个状态下的空诊断才算「干净」
 TRUSTED = (FRESH,)
+
+# 每个会话最多记这么多文档（每份含整份文件文本）。长会话里模型可能看几十上百个文件，
+# 不淘汰就是一份持续增长的全文副本；淘汰后工具会重新 didOpen，缓存不会指向旧内容。
+DEFAULT_MAX_DOCS = 50
 
 
 def norm_uri(uri: str) -> str:
@@ -70,6 +76,7 @@ class Doc:
     version: int = 1
     text: str = ""
     fp: str = ""
+    last_used: int = 0          # DiagStore 的 LRU 计数（越大越新）
 
     def __post_init__(self) -> None:
         if not self.fp:
@@ -98,7 +105,7 @@ class Deadline:
     """
 
     def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic):
-        self.seconds = max(0.0, float(seconds))
+        self.seconds = max(0.0, as_float(seconds))
         self._clock = clock
         self._end = clock() + self.seconds
 
@@ -115,17 +122,36 @@ class Deadline:
 class DiagStore:
     """按 uri 存文档版本与可信诊断。纯内存，不落盘。"""
 
-    def __init__(self) -> None:
+    def __init__(self, max_docs: int = DEFAULT_MAX_DOCS) -> None:
         self._docs: dict[str, Doc] = {}
         self._results: dict[str, Result] = {}
+        self.max_docs = max(1, as_int(max_docs, DEFAULT_MAX_DOCS))
+        self._tick = 0
+
+    # ------------------------------------------------------------ 容量
+    def _touch(self, doc: Doc) -> None:
+        self._tick += 1
+        doc.last_used = self._tick
+
+    def _evict(self) -> None:
+        """超出上限时按最近最少使用淘汰（连同它的诊断缓存）。"""
+        excess = len(self._docs) - self.max_docs
+        if excess <= 0:
+            return
+        order = sorted(self._docs.items(), key=lambda kv: kv[1].last_used)
+        for uri, _doc in order[:excess]:
+            self._docs.pop(uri, None)
+            self._results.pop(uri, None)
 
     # ------------------------------------------------------------ 文档
     def open(self, doc: Doc) -> Doc:
         # 键统一用 norm_uri：服务器回报的 uri 盘符大小写可能与发送时不同。
         doc.uri = norm_uri(doc.uri)
+        self._touch(doc)
         self._docs[doc.uri] = doc
         # 打开时把历史结果作废：新文档的版本从 1 重新开始
         self._results.pop(doc.uri, None)
+        self._evict()
         return doc
 
     def change(self, uri: str, text: str) -> Doc:
@@ -138,10 +164,12 @@ class DiagStore:
         if doc is None:
             doc = Doc(uri=uri, text=text)
             self._docs[uri] = doc
+            self._evict()
         else:
             doc.version += 1
             doc.text = text
             doc.fp = fingerprint(text)
+        self._touch(doc)
         prev = self._results.get(uri)
         if prev is not None and prev.status == FRESH and (
                 prev.version != doc.version or prev.version is None):
@@ -155,7 +183,10 @@ class DiagStore:
         self._results[uri] = Result(uri=uri, status=CLOSED, diagnostics=[])
 
     def doc(self, uri: str) -> Doc | None:
-        return self._docs.get(norm_uri(uri))
+        doc = self._docs.get(norm_uri(uri))
+        if doc is not None:
+            self._touch(doc)          # 读也算用过：LRU 按「最近还在看」淘汰，不是按打开顺序
+        return doc
 
     def uris(self) -> list[str]:
         return list(self._docs)
@@ -171,9 +202,10 @@ class DiagStore:
         doc = self._docs.get(uri)
         if doc is None:
             return False
+        self._touch(doc)
         ver = params.get("version")
         # 服务器不带 version 的实现（早期 pyright）按当前版本处理，靠指纹兜底
-        if ver is not None and int(ver) != doc.version:
+        if ver is not None and as_int(ver) != doc.version:      # 服务器给的值不可信
             # 丢弃，但**要留下痕迹**：调用方需要知道"收到过但不可信"，
             # 否则一个旧版本通知会让状态永远停在 not_open，看起来像"没查过"。
             self._mark_stale(uri, doc, f"丢弃旧版本诊断（v{ver} != 当前 v{doc.version}）")
@@ -200,6 +232,9 @@ class DiagStore:
         self._results[uri] = Result(uri=uri, status=status, diagnostics=[], reason=reason)
 
     def get(self, uri: str, default_status: str = NOT_OPEN) -> Result:
+        doc = self._docs.get(norm_uri(uri))
+        if doc is not None:
+            self._touch(doc)
         res = self._results.get(norm_uri(uri))
         if res is not None:
             return res
