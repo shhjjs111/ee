@@ -5,7 +5,7 @@ import { FolderOpen, RefreshCw } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { SkillInfo } from "../lib/slash";
 import { useApp } from "../lib/store";
-import type { MemoryInfo, Settings, SettingsResponse, SkillsSettings, WebKeySettings, WebSettings } from "../types";
+import type { LspServerInfo, MemoryInfo, Settings, SettingsResponse, SkillsSettings, WebKeySettings, WebSettings } from "../types";
 import { keySourceText } from "../types";
 import { Button, Input, Select, Spinner, Toggle } from "./ui";
 
@@ -295,6 +295,7 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
           <Toggle on={draft.lsp?.enabled ?? false} onChange={(v) => up({ lsp: { ...(draft.lsp ?? {}), enabled: v } })} />
         </Row>
       </Card>
+      <LspServers />
       <Card title="命令沙箱" desc="开启后，shell 和后台命令只能写当前工作区和沙箱临时目录，写其它位置会被系统拒绝；读文件不受限制。不是完整的安全边界，配合权限审批使用。对之后执行的命令生效（运行中的回合结束后）。">
         <Row label="启用沙箱" desc={sb.supported === false ? "当前系统不支持（仅 Windows 生效），开启后命令照常运行并提示未生效" : "Windows 受限令牌 + 工作区写权限 + 作业对象，命令结束时连同子进程一起清理"}>
           <Toggle on={sb.enabled} onChange={(v) => up({ sandbox: { ...sb, enabled: v } })} />
@@ -437,6 +438,58 @@ export function AgentSettings({ draft, resp, up }: { draft: Settings; resp: Sett
 
       <PermanentRules />
     </>
+  );
+}
+
+/** 此刻在跑的语言服务器（`lsp/servers`）。
+ *
+ * 服务器按需启动、空闲回收，所以这里永远是快照：刚查过诊断的会话会有一条，空闲两分钟后消失。
+ * 给用户一个「到底有几个 pyright 在跑」的答案——排查内存时最常问的就是这个。
+ */
+function LspServers() {
+  const rpc = useApp((s) => s.rpc);
+  const [rows, setRows] = useState<LspServerInfo[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(() => {
+    rpc?.call("lsp/servers", {})
+      .then((r) => {
+        setRows(r.servers ?? []);
+        setErr(null);
+      })
+      .catch((e) => setErr((e as Error).message));
+  }, [rpc]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  return (
+    <Card
+      title="语言服务器"
+      desc="服务器不常驻：模型查诊断时才启动，空闲约两分钟后回收。这里显示此刻还在跑的（快照，可手动刷新）。"
+      action={
+        <Button size="sm" variant="outline" onClick={load}>
+          <RefreshCw size={13} /> 刷新
+        </Button>
+      }
+    >
+      {err && <div className="text-[12.5px] text-danger">读取失败：{err}</div>}
+      {!err && rows === null && <div className="text-[12.5px] text-faint">读取中…</div>}
+      {!err && rows?.length === 0 && (
+        <div className="text-[12.5px] text-faint">现在没有在跑的语言服务器（模型没查诊断时就是这样）。</div>
+      )}
+      {!err && !!rows?.length && (
+        <div className="space-y-1.5">
+          {rows.map((r) => (
+            <div key={`${r.thread_id}:${r.identity}`} className="flex items-center gap-2 text-[12.5px] text-muted">
+              <span className="mono shrink-0 rounded bg-soft px-1.5 py-0.5 text-[11.5px] text-faint">{r.language}</span>
+              <span className="min-w-0 flex-1 truncate" title={r.root}>
+                {r.title} · {r.root}
+              </span>
+              <span className="shrink-0 text-faint">{r.alive ? `引用 ${r.refs}` : "已退出"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

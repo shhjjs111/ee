@@ -4,7 +4,7 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { useApp } from "../lib/store";
-import type { Settings, SettingsResponse } from "../types";
+import type { LspServerInfo, Settings, SettingsResponse } from "../types";
 import { AgentSettings } from "./AgentSettings";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -14,6 +14,8 @@ afterEach(() => {
 });
 
 let latest: Settings | null = null;
+/** `lsp/servers` 的返回值；每个用例自己设，mount() 里的假 rpc 直接读它。 */
+let lspServers: LspServerInfo[] = [];
 
 function Harness({ init }: { init: Partial<Settings> }) {
   const [draft, setDraft] = useState<Settings>({ models: {}, providers: {}, ...init } as unknown as Settings);
@@ -35,6 +37,7 @@ async function mount(init: Partial<Settings>) {
         if (method === "memory/get") return Promise.resolve({ user: { path: "/h/memory.md", exists: false, text: "", entries: [] }, workspace: null });
         if (method === "permissions/list") return Promise.resolve({ rules: [], path: "/h/permissions.json" });
         if (method === "skills/list") return Promise.resolve({ skills: [], errors: [], dirs: { user: "/h/skills", project: null } });
+        if (method === "lsp/servers") return Promise.resolve({ servers: lspServers });
         return Promise.resolve({});
       },
     } as never,
@@ -83,6 +86,30 @@ describe("工具与记忆设置：模式与开关", () => {
     await act(async () => switchAfter(host, "允许联网").click());
     expect(latest?.sandbox?.network).toBe(false);
     expect(latest?.sandbox?.enabled).toBe(true);
+    await act(async () => root.unmount());
+  });
+});
+
+describe("语言服务器快照（lsp/servers）", () => {
+  it("没有在跑的服务器时明确说「没在跑」，而不是空白", async () => {
+    lspServers = [];
+    const { host, root } = await mount({});
+    expect(host.textContent).toContain("语言服务器");
+    expect(host.textContent).toContain("现在没有在跑的语言服务器");
+    await act(async () => root.unmount());
+  });
+
+  it("列出行：语言、会话标题、工作区根目录、引用数", async () => {
+    lspServers = [{
+      thread_id: "t1", title: "修复登录", root: "/w/repo", language: "python",
+      identity: "pyright-langserver --stdio", refs: 0, alive: true,
+    }];
+    const { host, root } = await mount({});
+    const text = host.textContent ?? "";
+    expect(text).toContain("python");
+    expect(text).toContain("修复登录");
+    expect(text).toContain("/w/repo");
+    expect(text).toContain("引用 0");
     await act(async () => root.unmount());
   });
 });

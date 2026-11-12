@@ -387,6 +387,17 @@ export type SubagentRecord = {
   fork?: boolean; // 分叉子代理：继承主会话上下文（D5-10）
 };
 
+/** 一个在跑的语言服务器（`lsp/servers`，按会话）。服务器不常驻，这是快照。 */
+export type LspServerInfo = {
+  thread_id: string;
+  title: string;
+  root: string;
+  language: string;
+  identity: string;
+  refs: number;
+  alive: boolean;
+};
+
 export type NetworkSettings = {
   proxy_mode: "system" | "direct" | "custom";
   proxy_url: string;

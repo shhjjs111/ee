@@ -177,6 +177,18 @@ path 没登记时正好取到 `_clients[""]`。**旧路径能工作，但靠的�
 `test_lsp_integration.py::test_close_kills_the_wrapped_server_not_just_the_cmd_shell`：
 拿 `.CMD` 包装器的子进程 pid，`shutdown()` 后断言它们全部消失（Windows-only，真 pyright）。
 
-**仍未做**：§4 的跨会话共享（文档所有权那一步没动）；设置页展示 `LspManager.stats()`。单个 `pyright-langserver` 的真实 RSS 没量到（本机 `pyright-langserver`
+### 6.3 设置页能看到「现在有几个在跑」
+
+新增 RPC `lsp/servers`：遍历 `backend.threads`，把每个会话 `lsp_manager.stats()` 汇总成
+`{thread_id, title, root, language, identity, refs, alive}`。设置页「工具与记忆」下面加一张
+「语言服务器」卡片（列表 + 刷新按钮 + 空状态），回答「到底有几个 pyright 在跑、是谁的」——
+这是排查内存时最常问的问题。服务器不常驻，所以这份列表是快照（刚查过的会话有、空闲两分钟后消失），
+文案里写明了。
+
+测试：`test_lsp_lazy.py::test_lsp_servers_rpc_lists_running_servers`（空列表 + 一行）、
+`AgentSettings.test.tsx` 两条（空状态 / 行内容）。真机：`settings-scroll` 与
+`segments-setting` 两个 e2e 在加卡片后仍绿（设置页仍能滚到底、最后一项可见）。
+
+**仍未做**：§4 的跨会话共享（文档所有权那一步没动）。单个 `pyright-langserver` 的真实 RSS 没量到（本机 `pyright-langserver`
 是 `.cmd` 包装器，`tasklist` 拿到的是 cmd 的 8.3MB，node 子进程的统计没取到）——下次要量就用
 「跑 10 个会话各发一次 `lsp`，对比改造前后的进程数与总内存」这种端到端口径。

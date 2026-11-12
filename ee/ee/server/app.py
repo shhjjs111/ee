@@ -181,6 +181,7 @@ class Backend:
             "terminal/shell": self.terminal_shell,
             "git/diff": self.git_diff,
             "git/revert_file": self.git_revert_file,
+            "lsp/servers": self.lsp_servers,
         }
         # 由 checkpoint_rpc.register 注入（非 git 项目的快照对比）。先声明成可空：
         # 一是让静态检查看得到这个属性，二是注册顺序如果被改动，调用点会抛一条
@@ -694,7 +695,10 @@ class Backend:
             path.unlink()
         if extra.is_dir():
             import shutil
-            shutil.rmtree(extra, ignore_errors=True)
+            try:
+                shutil.rmtree(extra, ignore_errors=True)
+            except Exception:  # noqa: BLE001  附件目录删不掉也要继续删主文件后的收尾
+                log.info("删除会话附件目录失败（忽略）：%s", extra)
 
     async def thread_undo(self, thread_id: str, force: bool = False) -> dict:
         """/undo。要恢复的文件在回合后被用户改过时返回 {needs_confirm, conflicts}、不动文件；
@@ -1038,6 +1042,24 @@ class Backend:
             except ShellNotFound as e2:
                 return {"setting": name, "kind": None, "exe": None, "display": None, "notice": str(e2)}
         return {"setting": name, "kind": sh.kind, "exe": sh.exe, "display": sh.display, "notice": notice}
+
+    # ------------------------------------------------------------ LSP
+    async def lsp_servers(self) -> dict:
+        """此刻在跑的语言服务器（按会话）。
+
+        服务器不常驻：`lsp` 工具调用时现取，空闲超过 TTL 回收。所以这份列表是快照——
+        刚查过诊断的会话会有一条（refs 归零后仍会保留到 TTL），从没查过诊断的会话不会出现。
+        界面用它回答「到底有几个 pyright 在跑、是谁的」。
+        """
+        out = []
+        for t in list(self.threads.values()):
+            s = t.session
+            mgr = getattr(s, "lsp_manager", None) if s is not None else None
+            if mgr is None:
+                continue
+            for row in mgr.stats():
+                out.append({"thread_id": t.id, "title": t.meta.get("title") or "新对话", **row})
+        return {"servers": out}
 
     # ------------------------------------------------------------ git
     async def git_diff(self, cwd: str, thread_id: str | None = None) -> dict:

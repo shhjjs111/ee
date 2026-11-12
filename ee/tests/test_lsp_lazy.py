@@ -176,3 +176,24 @@ def test_acquire_failure_reports_unavailable_and_does_not_leak(lsp_session, work
     assert r.meta.get("status") == D.UNAVAILABLE
     assert "未取得诊断" in r.output and "起不来" in r.output
     assert started == [] and mgr.stats() == []
+
+
+def test_lsp_servers_rpc_lists_running_servers(ee_home, workspace):
+    """`lsp/servers` 把各会话的池子汇总成一份快照（设置页用它回答「有几个在跑」）。"""
+    from types import SimpleNamespace
+
+    from ee.server.app import Backend
+
+    async def go():
+        b = Backend(home=ee_home, persist=False)
+        th = (await b.call("thread/start", {"cwd": str(workspace)}))["thread"]
+        t = b.threads[th["id"]]
+        s = await t.ensure_session_async()
+        assert (await b.call("lsp/servers", {}))["servers"] == [], "没有服务器时应当是空列表"
+        row = {"root": str(workspace), "language": "python", "identity": "fake",
+               "refs": 0, "alive": True}
+        s.lsp_manager = SimpleNamespace(stats=lambda: [row])       # 模拟池里有一个
+        out = (await b.call("lsp/servers", {}))["servers"]
+        assert out == [{"thread_id": th["id"], "title": t.meta.get("title") or "新对话", **row}]
+
+    asyncio.run(go())

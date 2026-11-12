@@ -92,8 +92,10 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 验证：后端全量 `-n 8` **2536 passed / 16 skipped / 0 failed**（144 秒；同轮另一次全量的
 唯一红是已知并行 flake `test_robustness::test_http_status_error_message`，单独跑通过）；
 `ruff check ee/` 通过；`pyright` 0/0；`ee/scripts/lsp_process_probe.py` 实测 0→0→1→0→0。
-新增 `test_lsp_lazy.py`（5）、`test_lsp_store.py`（5）、`test_lsp_integration.py` 生产接线 +
-`.CMD` 进程树两个用例（真 pyright）、`test_config_scope.py` 的 `_BOOT_HOME` 契约用例。
+新增 `test_lsp_lazy.py`（6，含 `lsp/servers`）、`test_lsp_store.py`（5）、
+`test_lsp_integration.py` 生产接线 + `.CMD` 进程树两个用例（真 pyright）、
+`test_config_scope.py` 的 `_BOOT_HOME` 契约用例；前端 400 passed（新增设置页「语言服务器」卡片
+两例，真机 `settings-scroll` / `segments-setting` e2e 仍绿）。
 
 保留边界：跨会话共享进程（`plans/...` §4）没做——同一 URI 的文档所有权没有安全默认值；
 `DiagStore` 的 LRU 上限、设置页展示 `LspManager.stats()` 也留到以后；单个 `pyright-langserver`
