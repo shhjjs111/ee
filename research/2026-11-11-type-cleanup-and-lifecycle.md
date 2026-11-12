@@ -29,6 +29,9 @@
 - **删除会话是双保险**：后端门控 + 前端墓碑。只改一边，另一边仍可能复活。
 - **已知并行 flake**：`test_robustness::test_http_status_error_message` 在 `-n 8` 下
   偶发失败（本地假服务器争用），单独跑通过。不是本轮引入。
+  → **2026-11-12 已定位并修复**：假接口 `do_POST` 没读请求体就回 402，Windows 关连接时发 RST，
+  客户端拿到 10053 而非 402。压测 34/200 复现，补一行 `rfile.read(Content-Length)` 后 0/200。
+  详见 `roadmap-current.md`「收尾：`-n 8` 的那个偶发红」。
 
 ## 验证命令与结果
 

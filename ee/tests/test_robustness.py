@@ -118,6 +118,12 @@ def test_http_status_error_message():
 
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
+            # **先把请求体读掉再回 402**：不读就关连接，Windows 会给客户端一个 RST
+            # （ConnectionAbortedError 10053），它拿到的是「连不上模型服务」而不是 402。
+            # 这正是这条用例在 `-n 8` 下偶发红的原因：机器一忙，RST 就先到。
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                self.rfile.read(n)
             body = json.dumps({"error": {"message": "Insufficient Balance"}}).encode()
             self.send_response(402)
             self.send_header("Content-Type", "application/json")

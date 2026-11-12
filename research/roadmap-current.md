@@ -116,6 +116,24 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 `test_server_d2.py` 新增 1 例（往返 + 热更新 + 4 类越界拒绝）、`AgentSettings.test.tsx` 新增 1 例。
 前端全量 401 passed，真机 e2e `settings-scroll` + `segments-setting` 4 passed。
 
+### 收尾：`-n 8` 的那个偶发红不是产品缺陷，是测试服务器不读请求体
+
+复现条件与根因（2026-11-12）：全量 `-n 8` 连跑抓到 traceback —— 客户端拿到的不是 402，而是
+`连不上模型服务（ConnectionAbortedError: [WinError 10053] 你的主机中的软件中止了一个已建立的连接）`。
+假接口的 `do_POST` 直接回 402、**从没读过请求体**；`BaseHTTPRequestHandler` 在 HTTP/1.0 下回完就
+关连接，接收缓冲里还压着未读的 body → Windows 发 RST。机器一忙，RST 先于客户端读完响应到达，
+就成了「偶发」。
+
+压测证明（同一 handler，只差一行 `self.rfile.read(Content-Length)`，200 次 × 16 并发）：
+
+| 版本 | 结果 |
+|---|---|
+| 不读请求体（原实现） | 166 次正确 402，**34 次 ConnectionAborted** |
+| 读掉请求体 | **200/200 都是 402** |
+
+修法：用例里先 `rfile.read(Content-Length)` 再回响应（仓库里另外四个假服务器本来就是这么写的，
+只有这一处漏了）。修后连跑 3 轮全量：**2541 passed / 16 skipped / 0 failed**（每轮 2:15–2:30）。
+
 ## 执行记录（2026-11-12，写盘失败不再静默）
 
 来自 `2026-11-11` 交接的 backlog 第 1 条：`store.append` 写盘失败只写日志，界面无感知——磁盘满 / 杀软占用时对话看起来一切正常，重启才发现整段丢了。
@@ -133,7 +151,7 @@ backlog 第 3 条原写「跨会话共享 LSP 进程」。审计后改判：真�
 
 - `test_secrets::test_session_store_redacts` —— **被本次改动真的打红**：该用例用 `__new__` 绕过 `__init__`，新加的 `failed` 字段不存在（`AttributeError`）。修法：把 `failed` / `last_error` / `on_fail` / `on_write` 的默认值提到类属性（同时也为任何绕过 `__init__` 的构造路径兜底），而不是去改用例。
 - `test_bestof_verify::test_verify_picks_the_green_worktree` —— 环境假失败：判据命令写的是 `python -m pytest`，本机 PATH 上的 `python` 解析到 `C:\Users\…\.pi-lens\pip-tools\Scripts\python.exe`（No module named pytest）。先用 `git stash` 在 HEAD 上复跑确认了与本次改动无关。修法：用例改用 `sys.executable`；注意本机 shell 是 PowerShell，`"<路径>" -m pytest` 会被当成表达式（`Unexpected token '-m'`），所以路径无空格时不加引号。
-- `test_robustness::test_http_status_error_message` —— `-n 8` 下的已知并行 flake（本地假服务器争用），最终那一轮自己绿了；单独跑一直通过。
+- `test_robustness::test_http_status_error_message` —— `-n 8` 下的偶发红，**同日晚些已定位并修好**：假接口在 `do_POST` 里没读请求体就回 402，Windows 关连接时发 RST，客户端拿到的是 `ConnectionAbortedError 10053`（被映射成「连不上模型服务」）而不是 402。见本节末尾。
 
 保留边界：写盘失败状态只在内存里（盘写不了自然也无法从磁盘恢复），所以只有**正在运行的后端**能看到它；重启后界面不再提示「曾经失败过」，那部分记录也确实已经丢了。恢复后只清状态、不回填——失败期间没落盘的记录已经无法找回，提示文案里写明了这一点。`ee exec` / headless 这类没有 Thread 的入口仍只有日志（按 AGENTS.md 只发桌面版，不再为多入口加 UI 通路）。
 
