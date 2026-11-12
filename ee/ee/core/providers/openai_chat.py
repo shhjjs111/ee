@@ -22,6 +22,13 @@ log = logging.getLogger("ee.model")
 
 HEARTBEAT_S = 5.0      # 等首个响应对象时，多久更新一次“已等待 N 秒”的状态行
 
+# prompt_cache_retention 的合法值随供应商不同：OpenAI 原生只认 in_memory / 24h
+# （5m / 1h 是 Anthropic 的写法，抄过来会 400）。只对**已知家族**校验；不在表里的
+# 家族原样发送（网关可能有自己的写法），真不认也只错一次、由 400 降级记住。
+_TTL_BY_FAMILY = {"gpt": ("in_memory", "24h")}
+# Anthropic 写法 → OpenAI 同档位（5m 就是内存层；1h 只有更长的 24h 可选）。
+_TTL_ALIASES = {"5m": "in_memory", "10m": "in_memory", "1m": "in_memory", "1h": "24h"}
+
 
 class ModelError(RuntimeError):
     """模型请求最终失败：消息已是给用户看的中文说明。status_code 保留原 HTTP 状态（没有则 None）；
@@ -91,7 +98,13 @@ class QuirkState:
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 原子写：直接 write_text 写到一半（崩溃 / 两个 ee 进程同时写）会留下坏 JSON，
+            # 下次启动解析失败就被当成空表——所有降级记忆清零，每条不支持的参数再 400 一遍。
+            # 先写临时文件再原子改名：读者要么看到旧的完整内容，要么看到新的完整内容。
+            # （并发写仍然可能后写覆盖先写，但那只是多一次 400，不会损坏文件。）
+            tmp = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex[:8]}.tmp")
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
         except OSError:
             pass
 
@@ -207,9 +220,38 @@ class ChatClient:
         if not key:
             return
         p["prompt_cache_key"] = key
-        ttl = (self.profile.prompt_cache_ttl or "").strip()
+        ttl = self._cache_ttl((self.profile.prompt_cache_ttl or "").strip())
         if ttl and not st.get("no_prompt_ttl"):
             p["prompt_cache_retention"] = ttl
+
+    def _cache_ttl(self, raw: str) -> str:
+        """把 prompt_cache_ttl 换成当前家族认识的值；不认识就不发（别让它 400）。
+
+        **为什么需要这一层**：请求字段叫 prompt_cache_retention，取值各家不同——OpenAI 原生
+        只认 `in_memory` / `24h`。而 `5m` / `1h` 是 Anthropic 的写法，抄到 OpenAI 上会被 400，
+        然后被降级链当成「这个参数不支持」**永久关掉**，用户只看到保留时长静默失效。
+        已知家族在这里校验并校正；不在表里的家族原样发（网关可能有自己的写法）。
+
+        `1h` 映射到 `24h` 而不是丢掉：OpenAI 只有「默认（几分钟）」与「24 小时」两档，
+        用户要的是一小时，给更长的档才符合意图；反过来不发就等于退回几分钟。
+        """
+        family = self.profile.family or ""
+        allowed = _TTL_BY_FAMILY.get(family)
+        if not allowed:
+            return raw
+        value = raw.strip().lower()
+        if value in allowed:
+            return value
+        mapped = _TTL_ALIASES.get(value)
+        if mapped and mapped in allowed:
+            if mapped != value:
+                log.info("模型 %s 的 prompt_cache_ttl=%r 不属于 %s 家族，按 %r 发送",
+                         self.spec.alias, raw, family, mapped)
+            return mapped
+        log.warning("模型 %s 的 prompt_cache_ttl=%r 不被 %s 家族接受（可用：%s），本次不发；"
+                    "直接发出去会被 400 拒掉并永久降级这个参数。",
+                    self.spec.alias, raw, family, " / ".join(allowed))
+        return ""
 
     @staticmethod
     def has_reasoning_params(p: dict) -> bool:

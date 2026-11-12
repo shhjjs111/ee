@@ -459,6 +459,12 @@ class Session:
         if eff != before:
             self._break_reason = "effort_switch"
         note = "" if eff == lv else "（当前模型不支持这个档位，请求里不会发送）"
+        if eff != before:
+            # 换档位改的是请求参数，而服务端按参数分缓存 —— 下一次请求整段前缀失效。
+            # 和 set_model 的提示对齐：不能让用户以为“只变聪明一点”不要钱。
+            size = self.stats.last_prompt
+            cost = f"约 {size:,} token" if size > 0 else "整段上下文"
+            note += f"（服务端缓存会从零开始：下一次请求的{cost}按全价计）"
         return f"推理强度：{RZ.labels(self.profile)[lv]}{note}"
 
     def effort_support(self) -> dict:

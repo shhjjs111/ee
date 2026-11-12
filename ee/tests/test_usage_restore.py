@@ -64,6 +64,79 @@ class TestRestoreFromUsage:
         assert _spent_from_totals({}) == {}
 
 
+class TestRecordsReplay:
+    """逐请求账本回放（P0-1）：命中率/断点/上下文大小要跟 `ee usage` 一致。
+
+    不回放时同一条会话会给出两套数字：每回合 footer 读落盘的 turn_end（历史全景），
+    上下文面板读 stats（只有重载之后的那几条）；恢复后前 5 次请求的压缩水位自适应
+    还会因为样本不足直接停摆。
+    """
+
+    def test_replay_restores_metrics_but_not_money(self):
+        st = UsageStats()
+        st.add({"prompt": 10_000, "completion": 100, "hit": 9_900}, _price(2.0, "¥"), "m", role="main")
+        st.add({"prompt": 11_000, "completion": 100, "hit": 10_000}, _price(2.0, "¥"), "m", role="main")
+        saved = [dict(r) for r in st.records]
+
+        restored = UsageStats()
+        assert restored.restore(saved) == 2
+        assert restored.requests == 2
+        assert restored.totals()["main_hit_rate"] == pytest.approx((9_900 + 10_000) / 21_000)
+        assert restored.recent_main_hit_rate() is None, "两条样本还不够调水位（≥5 才动）"
+        assert restored.last_prompt == 11_000, "上下文大小要回到实测值，不再退回估算"
+        assert restored.spent("¥") == 0, "金额由 spent_before 负责，回放不能再加一遍"
+        assert restored.totals()["cost"] is None, "回放出来的总额是未知，不能冒充完整"
+
+    def test_replay_is_idempotent(self):
+        st = UsageStats()
+        st.add({"prompt": 1_000, "completion": 10, "hit": 900}, _price(2.0, "¥"), "m")
+        saved = [dict(r) for r in st.records]
+        target = UsageStats()
+        assert target.restore(saved) == 1
+        assert target.restore(saved) == 0, "已经记过账就不能再回放，否则命中率被算两遍"
+        assert target.requests == 1
+
+    def test_replay_skips_malformed_rows(self):
+        """坏行（崩溃写了一半 / 老版本字段缺失）不能让整个恢复失败。"""
+        target = UsageStats()
+        n = target.restore(["不是字典", {"hit": 1}, {"prompt": 100, "completion": 5, "hit": 90}])
+        assert n == 1
+        assert target.requests == 1
+
+    def test_replay_keeps_usage_missing_count(self):
+        """缺用量的计数也要回放：否则重载后 totals() 会把它报成 0，覆盖率又变成假 100%。"""
+        target = UsageStats()
+        n = target.restore([{"prompt": 100, "completion": 5, "hit": 90},
+                            {"prompt": 0, "completion": 0, "hit": None, "usage_missing": True}])
+        assert n == 2
+        assert target.usage_missing == 1
+        assert target.totals()["usage_missing"] == 1
+        assert target.totals()["main_usage_missing"] == 1
+
+    def test_thread_restore_uses_the_persisted_ledger(self, ee_home, workspace):
+        """生产路径：SessionStore.load() 带出账本 → Thread 建 Session 时回放。"""
+        from ee.core.store import SessionStore
+        from ee.server.threads import Thread
+
+        store = SessionStore(ee_home, session_id="t-restore")
+        store.message({"role": "user", "content": "问"})
+        store.usage({"prompt": 50_000, "completion": 100, "hit": 49_000, "role": "main",
+                     "cost": 0.5, "currency": "¥", "model": "m"})
+        store.usage({"prompt": 3_000, "completion": 10, "hit": 0, "role": "compact",
+                     "cost": 0.01, "currency": "¥", "model": "m"})
+
+        d = SessionStore.load(store.path)
+        assert len(d["usage"]) == 2, "load() 本来就逐行解析，账本不该再读一遍文件"
+        t = Thread("t-restore", ee_home, lambda *_: None, {"cwd": str(workspace)},
+                   messages=d["messages"], items=d["items"], persist=False, usage=d["usage"])
+        s = t.ensure_session()
+        assert s.stats.requests == 2
+        assert s.stats.records[0]["role"] == "main"
+        assert s.stats.totals()["main_hit_rate"] == pytest.approx(0.98)
+        assert s.stats.totals()["by_role"]["compact"]["requests"] == 1
+        assert s.stats.spent("¥") == 0
+
+
 class TestNoDoubleCount:
     def test_restored_baseline_not_double_counted(self):
         """恢复出的基线 + 新花费 = 真实总额，不能把基线算两遍。"""
@@ -82,7 +155,10 @@ class TestNoDoubleCount:
         _Probe.budget_root = _Probe
         _Probe.stats.add({"prompt": 1_000_000, "completion": 0, "hit": 0}, _price(1.0, "CNY"), "m")
 
-        assert Session.session_spent(_Probe, "CNY") == pytest.approx(2.0)
+        # 鸭子类型的探针，故意不是真的 Session：只验证 session_spent 的加法口径。
+        from typing import Any, cast
+
+        assert Session.session_spent(cast(Any, _Probe), "CNY") == pytest.approx(2.0)
 
 
 class TestMultiRestartAccumulation:

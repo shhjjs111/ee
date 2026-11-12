@@ -83,11 +83,42 @@ describe("context", () => {
       cacheLine(
         bd({
           cache: {
-            hit: 500, hit_rate: 0.5, hit_coverage: 0.8, cold: 2, cold_legacy: 1,
+            hit: 500, hit_rate: 0.5, hit_coverage: 0.8, cold: 2,
             causes: { model_switch: 1, compact: 2 },
           },
         }),
       ),
-    ).toBe("服务端缓存命中 50% · 覆盖 80% 输入 · 冷启动 2 次（旧账本 1） · 已知原因 compact 2、model_switch 1");
+    ).toBe("服务端缓存命中 50% · 覆盖 80% 输入 · 冷启动 2 次 · 已知原因 compact 2、model_switch 1");
+  });
+
+  it("老账本里分不清的行单独说，不冒充冷启动", () => {
+    expect(
+      cacheLine(
+        bd({
+          cache: {
+            hit: 500, hit_rate: 0.5, hit_coverage: 0.8, cold: 1, legacy: 3,
+          },
+        }),
+      ),
+    ).toBe("服务端缓存命中 50% · 覆盖 80% 输入 · 冷启动 1 次 · 旧账本无法归因 3 次");
+  });
+
+  it("缺用量的请求要单独说出来", () => {
+    // 缺用量的行 prompt=0，token 覆盖率永远是 100%；不点明的话那行
+    // 「覆盖 100% 输入」会把「有请求根本没报用量」盖掉。
+    expect(
+      cacheLine(
+        bd({
+          cache: {
+            hit: 900, hit_rate: 0.9, hit_coverage: 1,
+            main_hit_rate: 0.99, main_hit_coverage: 1, main_requests: 3, usage_missing: 2,
+          },
+        }),
+      ),
+    ).toBe("主对话缓存命中 99% · 覆盖 100% 输入 · 缺用量 2 次");
+    // usage_missing=0 不显示多余的一段
+    expect(
+      cacheLine(bd({ cache: { hit: 900, hit_rate: 0.9, hit_coverage: 1, main_hit_rate: 0.99, main_hit_coverage: 1, usage_missing: 0 } })),
+    ).toBe("主对话缓存命中 99% · 覆盖 100% 输入");
   });
 });

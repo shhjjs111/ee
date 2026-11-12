@@ -18,7 +18,7 @@
 """
 from __future__ import annotations
 
-from ee.core.usage import UsageRollup
+from ee.core.usage import UsageRollup, unbaselined_miss
 
 # 按输入规模分桶：命中率与 prompt 大小强相关（小 prompt 抖动大、大 prompt 摊薄快）
 _BUCKETS = ((0, 40_000, "<40k"), (40_000, 80_000, "40–80k"),
@@ -37,19 +37,13 @@ def _rate(hit: int, denom: int) -> float | None:
 
 
 def _is_cold(r: dict) -> bool:
-    """是不是没有 wire 基线的首发。
+    """是不是**明确记着**「没有 wire 基线」的首发（新记录才有这个标记）。
 
-    新记录有显式 `cold`；旧账本没有这个字段，只能保守推断：`new==0` 且
-    `hit==0` 或 gap 很大，才当冷启动。不能把所有 `new==0` 都算进来——
-    wire 估算变小（取消/失败重试）也会得到 new==0，但那是正常回合。
+    老账本没有 `cold` 字段，不能靠猜：猜对了没收益，猜错了会让冷启动次数虚高、
+    把一次整段未命中隐藏在「重启」背后。分不清的那一类走 `unbaselined_miss()`，
+    两边都不进、单独给一类。
     """
-    if r.get("cold"):
-        return True
-    if "baseline" in r:
-        return False
-    if r.get("break") or r.get("new") != 0:
-        return False
-    return _num(r.get("hit"), -1) == 0 or _num(r.get("gap")) >= 5000
+    return bool(r.get("cold"))
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -63,20 +57,26 @@ def summarize(rows: list[dict]) -> dict:
     main_prompt = sum(_num(r.get("prompt")) for r in main)
     known_prompt = sum(_num(r.get("prompt")) for r in known)
     main_hit = sum(_num(r.get("hit")) for r in known)
+    missing = [r for r in main if r.get("usage_missing")]
 
     breaks = [{"turn": r.get("turn"), "reason": r.get("break"),
                "prompt": _num(r.get("prompt")), "gap": _num(r.get("gap")),
                "new": _num(r.get("new"))}
               for r in main if r.get("break")]
+    by_break: dict[str, int] = {}
+    for b in breaks:
+        key = str(b["reason"])
+        by_break[key] = by_break.get(key, 0) + 1
     cold = [r for r in main if _is_cold(r)]
-    legacy_cold = [r for r in cold if not r.get("cold")]
+    legacy = [r for r in main if unbaselined_miss(r)]
     causes = [r for r in main if r.get("cause")]
     by_cause: dict[str, int] = {}
     for r in causes:
         key = str(r.get("cause"))
         by_cause[key] = by_cause.get(key, 0) + 1
     gaps = sorted(_num(r.get("gap")) for r in main
-                  if "gap" in r and not r.get("break") and not _is_cold(r))
+                  if "gap" in r and not r.get("break") and not _is_cold(r)
+                  and not unbaselined_miss(r))
 
     return {
         "requests": len(rows),
@@ -90,12 +90,19 @@ def summarize(rows: list[dict]) -> dict:
             # 两者一起看才知道「99%」是真命中还是样本太少。
             "hit_rate": _rate(main_hit, known_prompt),
             "hit_coverage": _rate(known_prompt, main_prompt),
+            # 请求口径的覆盖率。token 口径看不见「缺用量」的请求（它们 prompt=0，进不了任何
+            # 分母），所以单独给一个「报过 hit 的请求 / 全部主对话请求」——只有两个都是 1.0
+            # 才是真的全量样本。
+            "hit_coverage_requests": _rate(len(known), len(main)),
+            "usage_missing": len(missing),
         },
-        "breaks": {"count": len(breaks), "items": breaks},
+        "breaks": {"count": len(breaks), "by_reason": by_break, "items": breaks},
         # 冷启动/无基线：不计入 normal_gap 与压缩水位，但单独给出来，
         # 否则用户会以为「这些未命中凭空消失了」。
-        "cold": {"count": len(cold), "gap": sum(_num(r.get("gap")) for r in cold),
-                 "legacy": len(legacy_cold)},
+        "cold": {"count": len(cold), "gap": sum(_num(r.get("gap")) for r in cold)},
+        # 老账本（baseline 字段上线前）里分不清「冷启动」与「整段未命中」的行。
+        # 不算成冷启动（那会让次数虚高），也不进正常回合（那是把重算当前缀不稳）。
+        "legacy": {"count": len(legacy), "gap": sum(_num(r.get("gap")) for r in legacy)},
         # 已知原因（compact / prune / mcp_attach / model_switch ...）不一定都会触发 break：
         # gap 没超过阈值时只记 cause。单独汇总，用户才看得到「换了模型但仍命中」这类事件。
         "causes": {"count": len(causes), "by_reason": by_cause},
@@ -125,7 +132,8 @@ def _buckets(main: list[dict]) -> list[dict]:
     out = []
     for lo, hi, label in _BUCKETS:
         sel = [r for r in main if (hi is None or _num(r.get("prompt")) < hi) and _num(r.get("prompt")) >= lo]
-        known = [r for r in sel if r.get("hit") is not None and not _is_cold(r)]
+        known = [r for r in sel if r.get("hit") is not None and not _is_cold(r)
+                 and not unbaselined_miss(r)]
         denom = sum(_num(r.get("prompt")) for r in known)
         out.append({"label": label, "requests": len(sel),
                     "hit_rate": _rate(sum(_num(r.get("hit")) for r in known), denom),

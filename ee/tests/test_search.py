@@ -56,6 +56,32 @@ def test_snippet():
     assert snippet("abc", "zzz") == "abc"
 
 
+def test_incremental_tail_replaces_instead_of_stacking(ee_home, workspace):
+    """搜索前只读尾巴：同 id 的新版本要替换旧行，不能被叠加成两条。
+
+    工具卡片会从 running 更新成 ok（同一个 item id 两次落盘）。旧实现是整份重建，
+    天然只留最后一版；改成读尾巴之后，这个语义必须显式保住。
+    """
+    s = _session(ee_home, "c", workspace, [
+        {"id": "t1", "type": "tool", "name": "shell", "summary": "运行 pytest", "output": "第一次输出"},
+    ])
+    idx = SearchIndex(ee_home)
+    idx.sync()
+    assert idx.search("第一次输出")
+    s.item({"id": "t1", "type": "tool", "name": "shell", "summary": "运行 pytest",
+            "output": "第二次输出", "seq": 2})
+    assert idx.sync() == 1
+    assert idx.search("第一次输出") == [], "旧版本必须被替换，不能还留着"
+    hits = idx.search("第二次输出")[0]["hits"]
+    assert [h["item_id"] for h in hits] == ["t1"], "同一个 item 只能有一行"
+    # 再追加一条：旧行不能因为重读尾巴而重复
+    s.item({"id": "u2", "type": "user", "text": "再问一个运行 pytest 的问题", "seq": 3})
+    idx.sync()
+    hits = idx.search("运行 pytest")[0]["hits"]
+    assert len([h for h in hits if h["item_id"] == "t1"]) == 1
+    idx.close()
+
+
 def test_thread_search_rpc(ee_home, workspace, tmp_path):
     other = tmp_path / "other"
     other.mkdir()

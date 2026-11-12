@@ -134,30 +134,38 @@ class SessionStore:
 
     @staticmethod
     def _records(path: Path):
-        """逐行读出记录。坏行（崩溃时写了一半、不是合法 UTF-8 / JSON、不是对象）跳过并记日志，不影响其他行。"""
+        """逐行读出记录（流式，不把整份文件读进内存）。坏行跳过并记日志。
+
+        以前是 `read_bytes()` 再 split：长会话十几 MB，等于每次读都先多占一份同等大小的
+        拷贝。会话文件只追加（`append()` 只有 "ab"），按行迭代不需要随机访问。
+        """
         try:
-            raw = path.read_bytes()
+            f = open(path, "rb")
         except OSError:
             return
-        if raw.startswith(b"\xef\xbb\xbf"):
-            raw = raw[3:]
         bad = 0
-        for no, line in enumerate(raw.split(b"\n"), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError) as e:
-                rec, why = None, e
-            else:
-                why = "不是 JSON 对象"
-            if not isinstance(rec, dict):
-                bad += 1
-                if bad <= 5:
-                    log.warning("会话文件 %s 第 %d 行损坏（可能是崩溃时没写完），已跳过：%s", path.name, no, str(why)[:120])
-                continue
-            yield rec
+        try:
+            for no, line in enumerate(f, 1):
+                line = line.strip()
+                if no == 1 and line.startswith(b"\xef\xbb\xbf"):
+                    line = line[3:]
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError) as e:
+                    rec, why = None, e
+                else:
+                    why = "不是 JSON 对象"
+                if not isinstance(rec, dict):
+                    bad += 1
+                    if bad <= 5:
+                        log.warning("会话文件 %s 第 %d 行损坏（可能是崩溃时没写完），已跳过：%s",
+                                    path.name, no, str(why)[:120])
+                    continue
+                yield rec
+        finally:
+            f.close()
         if bad > 5:
             log.warning("会话文件 %s 共跳过 %d 行坏记录", path.name, bad)
 
@@ -165,8 +173,9 @@ class SessionStore:
     def usage_records(path: Path) -> list[dict]:
         """逐请求用量账本，按写入顺序。老会话没有这类记录时返回空列表（不报错）。
 
-        不做成 `load()` 的字段：`load()` 是恢复会话的热路径（每次打开会话都走），
-        而账本只有诊断才会读——诊断时按需扫一遍，比让每次恢复都多解析一整批记录划算。
+        只建账本、不建 messages/items：`ee usage` / `cache_report` 只想要账本，
+        没必要同时把整段历史构出来。恢复会话走的是 `load()`（它本来就逐行解析，
+        顺手把 usage 行放进返回值，不会为此多读一遍文件）。
         """
         out = []
         for rec in SessionStore._records(path):
@@ -200,9 +209,10 @@ class SessionStore:
 
     @staticmethod
     def load(path: Path) -> dict:
-        """一次读出 messages / items（按首次出现顺序，同 id 取最后一版）/ meta（合并）。"""
+        """一次读出 messages / items / usage（同 id 取最后一版）/ meta（合并）。"""
         messages: list[dict] = []
         items: dict[str, dict] = {}
+        usage: list[dict] = []
         meta: dict = {}
         first_t = last_t = None
         for rec in SessionStore._records(path):
@@ -238,6 +248,13 @@ class SessionStore:
                 it = rec.get("item")
                 if isinstance(it, dict) and it.get("id"):
                     items[it["id"]] = it
+            elif kind == "usage":
+                # 逐请求账本：恢复会话时回放进 UsageStats（命中率 / 断点 / 上下文大小）。
+                # 放在这里而不是让调用方再读一遍文件：_records() 已经把每一行都 json
+                # 解析过了，多留一个引用几乎不花钱；重读一遍 19MB 的会话文件才是真的贵。
+                u = rec.get("usage")
+                if isinstance(u, dict):
+                    usage.append(u)
         if not items:   # 老会话（终端版）没有 item 记录：从消息粗略还原
             items = {it["id"]: it for it in _items_from_messages(messages)}
         # 孤儿 tool_calls 也要在这里补：这是**生产恢复路径**（app.py:223 / headless.py:349 /
@@ -253,7 +270,7 @@ class SessionStore:
             meta["title"] = _title(first_user["text"]) if first_user else "新对话"
         ordered = sorted(items.values(), key=lambda it: _int(it.get("seq"), 0))
         _close_pending_items(ordered)
-        return {"messages": messages, "items": ordered, "meta": meta}
+        return {"messages": messages, "items": ordered, "meta": meta, "usage": usage}
 
     @staticmethod
     def summary(path: Path) -> dict:

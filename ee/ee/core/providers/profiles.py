@@ -72,7 +72,9 @@ class Profile:
     # 打开后同一会话的每条请求带同一个 key，服务端据此把多轮请求归到同一条缓存线上；
     # 关掉时一个字节都不发，行为与以前完全一致。
     supports_prompt_cache_key: bool = False
-    # prompt_cache_ttl：缓存保留时长（"5m" / "1h" / "" = 不发）。只有少数服务端支持。
+    # prompt_cache_ttl：缓存保留时长。取值随供应商不同——OpenAI 原生只认 in_memory / 24h
+    # （5m / 1h 是 Anthropic 的写法，抄过来会被 400 挡掉）；已知家族由
+    # openai_chat._cache_ttl 校验并校正，不认识的家族原样发送。
     prompt_cache_ttl: str = ""
     # 同家族内按模型名细分的覆盖项（[[variants]] match=[...] + 任意档案字段，price 按键合并）
     variants: list = field(default_factory=list)

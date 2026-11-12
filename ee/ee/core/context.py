@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ee.core import gitinfo
 from ee.core.coerce import as_float, as_int
+from ee.core.usage import unbaselined_miss
 
 
 def load_prompt(rel_path: str) -> str:
@@ -214,8 +215,14 @@ class UsageStats:
         压缩重建历史、换模型换了前缀、修剪改了历史中段都会这样。1000 token 的余量是给
         tokenizer 抖动和服务端块对齐留的：正常追加时实测 gap 只比新增多几十到几百。
         """
+        # 侧路请求在取槽之前就返回：它自己不参与主对话基线，但也**不能把主请求刚记下的
+        # wire 取走**。标题生成是后台 task（threads.py 的 _ai_title，最长 30s），完全可能
+        # 落在主请求 note_wire() 与 _charge() 之间；取走的结果不是报错，而是那条主记录
+        # 静默少了 wire/new/gap/break —— 断点从此漏记，账本上什么都看不出来。
+        if role != "main":
+            return {}
         wire, self._wire_pending = self._wire_pending, 0
-        if role != "main" or not wire:
+        if not wire:
             return {}
         # 没有基线（last_wire_tokens == 0）说明这是本进程里第一次主对话请求，或者刚 /new、
         # 刚从磁盘恢复会话。此时「上次发了多少」根本不知道，把整条 wire 当成新增会让 new
@@ -250,7 +257,7 @@ class UsageStats:
             # 没有基线时不断点：续跑/重启后的首请求与服务端缓存是否还热无关己，
             # 两者无法区分，此时硬判会把“进程刚起”记成 ee 自己造的断点。
             if baseline > 0 and gap > growth * 1.5 + 1000:
-                extra["break"] = break_reason or "unknown"
+                extra["break"] = break_reason or self._break_kind(as_int(hit), as_int(prompt))
                 if not break_reason:
                     # 归因未命中原因时最需要的一项：hit 只有很小一块，说明服务端在最前面
                     # 就匹配不上了（不是「尾巴改了」）。真实会话实测到的孤立断点就是这个形态：
@@ -259,6 +266,23 @@ class UsageStats:
         elif break_reason:
             extra["break"] = break_reason
         return extra
+
+    @staticmethod
+    def _break_kind(hit: int, prompt: int) -> str:
+        """归因不到本地原因时，按「命中到多深」给断点分类。
+
+        **为什么能这么分**：本地改写（压缩 / 修剪 / 清推理 / 换模型 / 前缀重冻）都发生在某个
+        位置之后，那个位置**之前**的前缀照样命中；只有服务端那一侧整段失配，才会出现
+        「只命中 system+tools 那一小段」。真实账本：55 次 unknown 断点里 35 次的 hit 不到
+        prompt 的 10%，其中 29 次干脆是 0 —— 而同一段历史的相邻请求都在 99.5% 以上。
+
+        用 10% 而不是绝对值：system+tools 的头在不同 provider 上从几千到几万 token 不等，
+        按比例才跨模型可比。代价是「尾巴被改了一点点」和「整段丢缓存」在极小的 prompt 上
+        可能同形；这类样本本来也分不清，保持 unknown 更诚实。
+        """
+        if prompt > 0 and hit * 10 < prompt:
+            return "upstream_full_miss"
+        return "unknown"
 
     def add(self, usage: dict | None, price, model: str = "", discount: float = 1.0, turn: int | None = None,
             role: str = "main", break_reason: str | None = None) -> float | None:
@@ -331,6 +355,38 @@ class UsageStats:
                 b["cost"] += cost
         self.records.append(dict(r))
 
+    def restore(self, records: list) -> int:
+        """回放落盘的逐请求账本（重开 / 重启 / 被内存淘汰后重载），返回真正回放的条数。
+
+        **为什么需要**：`records` 只活在进程里，而界面上的「主对话缓存命中」、压缩水位的
+        自适应（`recent_main_hit_rate`）、上下文大小的实测值（`last_prompt`）都读它。
+        不回放的话，同一条会话会给出两套数字：每回合 footer 读落盘的 `turn_end`（历史全景），
+        上下文面板读 `stats`（只有重载之后的那几条）；恢复后前 5 次请求水位自适应还会因为
+        样本不足直接停摆（`_watermark_factor` 返回 1.0，等于这一段白白按固定水位压缩）。
+
+        **金额刻意不恢复**（cost 置空）：跨重启的已花金额由 `Session.spent_before`（turn_end
+        的 `spent_total`）负责，两边都恢复会重复计费。回放出来的 record 只承担「过程」指标：
+        命中率 / 断点归因 / 上下文大小。代价是 `totals()["cost"]` 在重载后变回未知——
+        这比显示一个「只含本次进程」的偏小金额诚实。
+
+        只在还没记过账时回放（`requests == 0`），重复调用不会把历史记两遍。
+        """
+        if not records or self.requests:
+            return 0
+        n = 0
+        for r in records:
+            if not isinstance(r, dict) or "prompt" not in r or "completion" not in r:
+                continue                     # 坏行：宁可少一条，也不能让恢复整体失败
+            rec = dict(r)
+            rec["cost"] = None
+            self.add_record(rec)
+            if rec.get("usage_missing"):
+                # add_record 不管这个计数（add() 和子代理合并各自维护它），回放要自己补：
+                # 否则重载后 totals()["usage_missing"] 会变成 0，而账本里明明有缺用量的行。
+                self.usage_missing += 1
+            n += 1
+        return n
+
     def spent(self, currency: str) -> float:
         """某币种的已知花费合计（预算判断用）。"""
         return sum(as_float(r["cost"]) for r in self.records
@@ -352,10 +408,13 @@ class UsageStats:
         含断点 93.01%、排除断点 99.48%，对应水位 126k 与 168k，差一整次压缩。
         没有 wire 基线的冷启动（`cold`）也排除：首次请求 / 重启首发与「前缀是否稳定」无关，
         把它算进来会让一次长会话重启直接把水位压到 0.9。
+        老账本（没有 `baseline`）里分不清冷启动还是整段未命中的那些同样排除：把一次
+        重算当成「前缀不稳」，会把水位往下调，和断点污染是同一类错误。
         样本不足时返回 None，调用方据此「不动」。
         """
         recs = [r for r in reversed(self.records)
-                if (r.get("role") or "main") == "main" and not r.get("break") and not r.get("cold")][:max(1, window)]
+                if (r.get("role") or "main") == "main" and not r.get("break") and not r.get("cold")
+                and not unbaselined_miss(r)][:max(1, window)]
         known = [r for r in recs if r.get("hit") is not None]
         if len(known) < 5:
             return None

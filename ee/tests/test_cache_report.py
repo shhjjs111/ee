@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from ee.core.cache_report import summarize
 
 
@@ -45,7 +47,23 @@ def test_coverage_tells_how_much_of_input_is_known():
     d = summarize(rows)
     assert d["main"]["prompt"] == 40_000
     assert d["main"]["hit_coverage"] == 0.75
+    assert d["main"]["hit_coverage_requests"] == pytest.approx(2 / 3)
     assert d["main"]["hit_rate"] == (9_900 + 19_800) / 30_000
+
+
+def test_usage_missing_is_invisible_to_token_coverage_but_not_to_request_coverage():
+    """缺用量的请求 prompt=0，永远进不了 token 分母——「覆盖 100% 输入」不能当成样本完整。
+
+    真实账本里 10,949 条请求中有 27 条 usage_missing，而 hit_coverage 一直是 1.0000；
+    研究稿 §8 的 `assert main_hit_coverage == 1.0` 因此形同虚设。
+    """
+    rows = [_r(10_000, 9_900),
+            {"prompt": 0, "completion": 0, "hit": None, "usage_missing": True, "role": "main"}]
+    d = summarize(rows)
+    assert d["main"]["hit_coverage"] == 1.0
+    assert d["main"]["hit_coverage_requests"] == 0.5
+    assert d["main"]["usage_missing"] == 1
+    assert d["usage_missing"] == 1
 
 
 def test_breaks_and_compactions_are_counted_separately():
@@ -69,6 +87,16 @@ def test_more_breaks_than_compactions_is_visible():
     assert d["breaks"]["count"] == 3
     assert d["compactions"] == 0
     assert d["breaks"]["count"] > d["compactions"]
+
+
+def test_break_reasons_are_summarized():
+    """断点要能看出是哪种：upstream_full_miss 和 compact 的处理方式完全不同。"""
+    rows = [_brk(prompt=50_000, hit=0, gap=50_000, new=10, **{"break": "upstream_full_miss"}),
+            _brk(prompt=50_000, hit=40_000, gap=10_000, new=10, **{"break": "compact"}),
+            _brk(prompt=50_000, hit=45_000, gap=5_000, new=10, **{"break": "upstream_full_miss"})]
+    d = summarize(rows)
+    assert d["breaks"]["by_reason"] == {"upstream_full_miss": 2, "compact": 1}
+    assert summarize([])["breaks"]["by_reason"] == {}
 
 
 def test_buckets_split_by_prompt_size():
@@ -109,17 +137,22 @@ def test_cold_start_is_not_a_normal_gap():
     assert d["normal_gap"]["count"] == 1
     assert d["normal_gap"]["max"] == 1_000
     assert d["cold"]["count"] == 1 and d["cold"]["gap"] == 100_000
-    assert d["cold"]["legacy"] == 0
+    assert d["legacy"]["count"] == 0
     assert d["main"]["requests"] == 2
     assert d["main"]["hit_rate"] == 100_000 / 201_000, "总口径不能把首发的整段未命中藏掉"
 
 
-def test_legacy_cold_is_inferred_conservatively():
-    """旧账本没有 cold：只把 new==0 且 hit==0/gap 很大的行当冷启动，不能吃掉 wire 变小的正常回合。"""
-    rows = [_r(100_000, 0, new=0, gap=100_000),          # 旧版冷启动
+def test_legacy_rows_are_neither_cold_nor_normal():
+    """老账本（没有 baseline）里分不清冷启动与整段未命中的行：单独一类，两边都不进。
+
+    算成冷启动会让次数虚高、把一次重算隐藏在「重启」背后；算正常回合会把一次整段
+    重算当成「前缀不稳」，进而把压缩水位往下推（和断点污染同一类错误）。
+    """
+    rows = [_r(100_000, 0, new=0, gap=100_000),          # 老账本：冷启动或整段未命中
             _r(101_000, 100_500, new=0, gap=495)]         # wire 变小，但服务端几乎全命中
     d = summarize(rows)
-    assert d["cold"]["count"] == 1 and d["cold"]["legacy"] == 1
+    assert d["cold"]["count"] == 0, "没有 cold 标记的不能冒充冷启动"
+    assert d["legacy"]["count"] == 1 and d["legacy"]["gap"] == 100_000
     assert d["normal_gap"]["count"] == 1
     assert d["normal_gap"]["max"] == 495
 

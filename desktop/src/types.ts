@@ -647,9 +647,15 @@ export type ContextBreakdown = {
     main_hit_rate?: number | null;
     main_hit_coverage?: number | null;
     main_requests?: number;
-    /** 冷启动/无基线请求数；legacy 是旧账本推断出来的那部分。 */
+    /** 请求口径的覆盖率（报过 hit 的请求 / 全部主对话请求）。token 口径看不见缺用量
+     *  的请求（它们 prompt=0），所以这个值掉下 100% 才说明样本真的不全。 */
+    hit_coverage_requests?: number | null;
+    /** 主对话里没有返回用量的请求数（命中率分母里根本没有它们）。 */
+    usage_missing?: number;
+    /** 冷启动/无基线请求数。 */
     cold?: number;
-    cold_legacy?: number;
+    /** 老账本里分不清冷启动与整段未命中的行数（不算成冷启动，也不进正常回合）。 */
+    legacy?: number;
     /** 已知断点原因计数：compact / prune / mcp_attach / mcp_change / model_switch / prefix_migrated... */
     causes?: Record<string, number>;
   };

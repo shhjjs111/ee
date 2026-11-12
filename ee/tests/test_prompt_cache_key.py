@@ -61,8 +61,44 @@ def test_not_sent_without_session_id():
 def test_ttl_only_when_configured():
     spec = _spec("gpt-5")
     assert _params(_client(spec)).get("prompt_cache_retention") is None
-    spec.profile.prompt_cache_ttl = "1h"
+    spec.profile.prompt_cache_ttl = "24h"
+    assert _params(_client(spec))["prompt_cache_retention"] == "24h"
+
+
+def test_ttl_is_normalized_to_the_family_values():
+    """OpenAI 只认 in_memory / 24h；Anthropic 的 5m / 1h 直接发会被 400 永久降级。"""
+    for raw, want in (("in_memory", "in_memory"), ("5m", "in_memory"),
+                      ("1h", "24h"), ("24h", "24h"), ("24H", "24h")):
+        spec = _spec("gpt-5")
+        spec.profile.prompt_cache_ttl = raw
+        assert _params(_client(spec))["prompt_cache_retention"] == want, raw
+
+
+def test_unknown_ttl_is_not_sent():
+    """宁可退默认（几分钟），也不发一个必然 400、然后被永久降级的值。"""
+    spec = _spec("gpt-5")
+    spec.profile.prompt_cache_ttl = "永远"
+    p = _params(_client(spec))
+    assert p["prompt_cache_key"] == "sess-123"
+    assert "prompt_cache_retention" not in p
+
+
+def test_ttl_of_unknown_family_is_sent_as_is():
+    """不在已知表里的家族原样发：网关可能有自己的写法，猜反而会错。"""
+    spec = _spec("deepseek-flash", _cfg(), provider="deepseek")
+    spec.profile = spec.profile.merged({"supports_prompt_cache_key": True, "prompt_cache_ttl": "1h"})
     assert _params(_client(spec))["prompt_cache_retention"] == "1h"
+
+
+def test_quirks_file_is_written_atomically(tmp_path):
+    """直接 write_text 写到一半会留下坏 JSON，下次启动当空表 → 所有降级记忆清零。"""
+    import json
+
+    c = ChatClient(_spec("gpt-5"), client=object(), state_path=tmp_path / "quirks.json")
+    c.state.get(c.key)["no_prompt_cache_key"] = True
+    c.state.save()
+    assert json.loads((tmp_path / "quirks.json").read_text(encoding="utf-8"))[c.key]["no_prompt_cache_key"] is True
+    assert not list(tmp_path.glob("*.tmp")), "临时文件必须被 replace 掉"
 
 
 def test_remembers_rejection():
@@ -73,13 +109,13 @@ def test_remembers_rejection():
 
     # 只拒绝 key：key 不发，但配置了 TTL 时其余参数照旧
     c2 = _client(_spec("gpt-5"))
-    c2.profile = c2.profile.merged({"prompt_cache_ttl": "1h"})
+    c2.profile = c2.profile.merged({"prompt_cache_ttl": "24h"})
     c2.state.get(c2.key)["no_prompt_cache_key"] = True
     assert "prompt_cache_key" not in _params(c2)
 
     # 只拒绝 TTL：key 照发，TTL 不发
     c3 = _client(_spec("gpt-5"))
-    c3.profile = c3.profile.merged({"prompt_cache_ttl": "1h"})
+    c3.profile = c3.profile.merged({"prompt_cache_ttl": "24h"})
     c3.state.get(c3.key)["no_prompt_ttl"] = True
     p = _params(c3)
     assert p["prompt_cache_key"] == "sess-123" and "prompt_cache_retention" not in p

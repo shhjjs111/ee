@@ -275,12 +275,22 @@ def _print_usage(d: dict, *, title: str) -> None:
     m = d["main"]
     print(f"{title}")
     print(f"  请求 {d['requests']} 次（缺用量 {d['usage_missing']} 次）")
-    print(f"  主对话缓存命中 {_pct(m['hit_rate'])} · 覆盖 {_pct(m['hit_coverage'])} 输入"
+    # token 覆盖率与请求覆盖率都给：缺用量的行 prompt=0，只看前者会在「27 次没报用量」
+    # 的情况下仍然显示「覆盖 100% 输入」，验收断言就形同虚设。
+    cov = f"覆盖 {_pct(m['hit_coverage'])} 输入"
+    req_cov = m.get("hit_coverage_requests")
+    if req_cov is not None and req_cov < 1:
+        cov += f" · 有效请求 {_pct(req_cov)}"
+    print(f"  主对话缓存命中 {_pct(m['hit_rate'])} · {cov}"
           f" · {m['requests']} 次请求")
     br = d["breaks"]
     print(f"  断点 {br['count']} 次 / 压缩 {d['compactions']} 次", end="")
+    by = br.get("by_reason") or {}
+    if by:
+        detail = "，".join(f"{k} {v}" for k, v in sorted(by.items(), key=lambda kv: -kv[1]))
+        print(f"（{detail}）", end="")
     if br["count"] > d["compactions"]:
-        print("  ← 断点比压缩还多，说明有别的东西在改写前缀（换模型 / 修剪 / 老版本白压）")
+        print("  ← 断点比压缩还多，看看上面哪个原因在占大头（换模型 / 换档位 / 修剪 / 上游失配）")
     else:
         print()
     g = d["normal_gap"]
@@ -288,9 +298,10 @@ def _print_usage(d: dict, *, title: str) -> None:
         print(f"  正常回合未命中：中位 {g['median']} · p90 {g['p90']} · 最大 {g['max']} token")
     cold = d.get("cold") or {}
     if cold.get("count"):
-        legacy = cold.get("legacy") or 0
-        extra = f"，其中旧账本推断 {legacy} 次" if legacy else ""
-        print(f"  冷启动/无基线：{cold['count']} 次（未命中 {cold.get('gap', 0):,}，不计入正常回合{extra}）")
+        print(f"  冷启动/无基线：{cold['count']} 次（未命中 {cold.get('gap', 0):,}，不计入正常回合）")
+    legacy = d.get("legacy") or {}
+    if legacy.get("count"):
+        print(f"  老账本无法归因：{legacy['count']} 次（未命中 {legacy.get('gap', 0):,}，不计入正常回合）")
     causes = d.get("causes") or {}
     if causes.get("count"):
         detail = "，".join(f"{k} {v}" for k, v in sorted((causes.get("by_reason") or {}).items()))

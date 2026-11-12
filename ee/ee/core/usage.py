@@ -33,6 +33,23 @@ def _num(v, default=0):
         return default
 
 
+def unbaselined_miss(r: dict) -> bool:
+    """老账本里「分不清是冷启动还是整段未命中」的行。
+
+    本函数只用于**排除**，不用来冒充冷启动：
+      - 新记录带 `baseline`：冷启动有 `cold`，断点有 `break`，两条路都明确；
+      - 老记录两者都没有，只能保守推断：`new==0` 且 `hit==0` / `gap` 很大，
+        说明这次请求从头就没接上，跟「前缀稳不稳」无关。
+    把它算成冷启动会让冷启动次数虚高；直接算正常回合又会把一次整段重算当成前缀不稳，
+    把压缩水位往下推。所以单独一类，两侧都不进。
+    """
+    if not isinstance(r, dict) or "baseline" in r or r.get("cold") or r.get("break"):
+        return False
+    if _num(r.get("new"), -1) != 0:
+        return False
+    return _num(r.get("hit"), -1) == 0 or _num(r.get("gap")) >= 5000
+
+
 @dataclass
 class CurrencyBucket:
     """单币种的累计结果。"""
@@ -95,17 +112,24 @@ class UsageRollup:
         for r in self.records:
             name = str(r.get("role") or "main")
             b = out.setdefault(name, {"requests": 0, "prompt": 0, "completion": 0,
-                                      "hit": 0, "hit_known_prompt": 0})
+                                      "hit": 0, "hit_known_prompt": 0, "hit_requests": 0,
+                                      "usage_missing": 0})
             b["requests"] += 1
             b["prompt"] += _num(r.get("prompt"))
             b["completion"] += _num(r.get("completion"))
+            if r.get("usage_missing"):
+                b["usage_missing"] += 1
             h = r.get("hit")
             if h is not None:
                 b["hit"] += _num(h)
                 b["hit_known_prompt"] += _num(r.get("prompt"))
+                b["hit_requests"] += 1
         for b in out.values():
             b["hit_rate"] = (b["hit"] / b["hit_known_prompt"]) if b["hit_known_prompt"] > 0 else None
             b["hit_coverage"] = (b["hit_known_prompt"] / b["prompt"]) if b["hit_known_prompt"] > 0 else None
+            # 请求口径：缺 usage 的行 prompt=0，永远进不了 token 分母（它不可能把覆盖率拉低）。
+            # 所以再给一个按请求数算的覆盖率，两者都看才知道样本是不是真的全。
+            b["hit_coverage_requests"] = (b["hit_requests"] / b["requests"]) if b["requests"] > 0 else None
         return out
 
     def totals_v2(self, *, requests: int, prompt: int, completion: int, hit: int,
@@ -155,5 +179,7 @@ class UsageRollup:
             out["main_requests"] = main.get("requests", 0)
             out["main_hit_rate"] = main.get("hit_rate")
             out["main_hit_coverage"] = main.get("hit_coverage")
+            out["main_hit_coverage_requests"] = main.get("hit_coverage_requests")
+            out["main_usage_missing"] = main.get("usage_missing", 0)
             out["main_hit_known_prompt"] = main.get("hit_known_prompt", 0)
         return out

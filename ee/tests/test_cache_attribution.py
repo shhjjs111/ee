@@ -116,12 +116,13 @@ def test_many_breaks_do_not_starve_the_watermark_sample():
     assert s.recent_main_hit_rate() is None
 
 
-def test_unknown_break_records_how_much_prefix_matched():
-    """断点归因不到具体原因时，至少要留下「命中到多深」，否则没法区分是哪一类。
+def test_head_only_miss_is_attributed_to_upstream():
+    """断点归因不到具体原因时，按「命中到多深」分类，别再一律记 unknown。
 
-    真实会话里踩过：prompt 只比上一条多 224，hit 却从 128,384 掉到 2,560——痕迹只有这个
-    数字。不带 `prefix_hit` 时账本上只剩一个 "unknown"，和「压根不知道自己干了什么」
-    长得一模一样。
+    真实会话里踩过：prompt 只比上一条多 224，hit 却从 128,384 掉到 2,560——命中的那
+    一小块大致就是 system+tools。本地改写历史（压缩 / 修剪 / 清推理）都在某个位置之后
+    改字节，那个位置之前的前缀照样命中；只有服务端整段失配才会把 95%+ 的前缀打掉。
+    同时必须留下 `prefix_hit`，否则事后只剩一个原因字符串，没法核对。
     """
     s = UsageStats()
     s.note_wire(129_172)
@@ -129,8 +130,31 @@ def test_unknown_break_records_how_much_prefix_matched():
     s.note_wire(129_396)                      # 只多了 224
     s.add({"prompt": 129_396, "completion": 50, "hit": 2_560}, _price(), model="m", role="main")
     r = s.records[-1]
+    assert r["break"] == "upstream_full_miss"
+    assert r["prefix_hit"] == 2_560
+
+
+def test_zero_hit_is_upstream_full_miss():
+    """hit 恰好是 0：一个字节都没命中，本地改写做不到（system+tools 那段总是先命中）。"""
+    s = UsageStats()
+    s.note_wire(150_000)
+    s.add({"prompt": 150_000, "completion": 50, "hit": 149_500}, _price(), model="m", role="main")
+    s.note_wire(150_600)
+    s.add({"prompt": 150_600, "completion": 50, "hit": 0}, _price(), model="m", role="main")
+    assert s.records[-1]["break"] == "upstream_full_miss"
+    assert s.records[-1]["prefix_hit"] == 0
+
+
+def test_tail_break_stays_unknown():
+    """命中了一大半、只丢了尾部（例如历史中段被改）：不能算成上游整段失配。"""
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 50, "hit": 99_000}, _price(), model="m", role="main")
+    s.note_wire(100_200)
+    s.add({"prompt": 100_200, "completion": 50, "hit": 20_000}, _price(), model="m", role="main")
+    r = s.records[-1]
     assert r["break"] == "unknown"
-    assert r["prefix_hit"] == 2_560, "命中只有最前面一小块，是这条断点唯一可用的证据"
+    assert r["prefix_hit"] == 20_000
 
 
 def test_known_break_reason_does_not_add_prefix_hit():
@@ -198,6 +222,48 @@ def test_switching_effort_marks_the_next_request_as_a_break(workspace, ee_home):
     assert s._take_break() == "effort_switch"
 
 
+def test_switching_effort_warns_about_the_cache(workspace, ee_home):
+    """换档位同样会让整个前缀失效：提示文案要和 set_model 对齐，不能静默烧钱。"""
+    from ee.config import load_config
+    from ee.core import reasoning as RZ
+    from ee.core.session import Session
+
+    cfg = load_config(workspace)
+    name = list(cfg.data.get("models", {}))[0]
+    s = Session(cfg, model=name, cwd=workspace, persist=False, user_home=workspace)
+    lvls = RZ.levels(s.profile)
+    if not lvls:
+        pytest.skip("这个模型没有推理档位，无法验证")
+    target = lvls[0]
+    if RZ.effective(s.profile, target) == RZ.effective(s.profile, s.effort):
+        pytest.skip("起始档位已经是目标档位，切换不会改变请求参数")
+    s.stats.last_prompt = 92_000            # 模拟一个已经跑了一半的长会话
+    msg = s.set_effort(target)
+    assert "缓存会从零开始" in msg
+    assert "92,000 token" in msg
+
+
+def test_effort_switch_without_param_change_does_not_warn(workspace, ee_home):
+    """档位不影响请求字节时不提缓存：否则每次点同一个档位都弹一句无意义的警告。"""
+    from ee.config import load_config
+    from ee.core import reasoning as RZ
+    from ee.core.session import Session
+
+    cfg = load_config(workspace)
+    name = list(cfg.data.get("models", {}))[0]
+    s = Session(cfg, model=name, cwd=workspace, persist=False, user_home=workspace)
+    lvls = RZ.levels(s.profile)
+    if not lvls:
+        pytest.skip("这个模型没有推理档位，无法验证")
+    unsupported = next((x for x in ("low", "medium", "high", "max")
+                        if RZ.normalize(x) is not None and RZ.canonical(s.profile, x) not in lvls), None)
+    if unsupported is None:
+        pytest.skip("这个模型所有档位都支持，无法验证降级路径")
+    if RZ.effective(s.profile, s.effort) == "":
+        pytest.skip("起始档位已经是「不发参数」，切换不会改变请求字节")
+    assert "缓存会从零开始" not in s.set_effort(unsupported)
+
+
 def test_effort_switch_that_changes_no_param_is_not_a_break(workspace, ee_home):
     """当前模型不支持这个档位时 effective 退回 ""，请求字节没变 → 不该记断点（否则是误报）。"""
     from ee.config import load_config
@@ -256,6 +322,25 @@ def test_side_request_never_reports_a_break():
     assert s.last_wire_tokens == 0, "侧路不动主对话的 wire 游标"
 
 
+def test_side_request_does_not_steal_the_pending_wire():
+    """标题生成是后台 task，可能落在主请求 note_wire() 与 _charge() 之间。
+
+    它不能把主请求刚记下的 wire 取走：否则那条主记录的 wire/new/gap/break 全部消失，
+    断点不会报错，只会静默漏记——账本上看起来一切正常。
+    """
+    s = UsageStats()
+    s.note_wire(100_000)
+    s.add({"prompt": 100_000, "completion": 10, "hit": 99_000}, _price(), model="m", role="main")
+    s.note_wire(120_000)                      # 主请求 2 已经准备好
+    s.add({"prompt": 3_000, "completion": 50, "hit": 0}, _price(), model="m", role="title")
+    assert s._wire_pending == 120_000, "侧路不能动主对话的待用 wire"
+    s.add({"prompt": 120_000, "completion": 10, "hit": 0}, _price(), model="m", role="main")
+    r = s.records[-1]
+    assert r["wire"] == 120_000 and r["new"] == 20_000, "主请求的归因不能被侧路偷走"
+    assert r["gap"] == 120_000
+    assert r["break"] == "upstream_full_miss"
+
+
 def test_no_baseline_is_marked_cold_and_keeps_the_known_cause():
     """首次请求/重启首发要留下明确的 cold 标记；已知原因不能因为没基线就丢掉。"""
     s = UsageStats()
@@ -278,6 +363,18 @@ def test_cold_requests_do_not_enter_the_watermark_sample():
         s.add({"prompt": 201_000, "completion": 10, "hit": 200_500}, _price(), model="m", role="main")
     # 排除 cold 后是 200_500/201_000；把 cold 算进来会掉到约 0.83。
     assert s.recent_main_hit_rate() == pytest.approx(200_500 / 201_000)
+
+
+def test_legacy_unattributed_rows_do_not_enter_the_watermark_sample():
+    """老账本里分不清冷启动/整段未命中的行也不能进水位样本（同样会把水位往下推）。"""
+    s = UsageStats()
+    for _ in range(6):
+        s.note_wire(10_000)
+        s.add({"prompt": 10_000, "completion": 10, "hit": 9_950}, _price(), model="m", role="main")
+    # 老记录：没有 baseline、没有 cold/break，new==0 且 hit==0
+    s.records.append({"prompt": 50_000, "completion": 10, "hit": 0, "wire": 50_000,
+                      "new": 0, "gap": 50_000, "role": "main"})
+    assert s.recent_main_hit_rate() == pytest.approx(0.995)
 
 
 def test_known_cause_with_small_gap_is_kept_but_not_called_a_break():

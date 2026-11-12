@@ -371,7 +371,7 @@ class Backend:
             meta["cwd"] = meta.get("cwd") or str(Path.home())
         t = Thread(thread_id, self.home, self.notify, meta, messages=d["messages"], items=d["items"],
                    client_factory=self.client_factory, persist=self.persist, user_home=self.user_home,
-                   orchestrator=self.orchestrator)
+                   orchestrator=self.orchestrator, usage=d.get("usage"))
         self.threads[thread_id] = t
         return t
 

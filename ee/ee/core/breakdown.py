@@ -139,6 +139,10 @@ def for_session(s) -> dict:
         "main_hit_rate": totals.get("main_hit_rate"),
         "main_hit_coverage": totals.get("main_hit_coverage"),
         "main_requests": totals.get("main_requests"),
+        # 缺用量的请求 prompt=0，token 覆盖率看不见它们；请求覆盖率和次数单独给，
+        # 否则面板上的「覆盖 100% 输入」会和「N 次请求没报用量」同时成立。
+        "hit_coverage_requests": totals.get("main_hit_coverage_requests"),
+        "usage_missing": as_int(totals.get("main_usage_missing")),
     }
     # 冷启动和已知原因不一定体现在命中率里，但用户需要知道它们发生过；
     # 走和 ee usage 同一套 summarize，避免界面与 CLI 口径分叉。
@@ -147,7 +151,8 @@ def for_session(s) -> dict:
         roll = summarize(s.stats.records)
         d["cache"].update({
             "cold": int(roll["cold"]["count"]),
-            "cold_legacy": int(roll["cold"]["legacy"]),
+            # 老账本里分不清冷启动与整段未命中的行：单独一列，不冒充冷启动。
+            "legacy": int(roll["legacy"]["count"]),
             "causes": dict(roll["causes"]["by_reason"]),
         })
     except Exception:  # noqa: BLE001  统计异常不影响查看上下文构成

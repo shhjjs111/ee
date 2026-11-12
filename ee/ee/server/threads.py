@@ -229,7 +229,7 @@ class Thread:
                  messages: list[dict] | None = None, items: list[dict] | None = None,
                  client_factory: Callable | None = None, persist: bool = True,
                  configure: Callable | None = None, user_home: Path | None = None,
-                 orchestrator=None):
+                 orchestrator=None, usage: list[dict] | None = None):
         self.id = tid
         self.home = home
         self.user_home = Path(user_home) if user_home is not None else Path.home()
@@ -265,6 +265,10 @@ class Thread:
         self._save_fail_count = 0      # 本会话累计写失败次数（跨多个 store 实例累加：save_meta 每次都新建一个）
         self._save_notice_at = 0       # 上一次上报时的累计次数（用于节流，不重复刷提示）
         self.orchestrator = orchestrator   # 指挥会话（D6-1）：回合结束要回收名额
+        # 落盘的逐请求账本（SessionStore.load() 顺手带出），建 Session 时回放进 stats。
+        # 不回放的话，同一条会话在面板和 `ee usage` 里会给出两套命中率，恢复后前 5 次
+        # 请求的压缩水位自适应也会因为样本不足停摆（见 UsageStats.restore）。
+        self._usage_records: list[dict] = list(usage or [])
 
     # ------------------------------------------------------------ 内核会话（懒加载）
     @property
@@ -292,6 +296,10 @@ class Thread:
         s.store = self._store(enabled=self.persist)
         s.on_store_fail = self._on_store_fail      # new() / 切 persist 重建 store 时也带上钩子
         s.on_store_write = self._on_store_write
+        # 回放逐请求账本：成本不恢复（钱由 spent_before 负责），只补命中率/断点/上下文大小。
+        # 恢复会话（重开、重启、被内存淘汰后重载）都走这里，所以这一步也决定了面板上
+        # 「主对话缓存命中」是否与每回合 footer 同一口径。
+        s.stats.restore(self._usage_records)
         if self._pending_messages:
             s.history = list(self._pending_messages)
             s.turns = sum(1 for it in self.items if it.get("type") == "user")

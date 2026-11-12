@@ -60,13 +60,17 @@ export function cacheLine(d: ContextBreakdown): string | null {
   const cov = main ? c.main_hit_coverage : c.hit_coverage;
   const label = main ? "主对话缓存命中" : "服务端缓存命中";
   const pct = `${Math.round(rate * 100)}%`;
+  const missN = c.usage_missing ?? 0;
   const parts = cov == null ? [`${label} ${pct}`] : [`${label} ${pct} · 覆盖 ${Math.round(cov * 100)}% 输入`];
-  // 冷启动/已知原因不计入命中率时，也要让用户知道它们发生过；
+  // 缺用量的请求 prompt=0，token 覆盖率永远是 100%——不说出来，那行「覆盖 100%」
+  // 就会把「N 次请求根本没报用量」盖掉。
+  if (missN > 0) parts.push(`缺用量 ${missN} 次`);
+  // 冷启动/无法归因不计入命中率时，也要让用户知道它们发生过；
   // 否则重启、换模型、压缩造成的账本变化只能靠 ee usage 看出来。
-  if (c.cold != null && c.cold > 0) {
-    const legacy = c.cold_legacy != null && c.cold_legacy > 0 ? `（旧账本 ${c.cold_legacy}）` : "";
-    parts.push(`冷启动 ${c.cold} 次${legacy}`);
-  }
+  if (c.cold != null && c.cold > 0) parts.push(`冷启动 ${c.cold} 次`);
+  // 老账本（baseline 字段上线前）分不清是冷启动还是整段未命中：单独一句话，
+  // 不冒充冷启动——混进去会让「冷启动几次」变成不可信的旧账。
+  if (c.legacy != null && c.legacy > 0) parts.push(`旧账本无法归因 ${c.legacy} 次`);
   const causes = Object.entries(c.causes ?? {}).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b));
   if (causes.length) parts.push(`已知原因 ${causes.map(([k, n]) => `${k} ${n}`).join("、")}`);
   return parts.join(" · ");

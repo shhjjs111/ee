@@ -90,6 +90,19 @@ def test_usage_does_not_affect_history_rebuild(ee_home, workspace):
     assert d["messages"] == SessionStore.load_messages(s.store.path)
 
 
+def test_load_carries_the_ledger_without_a_second_pass(ee_home, workspace):
+    """`load()` 本来就把每一行都 json 解析过了，顺手把账本带出来——不要重读 19MB 文件。"""
+    s = _session(workspace, ee_home, [
+        text_chunks("答一") + finish("stop", prompt=1000, completion=10, hit=0),
+        text_chunks("答二") + finish("stop", prompt=1200, completion=10, hit=900),
+    ])
+    run(collect(s, "问一"))
+    run(collect(s, "问二"))
+    d = SessionStore.load(s.store.path)
+    assert d["usage"] == SessionStore.usage_records(s.store.path)
+    assert [r["hit"] for r in d["usage"]] == [0, 900]
+
+
 def test_old_session_without_usage_lines_reads_fine(ee_home, workspace):
     """老会话（这个功能上线前写的）没有 usage 行：load() 照常工作，usage 是空列表。"""
     store = SessionStore(ee_home, session_id="old")

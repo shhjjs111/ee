@@ -1,24 +1,35 @@
 """会话全文搜索（D4-4）：~/.ee/index/search.db，SQLite FTS5（trigram 分词，中文可用）。
 
 - 索引粒度：一条显示条目（用户消息 / 助手回复 / 工具卡片的摘要与输出）一行。
-- 增量同步：files 表记每个会话文件的 mtime+size；搜索前只重建变化了的会话、删掉已消失的会话。
-  这样不需要在热路径（每次 append）里写数据库，编辑重发 / 截断 / 覆盖等情况也天然正确。
+- 增量同步：files 表记每个会话文件的 mtime + 已索引到的字节偏移。会话文件只追加
+  （SessionStore 只有 `"ab"`），所以搜索前**只读尾巴**，不再把整份 JSONL 重新解析、
+  也不再把该会话的 FTS 行全部删了重插。编辑重发 / 截断通过 `truncate` 记录处理。
+- 删除靠 docmap（(session_id,item_id) → FTS rowid）定位：FTS5 表没有二级索引，
+  `DELETE ... WHERE session_id=?` 只能全表扫（实测 39k 行的库删一个 3.8k 条的会话要 3.8s）。
 - 查询：≥3 个字符走 FTS5 MATCH（bm25 排序）；更短（如两个汉字）退回 LIKE 扫描。
-- FTS5 不可用时（极少见的 sqlite 编译）整体退回逐文件扫描，不报错。
+- FTS5 不可用时（极少见的 sqlite 编译）整体退回 LIKE 扫描，不报错。
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
 from pathlib import Path
 
-from ee.core.store import SessionStore, strip_context
+from ee.core.store import strip_context
 
 MAX_TEXT = 20000          # 单条目最多索引的字符数（工具输出可能很长）
 SNIPPET_RADIUS = 36
 
 _lock = threading.Lock()
+
+
+def _int(v, default: int = 0) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
 
 
 def _item_text(it: dict) -> str:
@@ -79,12 +90,35 @@ class SearchIndex:
         except sqlite3.OperationalError:
             pass                    # 网络盘等不支持 WAL 的存储：退回默认，不影响功能
         c.execute("CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, mtime REAL, size INTEGER)")
+        # off：已经并进索引的字节数（= 已索引字节数，也就是下一次从哪读）。
+        # 会话文件只追加（SessionStore 只有 "ab"），所以搜索前只读尾巴。
+        # 老库没这一列：新增后为 NULL，第一次同步时「(mtime,size) 没变」的会话直接回填。
+        if "off" not in {r[1] for r in c.execute("PRAGMA table_info(files)")}:
+            try:
+                c.execute("ALTER TABLE files ADD COLUMN off INTEGER")
+            except sqlite3.OperationalError as e:
+                # 两个进程同时首次打开（桌面端 + ee exec）时会双双看到“没有 off”，
+                # 后到的那个 ALTER 报 duplicate column。这不是错误，是竞态已被人代劳。
+                if "duplicate column" not in str(e).lower():
+                    raise
+        # docmap：(session_id,item_id) → FTS rowid。FTS5 表没有二级索引，
+        # `DELETE ... WHERE session_id=?` 只能全表扫——实测 39k 行的库里删一个 3.8k 条的
+        # 会话要 3.8 秒，几乎就是整次重建的全部成本。有了映射，删除是索引查找 + 按 rowid 删。
+        c.execute("CREATE TABLE IF NOT EXISTS docmap (doc_rowid INTEGER PRIMARY KEY, "
+                  "session_id TEXT NOT NULL, item_id TEXT NOT NULL, seq INTEGER)")
+        c.execute("CREATE INDEX IF NOT EXISTS docmap_session ON docmap(session_id)")
+        # 复合索引单独建：索引建立在 rebuild 时每条 item 都要查一次「同 id 的旧行」，
+        # 只有 session_id 索引时每次都要扫完该会话的全部行（3841 条 × 3841 次 = 45s）。
+        c.execute("CREATE INDEX IF NOT EXISTS docmap_item ON docmap(session_id, item_id)")
         row = c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='docs'").fetchone()
         if row and "fts5" not in (row[0] or "").lower():
             # 上一次降级留下的普通 docs 表。不删掉的话，下面的 IF NOT EXISTS 会因同名表已存在
             # 而**静默跳过**，本进程带着 fts=True 去跑 `docs MATCH ?`，查询时才抛错。
             # 索引是纯缓存（能从 sessions/ 重建），删表重建比让用户手动删 search.db 合适。
-            c.execute("DROP TABLE docs")
+            # IF EXISTS：并发首次打开时两个进程可能都看到旧表，后到的那个不能报错。
+            # 映射表也要清：旧 rowid 会被新表重用，留着会让删除打到别人的行上。
+            c.execute("DROP TABLE IF EXISTS docs")
+            c.execute("DELETE FROM docmap")
         try:
             c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5("
                       "text, session_id UNINDEXED, item_id UNINDEXED, kind UNINDEXED, seq UNINDEXED, "
@@ -99,6 +133,13 @@ class SearchIndex:
                 raise
             self.fts = False
             c.execute("CREATE TABLE IF NOT EXISTS docs (text TEXT, session_id TEXT, item_id TEXT, kind TEXT, seq INTEGER)")
+        # 老库升级：用 docs 里现成的列回填映射，不重建索引、不重扫会话文件。
+        # 只在映射为空时做，并与下面的 commit 同事务：写到一半崩掉会整体回滚，
+        # 不会留下半张映射表（分不清哪些行有映射，删除就会漏）。
+        if not c.execute("SELECT 1 FROM docmap LIMIT 1").fetchone():
+            # OR IGNORE：两个进程同时迁移时，先到的那个先填完，后到的这条不报主键冲突。
+            c.execute("INSERT OR IGNORE INTO docmap(doc_rowid, session_id, item_id, seq) "
+                      "SELECT rowid, session_id, item_id, seq FROM docs")
         c.commit()
         self._conn = c
         return c
@@ -110,10 +151,16 @@ class SearchIndex:
 
     # ---- 同步
     def sync(self) -> int:
-        """把索引和 sessions/ 目录对齐，返回重建的会话数。"""
+        """把索引和 sessions/ 目录对齐，返回更新过的会话数。
+
+        没变过的会话只看 stat；变过的会话**从上次的字节偏移往下接**，不再整份重建。
+        这个前提是「会话文件只追加」（`SessionStore` 只有 `"ab"`，全仓库没有改写
+        会话文件的路径）。将来若加入重写/压缩，这里必须退回 `off=0` 的整份重建。
+        """
         with _lock:
             c = self._db()
-            known = {r[0]: (r[1], r[2]) for r in c.execute("SELECT id, mtime, size FROM files")}
+            known = {r[0]: (r[1], r[2], r[3])
+                     for r in c.execute("SELECT id, mtime, size, off FROM files")}
             present: dict[str, tuple[float, int, Path]] = {}
             if self.sessions.is_dir():
                 for p in self.sessions.glob("*.jsonl"):
@@ -126,36 +173,111 @@ class SearchIndex:
             for sid in set(known) - set(present):
                 self._drop(c, sid)
             for sid, (mtime, size, p) in present.items():
-                if known.get(sid) == (mtime, size):
-                    continue
-                self._index_file(c, sid, p, mtime, size)
+                prev = known.get(sid)
+                if prev is not None:
+                    pmtime, psize, poff = prev
+                    if (pmtime, psize) == (mtime, size):
+                        if poff is None:          # 老库升级：它已经按整份索引过
+                            c.execute("UPDATE files SET off = ? WHERE id = ?", (size, sid))
+                        continue
+                    if poff is not None and 0 <= poff <= size:
+                        self._index_file(c, sid, p, off=poff)
+                        changed += 1
+                        continue
+                self._index_file(c, sid, p, off=0)   # 新文件 / 文件变小 / 老库首次：整份
                 changed += 1
             c.commit()
             return changed
 
     def _drop(self, c: sqlite3.Connection, sid: str) -> None:
-        c.execute("DELETE FROM docs WHERE session_id = ?", (sid,))
+        for (rid,) in c.execute("SELECT doc_rowid FROM docmap WHERE session_id = ?", (sid,)).fetchall():
+            c.execute("DELETE FROM docs WHERE rowid = ?", (rid,))
+        c.execute("DELETE FROM docmap WHERE session_id = ?", (sid,))
         c.execute("DELETE FROM files WHERE id = ?", (sid,))
 
-    def _index_file(self, c: sqlite3.Connection, sid: str, p: Path, mtime: float, size: int) -> None:
-        # 先读文件、把行算好，再开写事务：load 要解析整份 JSONL，放在 DELETE 之后会让写锁
-        # 横跨整个解析过程——另一个 ee 进程的写/COMMIT 就一路等到 timeout（database is locked）。
+    def _index_file(self, c: sqlite3.Connection, sid: str, p: Path, off: int = 0) -> None:
+        """把 [off, EOF) 里的新记录并进索引；off=0 表示整份重建。
+
+        只消费到最后一个换行：崩溃留下的半行下次还会读到（SessionStore 下次追加前会先
+        补一个换行），不能在 off 里把它跳过去。
+        """
         try:
-            d = SessionStore.load(p)
-        except Exception:  # noqa: BLE001
-            d = {"items": [], "meta": {}}
-        rows = []
-        title = (d.get("meta") or {}).get("title") or ""
-        if title:
-            rows.append((title, sid, "", "title", -1))
-        for it in d.get("items") or []:
+            st = p.stat()
+            with open(p, "rb") as f:
+                f.seek(off)
+                raw = f.read()
+        except OSError:
+            return
+        end = raw.rfind(b"\n") + 1
+        body = raw[:end]
+        if off == 0:
+            self._drop(c, sid)
+            if body.startswith(b"\xef\xbb\xbf"):
+                body = body[3:]
+        for line in body.split(b"\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                continue                    # 坏行（崩溃写了一半）：跳过，不影响其它行
+            if isinstance(rec, dict):
+                self._apply_record(c, sid, rec)
+        # size 存的是**已索引字节数**（不是文件大小）：读完到落库之间文件又长了，
+        # 下一条 stat 就会不等，于是下一次 sync 从 off 接着读，不会漏行。
+        c.execute("INSERT OR REPLACE INTO files (id, mtime, size, off) VALUES (?, ?, ?, ?)",
+                  (sid, st.st_mtime, off + end, off + end))
+
+    def _apply_record(self, c: sqlite3.Connection, sid: str, rec: dict) -> None:
+        """一条会话记录进索引。语义必须和「整份重读」一致：
+
+        - item：同 id 后写的覆盖先写的（工具卡片会从 running 更新成 ok）
+        - meta：标题变了要换掉旧标题行（它单独占一行，item_id 为空）
+        - truncate：seq ≥ from_seq 的条目整批删掉（编辑重发 / 回退）
+        """
+        kind = rec.get("kind")
+        if kind == "item":
+            it = rec.get("item")
+            if not isinstance(it, dict) or not it.get("id"):
+                return
+            item_id = str(it.get("id"))
             text = _item_text(it).strip()
+            self._forget_item(c, sid, item_id)
             if text:
-                rows.append((text[:MAX_TEXT], sid, str(it.get("id") or ""), str(it.get("type") or ""),
-                             int(it.get("seq") or 0)))
-        c.execute("DELETE FROM docs WHERE session_id = ?", (sid,))
-        c.executemany("INSERT INTO docs (text, session_id, item_id, kind, seq) VALUES (?, ?, ?, ?, ?)", rows)
-        c.execute("INSERT OR REPLACE INTO files (id, mtime, size) VALUES (?, ?, ?)", (sid, mtime, size))
+                self._insert_doc(c, sid, item_id, str(it.get("type") or ""), _int(it.get("seq")),
+                                 text[:MAX_TEXT])
+        elif kind == "meta":
+            meta = rec.get("meta")
+            if not isinstance(meta, dict) or "title" not in meta:
+                return
+            title = str(meta.get("title") or "").strip()
+            self._forget_item(c, sid, "")
+            if title:
+                self._insert_doc(c, sid, "", "title", -1, title[:MAX_TEXT])
+        elif kind == "truncate":
+            cut = _int(rec.get("from_seq"))
+            doomed = [r[0] for r in c.execute("SELECT doc_rowid, seq FROM docmap WHERE session_id = ?", (sid,))
+                      if _int(r[1]) >= cut]
+            for rid in doomed:
+                self._delete_doc(c, rid)
+
+    @staticmethod
+    def _insert_doc(c: sqlite3.Connection, sid: str, item_id: str, kind: str, seq: int, text: str) -> None:
+        cur = c.execute("INSERT INTO docs (text, session_id, item_id, kind, seq) VALUES (?, ?, ?, ?, ?)",
+                        (text, sid, item_id, kind, seq))
+        c.execute("INSERT OR REPLACE INTO docmap (doc_rowid, session_id, item_id, seq) VALUES (?, ?, ?, ?)",
+                  (cur.lastrowid, sid, item_id, seq))
+
+    def _forget_item(self, c: sqlite3.Connection, sid: str, item_id: str) -> None:
+        for (rid,) in c.execute("SELECT doc_rowid FROM docmap WHERE session_id = ? AND item_id = ?",
+                                (sid, item_id)).fetchall():
+            self._delete_doc(c, rid)
+
+    @staticmethod
+    def _delete_doc(c: sqlite3.Connection, rid: int) -> None:
+        c.execute("DELETE FROM docs WHERE rowid = ?", (rid,))
+        c.execute("DELETE FROM docmap WHERE doc_rowid = ?", (rid,))
 
     def forget(self, sid: str) -> None:
         with _lock:

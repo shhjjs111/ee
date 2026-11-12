@@ -652,8 +652,15 @@ assert paired_task_steps_median <= 基线 + 1
 assert total_cost <= 11.337 * 1.05
 ```
 
-**注意**：`records` 不落盘，上面这段只能在**会话进程存活期间**跑（或在测试里构造）。
-跨重启回放要先把逐请求记录写进会话 JSONL——这是尚未做的一步。
+> **2026-11-13 补记（P0-1/P0-3/P1-1a 落地）**：
+> - `main_hit_coverage` 只看 token；缺用量的请求 `prompt=0`，永远进不了分母，所以它自己
+>   不足以支撑「样本完整」。真实账本 10,949 条请求里 27 条 `usage_missing`，覆盖率仍是
+>   1.0000。现在多一个请求口径：`assert t["main_hit_coverage_requests"] == 1.0`，并且
+>   `main_usage_missing` 会直接给出缺用量条数。
+> - `stats.records` 现在随会话恢复回放（`UsageStats.restore`，金额不入账、仍由
+>   `spent_before` 负责），所以上面这段跨重启也成立，不再需要「进程存活期间」这个前提。
+> - 归因不到本地原因的断点会再分一层：命中不到 prompt 10% 的记 `upstream_full_miss`
+>   （服务端整段失配），其余仍是 `unknown`。真实账本里 55 次 `unknown` 中有 35 次属于前者。
 
 **落地顺序**：P0-1 → P0-2（只加观测，不改行为，风险为零）→ **P1-1**（唯一真正抬命中率的改动）
 → P1-2（水位自适应）→ P1-3（按 provider 收益决定）。
