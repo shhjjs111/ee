@@ -761,3 +761,76 @@ assert total_cost <= 11.337 * 1.05
 > 的孤立失配（prompt 只多 224 而 hit 从 128k 掉到 2.5k，下一条立刻完全恢复，本地不可控）。
 > 换模型那条之前只会记成 `"unknown"`，现已接上 `model_switch`；归因不到时补记 `prefix_hit`，
 > 至少能把「最前面就没接上」和「尾巴被改了」分开。
+
+---
+
+## 12. 2026-11 追加：指纹、尾块、provider 档案与锚点试点
+
+这一节记录 2026-11-13 落地的一轮改动。目标不是再抬命中率，而是把「掉了以后能定位」补上——
+旧账本里 101 次断点有 57 次 `unknown`，吃掉 2.7M token（占断点损失的 74%），
+但账本只记了 `gap`，看不出是本地改写还是上游失配。
+
+### 12.1 落地内容
+
+| 改动 | 位置 | 作用 |
+|---|---|---|
+| 逐请求 wire 指纹 | `core/context.py` | system/tools/选项/端点 + 逐条消息 hash；`wire_cmp` = equal/appended/rewritten/generation_changed；`wire_diverged` 给出第一条分叉 |
+| 新断点原因 | 同上 | `client_history_rewrite`（本地确证改写）、`generation_changed`、`prefix_drift`、`prefix_tamper` |
+| 尾块 / 过短 / 过期 | `core/context.py` + `cache_report.py` | `tail = prompt % granularity`；`prompt < min_tokens` 记 `uncacheable`；空闲超 `ttl` 记 `cold_ttl`；三者都不算断点 |
+| provider 缓存档案 | `core/providers/profiles/*.toml` | `cache_type/granularity/min_tokens/ttl`：deepseek 64/64、gpt 128/1024/600s、claude 4096/300s、gemini 4096/3600s、qwen 1024/300s、glm 64、kimi/minimax 无 |
+| 客户端前缀稳定率 | `cache_report.py` | `equal + appended` 占比，不依赖服务商上报 cache 字段 |
+| 桌面面板 | `desktop/src/lib/context.ts` | 命中率下面多一行：前缀稳定率 + 尾块扣后命中；`cold_ttl` 单独一句 |
+
+为什么尾块要单算：DeepSeek 按 64 token 一块，末尾不满一块的部分按定义就是 miss。
+实测 `<40k` 桶只有 95.13%，扣掉尾块后才是「前缀是否稳定」的证据；不扣会把结构性损耗
+当成缓存策略不好，进而错误地下调压缩水位。
+
+### 12.2 试点的两组真实任务
+
+模型：`opencode` 的 `deepseek-v4.1-flash11`。任务：`ee/scripts/eval_tasks` 的 01/02/03，
+每组每任务跑 1 次（方向性证据，不是统计结论）。
+
+| 组 | 完成率 | 平均步数 | 平均输入 token | 缓存命中 | 花费 |
+|---|---|---|---|---|---|
+| `keep_reasoning_turns=0`（全清，现状） | 3/3 | 13.7 | 154,316 | 90% | ¥0.0347 |
+| `keep_reasoning_turns=1`（保留当前回合） | 3/3 | 16.3 | 96,500 | 90% | 缺失* |
+
+\* keep=1 组任务 03 遇到一次 600 秒的 `shell_output`，24 步才结束，样本被这个异常拉偏。
+
+结论：完成率没有差别。keep=1 的 token 平均更低是单次方差 + 超时路径，不足以支持改默认。
+
+### 12.3 Spark 式“排除项锚点”：做了，但默认关
+
+单回合任务看不到锚点（它挂在**下一条用户消息**上），所以另做两回合探针：
+第 1 轮只调研、列出不可行方案；第 2 轮 `--resume` 按分析修。
+
+| 组 | 结果 | 第 2 轮步数/请求 | 第 2 轮 prompt | 第 2 轮花费 |
+|---|---|---|---|---|
+| 锚点开 | 通过 | 4 步 / 5 次 | 81,120 | ¥0.00839 |
+| 锚点关 | 通过 | 3 步 / 4 次 | 69,229 | ¥0.00635 |
+
+锚点开多 1 步、多 1 次请求、约 +18% token，完成率没有提升；抽出来的锚点还有明显噪声
+（"Not feasible"、代码片段、自我对话）。收紧规则（只认强结论、丢掉候选/假设/自我对话/
+无主语英文碎片）后噪声少了，收益仍然没出现。
+
+所以 `core/anchors.py` 保留为显式实验：`[prune] exclusion_anchors = true` 才启用，
+默认关；`keep_reasoning_turns` 保持 0。**Spark 的“保留推理”相对 ee 的全清是负优化**，
+这次用真实任务确认了：它省的是“不裁剪”那条路的成本，不是 ee 这条路的。
+
+### 12.4 顺带修掉的真 bug
+
+`--max-tool-timeout` 原来只约束前台 `shell`，`shell_output` / `shell_write` 的等待仍按
+`MAX_WAIT=600` 封顶。评测里一次 600.0s 的 `shell_output` 空洞就是它：整轮耗时被一个
+后台等待盖住。现在按 `ctx.max_timeout` 封顶，与前台同一口径（`core/tools/bgshell.py`）。
+
+### 12.5 接下来只看账本，不再改代码
+
+跑几天真实会话后看 `ee usage`：
+
+- `unknown` 断点是否下降，是否出现 `client_history_rewrite` / `generation_changed` / `prefix_tamper`；
+- 客户端前缀稳定率是否接近 100%；
+- `尾块扣后命中` 与总命中率的差距；
+- 若 `client_history_rewrite` 每轮都出现，说明还有东西在稳定改写历史，那才是下一个要查的点。
+
+验收口径不变：分母只含报过 `hit` 的请求，覆盖率与请求覆盖率一起看；冷启动、老账本、
+`cold_ttl`、`uncacheable` 各自单列，不混进「前缀不稳」。
