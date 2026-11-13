@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator, Callable, cast
 
 from ee.config import Config, ee_home
 from ee.core import compaction as C
+from ee.core import anchors as AN
 from ee.core.coerce import as_float, as_int
 from ee.core import gitinfo
 from ee.core import hooks
@@ -495,6 +496,12 @@ class Session:
         sp = self._style_part()
         if sp:
             parts["style"] = sp
+        # 排除项锚点（见 core/anchors.py）：推理会被清空，但「哪条路试过、为什么不行」
+        # 值得留在附录里。没有锚点就不加这个键，附录的字节不会因为空块抖动。
+        if AN.enabled(self.config.data):
+            block = AN.render(AN.from_history(self.history))
+            if block:
+                parts["excluded"] = block
         return parts
 
     def active_role(self) -> str | None:
