@@ -654,10 +654,20 @@ export type ContextBreakdown = {
     usage_missing?: number;
     /** 冷启动/无基线请求数。 */
     cold?: number;
+    /** 空闲超过 provider 缓存 TTL 的请求数（服务端过期，不是前缀不稳）。 */
+    cold_ttl?: number;
     /** 老账本里分不清冷启动与整段未命中的行数（不算成冷启动，也不进正常回合）。 */
     legacy?: number;
     /** 已知断点原因计数：compact / prune / mcp_attach / mcp_change / model_switch / prefix_migrated... */
     causes?: Record<string, number>;
+    /** 客户端前缀稳定率（相邻请求的 wire 指纹只是追加）。旧后端/旧账本没有指纹时缺失。 */
+    prefix_rate?: number | null;
+    /** 参与稳定率计算的请求数（有上一次请求可比的次数）。 */
+    prefix_observed?: number;
+    /** 扣掉末尾不满一个缓存块的 token 后的命中率（块大小由 provider 档案决定）。 */
+    tail_rate?: number | null;
+    /** 累计的尾块 token（每次请求末尾不满一块的部分）。 */
+    tail_tokens?: number;
   };
   compactions: number;
   frozen: boolean;

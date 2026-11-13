@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ContextBreakdown } from "../types";
-import { cacheLine, fmtTokens, savingsLine, thresholdLine, usageLine } from "./context";
+import { cacheLine, cacheQualityLine, fmtTokens, savingsLine, thresholdLine, usageLine } from "./context";
 
 const bd = (over: Partial<ContextBreakdown> = {}): ContextBreakdown => ({
   items: [], tools: [], total: 0, window: 1_000_000, used: 12_300, actual: true, images: 0, messages: 0,
@@ -43,6 +43,26 @@ describe("context", () => {
     expect(
       savingsLine(bd({ savings: { pruned: 2000, prunes: 1, pruned_outputs: 3, compacted: 0, reasoning_cut: 12_000 } })),
     ).toBe("旧推理不再回传省 ~12k · 修剪旧工具输出省 ~2.0k");
+  });
+
+  it("前缀稳定率与尾块口径来自本地账本，旧数据不显示", () => {
+    // 旧账本没有指纹 / 尾块字段：什么都不加，不能编造成 0%。
+    expect(cacheQualityLine(bd())).toBeNull();
+    expect(
+      cacheQualityLine(
+        bd({
+          cache: { hit: 0, hit_rate: 0.98, hit_coverage: 1, prefix_rate: 0.97, prefix_observed: 120, tail_rate: 0.99, tail_tokens: 1234 },
+        }),
+      ),
+    ).toBe("客户端前缀稳定 97%（120 次） · 扣掉尾块 1.2k 后命中 99%");
+    // 只有前缀（还没有尾块数据）：只说前缀。
+    expect(cacheQualityLine(bd({ cache: { hit: 0, hit_rate: 0.98, hit_coverage: 1, prefix_rate: 1, prefix_observed: 5 } }))).toBe(
+      "客户端前缀稳定 100%（5 次）",
+    );
+    // 只有尾块（旧会话中段开始记）：只说尾块。
+    expect(cacheQualityLine(bd({ cache: { hit: 0, hit_rate: 0.98, hit_coverage: 1, tail_rate: 0.995, tail_tokens: 88 } }))).toBe(
+      "扣掉尾块 88 后命中 100%",
+    );
   });
 
   it("缓存命中带覆盖率，未知不显示 0", () => {
@@ -101,6 +121,15 @@ describe("context", () => {
         }),
       ),
     ).toBe("服务端缓存命中 50% · 覆盖 80% 输入 · 冷启动 1 次 · 旧账本无法归因 3 次");
+  });
+
+  it("空闲过期与冷启动分开说", () => {
+    // 前者是服务端 TTL 到期，后者是进程/会话刚起；都排除在「前缀不稳」之外，但原因不同。
+    expect(
+      cacheLine(
+        bd({ cache: { hit: 500, hit_rate: 0.5, hit_coverage: 0.8, cold: 1, cold_ttl: 2 } }),
+      ),
+    ).toBe("服务端缓存命中 50% · 覆盖 80% 输入 · 冷启动 1 次 · 空闲过期 2 次");
   });
 
   it("缺用量的请求要单独说出来", () => {

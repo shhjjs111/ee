@@ -1,7 +1,7 @@
 // 上下文圆环 + 点开后的「上下文构成」面板（A12，RPC thread/context_breakdown）。
 import * as DM from "@radix-ui/react-dropdown-menu";
-import { useState } from "react";
-import { cacheLine, fmtTokens, savingsLine, thresholdLine, usageLine } from "../lib/context";
+import { useState, type ReactNode } from "react";
+import { cacheLine, cacheQualityLine, fmtTokens, savingsLine, thresholdLine, usageLine } from "../lib/context";
 import { useApp } from "../lib/store";
 import type { ContextBreakdown } from "../types";
 import { Button, Spinner } from "./ui";
@@ -11,6 +11,7 @@ export function ContextBreakdownView({ data, onCompact, canCompact }: { data: Co
   const max = Math.max(1, ...data.items.map((x) => x.tokens));
   const saved = savingsLine(data);
   const cache = cacheLine(data);
+  const quality = cacheQualityLine(data);
   const th = thresholdLine(data);
   return (
     <div className="w-[320px] space-y-2.5 p-1 text-[12.5px]">
@@ -25,7 +26,7 @@ export function ContextBreakdownView({ data, onCompact, canCompact }: { data: Co
               <span className="flex-1 text-muted">
                 {x.label}
                 {x.key === "tools" && data.tools.length > 0 && (
-                  <button className="ml-1.5 text-[11.5px] text-accent hover:underline" onClick={() => setShowTools(!showTools)}>
+                  <button type="button" className="ml-1.5 text-[11.5px] text-accent hover:underline" onClick={() => setShowTools(!showTools)}>
                     {showTools ? "收起" : `${data.tools.length} 个`}
                   </button>
                 )}
@@ -51,6 +52,7 @@ export function ContextBreakdownView({ data, onCompact, canCompact }: { data: Co
         ))}
       </div>
       {cache && <div className="text-muted">{cache}</div>}
+      {quality && <div className="text-faint">{quality}</div>}
       {saved && <div className="text-muted">{saved}</div>}
       <div className="text-[11.5px] leading-relaxed text-faint">
         各项为按字符估算{data.actual ? "，顶部占用取模型返回的实际用量" : ""}。{th ? `${th}。` : ""}
@@ -90,14 +92,26 @@ export function ContextRing({ threadId, left, onCompact, compacting, canCompact 
       .then((d: ContextBreakdown) => setData(d))
       .catch((e: Error) => setErr(e.message));
   };
+  const renderBody = (): ReactNode => {
+    if (err) return <div className="w-[260px] text-[12.5px] text-danger">读取上下文构成失败：{err}</div>;
+    if (data) return <ContextBreakdownView data={data} onCompact={onCompact} canCompact={canCompact} />;
+    return (
+      <div className="flex w-[260px] items-center gap-2 text-[12.5px] text-muted">
+        <Spinner size={12} /> 正在统计…
+      </div>
+    );
+  };
+
   return (
     <DM.Root onOpenChange={load}>
       <DM.Trigger asChild>
         <button
+          type="button"
           title={`上下文剩余 ${Math.round(left * 100)}% · 点击查看构成`}
           className="flex h-7 w-7 items-center justify-center rounded-lg outline-none hover:bg-hover"
         >
           <svg width="18" height="18" viewBox="0 0 18 18" className="text-faint">
+            <title>上下文占用</title>
             <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
             <circle
               cx="9"
@@ -115,15 +129,7 @@ export function ContextRing({ threadId, left, onCompact, compacting, canCompact 
       </DM.Trigger>
       <DM.Portal>
         <DM.Content side="top" align="end" sideOffset={6} className="z-50 rounded-xl border border-line bg-elev p-2.5 shadow-[var(--shadow)] fadein">
-          {err ? (
-            <div className="w-[260px] text-[12.5px] text-danger">读取上下文构成失败：{err}</div>
-          ) : data ? (
-            <ContextBreakdownView data={data} onCompact={onCompact} canCompact={canCompact} />
-          ) : (
-            <div className="flex w-[260px] items-center gap-2 text-[12.5px] text-muted">
-              <Spinner size={12} /> 正在统计…
-            </div>
-          )}
+          {renderBody()}
         </DM.Content>
       </DM.Portal>
     </DM.Root>

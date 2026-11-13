@@ -53,4 +53,20 @@ describe("ContextBreakdownView", () => {
     act(() => btn.click());
     expect(onCompact).toHaveBeenCalledOnce();
   });
+
+  it("新账本才显示前缀稳定率与尾块口径，旧账本不加行", () => {
+    const old = render(<ContextBreakdownView data={data} />);
+    expect(old.textContent).not.toContain("客户端前缀稳定");
+    expect(old.textContent).not.toContain("扣掉尾块");
+    const next = render(
+      <ContextBreakdownView
+        data={{
+          ...data,
+          cache: { ...data.cache, prefix_rate: 0.98, prefix_observed: 80, tail_rate: 0.99, tail_tokens: 1234 },
+        }}
+      />,
+    );
+    expect(next.textContent).toContain("客户端前缀稳定 98%（80 次）");
+    expect(next.textContent).toContain("扣掉尾块 1.2k 后命中 99%");
+  });
 });

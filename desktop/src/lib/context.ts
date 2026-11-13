@@ -68,10 +68,31 @@ export function cacheLine(d: ContextBreakdown): string | null {
   // 冷启动/无法归因不计入命中率时，也要让用户知道它们发生过；
   // 否则重启、换模型、压缩造成的账本变化只能靠 ee usage 看出来。
   if (c.cold != null && c.cold > 0) parts.push(`冷启动 ${c.cold} 次`);
+  // 空闲超过服务端 TTL：服务端过期，不是前缀不稳。单独说，不和冷启动混在一起。
+  if (c.cold_ttl != null && c.cold_ttl > 0) parts.push(`空闲过期 ${c.cold_ttl} 次`);
   // 老账本（baseline 字段上线前）分不清是冷启动还是整段未命中：单独一句话，
   // 不冒充冷启动——混进去会让「冷启动几次」变成不可信的旧账。
   if (c.legacy != null && c.legacy > 0) parts.push(`旧账本无法归因 ${c.legacy} 次`);
   const causes = Object.entries(c.causes ?? {}).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b));
   if (causes.length) parts.push(`已知原因 ${causes.map(([k, n]) => `${k} ${n}`).join("、")}`);
   return parts.join(" · ");
+}
+
+/** 缓存质量的两个本地口径：客户端前缀稳定率 + 扣掉尾块后的命中率。
+ *
+ * 与 cacheLine 分开一行：命中率回答「省了多少」，这两项回答「为什么」。
+ * 服务商不报 cache_read 时命中率是 null，前缀稳定率仍然可读——它由本地指纹算出来，
+ * 不依赖服务端。旧后端 / 旧账本没有这些字段，返回 null，面板什么都不加。 */
+export function cacheQualityLine(d: ContextBreakdown): string | null {
+  const c = d.cache;
+  if (!c) return null;
+  const parts: string[] = [];
+  if (c.prefix_rate != null && (c.prefix_observed ?? 0) > 0) {
+    parts.push(`客户端前缀稳定 ${Math.round(c.prefix_rate * 100)}%（${c.prefix_observed} 次）`);
+  }
+  // 只统计「新账本里真的记到尾块」的会话：tail_tokens=0 时不画蛇添足。
+  if ((c.tail_tokens ?? 0) > 0 && c.tail_rate != null) {
+    parts.push(`扣掉尾块 ${fmtTokens(c.tail_tokens ?? 0)} 后命中 ${Math.round(c.tail_rate * 100)}%`);
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
