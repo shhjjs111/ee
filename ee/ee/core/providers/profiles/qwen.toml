@@ -10,6 +10,10 @@ edit_style = "edit"
 prompt_patch = "qwen"
 empty_assistant_content = "empty"
 quirks = ["xml_tool_calls", "json_tool_calls"]
+# 百炼/通义显式缓存：1024 token 起，默认 5 分钟 TTL。
+cache_type = "explicit-cache"
+cache_min_tokens = 1024
+cache_ttl_s = 300
 # 思考开关与推理强度（官方文档 https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking）：
 # - enable_thinking = true / false（混合思考模式；部分模型是纯思考模式，关不掉）。
 # - reasoning_effort 控制推理力度，取值按模型而异：qwen3.8-max 是 **low / medium / xhigh**（默认 xhigh）。

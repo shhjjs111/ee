@@ -76,6 +76,18 @@ class Profile:
     # （5m / 1h 是 Anthropic 的写法，抄过来会被 400 挡掉）；已知家族由
     # openai_chat._cache_ttl 校验并校正，不认识的家族原样发送。
     prompt_cache_ttl: str = ""
+    # 前缀缓存档案（数值来自公开行为/对端实测；不知道就不猜）。
+    # cache_type：exact-prefix / implicit-prefix / explicit-breakpoint / explicit-cache / none / ""
+    # cache_granularity：匹配粒度（token）。DeepSeek 是 64——末尾不满一块的部分每次都是 miss，
+    #   命中率的分母必须把它扣掉，否则小请求永远到不了 99%。0 = 未知，不参与尾块统计。
+    # cache_min_tokens：低于它整个 prompt 进不了缓存（实测 OpenAI 1024、Anthropic 4096）。
+    #   0 = 未知。低于阈值的请求单独记 uncacheable，不算成「前缀不稳」。
+    # cache_ttl_s：缓存保留时长（秒）。超过它未命中是服务端过期，不是客户端改坏了前缀。
+    #   0 = 未知/不设（DeepSeek 不声明 TTL）。
+    cache_type: str = ""
+    cache_granularity: int = 0
+    cache_min_tokens: int = 0
+    cache_ttl_s: float = 0.0
     # 同家族内按模型名细分的覆盖项（[[variants]] match=[...] + 任意档案字段，price 按键合并）
     variants: list = field(default_factory=list)
 

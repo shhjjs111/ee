@@ -166,3 +166,75 @@ def test_known_causes_are_summarized_even_without_break():
     assert d["causes"]["count"] == 2
     assert d["causes"]["by_reason"] == {"model_switch": 1, "compact": 1}
     assert d["breaks"]["count"] == 0
+
+
+# ---------------------------------------------------------------- 尾块 / 前缀稳定率 / 空闲（2026-11）
+
+def test_tail_is_subtracted_from_the_hit_rate_denominator():
+    """末尾不满一个缓存块的 token 按定义必然 miss，不能算成「前缀不稳」。"""
+    rows = [_r(1000, 900, tail=40), _r(2000, 1900, tail=16)]
+    tail = summarize(rows)["main"]["tail"]
+    assert tail == {"requests": 2, "tokens": 56,
+                    "share": pytest.approx(56 / 3000),
+                    "adjusted_hit_rate": pytest.approx(2800 / 2944)}
+
+
+def test_rows_without_tail_do_not_invent_one():
+    """老账本没有 tail 字段：返回 None，不是 0%——0 会被读成「扣完就没了」。"""
+    assert summarize([_r(1000, 900)])["main"]["tail"] is None
+
+
+def test_wire_stability_comes_from_local_evidence_not_the_provider():
+    rows = [_r(100, 90, wire_cmp="equal"), _r(100, 90, wire_cmp="appended"),
+            _r(100, 50, wire_cmp="rewritten"), _r(100, 80),
+            _r(100, 90, wire_cmp="baseline_missing")]
+    wire = summarize(rows)["main"]["wire"]
+    assert wire["observed"] == 3, "没有指纹/没有基线的记录都不进分母"
+    assert wire["stable"] == 2
+    assert wire["rate"] == pytest.approx(2 / 3)
+    assert wire["by_cmp"] == {"equal": 1, "appended": 1, "rewritten": 1}
+    assert summarize([_r(100, 90)])["main"]["wire"] is None
+
+
+def test_idle_buckets_measure_cache_expiry_instead_of_assuming_a_ttl():
+    rows = [_r(1000, 900, idle_s=5), _r(1000, 900, idle_s=120),
+            _r(1000, 300, idle_s=700), _r(1000, 0, idle_s=4000)]
+    buckets = {b["label"]: b for b in summarize(rows)["main"]["idle"]}
+    assert buckets["<1m"]["requests"] == 1 and buckets["<1m"]["hit_rate"] == 0.9
+    assert buckets["1–5m"]["requests"] == 1
+    assert buckets["5–30m"]["hit_rate"] == 0.3
+    assert buckets[">30m"]["hit_rate"] == 0.0
+
+
+def test_tiny_prompt_is_excluded_from_the_adjusted_rate():
+    """连一块都不满的请求没有「可缓存部分」：既不进分母，也不能把它的命中算进分子。"""
+    rows = [_r(50, 40, tail=50), _r(1000, 900, tail=40)]
+    tail = summarize(rows)["main"]["tail"]
+    assert tail["requests"] == 1
+    assert tail["adjusted_hit_rate"] == pytest.approx(900 / 960)
+
+
+def test_uncacheable_is_counted_separately_from_the_tail():
+    """低于最短可缓存长度的 prompt 整段进不了缓存：单独计数，不冒充尾块。"""
+    rows = [_r(500, 0, uncacheable=True), _r(1000, 900, tail=40)]
+    main = summarize(rows)["main"]
+    assert main["uncacheable"] == {"requests": 1, "prompt": 500}
+    assert main["tail"]["requests"] == 1 and main["tail"]["tokens"] == 40
+
+
+def test_expired_cache_is_not_a_normal_gap_or_a_bucket_sample():
+    rows = [_r(100_000, 100, cold_ttl=True, gap=99_900, new=100, idle_s=4000),
+            _r(100_100, 100_100, gap=0, new=100)]
+    d = summarize(rows)
+    assert d["cold_ttl"] == {"count": 1, "gap": 99_900}
+    assert d["normal_gap"] == {"count": 1, "median": 0, "p90": 0, "max": 0}
+    bucket = {b["label"]: b for b in d["buckets"]}["80–150k"]
+    assert bucket["hit_rate"] == 1.0, "过期那次不进桶的命中率样本"
+
+
+def test_uncacheable_rows_do_not_drag_the_size_bucket_down():
+    """过短请求结构上不可能命中：不能让它把 <40k 桶的命中率说成 0%。"""
+    rows = [_r(500, 0, uncacheable=True), _r(1000, 900, tail=40)]
+    bucket = {b["label"]: b for b in summarize(rows)["buckets"]}["<40k"]
+    assert bucket["hit_rate"] == 0.9
+    assert bucket["uncacheable"] == 1

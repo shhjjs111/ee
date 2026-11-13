@@ -11,6 +11,11 @@ edit_style = "apply_patch"
 prompt_patch = "gpt"
 empty_assistant_content = "null"
 quirks = []
+# 前缀缓存：OpenAI 按 1024 token 起、128 token 对齐，保留约 10 分钟（官方 Prompt Caching 文档）。
+cache_type = "implicit-prefix"
+cache_granularity = 128
+cache_min_tokens = 1024
+cache_ttl_s = 600
 # OpenAI 支持 prompt_cache_key（会话级缓存路由）；不支持的网关会在 400 时被自动降级并记住。
 supports_prompt_cache_key = true
 # 普通 GPT 不支持推理强度；o 系列 / gpt-5 系在下方 variants 里打开。

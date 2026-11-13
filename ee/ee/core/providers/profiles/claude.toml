@@ -10,6 +10,10 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = []
+# Anthropic 显式缓存：最少 4096 token，默认 5 分钟 TTL（官方 Prompt Caching 文档）。
+cache_type = "explicit-breakpoint"
+cache_min_tokens = 4096
+cache_ttl_s = 300
 
 # 推理强度：**内置档案里不配**，原因见下（2026-11 查官方文档确认）。
 #

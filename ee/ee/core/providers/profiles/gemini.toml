@@ -10,6 +10,10 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = ["json_tool_calls"]
+# Gemini 显式缓存：4096 token 起，默认保留 1 小时。
+cache_type = "explicit-cache"
+cache_min_tokens = 4096
+cache_ttl_s = 3600
 # 推理强度（官方文档 https://ai.google.dev/gemini-api/docs/thinking 与
 # OpenAI 兼容说明 https://aistudio.google.com/docs/openai，2026-11 查阅）：
 # - Gemini 3 用 thinking_level：MINIMAL / LOW / MEDIUM / HIGH，默认 HIGH。

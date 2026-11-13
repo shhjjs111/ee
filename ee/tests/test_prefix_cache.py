@@ -169,3 +169,22 @@ def test_model_switch_refreezes(ee_home, workspace):
     run(collect(s, "二"))
     assert s.prefix.sha256 != h
     assert '<context-update seq="2">' in s.history[-2]["content"]   # 换模型后补发全量
+
+
+def test_tampered_prefix_is_refrozen_instead_of_sent(ee_home, workspace):
+    """冻结前缀被改动时修复（重新冻结），而不是把坏字节发出去。
+
+    修复后如果字节与存盘一致，一次缓存都不用重建；不一致时 `_refreeze_prefix` 会记
+    prefix_tamper。两种都比「发出去、让服务端整段未命中」好。
+    """
+    s, _fake = make_session(workspace, [])
+    notices: list = []
+    original = s._ensure_prefix(notices.append)
+    original_sha = original.sha256
+    s.prefix.system["content"] += " TRAMPER"
+
+    repaired = s._ensure_prefix(notices.append)
+    assert repaired.verify()
+    assert repaired.sha256 == original_sha, "修复应回到原字节，而不是把被改过的内容发出去"
+    assert any(isinstance(n, Notice) for n in notices)
+    assert s._take_break() is None, "字节没变就不该记断点"

@@ -33,7 +33,8 @@ from ee.core import styles as ST
 from ee.core import sysprompt as SP
 from ee.core.budget import BudgetGuard
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
-from ee.core.context import ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt
+from ee.core.context import (ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt,
+                             wire_fingerprint)
 from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
                             QueueDelivered, QueueReturned, ReasoningDelta, Status, StepStart, TextDelta, ToolEnd,
                             ToolOutput, ToolStart, TurnDone, TurnStart, Usage)
@@ -567,9 +568,15 @@ class Session:
         """
         why = self._take_break() if role == "main" else None
         before = len(self.stats.records)
-        cost = self.stats.add(usage, spec.profile.price, spec.alias,
-                              discount=self._current_discount(spec.profile.family),
-                              turn=self.turns, role=role, break_reason=why)
+        p = spec.profile
+        # 缓存档案随请求落账：后续 `ee usage` 才能区分「尾块 / 过短不可缓存 / 空闲过期」，
+        # 而不是把所有未命中都算成前缀不稳。值为 0 时对应口径自动关闭（不猜）。
+        cache_spec = {"type": p.cache_type, "block": p.cache_granularity,
+                      "min": p.cache_min_tokens, "ttl": p.cache_ttl_s}
+        cost = self.stats.add(usage, p.price, spec.alias,
+                              discount=self._current_discount(p.family),
+                              turn=self.turns, role=role, break_reason=why,
+                              cache_spec=cache_spec)
         # add() 一定至少落一条（缺 usage 也落 usage_missing 记录），逐条写出，不漏不重。
         # 子代理 persist=False，append() 自己 no-op，不会另开文件。
         for rec in self.stats.records[before:]:
@@ -1296,6 +1303,14 @@ class Session:
             if not self._prefix_bad_verify:
                 self._prefix_bad_verify = True
                 emit(Notice("冻结前缀的内容被改动了（sha256 不符），缓存会失效。", "warn"))
+            # 只在「重算的字节与冻结时一致」时修复：这说明被改的只是内存副本，换回去
+            # 不会改变发出去的字节，一次缓存都不用重建。若重算结果不同（提示词文件改过），
+            # 保持冻结字节不动——中途换前缀反而会把缓存推到重建，上面的警告已经告知用户。
+            repaired = self.current_prefix()
+            if repaired.sha256 == self.prefix.sha256:
+                self.prefix = repaired
+            else:
+                self._break_reason = self._break_reason or "prefix_tamper"
         fresh = self.current_prefix().sha256
         if fresh != self.prefix.sha256:
             # 同一个原因只在**第一次**提醒（P2）：_ensure_prefix 每次请求前都跑，
@@ -1728,16 +1743,23 @@ class Session:
         messages = [prefix.system] + T.wire_messages(self.history, spec.profile, self._reasoning_strip_to,
                                                     elide, missing_images=missing_images)
         self._note_missing_images(missing_images)
-        # 断点归因：记下这次要发的输入规模。下一次主对话请求的新增量 = 本次 wire − 上次 wire，
-        # 未命中远超新增量就说明中间有东西被改写（压缩 / 换模型 / 修剪），由 UsageStats 判定。
-        self.stats.note_wire(C.estimate_tokens(prefix.system["content"]) +
-                             C.estimate_tokens(json.dumps(prefix.tools, ensure_ascii=False)) + C.estimate_messages(messages))
+        # 断点归因：记下这次要发的输入规模 + wire 指纹。下一次主对话请求的新增量 = 本次
+        # wire − 上次 wire，未命中远超新增量就说明中间有东西被改写（压缩 / 换模型 / 修剪），
+        # 由 UsageStats 判定；指纹则定位到「从哪一条消息开始不一样」。
+        effort = self.effort_for(spec)
+        self.stats.note_wire(
+            C.estimate_tokens(prefix.system["content"]) +
+            C.estimate_tokens(json.dumps(prefix.tools, ensure_ascii=False)) + C.estimate_messages(messages),
+            wire_fingerprint(prefix.system, prefix.tools, messages[1:],
+                             options_key=f"{spec.model}|{effort}",
+                             endpoint_key=f"{spec.provider}|{spec.base_url}"),
+        )
         comp: Completion | None = None
         text, reasoning = [], []
         emit(Status(f"正在准备请求 {spec.alias}…"))
         try:
             client = await self.ensure_role_client(spec)
-            async for kind, val in client.stream(messages, prefix.tools, effort=self.effort_for(spec)):
+            async for kind, val in client.stream(messages, prefix.tools, effort=effort):
                 if kind == "text":
                     text.append(val); emit(TextDelta(val))
                 elif kind == "reasoning":

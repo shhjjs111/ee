@@ -70,6 +70,83 @@ def prefix_hash(system: dict, tools: list[dict]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------- wire 指纹（断点定位）
+
+def _digest(value) -> str:
+    """一段可序列化内容的短指纹（12 位十六进制）。
+
+    12 位 = 48 bit：一个会话里最多几万条消息，碰撞概率约 1e-8 量级，足够定位分叉；
+    存进账本时又不会把每行撑大。**键顺序参与哈希**——它决定发给服务端的字节顺序，
+    而前缀缓存按字节匹配。
+    """
+    blob = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def message_signature(msg: dict) -> str:
+    """单条 wire 消息的指纹。下划线开头的键是 ee 内部字段，不会被发送，不参与哈希。"""
+    return _digest({k: v for k, v in msg.items() if not k.startswith("_")})
+
+
+def wire_fingerprint(system: dict, tools: list, messages: list, options_key: str = "",
+                     endpoint_key: str = "") -> dict:
+    """一次请求的 wire 指纹：system / tools / 选项 / 端点各一个，历史逐条一个。
+
+    为什么需要：命中率只告诉你「这次漏了多少」，看不出「从哪一条开始不一样」。
+    逐条指纹和上一次请求比对，就能把断点分成「正常追加」「客户端改写了历史」
+    「换了模型/端点」三类——`ee usage` 里的 unknown 才不会永远说不清。
+    """
+    return {
+        "sys": _digest(system),
+        "tools": _digest(tools),
+        "opts": _digest(options_key),
+        "endpoint": _digest(endpoint_key),
+        "msgs": [message_signature(m) for m in messages],
+    }
+
+
+def compare_wire(prev: dict | None, cur: dict) -> dict:
+    """与上一次已记账的请求比对，给出可落账的结论（纯函数）。
+
+    cmp 的取值：
+      baseline_missing  本进程第一条（或刚恢复会话），没有可比的基线；
+      equal             逐条完全相同；
+      appended          上一条是新请求的前缀（正常追加，缓存最理想）；
+      rewritten         前缀中途变了（压缩 / 修剪以外的改写，通常是 bug）；
+      generation_changed system / tools / 选项 / 端点变了，等于换了一条缓存线。
+
+    生成变化优先于历史变化：换模型时历史往往没动，但缓存键已经整体作废，
+    先报 generation 才是根因；历史是否也变了用 `msgs_changed` 单独标出。
+    """
+    out = {"sys": cur["sys"], "tools": cur["tools"], "opts": cur["opts"],
+           "endpoint": cur["endpoint"], "wire_msgs": len(cur["msgs"])}
+    if not prev:
+        out["wire_cmp"] = "baseline_missing"
+        return out
+    out["wire_prev_msgs"] = len(prev["msgs"])
+    for key, label in (("sys", "sys_changed"), ("tools", "tools_changed"),
+                       ("opts", "opts_changed"), ("endpoint", "endpoint_changed")):
+        if prev.get(key) != cur.get(key):
+            out[label] = True
+    old, new = prev["msgs"], cur["msgs"]
+    same = 0
+    while same < len(old) and same < len(new) and old[same] == new[same]:
+        same += 1
+    appended = same == len(old)
+    if any(out.get(k) for k in ("sys_changed", "tools_changed", "opts_changed", "endpoint_changed")):
+        out["wire_cmp"] = "generation_changed"
+    elif appended and len(old) == len(new):
+        out["wire_cmp"] = "equal"
+    elif appended:
+        out["wire_cmp"] = "appended"
+    else:
+        out["wire_cmp"] = "rewritten"
+        out["wire_diverged"] = same
+    if not appended:
+        out["msgs_changed"] = True
+    return out
+
+
 @dataclass
 class FrozenPrefix:
     system: dict
@@ -189,6 +266,14 @@ class UsageStats:
     # 「本次比上次多出来的量」约等于「本该未命中的量」；实测未命中远超它，说明有人在中间改了历史。
     last_wire_tokens: int = 0
     _wire_pending: int = 0
+    # wire 指纹（断点定位）：pending 是本次待记账的，last 是上一次**已记账**的。
+    # 只在 add() 里推进 last——重试、400 回退会重新构造同一条请求，不能让它把基线挪走。
+    _wire_pending_fp: dict | None = None
+    _wire_pending_diag: dict | None = None
+    _last_wire_fp: dict | None = None
+    # 上一次主对话请求的时间（monotonic）：用来记「空闲了多久」，服务端缓存按 TTL 过期时
+    # 才能把整段未命中归给「隔太久」而不是「前缀不稳」。
+    _last_main_at: float = 0.0
     # 每次请求一条：{prompt, completion, hit, reasoning, cost, currency, model, turn, role}
     # （子代理并入主会话时按条复制，花费不重算）
     records: list = field(default_factory=list)
@@ -200,20 +285,31 @@ class UsageStats:
     reasoning_tokens: int = 0
     compacted_tokens: int = 0      # 压缩累计省下的 token（估计：压缩前 − 压缩后）
 
-    def note_wire(self, tokens: int) -> None:
-        """记下本次主对话请求估算的输入 token 数，供 add() 判断未命中是不是「正常新增」。
+    def note_wire(self, tokens: int, fingerprint: dict | None = None) -> None:
+        """记下本次主对话请求估算的输入 token 数 + wire 指纹，供 add() 判断断点性质。
 
         侧路请求（标题 / commit / 压缩）不调它：它们的消息和主对话没有公共前缀，
         拿它们的 wire 大小去比主对话，会把主对话的断点全部算错。
+
+        指纹只在这里**暂存**，比对与推进基线都放到 add()：重试 / 400 回退会再用同一条
+        请求调一次 note_wire，如果在这里推进基线，下一次真实请求就会拿「上一次重试」
+        当基线，正常追加被误判成改写。
         """
         self._wire_pending = max(0, as_int(tokens))
+        self._wire_pending_fp = fingerprint
+        self._wire_pending_diag = compare_wire(self._last_wire_fp, fingerprint) if fingerprint else None
 
-    def _wire_extra(self, role: str, prompt: int | None, hit: int | None, break_reason: str | None) -> dict:
-        """把「本次新增了多少 / 实际未命中多少 / 是不是断点」写进 record。
+    def _wire_extra(self, role: str, prompt: int | None, hit: int | None, break_reason: str | None,
+                    cache_spec: dict | None = None) -> dict:
+        """把「本次新增了多少 / 实际未命中多少 / 是哪类断点」写进 record。
 
         判定规则：gap（服务端报的未命中）如果远超这次真正追加的量，说明中间有东西被改写了——
         压缩重建历史、换模型换了前缀、修剪改了历史中段都会这样。1000 token 的余量是给
         tokenizer 抖动和服务端块对齐留的：正常追加时实测 gap 只比新增多几十到几百。
+
+        wire 指纹让判定不再只靠 gap 猜：`rewritten` 是**本地就能确认**的历史改写（逐条哈希
+        对不上），`generation_changed` 是 system/tools/选项/端点变了。两者都会写进 cause，
+        断点原因也优先用它们，不再落进 unknown。
         """
         # 侧路请求在取槽之前就返回：它自己不参与主对话基线，但也**不能把主请求刚记下的
         # wire 取走**。标题生成是后台 task（threads.py 的 _ai_title，最长 30s），完全可能
@@ -222,8 +318,29 @@ class UsageStats:
         if role != "main":
             return {}
         wire, self._wire_pending = self._wire_pending, 0
+        diag, self._wire_pending_diag = self._wire_pending_diag, None
+        fp, self._wire_pending_fp = self._wire_pending_fp, None
+        if fp is not None:
+            self._last_wire_fp = fp
+        extra: dict = dict(diag or {})
+        # 已知原因（compact / prune / model_switch …）优先于指纹推断：调用方知道“我刚做过
+        # 什么”，而指纹只知道“字节变了”。没有已知原因时，指纹是比 gap 猜测更硬的证据。
+        inferred = self._infer_cause(diag, break_reason)
+        if inferred:
+            extra["cause"] = inferred
+        extra.update(self._cache_hints(prompt, cache_spec))
+        # 空闲间隔：服务端缓存会过期，隔太久之后的整段未命中不是前缀不稳。
+        # TTL 由 provider 档案声明（OpenAI 10 分钟、Anthropic 5 分钟…），没声明就不判。
+        now = time.monotonic()
+        ttl = as_float((cache_spec or {}).get("ttl"))
+        if self._last_main_at > 0:
+            idle = now - self._last_main_at
+            extra["idle_s"] = round(idle, 1)
+            if ttl > 0 and idle > ttl:
+                extra["cold_ttl"] = True
+        self._last_main_at = now
         if not wire:
-            return {}
+            return extra
         # 没有基线（last_wire_tokens == 0）说明这是本进程里第一次主对话请求，或者刚 /new、
         # 刚从磁盘恢复会话。此时「上次发了多少」根本不知道，把整条 wire 当成新增会让 new
         # 虚高到几万，还会让断点判定 gap > new*1.5+1000 永不成立（漏报）。
@@ -231,7 +348,7 @@ class UsageStats:
         baseline = self.last_wire_tokens
         new = max(0, wire - baseline) if baseline > 0 else 0
         self.last_wire_tokens = wire
-        extra: dict = {"wire": wire, "new": new, "baseline": baseline}
+        extra.update({"wire": wire, "new": new, "baseline": baseline})
         if baseline > 0 and wire < baseline:
             # new==0 的另一种来源：历史/估算变小（取消、失败重试、上次 note_wire 没落账）。
             # 它不等于冷启动，但仍值得标出来，避免和“真的没有新增 token”混在一起。
@@ -240,10 +357,6 @@ class UsageStats:
             # 不能只留下 new==0：它和“wire 估算变小”长得一模一样。显式记 cold，
             # cache_report 与压缩水位据此排除，才不会把一次重启当成“前缀不稳”。
             extra["cold"] = True
-        if break_reason:
-            # 已知原因始终留下。原来 baseline==0 或 gap 没超过阈值时，
-            # model_switch / compact / prune 会被静默丢掉，账上只剩 unknown 或什么都没有。
-            extra["cause"] = break_reason
         if hit is not None and prompt:
             gap = max(0, as_int(prompt) - as_int(hit))
             extra["gap"] = gap
@@ -256,9 +369,10 @@ class UsageStats:
             growth = server_new if server_new is not None else new
             # 没有基线时不断点：续跑/重启后的首请求与服务端缓存是否还热无关己，
             # 两者无法区分，此时硬判会把“进程刚起”记成 ee 自己造的断点。
-            if baseline > 0 and gap > growth * 1.5 + 1000:
-                extra["break"] = break_reason or self._break_kind(as_int(hit), as_int(prompt))
-                if not break_reason:
+            if baseline > 0 and gap > growth * 1.5 + 1000 \
+                    and not extra.get("uncacheable") and not extra.get("cold_ttl"):
+                extra["break"] = inferred or self._break_kind(as_int(hit), as_int(prompt))
+                if not inferred:
                     # 归因未命中原因时最需要的一项：hit 只有很小一块，说明服务端在最前面
                     # 就匹配不上了（不是「尾巴改了」）。真实会话实测到的孤立断点就是这个形态：
                     # prompt 只比上一条多 224，hit 却从 128,384 掉到 2,560。
@@ -284,20 +398,58 @@ class UsageStats:
             return "upstream_full_miss"
         return "unknown"
 
+    @staticmethod
+    def _infer_cause(diag: dict | None, break_reason: str | None) -> str | None:
+        """断点原因：调用方已知的优先，其次用 wire 指纹这个本地硬证据。"""
+        if break_reason:
+            return break_reason
+        if not diag:
+            return None
+        if diag.get("wire_cmp") == "rewritten":
+            return "client_history_rewrite"
+        if diag.get("sys_changed") or diag.get("tools_changed"):
+            return "prefix_drift"
+        if diag.get("wire_cmp") == "generation_changed":
+            return "generation_changed"
+        return None
+
+    @staticmethod
+    def _cache_hints(prompt: int | None, cache_spec: dict | None) -> dict:
+        """尾块 / 不可缓存（纯函数）。不知道块大小或最短长度就不猜。
+
+        type == none 的服务端根本不缓存，尾块/命中率都没有意义，直接不记。
+        低于最短长度的整个 prompt 都进不了缓存：记 uncacheable 而不是 tail，
+        因为把它当尾块会让「尾块占比」虚高。
+        """
+        out: dict = {}
+        spec = cache_spec or {}
+        if spec.get("type") == "none" or not prompt:
+            return out
+        block, min_tokens = as_int(spec.get("block")), as_int(spec.get("min"))
+        if min_tokens > 0 and as_int(prompt) < min_tokens:
+            out["uncacheable"] = True
+        elif block > 0:
+            tail = as_int(prompt) % block
+            if tail:
+                out["tail"] = tail
+        return out
+
     def add(self, usage: dict | None, price, model: str = "", discount: float = 1.0, turn: int | None = None,
-            role: str = "main", break_reason: str | None = None) -> float | None:
+            role: str = "main", break_reason: str | None = None, cache_spec: dict | None = None) -> float | None:
         """记一次请求：price 是这次请求实际用的模型的单价，model 是它的名字（按模型细分统计）。
         discount 是错峰折扣（0<d<=1），只作用于输入+输出，缓存读取价不打折。
         turn 是第几回合（缓存未命中归因用：首回合必然冷启动）。
         role 区分请求来自哪条路（main / side / title / commit / compact）：侧路请求每次都是两条
         全新消息、命中恒 0，混进主对话会把用户看到的命中率无端拉低几个百分点。
         break_reason：调用方知道「这次请求前面刚发生了会作废缓存的事」时给出（compact / model_switch / prune）。
+        cache_spec：provider 档案里的缓存参数（type / block / min / ttl）。block>0 时记末尾不满一块的
+        token；prompt<min 记 uncacheable；空闲超过 ttl 记 cold_ttl，供 `ee usage` 从结构性损耗里扣除。
 
         缺 usage 时也要落一条记录（cost=None）：否则这次请求会从账里彻底消失，
         用户看到的总额就成了「看起来完整、其实漏了若干次」的假精确。
         """
         if not usage:
-            extra = self._wire_extra(role, None, None, break_reason)
+            extra = self._wire_extra(role, None, None, break_reason, cache_spec)
             self.requests += 1
             self.usage_missing += 1
             self.records.append({"prompt": 0, "completion": 0, "hit": None, "reasoning": None,
@@ -306,7 +458,7 @@ class UsageStats:
             self.cost_known = False
             return None
         cost = price.cost(usage["prompt"], usage["completion"], usage.get("hit"), discount) if price is not None else None
-        extra = self._wire_extra(role, usage.get("prompt"), usage.get("hit"), break_reason)
+        extra = self._wire_extra(role, usage.get("prompt"), usage.get("hit"), break_reason, cache_spec)
         self.add_record({"prompt": usage["prompt"], "completion": usage["completion"], "hit": usage.get("hit"),
                          "reasoning": usage.get("reasoning"), "cost": cost,
                          "currency": getattr(price, "currency", "¥") if price is not None else "¥", "model": model,
@@ -410,11 +562,13 @@ class UsageStats:
         把它算进来会让一次长会话重启直接把水位压到 0.9。
         老账本（没有 `baseline`）里分不清冷启动还是整段未命中的那些同样排除：把一次
         重算当成「前缀不稳」，会把水位往下调，和断点污染是同一类错误。
+        服务端缓存过期（`cold_ttl`，空闲超过 provider 声明的 TTL）也排除：那是等太久，
+        不是前缀被改坏；算进来会让一次午休把水位永久压低下调。
         样本不足时返回 None，调用方据此「不动」。
         """
         recs = [r for r in reversed(self.records)
                 if (r.get("role") or "main") == "main" and not r.get("break") and not r.get("cold")
-                and not unbaselined_miss(r)][:max(1, window)]
+                and not r.get("cold_ttl") and not unbaselined_miss(r)][:max(1, window)]
         known = [r for r in recs if r.get("hit") is not None]
         if len(known) < 5:
             return None

@@ -11,6 +11,8 @@ edit_style = "edit"
 prompt_patch = "default"
 empty_assistant_content = "empty"
 quirks = ["think_tags", "xml_tool_calls", "json_tool_calls"]
+# MiniMax 不提供前缀缓存。
+cache_type = "none"
 # 思考开关与推理强度（官方文档 https://platform.minimax.cn/docs/api-reference/text-openai-api，2026-11 查阅）：
 # - thinking.type = disabled / adaptive（省略 = 开启）。M3.1-Flash 强制思考，传 disabled 会 400。
 # - reasoning_effort = low / medium / high / xhigh / max，省略时默认 max。

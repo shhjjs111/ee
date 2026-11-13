@@ -10,6 +10,8 @@ edit_style = "edit"
 prompt_patch = "kimi"
 empty_assistant_content = "empty"
 quirks = ["json_tool_calls"]
+# Kimi/Moonshot 不提供前缀缓存（不返回缓存读字段）。
+cache_type = "none"
 # 思考开关与推理强度（官方文档 https://platform.kimi.com/docs/guide/use-reasoning-effort，2026-11 查阅）：
 # - K3 / K3.1-Pro：顶层 reasoning_effort = low / high / max，**默认就是 max**。
 #   这两个是「始终推理」模型，不能传 thinking 字段（K2.x 的老写法，传了会出错），所以变体里把

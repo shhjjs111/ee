@@ -84,6 +84,26 @@ def test_session_breakdown_is_read_only(ee_home, workspace):
     assert it["system"]["tokens"] == C.estimate_tokens(s.prefix.system["content"])
 
 
+def test_breakdown_exposes_prefix_stability_and_tail(ee_home, workspace):
+    """客户端的两个缓存质量口径：前缀稳定率（本地指纹）与扣掉尾块后的命中率。
+
+    服务商报不报 cache_read 都不影响这两个数；旧账本没有指纹/尾块字段时必须是
+    None / 0，界面据此不显示——不能拿 0% 冒充「前缀不稳」。
+    """
+    s, _fake = make_session(workspace, [
+        text_chunks("答一") + finish("stop", prompt=2000, completion=20, hit=0),
+        text_chunks("答二") + finish("stop", prompt=2400, completion=20, hit=1700),
+    ])
+    empty = B.for_session(s)["cache"]
+    assert empty["prefix_rate"] is None and empty["tail_tokens"] == 0, "还没请求时不能编造"
+    run(collect(s, "问一"))
+    run(collect(s, "问二"))
+    c = B.for_session(s)["cache"]
+    assert c["prefix_observed"] == 1 and c["prefix_rate"] == 1.0, "首条没有基线，第二条应是纯追加"
+    assert c["tail_tokens"] == (2000 % 64) + (2400 % 64)
+    assert c["tail_rate"] is not None and c["tail_rate"] > c["main_hit_rate"]
+
+
 def test_session_breakdown_exposes_cache_hit_and_coverage(ee_home, workspace):
     """T19：缓存命中要带覆盖率，供前端「三类节省」分开展示。
 

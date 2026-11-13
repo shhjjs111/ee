@@ -112,3 +112,19 @@ def test_first_request_after_resume_has_no_baseline(ee_home, workspace):
     second = main_records(s2)[1]
     assert second["new"] > 0
     assert "break" not in second, "正常追加：gap 约等于 new，不该标断点"
+
+
+def test_wire_ledger_says_appended_and_records_the_tail(ee_home, workspace):
+    """端到端接线：note_wire() 必须把指纹带上，否则账本里只有 gap，定位不到第一条分叉。"""
+    s = make(workspace, [
+        text_chunks("答一") + finish("stop", prompt=2000, completion=50, hit=0),
+        text_chunks("答二") + finish("stop", prompt=2400, completion=50, hit=1700),
+    ])
+    run(collect(s, "问一"))
+    run(collect(s, "问二"))
+    first, second = main_records(s)
+    assert first["wire_cmp"] == "baseline_missing", "本进程第一条没有可比基线"
+    assert second["wire_cmp"] == "appended", "正常回合只该追加，不该被记成改写"
+    assert "wire_diverged" not in second
+    assert second["sys"] == first["sys"] and second["tools"] == first["tools"]
+    assert second["tail"] == 2400 % 64, "DeepSeek 按 64 token 一块，尾巴单独记"

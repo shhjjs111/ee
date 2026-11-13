@@ -149,11 +149,23 @@ def for_session(s) -> dict:
     try:
         from ee.core.cache_report import summarize
         roll = summarize(s.stats.records)
+        main = roll["main"]
+        wire = main.get("wire") or {}
+        tail = main.get("tail") or {}
         d["cache"].update({
             "cold": int(roll["cold"]["count"]),
+            # 空闲超过服务端 TTL 的整段未命中：和冷启动不同，但对用户是同一类噪声，
+            # 单列一项，不冒充「冷启动」。
+            "cold_ttl": int(roll["cold_ttl"]["count"]),
             # 老账本里分不清冷启动与整段未命中的行：单独一列，不冒充冷启动。
             "legacy": int(roll["legacy"]["count"]),
             "causes": dict(roll["causes"]["by_reason"]),
+            # 客户端前缀稳定率与尾块口径：与 `ee usage` 同源，面板不再另算一套。
+            # 旧账本没有指纹/尾块字段，这两个值会是 None，界面据此不显示。
+            "prefix_rate": wire.get("rate"),
+            "prefix_observed": int(wire.get("observed") or 0),
+            "tail_rate": tail.get("adjusted_hit_rate"),
+            "tail_tokens": int(tail.get("tokens") or 0),
         })
     except Exception:  # noqa: BLE001  统计异常不影响查看上下文构成
         pass

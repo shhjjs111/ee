@@ -29,6 +29,11 @@ effort_levels = ["low", "max"]
 effort_values = { low = "low", max = "max" }
 effort_aliases = { medium = "", high = "max" }
 effort_labels = { "" = "默认（high）", max = "最高（max）" }
+# 前缀缓存按 64 token 一块匹配；末尾不满一块的部分每次必然 miss。
+# 写进账本后 `ee usage` 会把它从命中率分母里扣掉（尾块口径）。
+cache_type = "exact-prefix"
+cache_granularity = 64
+cache_min_tokens = 64
 
 [price]
 currency = "¥"

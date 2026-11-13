@@ -10,6 +10,9 @@ edit_style = "edit"
 prompt_patch = "glm"
 empty_assistant_content = "empty"
 quirks = ["xml_tool_calls", "json_tool_calls"]
+# GLM 前缀缓存：64 token 起（官方未公开对齐粒度，不猜 cache_granularity）。
+cache_type = "exact-prefix"
+cache_min_tokens = 64
 # 思考开关与推理强度（官方文档 https://docs.z.ai/guides/capabilities/thinking，2026-11 查阅）：
 # - thinking.type = enabled（默认）/ disabled。GLM-5.3 与 5.3-FLASH 不再支持关闭（传 disabled 会报错）。
 # - reasoning_effort 只有 GLM-5.2 及以上支持：max（默认，深推理）/ high / low。

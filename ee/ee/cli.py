@@ -290,15 +290,37 @@ def _print_usage(d: dict, *, title: str) -> None:
         detail = "，".join(f"{k} {v}" for k, v in sorted(by.items(), key=lambda kv: -kv[1]))
         print(f"（{detail}）", end="")
     if br["count"] > d["compactions"]:
-        print("  ← 断点比压缩还多，看看上面哪个原因在占大头（换模型 / 换档位 / 修剪 / 上游失配）")
+        print("  ← 断点比压缩还多，看看上面哪个原因在占大头（换模型 / 换档位 / 客户端改写 / 上游失配）")
     else:
         print()
     g = d["normal_gap"]
     if g["count"]:
         print(f"  正常回合未命中：中位 {g['median']} · p90 {g['p90']} · 最大 {g['max']} token")
+    tail = m.get("tail") or {}
+    if tail.get("tokens"):
+        print(f"  尾块 {tail['tokens']:,} token（占 {_pct(tail.get('share'))}，按缓存块对齐必然 miss）"
+              f" → 扣掉后命中 {_pct(tail.get('adjusted_hit_rate'))}")
+    wire = m.get("wire") or {}
+    if wire.get("observed"):
+        detail = "，".join(f"{k} {v}" for k, v in sorted((wire.get("by_cmp") or {}).items(),
+                                                         key=lambda kv: -kv[1]))
+        print(f"  客户端前缀稳定 {_pct(wire.get('rate'))}（{wire['stable']}/{wire['observed']}）"
+              f"：{detail}")
+    idle = [b for b in (m.get("idle") or []) if b["requests"]]
+    if idle:
+        print("  空闲间隔：" + " · ".join(
+            f"{b['label']} {_pct(b['hit_rate'])}（{b['requests']}）" for b in idle))
     cold = d.get("cold") or {}
     if cold.get("count"):
         print(f"  冷启动/无基线：{cold['count']} 次（未命中 {cold.get('gap', 0):,}，不计入正常回合）")
+    cold_ttl = d.get("cold_ttl") or {}
+    if cold_ttl.get("count"):
+        print(f"  缓存过期（空闲超 TTL）：{cold_ttl['count']} 次"
+              f"（未命中 {cold_ttl.get('gap', 0):,}，不计入正常回合）")
+    unc = m.get("uncacheable") or {}
+    if unc.get("requests"):
+        print(f"  过短不缓存：{unc['requests']} 次（合计 {unc.get('prompt', 0):,} token，"
+              f"低于服务商最短可缓存长度）")
     legacy = d.get("legacy") or {}
     if legacy.get("count"):
         print(f"  老账本无法归因：{legacy['count']} 次（未命中 {legacy.get('gap', 0):,}，不计入正常回合）")
