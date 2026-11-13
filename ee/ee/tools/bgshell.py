@@ -72,6 +72,16 @@ def _wait_tick(ctx: ToolContext, p, wait: int):
     return tick
 
 
+def _max_wait(ctx: ToolContext) -> int:
+    """本会话允许的最长等待：`shell_max_timeout`（无人值守硬上限）优先，否则 MAX_WAIT。
+
+    ShellTool 已经按这个上限掐命令；后台等待如果不受同一上限约束，`shell_output(wait=600)`
+    仍能合法占满 10 分钟——评测里实测到一次 600.0s 的空洞，整轮耗时被它一个盖住。
+    """
+    cap = int(getattr(ctx, "max_timeout", 0) or 0)
+    return max(1, min(MAX_WAIT, cap)) if cap > 0 else MAX_WAIT
+
+
 def _clear_status(ctx: ToolContext) -> None:
     """等待结束（等到输出 / 进程退出 / 到点）：把进度清掉，免得停在「等待中」误导用户。"""
     ev = (ctx.extra or {}).get("emit_event")
@@ -104,7 +114,7 @@ class ShellOutputTool(Tool):
                 pattern = re.compile(str(args["filter"]))
             except re.error as e:
                 raise ToolError(f"filter 不是合法正则：{e}")
-        wait = max(0, min(MAX_WAIT, int(args.get("wait") or 0)))
+        wait = max(0, min(_max_wait(ctx), int(args.get("wait") or 0)))
         if wait:
             try:
                 await mgr.wait_output(p, wait, pattern, tick=_wait_tick(ctx, p, wait))
@@ -151,7 +161,7 @@ class ShellWriteTool(Tool):
             wait_s = int(raw_wait) if isinstance(raw_wait, (int, float, str)) else 2
         except (TypeError, ValueError):
             wait_s = 2
-        wait = max(0, min(MAX_WAIT, wait_s))
+        wait = max(0, min(_max_wait(ctx), wait_s))
         if wait:
             await mgr.wait_output(p, wait)
         text, notes = mgr.read_new(p)

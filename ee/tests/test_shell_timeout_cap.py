@@ -150,3 +150,29 @@ def test_eval_profiles_passes_cap_to_exec():
     assert args.max_tool_timeout and args.max_tool_timeout > 0
     args_off = p.parse_args(["--max-tool-timeout", "0"])
     assert args_off.max_tool_timeout == 0
+
+
+def test_bg_output_wait_respects_the_session_cap(tmp_path):
+    """后台等待也受 `shell_max_timeout` 约束：shell_output(wait=600) 不能绕过硬上限。
+
+    评测里实测到一次 600.0s 的 shell_output 空洞：ShellTool 被上限掐了，
+    后台等待却没有，整轮耗时被它一个盖住。
+    """
+    from ee.core.bgproc import BgManager
+    from ee.tools.bgshell import ShellKillTool, ShellOutputTool
+
+    async def go():
+        sess = type("S", (), {"bg": BgManager(tmp_path)})()
+        ctx = ToolContext(cwd=tmp_path, state=ToolState(), output_dir=tmp_path / ".out",
+                          extra={"session": sess}, max_timeout=1)
+        start = await ShellTool().run({"command": _sleep_cmd(), "background": True}, ctx)
+        bg_id = start.details["bg_id"]
+        t0 = time.monotonic()
+        try:
+            await ShellOutputTool().run({"id": bg_id, "wait": 600}, ctx)
+        finally:
+            await ShellKillTool().run({"id": bg_id}, ctx)
+        return time.monotonic() - t0
+
+    dur = asyncio.run(go())
+    assert dur < 15, f"后台等待没受会话上限约束：等了 {dur:.1f}s"
