@@ -52,7 +52,13 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
         return { ...t, status_text: `全力以赴：判据${p.met ? "通过" : "未通过"}${n}` };
       }
       if (phase === "repair") {
-        return { ...t, status_text: `全力以赴：第 ${p.attempt ?? 1} 轮修复${p.kept ? "，已保留" : "，未保留"}` };
+        // 「未保留」必须说清楚磁盘到底回滚了没有：reverted 是回滚的文件数，null = 没能回滚。
+        const tail = p.kept
+          ? "，已保留"
+          : typeof p.reverted === "number"
+            ? `，已回滚${p.reverted} 个文件`
+            : "，未保留（未能回滚，工作区仍是这份改动）";
+        return { ...t, status_text: `全力以赴：第 ${p.attempt ?? 1} 轮修复${tail}` };
       }
       if (phase === "candidate") {
         return { ...t, status_text: `全力以赴：候选 ${p.id ?? "?"}${p.met ? "通过判据" : "未通过"}` };

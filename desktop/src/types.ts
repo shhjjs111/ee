@@ -168,6 +168,10 @@ export type ThreadSummary = {
   effort?: Effort | string; // D5-9：会话级推理强度
   effort_support?: EffortSupport | null;
   style?: string; // D5-9：会话级回答风格
+  /** 本回合被强制只读（/review）。**与 mode 分开**：mode 是用户的偏好，
+   *  这个字段说的是「这一回合到底能不能写」。以前靠临时改 mode 实现，回合中切模式
+   *  会给审查提权、收尾还会让 meta 与策略分叉。 */
+  readonly?: boolean;
   /** 会话记录写盘失败（磁盘满 / 文件被占用）：{count, error, at}。
    *  后端只能放在内存里（盘写不进去），所以这是「现在保存不了」的实时状态，不是落盘字段。 */
   save_error?: SaveError | null;

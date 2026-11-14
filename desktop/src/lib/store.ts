@@ -242,21 +242,34 @@ export const useApp = create<State & Actions>((set, get) => ({
           // 否则「本地有、快照里没有」的旧条目会被当成新条目往尾部追加，顺序就乱了。
           // 同时不要为此把整份 7MB 历史再拉一遍（本地已有的不用重传）。
           const localCount = get().details[id]?.items?.length ?? 0;
+          const window = { id, touched: new Map<string, unknown>(), removed: new Set<string>(),
+            summary: {} as Partial<ThreadSummary> };
+          snapshotWindow = window;
           rpc.call("thread/get", { thread_id: id, tail: Math.max(FIRST_PAGE, localCount + 40) })
             .then((r) => useApp.setState((st) => {
               const fresh = r.thread as ThreadDetail;
               const cur = st.details[id];
-              // 只保留「快照里没有、且发请求时本地也没有」的条目——
+              // 1) 窗口内被删掉的条目：旧快照里还有，不能复活
+              const items = fresh.items
+                .filter((f: { id: string }) => !window.removed.has(f.id))
+                // 2) 窗口内被更新过的条目：以本地版本为准（审批结果 / 工具输出可能已经变了）
+                .map((f: { id: string }) => (window.touched.get(f.id) as any) ?? f);
+              // 3) 只保留「快照里没有、且发请求时本地也没有」的条目——
               // 那是快照生成之后才到达的新内容，不能被旧快照抹掉。
               const keep = (cur?.items ?? []).filter(
-                (x: { id: string }) => !sentIds.has(x.id) && !fresh.items.some((f) => f.id === x.id),
+                (x: { id: string }) => !window.removed.has(x.id) && !sentIds.has(x.id)
+                  && !fresh.items.some((f) => f.id === x.id),
               );
-              const merged = keep.length ? { ...fresh, items: [...fresh.items, ...keep] } : fresh;
+              const merged = keep.length ? { ...fresh, items: [...items, ...keep] } : { ...fresh, items };
               // 快照只带了尾部一页（本地已翻过更多页时照旧保留）：更新「后面还有历史」标记，
               // 别让重新打开后误以为已经到头顶。
-              return { details: { ...st.details, [id]: { ...merged, items_has_more: fresh.items_has_more ?? false } } };
+              return { details: { ...st.details, [id]: { ...merged, ...window.summary,
+                items_has_more: fresh.items_has_more ?? false } } };
             }))
-            .catch((e: Error) => get().showToast(`重连后刷新当前对话失败：${e.message}`, "error"));
+            .catch((e: Error) => get().showToast(`重连后刷新当前对话失败：${e.message}`, "error"))
+            .finally(() => {
+              if (snapshotWindow === window) snapshotWindow = null;
+            });
         }
         wasOpen = true;
       }
@@ -735,7 +748,10 @@ export const useApp = create<State & Actions>((set, get) => ({
     if (!id) return false;
     try {
       set((st) => ({ turnStartedAt: { ...st.turnStartedAt, [id]: Date.now() } }));
-      const params = { thread_id: id, item_id: itemId, text, model: s.draftModel || undefined, mode: s.draftMode };
+      // 有会话时不带 mode：与 send() 同一条规矩。模式只由模式控件（thread/set_mode）改，
+      // 否则「打开一个只读会话、编辑重发一句话」就会把它提成全局草稿模式里的那档，
+      // 而界面全程显示的是会话自己的模式，用户没有任何线索。
+      const params = { thread_id: id, item_id: itemId, text, model: s.draftModel || undefined };
       let r = await s.rpc!.call("thread/edit_resend", params, LONG_RPC_TIMEOUT);
       if (r.needs_confirm) {
         if (!confirm(conflictPrompt(r.conflicts ?? [], "编辑重发"))) {
@@ -980,6 +996,49 @@ function forgetThread(id: string) {
   });
 }
 
+/** 重连时 `thread/get` 往返窗口内到达的本地增量。
+ *
+ * 快照是「发请求那一刻」的状态，回来时可能已经是旧的：期间到达的**更新**（审批结果、
+ * 工具输出）、**删除**（`item/removed`）和**更新的回合状态**都不在快照里。
+ * 只补「快照里没有的新条目」不够——同一个条目会被快照里的旧版本盖回去。
+ * 这里把窗口内的增量记下来，合并时逐条优先本地版本（详见 store.init 的 ACC-25 注释）。
+ */
+let snapshotWindow: {
+  id: string;
+  touched: Map<string, unknown>;   // item id → 窗口内收到的最新条目版本
+  removed: Set<string>;            // 窗口内被删掉的条目
+  summary: Partial<ThreadSummary>; // 窗口内收到的 thread/updated（状态、模式、标题等）
+} | null = null;
+
+/** 记录重连窗口内的增量（在应用通知之前调，两边看到的是同一份 payload）。 */
+function noteSnapshotWindow(method: string, p: any): void {
+  const w = snapshotWindow;
+  if (!w) return;
+  if (method === "item/started" || method === "item/updated") {
+    if (p?.thread_id !== w.id || !p?.item?.id) return;
+    w.removed.delete(p.item.id);
+    w.touched.set(p.item.id, p.item);
+    return;
+  }
+  if (method === "item/removed") {
+    if (p?.thread_id !== w.id) return;
+    const id = String(p.item_id ?? "");
+    w.touched.delete(id);
+    w.removed.add(id);
+    return;
+  }
+  if (method === "thread/updated") {
+    const t = p?.thread as ThreadSummary | undefined;
+    if (t?.id !== w.id) return;
+    Object.assign(w.summary, t);
+    return;
+  }
+  if (method === "turn/completed" && p?.thread_id === w.id) {
+    // 回合结束之后，本地状态肯定比快照新（快照可能还写着 running）
+    w.summary.status = "idle";
+  }
+}
+
 function setStatusText(id: string, text: string) {
   useApp.setState((s) => (s.details[id] ? { details: { ...s.details, [id]: { ...s.details[id], status_text: text } } } : {}));
 }
@@ -1025,6 +1084,8 @@ const deltaBuf = new StreamBuffer(
 );
 
 export function onNotification(method: string, p: any) {
+  // 重连快照往返窗口：先把增量记下来，合并时逐条优先本地版本（见 snapshotWindow）
+  noteSnapshotWindow(method, p);
   // 任何非 delta 通知都意味着一个事件边界：先把累积的 delta 落盘，
   // 保证 turn/completed、item/updated 到达前流式文本已经追平（T22）。
   if (method !== "item/delta") deltaBuf.flush();

@@ -101,6 +101,9 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   const model = s.draftModel ?? detail?.model ?? s.defaultModel;
   // 有会话时显示会话自己的模式（后端的 detail.mode），否则显示新对话的草稿值
   const mode = (s.activeThreadId ? detail?.mode : null) ?? s.draftMode;
+  // 本回合被强制只读（/review 等）：只读是回合级约束，不由 mode 开关决定，
+  // 切模式只影响下一回合。界面上必须把这件事说清楚，不能靠把 mode 临时改成 read-only 来暗示。
+  const readonlyTurn = !!detail?.readonly;
   // D5-9：推理强度 / 回答风格（有对话时取会话的；新对话取草稿，否则取设置里的默认）
   const [styles, setStyles] = useState<StyleInfo[]>([]);
   useEffect(() => {
@@ -732,7 +735,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
               void s.setMode(v);
             }}
             icon={MODES.find((m) => m.value === mode)?.icon}
-            title="权限模式"
+            title={readonlyTurn ? "权限模式（本回合是只读审查，切模式只影响下一回合）" : "权限模式"}
           />
           {/* 推理强度与回答风格收进「更多」：两者都是低频、非每次发送都要看的参数。
               权限模式、模型与发送留在原位——那是每次都要确认的。

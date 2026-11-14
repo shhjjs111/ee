@@ -441,6 +441,20 @@ describe("长操作不用 20 秒默认超时", () => {
     c.resolve({ needs_confirm: false });
     await Promise.race([p, new Promise((r) => setTimeout(r, 10))]);
   });
+
+  it("编辑重发不随消息改权限模式", async () => {
+    // 审计 P1#1：普通发送已经把 mode 改成「有会话就不带」，编辑重发漏了。
+    // 后果：只读会话被一条重发提成全局草稿里的模式（比如全自动），界面还显示只读。
+    const f = fakeRpc();
+    useApp.setState({ rpc: f.rpc, activeThreadId: "t", details: { t: detail("t", "/A") }, draftMode: "auto" });
+
+    const p = useApp.getState().editResend("u1", "改一下");
+    const c = f.calls.find((x) => x.method === "thread/edit_resend")!;
+    expect(c.params.mode, "已有会话时不能带 mode，否则会静默改权限").toBeUndefined();
+
+    c.resolve({ needs_confirm: false });
+    await Promise.race([p, new Promise((r) => setTimeout(r, 10))]);
+  });
 });
 
 describe("退回的排队消息要跨会话保住", () => {
@@ -519,5 +533,57 @@ describe("文件预览路径不跨会话", () => {
 
     expect(useApp.getState().filePath).toBeNull();
     expect(useApp.getState().lastFilePath).toBeNull();
+  });
+});
+
+describe("重连快照不能覆盖更新的审批/回合状态（P2-4）", () => {
+  /**
+   * 旧实现只补「快照里没有、且发请求时本地也没有」的新条目：同一个条目在窗口内
+   * 被更新（审批从 pending 变 approved、工具输出补全）、被删除（item/removed），
+   * 或者回合状态变新（running → idle），都会随旧快照一起被退回旧值。
+   */
+  function openOnReconnect() {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "t1",
+      activeWorkspace: "/w",
+      details: { t1: { ...detail("t1", "/w"), items: [{ id: "ap", type: "approval", status: "pending" }] } },
+      conn: "open",
+    } as any);
+    void useApp.getState().init(f.rpc);
+    f.emitState("open");
+    f.emitState("closed");
+    f.emitState("open");
+    return { f, get: f.calls.find((c) => c.method === "thread/get")! };
+  }
+
+  it("窗口内的条目更新以本地为准", async () => {
+    const { f, get } = openOnReconnect();
+    f.emitNotif("item/updated", { thread_id: "t1", item: { id: "ap", type: "approval", status: "always" } });
+    get.resolve({ thread: { ...detail("t1", "/w"), items: [{ id: "ap", type: "approval", status: "pending" }] } });
+    await Promise.resolve();
+    await Promise.resolve();
+    const ap = (useApp.getState().details.t1!.items as any[]).find((x) => x.id === "ap");
+    expect(ap.status, "审批结果被旧快照改回了 pending").toBe("always");
+  });
+
+  it("窗口内被删除的条目不能被旧快照复活", async () => {
+    const { f, get } = openOnReconnect();
+    f.emitNotif("item/removed", { thread_id: "t1", item_id: "ap" });
+    get.resolve({ thread: { ...detail("t1", "/w"), items: [{ id: "ap", type: "approval", status: "pending" }] } });
+    await Promise.resolve();
+    await Promise.resolve();
+    const ids = (useApp.getState().details.t1!.items as any[]).map((x) => x.id);
+    expect(ids, "旧快照把已删条目带回来了").not.toContain("ap");
+  });
+
+  it("窗口内回合结束，旧快照的 running 不能盖回状态", async () => {
+    const { f, get } = openOnReconnect();
+    f.emitNotif("turn/completed", { thread_id: "t1", reason: "completed", duration_ms: 1, usage: {} });
+    get.resolve({ thread: { ...detail("t1", "/w"), status: "running", items: [] } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useApp.getState().details.t1!.status, "已结束的回合被标回 running").toBe("idle");
   });
 });
