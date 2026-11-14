@@ -115,3 +115,27 @@ describe("parseDiff", () => {
     expect(diffStat(patch)).toEqual({ add: 2, del: 1 });
   });
 });
+
+describe("通知乱序（同一连接内理论上不该发生，但重连/补齐路径会）", () => {
+  it("item/updated 先到：条目照样出现，后来的 item/started 不能产生重复", () => {
+    const updated = applyItemNotification(base, "item/updated", {
+      item: { id: "a1", type: "assistant", text: "最终文本", streaming: false },
+    });
+    expect(updated.items.map((x) => x.id)).toEqual(["a1"]);
+
+    const started = applyItemNotification(updated, "item/started", {
+      item: { id: "a1", type: "assistant", text: "", streaming: true },
+    });
+    expect(started.items.map((x) => x.id), "同一条目出现两次会让消息重复渲染").toEqual(["a1"]);
+    expect((started.items[0] as any).text, "started 是权威的初始版本，覆盖而不是合并").toBe("");
+  });
+
+  it("item/removed 先到、item/updated 后到：条目被重新加回（后端不会这么发，但不许崩）", () => {
+    const t = applyItemNotification(base, "item/removed", { item_id: "a1" });
+    expect(t.items).toEqual([]);
+    const back = applyItemNotification(t, "item/updated", {
+      item: { id: "a1", type: "assistant", text: "x", streaming: false },
+    });
+    expect(back.items.map((x) => x.id)).toEqual(["a1"]);
+  });
+});

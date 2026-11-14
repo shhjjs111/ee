@@ -140,6 +140,12 @@ _PHPUNIT_SUM = re.compile(r"Tests:\s*(\d+),\s*Assertions:", re.I)
 _BUN_PASS = re.compile(r"^\s*(\d+)\s+pass\s*$", re.M)
 _BUN_FAIL = re.compile(r"^\s*(\d+)\s+fail\s*$", re.M)
 _MAVEN = re.compile(r"Tests run:\s*(\d+)", re.I)
+# CTest（CMake）：`100% tests passed, 0 tests failed out of 5`。必须先认整行：
+# `0 tests failed` 会被通用规则读成「一个测试都没跑」，Goal 于是永远不达标。
+_CTEST = re.compile(r"(\d+)%\s+tests passed,\s+(\d+)\s+tests failed out of\s+(\d+)", re.I)
+# Meson test 的汇总：`Ok:  5` / `Fail:  0`
+_MESON_OK = re.compile(r"^Ok:\s*(\d+)\s*$", re.M)
+_MESON_FAIL = re.compile(r"^Fail:\s*(\d+)\s*$", re.M)
 # surefire 的每套件行：`Tests run: 2, ... Time elapsed: 0.01 s -- in com.example.A`
 _MAVEN_SUITE = re.compile(r"Tests run:\s*(\d+)[^\n]*?--\s*in\s+\S", re.I)
 _UNITTEST = re.compile(r"^Ran\s+(\d+)\s+tests?\s+in\s", re.M)
@@ -199,6 +205,14 @@ def parse_tests(output: str) -> int:
     m = _GRADLE_SUMMARY.search(output)
     if m:
         return as_int(m.group(1))
+    m = _CTEST.search(output)
+    if m:
+        # total - failed：全部通过就是 total；有失败时退出码本来就非 0
+        return max(0, as_int(m.group(3)) - as_int(m.group(2)))
+    ok = _MESON_OK.search(output)
+    if ok:
+        fail = _MESON_FAIL.search(output)
+        return as_int(ok.group(1)) + (as_int(fail.group(1)) if fail else 0)
     # 没有 Tests 行时，`Test Files  3 passed` 同样不能被通用规则当测试数。
     generic = re.sub(r"^.*Test Files.*$", "", output, flags=re.M)
     p = _PASSED.search(generic)

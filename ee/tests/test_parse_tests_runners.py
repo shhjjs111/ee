@@ -64,6 +64,12 @@ SAMPLES = [
     ("pytest_mixed", "2 failed, 3 passed in 0.5s\n", 5),
     # 只收集（`--collect-only` 也打这一行，退出 0）：一个用例都没执行 → 0
     ("pytest_collected_only", "collected 7 items\n", 0),
+    # ---- CTest（CMake）：认整行，否则 `0 tests failed` 会被通用规则读成「跑了 0 个」
+    ("ctest_ok", "100% tests passed, 0 tests failed out of 5\n\nTotal Test time (real) = 0.02 sec\n", 5),
+    ("ctest_partial", "80% tests passed, 1 tests failed out of 5\n", 4),
+    # ---- Meson test 的汇总行
+    ("meson_ok", "Ok:                 5\nExpected Fail:      0\nFail:               0\nSkipped:            0\n", 5),
+    ("meson_fail", "Ok:                 4\nFail:               1\nSkipped:            0\n", 5),
 ]
 
 

@@ -31,6 +31,7 @@ def test_capture_changed_restore(workspace, ee_home):
     (workspace / "新目录").mkdir()
     (workspace / "新目录" / "x.txt").write_text("x", encoding="utf-8")
     t2 = ds.capture()
+    assert t1 is not None and t2 is not None, "抓快照失败，用例前提不成立"
     changed = set(ds.changed(t1, t2))
     assert changed == {"a.txt", "b.txt", "c.txt", "子目录/中文.txt", "新目录/x.txt"}
     restored = ds.restore(t1, sorted(changed))
@@ -39,7 +40,9 @@ def test_capture_changed_restore(workspace, ee_home):
     assert (workspace / "c.txt").read_text(encoding="utf-8") == "c1"
     assert (workspace / "子目录" / "中文.txt").read_text(encoding="utf-8") == "旧"
     assert not (workspace / "b.txt").exists() and not (workspace / "新目录").exists()
-    assert ds.changed(t1, ds.capture()) == []
+    cur = ds.capture()
+    assert t1 is not None and cur is not None
+    assert ds.changed(t1, cur) == []
 
 
 def test_crlf_bytes_kept(workspace, ee_home):
@@ -47,7 +50,9 @@ def test_crlf_bytes_kept(workspace, ee_home):
     ds = _ds(workspace, ee_home)
     t1 = ds.capture()
     (workspace / "w.txt").write_bytes(b"changed\n")
-    ds.restore(t1, ds.changed(t1, ds.capture()))
+    cur = ds.capture()
+    assert t1 is not None and cur is not None, "抓快照失败，用例前提不成立"
+    ds.restore(t1, ds.changed(t1, cur))
     assert (workspace / "w.txt").read_bytes() == b"line1\r\nline2\r\n"
 
 
@@ -60,6 +65,7 @@ def test_respects_gitignore_and_skips_big_files(workspace, ee_home):
     (workspace / "src.py").write_text("print(1)\n", encoding="utf-8")
     ds = _ds(workspace, ee_home)
     t = ds.capture()
+    assert t is not None, "抓快照失败，用例前提不成立"
     files = set(ds._run("ls-tree", "-r", "--name-only", t).decode().split())
     assert "src.py" in files and ".gitignore" in files
     assert "out/build.bin" not in files and "big.dat" not in files
@@ -70,7 +76,9 @@ def test_non_git_project_default_excludes(workspace, ee_home):
     (workspace / "node_modules" / "pkg" / "i.js").write_text("x", encoding="utf-8")
     (workspace / "app.js").write_text("y", encoding="utf-8")
     ds = _ds(workspace, ee_home)
-    files = set(ds._run("ls-tree", "-r", "--name-only", ds.capture()).decode().split())
+    cur = ds.capture()
+    assert cur is not None, "抓快照失败，用例前提不成立"
+    files = set(ds._run("ls-tree", "-r", "--name-only", cur).decode().split())
     assert files == {"app.js"}
 
 
@@ -210,3 +218,20 @@ def test_shadow_repo_costs_at_most_two_git_calls(workspace, ee_home):
     assert calls.count("init") == 1
     assert calls.count("config") == 1, f"应为 1 次 config（校验），实际 {calls.count('config')} 次：{calls}"
     assert len(calls) <= 2, f"建仓启动了 {len(calls)} 个 git 进程：{calls}"
+
+
+def test_repo_key_is_one_repo_per_real_dir(workspace, ee_home):
+    """影子仓库按「真实路径小写」分桶：同一目录的不同写法必须落到同一个仓库。
+
+    分桶错了的后果不是多占点磁盘：两个 cwd 各建一份仓库时，检查点/undo 看的是
+    自己那份，用户在另一处恢复就恢复不到；反过来（不同目录撞同一个键）更糟——
+    恢复会把另一个项目的文件当成自己的改回去。这里守住两条：同一真实目录同键、
+    不同目录不同键。
+    """
+    a = snapshot.repo_key(workspace)
+    assert snapshot.repo_key(str(workspace).upper()) == a, "Windows 上大小写不同还是同一个目录"
+    assert snapshot.repo_key(workspace / ".") == a
+    assert snapshot.repo_key(workspace / "sub" / "..") == a, "`..` 折回同一个目录"
+    other = workspace.parent / "另一处"
+    other.mkdir()
+    assert snapshot.repo_key(other) != a
