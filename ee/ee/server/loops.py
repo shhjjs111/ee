@@ -56,7 +56,7 @@ class Loops:
         return {str(lp["thread_id"]) for lp in self.loops.values()}
 
     # ---------------------------------------------------------- 增删
-    def create(self, thread_id: str, text: str) -> dict:
+    async def create(self, thread_id: str, text: str) -> dict:
         spec = LS.parse(text)
         if sum(1 for lp in self.loops.values() if lp["thread_id"] == thread_id) >= MAX_PER_THREAD:
             raise ValueError(f"一个会话最多 {MAX_PER_THREAD} 个循环，先用 /loop stop 停掉一些")
@@ -67,7 +67,7 @@ class Loops:
               "pending": False, "last_error": ""}
         self.loops[lp["id"]] = lp
         if spec.schedule["kind"] == "interval":
-            self._fire(lp, now)                       # 间隔型：马上发一次
+            await self._fire(lp, now)                 # 间隔型：马上发一次（要过工作区锁，所以是 await）
         else:
             lp["next_run"] = self._next(lp, now)
         self._changed(lp)
@@ -112,7 +112,7 @@ class Loops:
     def _thread(self, lp: dict):
         return self.backend.threads.get(lp["thread_id"])
 
-    def _fire(self, lp: dict, now: float) -> None:
+    async def _fire(self, lp: dict, now: float) -> None:
         lp["next_run"] = self._next(lp, now)
         th = self._thread(lp)
         if th is None:                                 # 会话已经不在了
@@ -125,12 +125,16 @@ class Loops:
                 lp["pending"] = True
                 self._waiters[lp["id"]] = asyncio.get_running_loop().create_task(self._after_idle(lp))
             return
-        self._send(lp, th)
+        await self._send(lp, th)
 
-    def _send(self, lp: dict, th) -> None:
+    async def _send(self, lp: dict, th) -> None:
+        """发一回合。要过工作区锁：恢复/撤销正在写文件时先等它写完，
+        否则恢复会把这一回合刚写的东西当成「用户手改」覆盖掉（见 Backend.workspace_lock）。
+        """
         lp["pending"] = False
         try:
-            th.start_turn(lp["prompt"], kind="loop")
+            async with self.backend.workspace_lock(th.meta.get("cwd")):
+                th.start_turn(lp["prompt"], kind="loop")
             lp["runs"] += 1
             lp["last_run"] = self.clock()
             lp["last_error"] = ""
@@ -148,7 +152,7 @@ class Loops:
                     await asyncio.sleep(0.05)          # 让回合收尾的通知先发出去
                     if th.running:                     # 用户抢先开始了新回合：继续等
                         continue
-                    self._send(lp, th)
+                    await self._send(lp, th)
                     self._changed(lp)
                     return
                 task = th.task
@@ -169,7 +173,7 @@ class Loops:
             nr = lp.get("next_run")
             if nr is None or nr > now:
                 continue
-            self._fire(lp, now)
+            await self._fire(lp, now)
             if lp["id"] in self.loops:
                 self._changed(lp)
                 fired.append(self.view(lp))
@@ -225,7 +229,7 @@ def register(methods: dict, backend: "Backend") -> Loops:
     async def create(thread_id: str, text: str) -> dict:
         await backend._athread(thread_id)
         try:
-            lp = lo.create(thread_id, text)
+            lp = await lo.create(thread_id, text)
         except ValueError as e:
             raise RpcError(str(e))
         return {"loop": lp}

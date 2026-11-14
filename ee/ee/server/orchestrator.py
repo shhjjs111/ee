@@ -249,7 +249,9 @@ class Orchestrator:
             return {"thread": t.summary(), "started": False}
 
         try:
-            started = t.start_turn(prompt_text)
+            # 开回合要过工作区锁（同 turn/start）：子会话也跑在同一个工作区里。
+            async with self.b.workspace_lock(t.meta.get("cwd")):
+                started = t.start_turn(prompt_text)
         except Exception:
             ctl.release(child_id)
             raise
@@ -269,15 +271,19 @@ class Orchestrator:
         if not text:
             raise OrchestratorError("要发送的内容不能为空")
         if t.running:
-            # 正在跑：走排队（不额外占名额，当前回合一结束就轮到它）
-            return t.start_turn(text)
+            # 正在跑：走排队（不额外占名额，当前回合一结束就轮到它）。
+            # 排队不写文件，但也要过锁：顺序与「恢复是否已开始」一致，避免把 mode/model
+            # 记在一个正要被恢复/撤销的回合上。
+            async with self.b.workspace_lock(t.meta.get("cwd")):
+                return t.start_turn(text)
         ctl = self._controller(t)
         try:
             await ctl.reserve(child_id)
         except SlotLimit as e:
             raise OrchestratorError(str(e)) from None
         try:
-            return t.start_turn(text)
+            async with self.b.workspace_lock(t.meta.get("cwd")):
+                return t.start_turn(text)
         except Exception:
             ctl.release(child_id)
             raise

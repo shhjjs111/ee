@@ -184,3 +184,29 @@ def test_active_threads_lists_loop_owners(ee_home, workspace):
         assert b.loops.active_threads() == set()
 
     asyncio.run(main())
+
+
+def test_loop_send_waits_for_workspace_lock(ee_home, workspace):
+    """循环发送也要过工作区锁：恢复/撤销持锁期间不能开回合。
+
+    自动化、/loop、指挥会话子会话都是直接调 `Thread.start_turn`，不走 turn/start RPC。
+    它们不过同一把锁的话，恢复与它们仍然会互相盖文件——那正是 2026-11 审查 P1-6
+    的剩余部分（`/undo`、检查点恢复、编辑重发已经过了锁）。
+    """
+    async def main():
+        b, fake, clock, tid = await setup(
+            ee_home, workspace, [text_chunks("好") + finish("stop"), text_chunks("好2") + finish("stop")])
+        lock = b.workspace_lock(str(workspace))
+        await lock.acquire()
+        task = asyncio.ensure_future(b.call("loop/create", {"thread_id": tid, "text": "1m 打招呼"}))
+        try:
+            await asyncio.sleep(0.1)
+            assert not task.done(), "恢复持锁期间循环不该开始回合"
+            assert b.threads[tid].running is False
+        finally:
+            lock.release()
+        res = await task
+        assert res["loop"]["runs"] == 1, "释放锁之后照常发出去（不是被吞掉）"
+        await idle(b, tid)
+        assert user_texts(b, tid) == ["打招呼"]
+    asyncio.run(main())

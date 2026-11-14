@@ -625,7 +625,9 @@ class Automations:
                 return
             self._notify("automation/run_updated", {"run": dict(run)})
             self.backend.notify("thread/updated", {"thread": th.summary()})
-            th.start_turn(a["prompt"], mode=a.get("mode") or "read-only")
+            # 与恢复/撤销共用工作区锁：自动化是后台触发的，用户完全可能正从时间线恢复文件。
+            async with self.backend.workspace_lock(th.meta.get("cwd")):
+                th.start_turn(a["prompt"], mode=a.get("mode") or "read-only")
             th.meta["title"] = a["name"]                    # 标题用自动化名字（start_turn 会按提示词起标题）
             th.save_meta()
             self.backend.notify("thread/updated", {"thread": th.summary()})
