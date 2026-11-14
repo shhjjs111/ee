@@ -760,6 +760,8 @@ class Thread:
         # s.turn_trees 追加一条。收尾时再折叠成一条（见 _collapse_turn_trees）。
         trees0 = len(getattr(s, "turn_trees", []) or [])
         self._delivery = None            # 每回合重置：上一轮的交付结论不能带到这一轮
+        self._model_turn = None
+        self._model_report = None
         self.turn_started_at = time.monotonic()
         self.cur_assistant = None
         self.plan_item = None
@@ -767,6 +769,8 @@ class Thread:
         try:
             probe_denied = False
             if allout:
+                # 第二批（模型绑定）：本轮锁模型 + 提强度。收尾在 finally 里还原。
+                self._model_turn = self._bind_turn_model(s)
                 proj = await self._plan_allout(allout, goal)
                 if not goal and proj is not None and proj.command:
                     if self._allout_goal_confirmed(proj.command):
@@ -835,6 +839,11 @@ class Thread:
                 policy = getattr(s, "policy", None)
                 if policy is not None:
                     policy.readonly = False
+                info = getattr(self, "_model_turn", None)
+                if info is not None:
+                    self._model_report = s.model_state()     # 解锁前记录实际模型/档位
+                    self._model_turn = None
+                    self._restore_turn_model(s, info)
                 try:
                     self._collapse_turn_trees(s, trees0)
                 except Exception:  # noqa: BLE001  折叠失败只影响 /undo 粒度，不能拖垮收尾
@@ -846,6 +855,37 @@ class Thread:
                 log.error("回合收尾异常（会话 %s）", self.id, exc_info=True)
                 self.notify("turn/completed", {"thread_id": self.id, "reason": "error", "duration_ms": 0,
                                                "usage": self.usage, "context_left": self.context_left})
+
+    def _bind_turn_model(self, s) -> dict:
+        """全力以赴回合的模型绑定：锁定身份 + 把强度提到该模型的最高可用档。
+
+        两件事都**只在本轮生效**（不写 config/meta），否则用户下次普通对话会莫名其妙
+        用上高强度/被锁的模型。返回还原所需的信息（交给 _restore_turn_model）。
+        """
+        from ee.core import allout as A
+
+        info: dict = {"effort": s.effort, "model": s.lock_model(), "applied": s.effort, "degraded": False}
+        top = A.max_effort(s.profile)
+        if top:
+            try:
+                s.set_effort(top)
+            except ValueError:
+                log.info("全力以赴：该模型的强度档 %s 不可用，保持原档", top)
+        info["applied"] = s.effort
+        info["degraded"] = bool(s.effort_support().get("effort")) and s.effort != top
+        return info
+
+    def _restore_turn_model(self, s, info: dict | None) -> None:
+        """回合结束：解开模型锁、把强度还原成进来时的档位。"""
+        if not info:
+            return
+        s.unlock_model()
+        before = info.get("effort")
+        if before is not None and s.effort != before:
+            try:
+                s.set_effort(before)
+            except ValueError:
+                log.info("全力以赴：还原强度档失败（%s）", before)
 
     async def _plan_allout(self, allout: dict, goal: dict | None):
         """全力以赴的推导与判据探测：只发通知，不执行任何命令。
@@ -875,16 +915,8 @@ class Thread:
         plan = derive(config=s.config.data, profile=s.profile, has_goal=has_goal,
                       max_parallel=as_int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
                       max_candidates=as_int(allout.get("candidates") or 3))
-        # 推理强度是设计里最大的杠杆（v2 §1.1），必须真的落到请求参数上：
-        # 推导结果原先只写进了 reasons，没写进会话——界面说「max」，请求仍是默认档。
-        # 只在新会话应用：已有会话中途换档会断前缀缓存（session.py 的 effort_switch）。
-        # 放在 _plan_allout 而不是 _run_allout：降级路径（没判据）不走 _run_allout，
-        # 但用户开了全力以赴就该拿到最高强度（reasons 也一直是这么写的）。
-        if plan.effort and s.turns == 0 and s.effort != plan.effort:
-            s.set_effort(plan.effort)
-            self.meta["effort"] = s.effort
-            self.save_meta()
-            self.notify("thread/updated", {"thread": self.summary()})
+        # 推理强度由回合级绑定负责（_bind_turn_model）：已有会话也提到最高档，
+        # 且只在这一回合生效。这里不再改会话 meta——那样用户下次普通对话会莫名用高强度。
         self.notify("allout_plan", {
             "thread_id": self.id,
             "plan": plan.as_dict(),
@@ -1751,13 +1783,17 @@ class Thread:
         # 交付结论（全力以赴才有）：界面按它显示「交付复验失败 / 验收依据发生变化」，
         # 不能只显示「跑满轮次未达成」——那是另一个原因。
         delivery = getattr(self, "_delivery", None)
+        model = getattr(self, "_model_report", None)
         self._add({"type": "turn_end", "reason": reason, "duration_ms": dur,
-                   "usage": self._usage_snapshot(), **({"delivery": delivery} if delivery else {})})
+                   "usage": self._usage_snapshot(),
+                   **({"delivery": delivery} if delivery else {}),
+                   **({"model": model} if model else {})})
         self.save_meta()
         self.notify("turn/completed", {"thread_id": self.id, "reason": reason, "duration_ms": dur,
                                        "usage": self.usage, "context_left": self.context_left,
                                        "instructions": self.instructions(),
-                                       **({"delivery": delivery} if delivery else {})})
+                                       **({"delivery": delivery} if delivery else {}),
+                                       **({"model": model} if model else {})})
         self.notify("thread/updated", {"thread": {**self.summary(), "status": "idle"}})
         if reason == "completed":
             self._maybe_ai_title()

@@ -341,8 +341,16 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
 
     read_only = is_read_only(parent, args, adef)
     # 模型：调用时指定 > 子代理定义 > 只读子代理用 roles.explore（D5-9）> 主会话的模型
-    model = str(args.get("model") or adef.model or "").strip() or \
-        ((parent.config.role_model("explore") or "") if read_only else "") or parent.spec.alias
+    requested = str(args.get("model") or adef.model or "").strip()
+    model_ignored = ""
+    if getattr(parent, "model_lock", None) is not None:
+        # 全力以赴回合：子代理也用本轮锁定的模型。调用方（模型自己）指定的其他模型
+        # 一律忽略——否则它给子代理塞一个便宜模型就绕过了「用户选定这个模型」。
+        if requested and requested != parent.spec.alias:
+            model_ignored = requested
+        model = parent.spec.alias
+    else:
+        model = requested or ((parent.config.role_model("explore") or "") if read_only else "") or parent.spec.alias
     if fork:
         model = fork_model
     use_wt = (not read_only) and (getattr(parent, "_subagent_plan", None) or {}).get(call_id) == "worktree"
@@ -526,9 +534,12 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             "budget": "（子代理因达到花费上限停止）"}.get(reason, "")
     fork_attr = ' fork="true"' if fork else ""
     digest = build_digest(rec, step)
+    lock_note = (f"（本轮已锁定模型 {parent.spec.alias}，忽略了你指定的 model={model_ignored}）"
+                 if model_ignored else "")
     out = (f'<task_result agent="{kind}"{fork_attr} status="{reason}" steps="{step}">\n{final.strip()}\n</task_result>' +
            (f"\n{digest}" if digest else "") +
-           (f"\n{note}" if note else "") + (f"\n{wt_note}" if wt_note else ""))
+           (f"\n{note}" if note else "") + (f"\n{wt_note}" if wt_note else "") +
+           (f"\n{lock_note}" if lock_note else ""))
     return out, ok, rec
 
 

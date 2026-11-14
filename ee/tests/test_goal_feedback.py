@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from typing import cast
+
 
 from ee.core import goal as goal_mod
 from ee.core.goal import Verdict
@@ -56,7 +58,7 @@ def _run_goal_with(monkeypatch, failure_output: str, command: str, max_rounds: i
     th = _FakeThread()
     import asyncio
     # 鸭子类型的替身：这里只验「判据输出怎么拼进模型输入」，不建真 Thread / Session
-    asyncio.run(Thread._consume_goal(th, "把 parse_date 的时区 bug 修好", None,  # type: ignore[arg-type]
+    asyncio.run(Thread._consume_goal(cast(Thread, th), "把 parse_date 的时区 bug 修好", None,
                                      {"command": command, "max_rounds": max_rounds}))
     return th.session.inputs
 
@@ -90,7 +92,7 @@ def test_goal_zero_turns_when_already_met(monkeypatch):
     import asyncio
 
     th = _FakeThread()
-    reason = asyncio.run(Thread._consume_goal(th, "随便", None,  # type: ignore[arg-type]
+    reason = asyncio.run(Thread._consume_goal(cast(Thread, th), "随便", None,
                                               {"command": "pytest -q", "max_rounds": 3}))
     assert reason == "met"
     assert th.session.inputs == [], f"判据已成立却跑了模型回合：{th.session.inputs}"

@@ -119,6 +119,9 @@ class Session:
         self._client_factory = client_factory
         self._client = None
         self.spec = config.resolve_model(model)
+        # 本轮模型绑定（全力以赴）：非 None 时，角色配置与子代理都不能换模型。
+        # 与 `mode` 一样，它是**回合级**的临时状态，不改 config、不落盘。
+        self.model_lock: dict | None = None
         # 精简模式 full / lean：会话开始时定下（恢复会话时沿用会话记下的），之后切模型也不变
         self.agent_profile = agent if agent in AGENT_PROFILES else agent_profile(config)
         # 指挥会话（D6-1）：子会话拿到的工具表里没有 thread_*（它不能再建子会话）；
@@ -509,7 +512,13 @@ class Session:
         return self._turn_role or ("plan" if self.policy.mode == "plan" else None)
 
     def role_spec(self, role: str | None):
-        """某个用途实际用的模型（没配 / 配错 → 主模型）。"""
+        """某个用途实际用的模型（没配 / 配错 → 主模型）。
+
+        本轮锁定了模型（全力以赴）时，任何用途都返回主模型：用户选的是「用这个模型
+        完成这个任务」，压缩/A-B 评审/标题都不该偷偷换成另一个。
+        """
+        if self.model_lock is not None:
+            return self.spec
         name = self.config.role_model(role) if role else None
         if not name or name == self.spec.alias:
             return self.spec
@@ -517,6 +526,39 @@ class Session:
             return self.config.resolve_model(name)
         except ValueError:
             return self.spec
+
+    def lock_model(self) -> dict:
+        """锁定本轮的模型身份（provider / 端点 / 实际 model id）。
+
+        锁的是**身份**，不是采样参数：候选仍可按温度阶梯产生差异（那是同一模型的不同采样），
+        但角色配置（roles.compact / roles.allout）与子代理的 `model` 参数在本轮一律不生效。
+        """
+        spec = self.spec
+        self.model_lock = {"alias": spec.alias, "provider": spec.provider, "model": spec.model,
+                           "base_url": spec.base_url, "api_key_env": spec.api_key_env}
+        return dict(self.model_lock)
+
+    def unlock_model(self) -> None:
+        self.model_lock = None
+
+    def model_state(self) -> dict:
+        """本轮实际用的模型与推理档位（含服务端降级情况），供界面/小结展示。"""
+        spec = self.role_spec(None)
+        degraded = False
+        c = self._client
+        if c is not None:
+            try:
+                # QuirkState.data 是 {base_url|model: {no_reasoning_effort: True, ...}}；
+                # 直接读 .data 而不是 .get()（后者会 setdefault 写进一个空条目）。
+                qs = getattr(c, "state", None)
+                data = (getattr(qs, "data", {}) or {}).get(getattr(c, "key", ""), {}) or {}
+                degraded = bool(data.get("no_reasoning_effort"))
+            except Exception:  # noqa: BLE001  读数只是为了展示，绝不影响回合
+                degraded = False
+        support = self.effort_support()
+        return {"alias": spec.alias, "provider": spec.provider, "model": spec.model,
+                "effort": self.effort, "effort_supported": bool(support.get("effort")),
+                "effort_degraded": degraded, "locked": self.model_lock is not None}
 
     def role_client(self, spec) -> ChatClient:
         """按用途取模型客户端（压缩 / 标题 / 审查）。同模型直接复用主客户端。

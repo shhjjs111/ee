@@ -824,6 +824,15 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
   if (u.reasoning) bits.push(`推理 ${u.reasoning.toLocaleString()} tokens`);
   if (u.pruned) bits.push(`修剪省 ~${u.pruned.toLocaleString()} tokens`);
   if (u.cost !== undefined && u.cost !== null) bits.push(`累计 ${u.currency ?? ""}${u.cost.toFixed(4)}`);
+  // 全力以赴的模型绑定：把"到底用了哪个模型、哪一档"写出来。用户选了模型，
+  // 就不该只从设置页推断这次到底跑的是谁；档位被服务端降级时也要说清。
+  if (item.model?.alias) {
+    const m = item.model;
+    let s = `模型 ${m.alias}`;
+    if (m.effort_supported && m.effort) s += ` · 强度 ${m.effort}`;
+    if (m.effort_degraded) s += "（服务端不支持该档，已降级）";
+    bits.push(s);
+  }
   const models = Object.entries(u.by_model ?? {});
   const tip =
     models.length > 1

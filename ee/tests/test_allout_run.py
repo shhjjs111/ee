@@ -316,25 +316,43 @@ def test_probe_goal_denied_degrades_without_judge(ee_home, workspace, monkeypatc
     assert any("没有确认" in x for x in notices), notices
 
 
-def test_plan_allout_applies_effort_on_new_session(ee_home, workspace, monkeypatch):
-    """开了全力以赴，新会话必须真的切到推导出的最高强度，而不是只写在文案里。"""
+def test_model_binding_raises_effort_for_existing_session(ee_home, workspace):
+    """全力以赴回合：**已有会话**也提到该模型最高档，并在收尾还原（不写 meta）。
+
+    老实现只在新会话提档，于是「在旧会话里遇到难题再开火力」恰好享受不到这项能力
+    （2026-11 设计评审）。新实现把档位限定在本轮：进来时的档位记下来，finally 还原。
+    """
+    from ee.core.allout import max_effort
+
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    s.turns = 5                                     # 模拟已经有历史的会话
+    before = s.effort
+    info = th._bind_turn_model(s)
+    assert s.effort == max_effort(s.profile), "已有会话也要提到最高可用档"
+    assert s.model_lock is not None
+    assert th.meta.get("effort") != s.effort, "档位不能写进会话元数据（只限本轮）"
+    th._restore_turn_model(s, info)
+    assert s.effort == before and s.model_lock is None
+
+
+def test_plan_allout_does_not_touch_effort(ee_home, workspace, monkeypatch):
+    """推导层不再改会话：模型/档位绑定由回合级 _bind_turn_model 负责。"""
     import ee.core.allout as A
 
     th = _thread(ee_home, workspace)
-    th.ensure_session()
+    s = th.ensure_session()
+    before = s.effort
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
         candidates=1, repair_rounds=1, max_rounds=2, effort="high", max_steps=50,
         temperature_ladder=(0.0,), verified=True, reasons=(), degradations=()))
     asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
                                 {"command": "pytest -q", "max_rounds": 3}))
-    from ee.core import reasoning as RZ
-    want = RZ.canonical(th.session.profile, "high")   # 档案可能把 high 映射成 max
-    assert th.session.effort == want, "新会话必须切到推导出的最高强度（按档案规整后）"
-    assert th.meta.get("effort") == want
+    assert s.effort == before, "推导不应改会话状态（绑定在 _bind_turn_model）"
 
 
 def test_plan_allout_leaves_used_session_effort_alone(ee_home, workspace, monkeypatch):
-    """已有会话中途换档会断前缀缓存（effort_switch），保持原档不动。"""
+    """推导层保持原档不动（绑定与还原由回合级方法负责）。"""
     import ee.core.allout as A
 
     th = _thread(ee_home, workspace)
@@ -351,19 +369,21 @@ def test_plan_allout_leaves_used_session_effort_alone(ee_home, workspace, monkey
     assert th.meta.get("effort") is None
 
 
-def test_plan_allout_degraded_path_also_maxes_effort(ee_home, workspace):
-    """没有判据的降级路径（不走 _run_allout）也要拉满：用户开了全力以赴就该拿到最高强度。"""
-    from ee.core import reasoning as RZ
+def test_degraded_path_also_gets_max_effort(ee_home, workspace):
+    """没有判据的降级路径（不走 _run_allout）：绑定发生在 _consume 开头，同样拉满。
+
+    这里只验绑定本身——降级路径共用同一个 `_bind_turn_model`（见 threads._consume）。
+    """
     from ee.core.allout import max_effort
 
     th = _thread(ee_home, workspace)
-    th.ensure_session()
-    lv = max_effort(th.session.profile)
-    assert lv, "测试环境的默认模型档案应支持调节强度"
-    asyncio.run(th._plan_allout({"enabled": True, "candidates": 3}, None))
-    want = RZ.canonical(th.session.profile, lv)
-    assert th.session.effort == want
-    assert th.meta.get("effort") == want
+    s = th.ensure_session()
+    assert max_effort(s.profile), "测试环境的默认模型档案应支持调节强度"
+    info = th._bind_turn_model(s)
+    try:
+        assert s.effort == max_effort(s.profile)
+    finally:
+        th._restore_turn_model(s, info)
 
 
 def test_candidate_ok_requires_met_and_not_regressed():

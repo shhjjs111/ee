@@ -114,12 +114,25 @@ export type DeliveryInfo = {
   apply?: { patch_sha?: string; mismatches?: unknown[]; expected?: { ok?: boolean; reason?: string; uncovered?: string[] } };
 };
 
+/** 本轮实际用的模型与推理档位（全力以赴的模型绑定才会带；与模型列表里的 ModelInfo 不同）。 */
+export type RunModelInfo = {
+  alias?: string;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  effort_supported?: boolean;
+  /** 服务端拒了这个参数、真实降级了（4xx 后回退），界面要如实说 */
+  effort_degraded?: boolean;
+  locked?: boolean;
+};
+
 export type TurnEndItem = ItemBase & {
   type: "turn_end";
   reason: string;
   duration_ms: number;
   usage: Usage;
   delivery?: DeliveryInfo;
+  model?: RunModelInfo;
 };
 
 export type Item = UserItem | AssistantItem | ToolItem | ApprovalItem | QuestionItem | PlanItem | NoticeItem | ErrorItem | TurnEndItem;
