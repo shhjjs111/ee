@@ -587,3 +587,39 @@ describe("重连快照不能覆盖更新的审批/回合状态（P2-4）", () =>
     expect(useApp.getState().details.t1!.status, "已结束的回合被标回 running").toBe("idle");
   });
 });
+
+describe("重连时正在流式输出的条目（P2-4 补洞）", () => {
+  /** 断线重连的窗口里，正在流式输出的那条消息只会有 `item/delta`，不一定有
+   *  `item/updated`。旧快照带回的是「发请求那一刻」的文本，合并时若按条目整体
+   *  采用快照，窗口内到达的那一段就被抹掉了——用户看到回答中途丢一段。 */
+  it("窗口内到达的流式增量不能被旧快照抹掉", async () => {
+    const f = fakeRpc();
+    useApp.setState({
+      rpc: f.rpc,
+      activeThreadId: "t1",
+      activeWorkspace: "/w",
+      details: {
+        t1: { ...detail("t1", "/w"), status: "running",
+          items: [{ id: "a1", type: "assistant", text: "已完成", streaming: true }] },
+      },
+      conn: "open",
+    } as any);
+    void useApp.getState().init(f.rpc);
+    f.emitState("open");
+    f.emitState("closed");
+    f.emitState("open");
+    const get = f.calls.find((c) => c.method === "thread/get")!;
+
+    f.emitNotif("item/delta", { thread_id: "t1", item_id: "a1", field: "text", delta: "，正在写" });
+
+    get.resolve({
+      thread: { ...detail("t1", "/w"), status: "running",
+        items: [{ id: "a1", type: "assistant", text: "已完成", streaming: true }] },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const a1 = (useApp.getState().details.t1!.items as any[]).find((x) => x.id === "a1");
+    expect(a1.text, "窗口内到达的流式增量被旧快照抹掉了").toBe("已完成，正在写");
+  });
+});

@@ -242,18 +242,24 @@ export const useApp = create<State & Actions>((set, get) => ({
           // 否则「本地有、快照里没有」的旧条目会被当成新条目往尾部追加，顺序就乱了。
           // 同时不要为此把整份 7MB 历史再拉一遍（本地已有的不用重传）。
           const localCount = get().details[id]?.items?.length ?? 0;
-          const window = { id, touched: new Map<string, unknown>(), removed: new Set<string>(),
+          const window = { id, touched: new Set<string>(), removed: new Set<string>(),
             summary: {} as Partial<ThreadSummary> };
           snapshotWindow = window;
           rpc.call("thread/get", { thread_id: id, tail: Math.max(FIRST_PAGE, localCount + 40) })
-            .then((r) => useApp.setState((st) => {
+            .then((r) => {
+              // 先把缓冲的 delta 落盘：合并时看到的本地版本才包含窗口内最后一段流式文本
+              deltaBuf.flush();
+              useApp.setState((st) => {
               const fresh = r.thread as ThreadDetail;
               const cur = st.details[id];
+              const localById = new Map<string, any>(
+                (cur?.items ?? []).map((x: { id: string }) => [x.id, x]),
+              );
               // 1) 窗口内被删掉的条目：旧快照里还有，不能复活
               const items = fresh.items
                 .filter((f: { id: string }) => !window.removed.has(f.id))
-                // 2) 窗口内被更新过的条目：以本地版本为准（审批结果 / 工具输出可能已经变了）
-                .map((f: { id: string }) => (window.touched.get(f.id) as any) ?? f);
+                // 2) 窗口内收到过事件（更新/流式增量）的条目：以本地版本为准
+                .map((f: { id: string }) => (window.touched.has(f.id) ? (localById.get(f.id) ?? f) : f));
               // 3) 只保留「快照里没有、且发请求时本地也没有」的条目——
               // 那是快照生成之后才到达的新内容，不能被旧快照抹掉。
               const keep = (cur?.items ?? []).filter(
@@ -265,7 +271,8 @@ export const useApp = create<State & Actions>((set, get) => ({
               // 别让重新打开后误以为已经到头顶。
               return { details: { ...st.details, [id]: { ...merged, ...window.summary,
                 items_has_more: fresh.items_has_more ?? false } } };
-            }))
+              });
+            })
             .catch((e: Error) => get().showToast(`重连后刷新当前对话失败：${e.message}`, "error"))
             .finally(() => {
               if (snapshotWindow === window) snapshotWindow = null;
@@ -1005,7 +1012,7 @@ function forgetThread(id: string) {
  */
 let snapshotWindow: {
   id: string;
-  touched: Map<string, unknown>;   // item id → 窗口内收到的最新条目版本
+  touched: Set<string>;            // 窗口内收到过事件（new/updated/delta）的条目：以本地版本为准
   removed: Set<string>;            // 窗口内被删掉的条目
   summary: Partial<ThreadSummary>; // 窗口内收到的 thread/updated（状态、模式、标题等）
 } | null = null;
@@ -1014,10 +1021,13 @@ let snapshotWindow: {
 function noteSnapshotWindow(method: string, p: any): void {
   const w = snapshotWindow;
   if (!w) return;
-  if (method === "item/started" || method === "item/updated") {
-    if (p?.thread_id !== w.id || !p?.item?.id) return;
-    w.removed.delete(p.item.id);
-    w.touched.set(p.item.id, p.item);
+  if (method === "item/started" || method === "item/updated" || method === "item/delta") {
+    // delta 也算：流式输出的那条消息在窗口里可能只收到 delta（不一定有 item/updated），
+    // 不记下来，合并时就会用快照里的旧文本把这一段抹掉。
+    if (p?.thread_id !== w.id || !(p?.item?.id ?? p?.item_id)) return;
+    const id = String(p.item?.id ?? p.item_id);
+    w.removed.delete(id);
+    w.touched.add(id);
     return;
   }
   if (method === "item/removed") {
