@@ -98,3 +98,23 @@ export function turnEndText(reason: string | null | undefined): string {
 export function cardText(reason: string | null | undefined): string {
   return isStopReason(reason) ? CARD_TEXT[reason] : "空闲";
 }
+
+/** 交付结论的文案。比 reason 更具体：同样是 exhausted，"复验没通过"和"验收依据变了"
+ *  是两件不同的事，用户要据此决定是接着修还是先确认验收标准。 */
+export function deliveryText(d: { status?: string } | undefined | null): string {
+  if (!d) return "";
+  switch (d.status) {
+    case "verified":
+      return "交付已复验";
+    case "failed":
+      return "交付复验失败";
+    case "needs_review":
+      return "验收依据发生变化";
+    case "failed_apply":
+      return "补丁未能写回";
+    case "interrupted":
+      return "验证被中断";
+    default:
+      return "";
+  }
+}

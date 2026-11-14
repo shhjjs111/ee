@@ -597,8 +597,7 @@ def test_discarded_repair_is_reverted_in_workspace(ee_home, workspace, monkeypat
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1), _Verdict(False, 1)])
     _stub_turn(th, ["completed", "completed", "completed"])
 
-    trees = iter([f"tree-{i}" for i in range(10)])
-    th.session.disk_capture = lambda: next(trees)
+    th.session.disk_capture = lambda: "tree-stable"      # 文件没变时 capture 返回同一个 tree
     reverted: list[str | None] = []
     monkeypatch.setattr(th, "_revert_repair", lambda s, tree: reverted.append(tree) or ["a.txt"])
     notes = []
@@ -620,8 +619,7 @@ def test_kept_repair_is_not_reverted(ee_home, workspace, monkeypatch):
     th.ensure_session()
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(True, 12)])
     _stub_turn(th, ["completed", "completed"])
-    trees = iter([f"tree-{i}" for i in range(10)])
-    th.session.disk_capture = lambda: next(trees)
+    th.session.disk_capture = lambda: "tree-stable"
     reverted: list[object] = []
     monkeypatch.setattr(th, "_revert_repair", lambda s, tree: reverted.append(tree) or ["a.txt"])
     th.notify = lambda m, p: None
@@ -685,8 +683,12 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
 
     monkeypatch.setattr(th, "_allout_fanout", fake_fanout)
     monkeypatch.setattr(th, "_allout_rank", fake_rank)
-    monkeypatch.setattr(A, "apply_winner", lambda *a, **k: {"applied": False, "files": 2,
-                                                           "error": "补丁应用失败（主目录未改动）：冲突"})
+    th.session.disk_capture = lambda: "tree-stable"
+    monkeypatch.setattr(A, "candidate_patch", lambda *a, **k: {
+        "ok": True, "patch": b"diff --git a/a.txt b/a.txt\n", "paths": ["a.txt"],
+        "sha": "deadbeef", "error": ""})
+    monkeypatch.setattr(A, "apply_patch", lambda *a, **k: {"applied": False, "files": 1,
+                                                          "error": "补丁应用失败（主目录未改动）：冲突"})
     notes = []
     th.notify = lambda m, p: notes.append((m, p))
 

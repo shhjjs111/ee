@@ -254,15 +254,17 @@ def candidate_deny_rules(main_cwd) -> list[str]:
 # ---------------------------------------------------------------- 写回（补丁方式，不要求主目录干净）
 
 
-def apply_winner(candidate_dir, agent_base: str, main_cwd) -> dict:
-    """把候选的改动以补丁形式应用到主目录。**不要求主目录干净**（v1 §7.3 已实测）。
+def candidate_patch(candidate_dir, agent_base: str) -> dict:
+    """把候选的改动**固定成一份补丁**：字节 + 涉及路径 + sha。
 
-    为什么不走 `worktree.merge`：它要求主目录无未提交改动（worktree.py:455），
-    而全自动场景下用户刚改完代码时主目录必然是脏的。`git diff agent_base..HEAD`
-    只含候选自己的改动（基线提交已含主目录的脏改动），因此能干净应用并保留
-    用户未提交的工作。失败时不覆盖主目录，报告并保留 worktree。
+    为什么要固定：写回、预期状态构造、反向检查必须用同一份字节。如果各自去算
+    `git diff agent_base..HEAD`，中间的 commit/工作区变化会让三者对不上。
+
+    `--no-renames`：重命名按「删除旧文件 + 新增新文件」表达。这样路径列表天然包含两侧，
+    预期状态比对与 `git apply` 的语义也一致（不用自己解析 rename from/to）。
+    路径用 `--name-only -z` 取，不从补丁文本解析：带空格或非 ASCII 的路径会被 git 加引号，
+    自己解析迟早出错。
     """
-    import tempfile
     from pathlib import Path
 
     from ee.core import gitinfo
@@ -270,31 +272,68 @@ def apply_winner(candidate_dir, agent_base: str, main_cwd) -> dict:
     from ee.tools.textdecode import smart_decode
 
     exe = gitinfo.git_exe() or "git"
-    cdir, mdir = str(Path(candidate_dir)), str(Path(main_cwd))
-    code, patch, err = run_capture([exe, "-c", "core.quotepath=false", "diff", "--binary", "--no-color",
-                                    "--no-ext-diff", f"{agent_base}..HEAD"], cwd=cdir, timeout=120)
+    cdir = str(Path(candidate_dir))
+    base = [exe, "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--no-renames"]
+    code, patch, err = run_capture([*base, "--binary", f"{agent_base}..HEAD"], cwd=cdir, timeout=120)
     if code != 0:
-        return {"applied": False, "files": 0,
+        return {"ok": False, "patch": b"", "paths": [], "sha": "",
                 "error": "读取候选改动失败：" + (smart_decode(err or b"")[:500] or f"exit {code}")}
     if not patch.strip():
-        return {"applied": False, "files": 0, "error": "候选没有改动（agent_base..HEAD 为空）"}
-    files = sum(1 for line in patch.split(b"\n") if line.startswith(b"diff --git "))
+        return {"ok": False, "patch": b"", "paths": [], "sha": "",
+                "error": "候选没有改动（agent_base..HEAD 为空）"}
+    code, out, err = run_capture([*base, "--name-only", "-z", f"{agent_base}..HEAD"], cwd=cdir, timeout=120)
+    if code != 0:
+        return {"ok": False, "patch": b"", "paths": [], "sha": "",
+                "error": "读取候选改动路径失败：" + (smart_decode(err or b"")[:500] or f"exit {code}")}
+    paths = [p for p in out.decode("utf-8", "replace").split("\0") if p]
+    if not paths:
+        return {"ok": False, "patch": b"", "paths": [], "sha": "", "error": "候选改动没有涉及任何文件"}
+    import hashlib
+    return {"ok": True, "patch": patch, "paths": paths, "sha": hashlib.sha256(patch).hexdigest()[:16],
+            "error": ""}
+
+
+def apply_patch(main_cwd, patch: bytes) -> dict:
+    """把固定补丁应用到主目录。**不要求主目录干净**（v1 §7.3 已实测）。
+
+    为什么不走 `worktree.merge`：它要求主目录无未提交改动（worktree.py:455），
+    而全自动场景下用户刚改完代码时主目录必然是脏的。`git diff agent_base..HEAD`
+    只含候选自己的改动（基线提交已含主目录的脏改动），因此能干净应用并保留
+    用户未提交的工作。`git apply` 默认全有或全无：失败时主目录一个文件都不动。
+    """
+    import os as _os
+    import tempfile
+    from pathlib import Path
+
+    from ee.core import gitinfo
+    from ee.proc import run_capture
+    from ee.tools.textdecode import smart_decode
+
+    if not patch:
+        return {"applied": False, "error": "补丁为空"}
+    howmany = sum(1 for line in patch.split(b"\n") if line.startswith(b"diff --git "))
+    exe = gitinfo.git_exe() or "git"
     fd, tmp = tempfile.mkstemp(suffix=".patch")
     try:
-        import os as _os
-
         with _os.fdopen(fd, "wb") as f:
             f.write(patch)
-        code, _out, err = run_capture([exe, "apply", "--binary", "--whitespace=nowarn", tmp.replace("\\", "/")],
-                                      cwd=mdir, timeout=120)
+        code, _out, err = run_capture([exe, "apply", "--binary", "--whitespace=nowarn",
+                                       tmp.replace("\\", "/")], cwd=str(Path(main_cwd)), timeout=120)
     finally:
         try:
-            import os as _os
-
             _os.unlink(tmp)
         except OSError:
             pass
     if code != 0:
-        return {"applied": False, "files": files,
+        return {"applied": False, "files": howmany,
                 "error": "补丁应用失败（主目录未改动）：" + (smart_decode(err or b"")[:500] or f"exit {code}")}
-    return {"applied": True, "files": files, "error": ""}
+    return {"applied": True, "files": howmany, "error": ""}
+
+
+def apply_winner(candidate_dir, agent_base: str, main_cwd) -> dict:
+    """兼容包装：算补丁 → 应用。返回值额外带 `patch_sha` / `paths`，便于上层核对交付内容。"""
+    got = candidate_patch(candidate_dir, agent_base)
+    if not got["ok"]:
+        return {"applied": False, "files": 0, "error": got["error"], "patch_sha": "", "paths": []}
+    res = apply_patch(main_cwd, got["patch"])
+    return {**res, "patch_sha": got["sha"], "paths": list(got["paths"])}

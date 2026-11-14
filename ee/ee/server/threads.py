@@ -250,6 +250,10 @@ class Thread:
         self._pending_messages = messages or []
         self.task: asyncio.Task | None = None
         self.approvals: dict[str, tuple[asyncio.Future, dict]] = {}
+        # 交付验证（全力以赴）：本轮起始的验收依据指纹、最近判据记录、交付结论
+        self._accept0: dict | None = None
+        self._judge_recent: dict[str, dict] = {}
+        self._delivery: dict | None = None
         self.cur_assistant: dict | None = None
         self.plan_item: dict | None = None
         self.turn_started_at = 0.0
@@ -755,6 +759,7 @@ class Thread:
         # 这个外层回合内部会调几次 s.run_turn（Goal / 全力以赴），每次都会往
         # s.turn_trees 追加一条。收尾时再折叠成一条（见 _collapse_turn_trees）。
         trees0 = len(getattr(s, "turn_trees", []) or [])
+        self._delivery = None            # 每回合重置：上一轮的交付结论不能带到这一轮
         self.turn_started_at = time.monotonic()
         self.cur_assistant = None
         self.plan_item = None
@@ -941,6 +946,9 @@ class Thread:
                         min_tests=as_int(goal.get("min_tests") or 1),
                         timeout=as_float(goal.get("timeout") or 300.0))
         pass_to_pass = str(goal.get("pass_to_pass") or "").strip() or None
+        # 交付闸门要单独跑回归命令（未配置 ≠ 通过），所以在这里就把 spec 备好
+        p2p_spec = (GoalSpec(command=pass_to_pass, cwd=str(self.cwd), min_tests=1,
+                             timeout=as_float(goal.get("timeout") or 300.0)) if pass_to_pass else None)
         plan = A.derive(config=s.config.data, profile=s.profile, has_goal=True,
                         max_parallel=as_int((s.config.data.get("subagent") or {}).get("max_parallel") or 3),
                         max_candidates=as_int(allout.get("candidates") or 3))
@@ -948,12 +956,24 @@ class Thread:
         lock = getattr(self, "_allout_judge_lock", None)
         if lock is None:
             lock = self._allout_judge_lock = asyncio.Lock()
+        # 交付闸门要用的状态：本轮起始的验收依据指纹（命令 + conftest/配置），
+        # 以及最近一次目标/回归判据的记录（树一致时能复用，不必为了报告再跑一遍）。
+        from ee.core import acceptance as _acceptance
+        self._accept0 = _acceptance.fingerprint(self.cwd, spec.command)
+        self._judge_recent: dict[str, dict] = {}
 
         async def judge_serial(cwd: str | None = None) -> Verdict:
             sp = spec if cwd is None else GoalSpec(command=spec.command, cwd=cwd,
                                                    min_tests=spec.min_tests, timeout=spec.timeout)
+            # 主工作区的判据：记下运行前后的树。判据命令自己也可能写文件（生成物、快照），
+            # 那样这次结果就不能用来证明"交付状态通过"（见 _delivery_judge 的复用条件）。
+            t0 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
             async with lock:                      # 串行：判据命令本身吃 CPU
                 v = await judge(sp)
+            t1 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
+            if cwd is None:
+                self._judge_recent["target"] = {"verdict": v, "tree": t1,
+                                                "source_unchanged": bool(t0 and t1 and t0 == t1)}
             self.notify("allout_progress", {"thread_id": self.id, "phase": "judge",
                                             "met": bool(v.met), "reason": v.reason,
                                             "tests": v.tests, "cwd": cwd})
@@ -968,8 +988,13 @@ class Thread:
             if not pass_to_pass:
                 raise RuntimeError("pass_to_pass 未设置")
             sp = GoalSpec(command=pass_to_pass, cwd=cwd or spec.cwd, min_tests=1, timeout=spec.timeout)
+            t0 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
             async with lock:
                 v = await judge(sp)
+            t1 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
+            if cwd is None:
+                self._judge_recent["regression"] = {"verdict": v, "tree": t1,
+                                                    "source_unchanged": bool(t0 and t1 and t0 == t1)}
             self.notify("allout_progress", {"thread_id": self.id, "phase": "regression",
                                             "met": bool(v.met), "reason": v.reason,
                                             "tests": v.tests, "cwd": cwd})
@@ -1017,8 +1042,11 @@ class Thread:
                 regressed = True
                 last_fail = reg_fail_verdict(rv)
         if best.met and not regressed:
-            self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "first_try"})
-            return "met"
+            # 首轮就过判据也要过交付闸门：这一轮可能改过测试、也可能刚被外部编辑器改过文件。
+            reason = await self._delivery_gate(s, spec, p2p_spec, source="first_try")
+            if reason == "met":
+                self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "first_try"})
+            return reason
         if getattr(s.budget, "stop_reason", None):
             return "budget"
 
@@ -1058,8 +1086,10 @@ class Thread:
                 # 这次连目标判据都没过（可能是修复把功能改坏了）：下一轮看它的失败输出。
                 last_fail = after
             if best.met and not regressed:
-                self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "repair"})
-                return "met"
+                reason = await self._delivery_gate(s, spec, p2p_spec, source="repair")
+                if reason == "met":
+                    self.notify("allout_progress", {"thread_id": self.id, "phase": "done", "how": "repair"})
+                return reason
             if getattr(s.budget, "stop_reason", None):
                 return "budget"
 
@@ -1071,15 +1101,53 @@ class Thread:
             if passed:
                 winner = await self._allout_rank(passed, text, getattr(best, "output", "") or "")
                 if winner is not None:
-                    res = await asyncio.to_thread(A.apply_winner, winner["cwd"], winner["base"], self.cwd)
+                    # 补丁只算一次：写回、预期状态构造、内容比对必须用同一份字节，
+                    # 否则中间 HEAD/工作区一变，三者就对不上。
+                    patch = await asyncio.to_thread(A.candidate_patch, winner["cwd"], winner["base"])
+                    pre_tree = await asyncio.to_thread(s.disk_capture)
+                    info: dict = {"patch_sha": patch.get("sha", ""), "paths": list(patch.get("paths") or []),
+                                  "pre_tree": pre_tree, "expected": {}, "mismatches": [], "result": {}}
+                    if not patch.get("ok"):
+                        info["result"] = {"applied": False, "error": patch.get("error") or "补丁不可用"}
+                        self._delivery = {"status": "failed", "source": "apply", "target": {},
+                                          "regression": {}, "acceptance": {}, "state": {}, "apply": info}
+                        self.notify("allout_progress", {"thread_id": self.id, "phase": "apply",
+                                                        "winner": winner["id"], "result": info["result"]})
+                        self._add({"type": "notice", "level": "warn",
+                                   "text": "全力以赴：没能取到候选的补丁（" + str(patch.get("error") or "原因未知")
+                                           + "）。候选的改动仍保留在它自己的 worktree 分支上，可以手动对比。"})
+                        return await self._delivery_gate(s, spec, p2p_spec, source="apply", apply_info=info)
+
+                    disk = s.disk()
+                    expected = None
+                    if disk is not None:
+                        from ee.core import delivery as D
+                        try:
+                            expected = await asyncio.to_thread(
+                                D.build_expected, disk, pre_tree, patch["patch"], patch["paths"], self.cwd)
+                        except Exception as e:  # noqa: BLE001  构造失败要如实报告，不能拖垮回合
+                            log.warning("全力以赴：构造预期交付状态失败", exc_info=True)
+                            info["expected"] = {"ok": False, "reason": f"构造预期状态异常：{type(e).__name__}: {e}"}
+                        else:
+                            info["expected"] = expected.as_dict()
+
+                    res = await asyncio.to_thread(A.apply_patch, self.cwd, patch["patch"])
+                    info["result"] = res
                     self.notify("allout_progress", {"thread_id": self.id, "phase": "apply",
                                                     "winner": winner["id"], "result": res})
                     if res.get("applied"):
+                        applied_tree = await asyncio.to_thread(s.disk_capture)
                         await asyncio.to_thread(s.refresh_git)
-                        tree = await asyncio.to_thread(s.disk_capture)
-                        if tree:
-                            self._mark_tree_after(tree)
-                        return "met"
+                        if applied_tree:
+                            self._mark_tree_after(applied_tree)
+                        # 内容比对：写回的是不是这份补丁、有没有顺带改动别的文件
+                        if expected is not None and expected.ok:
+                            from ee.core import delivery as D
+                            info["mismatches"] = await asyncio.to_thread(
+                                D.compare, expected, self.cwd, patch["paths"])
+                        reason = await self._delivery_gate(s, spec, p2p_spec, source="apply",
+                                                           apply_info=info, delivered_tree=applied_tree)
+                        return reason
                     # 写回失败（git apply 是全有或全无，主目录一个文件都没动）：回合会如实
                     # 报 exhausted，但状态文字在收尾时就被清掉了，用户看不到原因与善后路径。
                     # 候选的改动仍提交在它自己的分支上，所以要明确告诉他去合并或对比。
@@ -1089,6 +1157,121 @@ class Thread:
                                        + "）。候选的改动仍保留在它自己的 worktree 分支上，"
                                          "可以对比后手动合并，或改完冲突再试一次。"})
         return "exhausted" if (not best.met or regressed) else "met"
+
+    async def _delivery_judge(self, s, spec, key: str) -> dict:
+        """跑一次「交付验收」判据，能复用就复用。
+
+        复用必须同时满足（少一条都会把"某次跑过"当成"交付状态通过"）：
+        - 那次判据运行**前后**源码树相等（命令自己写文件 → 结果不可用）；
+        - 当前树 == 那次判据结束时的树；
+        - 结果完整结束（非超时、非取消）。
+        验收依据的一致性由 `_delivery_gate` 单独判（见 acceptance.fingerprint）。
+        """
+        from ee.core.goal import judge
+
+        rec = (getattr(self, "_judge_recent", {}) or {}).get(key) or {}
+        now = await asyncio.to_thread(s.disk_capture)
+        v = rec.get("verdict")
+        if (v is not None and rec.get("source_unchanged") and now and rec.get("tree") == now
+                and not bool(getattr(v, "timed_out", False))):
+            return {"ran": True, "reused": True, "met": bool(v.met), "tests": v.tests,
+                    "reason": v.reason, "cwd": str(spec.cwd or self.cwd), "tree": now,
+                    "source_unchanged": True, "timed_out": False}
+
+        before = await asyncio.to_thread(s.disk_capture)
+        v = await judge(spec)                 # 可取消：用户点停止时子进程会被杀掉
+        after = await asyncio.to_thread(s.disk_capture)
+        return {"ran": True, "reused": False, "met": bool(v.met), "tests": v.tests,
+                "reason": v.reason, "cwd": str(spec.cwd or self.cwd), "tree": after,
+                "source_unchanged": bool(before and after and before == after),
+                "timed_out": bool(getattr(v, "timed_out", False))}
+
+    async def _delivery_gate(self, s, spec, p2p_spec, *, source: str,
+                             apply_info: dict | None = None,
+                             delivered_tree: str | None = None) -> str:
+        """所有 `met` 出口的唯一闸门：确认**用户实际拿到的状态**通过验收。
+
+        返回 "met" 或 "exhausted"；后者时 `self._delivery` 里写明是哪一环没过、
+        证据是什么（界面按它显示"交付复验失败 / 验收依据发生变化"，不能显示成"跑满轮次"）。
+        """
+        from ee.core import acceptance
+
+        delivery: dict = {"status": "failed", "source": source,
+                          "target": {}, "regression": {}, "acceptance": {}, "state": {},
+                          "apply": apply_info or {}}
+        self._delivery = delivery
+
+        # 1) 验收依据在本轮里有没有被改过（改断言、改测试配置、改命令都算）
+        now_fp = acceptance.fingerprint(self.cwd, spec.command)
+        adiff = acceptance.diff(getattr(self, "_accept0", {}) or {}, now_fp)
+        if acceptance.changed(getattr(self, "_accept0", {}) or {}, now_fp):
+            delivery["acceptance"] = {"changed": True, "detail": acceptance.describe(adiff), "diff": adiff}
+            delivery["status"] = "needs_review"
+            return "exhausted"
+        delivery["acceptance"] = {"changed": False, "detail": "", "diff": adiff}
+
+        # 2) 交付状态绑定：写回之后工作区又被改过，就不能拿"现在"去验证写回结果
+        if delivered_tree:
+            current = await asyncio.to_thread(s.disk_capture)
+            delivery["state"] = {"delivered_tree": delivered_tree, "before_verify": current}
+            if current and current != delivered_tree:
+                delivery["state"]["changed_after_delivery"] = True
+                delivery["status"] = "failed"
+                return "exhausted"
+
+        # 3) 写回来源必须先证明"用户拿到的是这份补丁"：预期状态构造失败、
+        #    内容比对不一致、或有快照未覆盖的路径，都不能报 met（宁可如实说没验证到）。
+        if source == "apply":
+            ap = delivery.get("apply") or {}
+            exp = ap.get("expected") or {}
+            if not exp.get("ok"):
+                delivery["status"] = "failed"
+                return "exhausted"
+            if ap.get("mismatches") or exp.get("uncovered"):
+                delivery["status"] = "failed"
+                return "exhausted"
+
+        # 3) 目标判据（可复用同一树上的最近结果）
+        try:
+            target = await self._delivery_judge(s, spec, "target")
+        except asyncio.CancelledError:
+            # 用户点停止：判据子进程由 run_command 杀掉；结果不能用，明确标记被中断
+            delivery["status"] = "interrupted"
+            raise
+        delivery["target"] = target
+
+        # 4) 回归命令：未配置 ≠ 通过，单列状态；它若改了源码，目标结果一并作废
+        if p2p_spec is not None:
+            reg = await self._delivery_judge(s, p2p_spec, "regression")
+            delivery["regression"] = reg
+            if not reg.get("source_unchanged"):
+                target["source_unchanged"] = False
+        else:
+            delivery["regression"] = {"ran": False, "reused": False, "met": False, "tests": 0,
+                                      "reason": "未配置回归命令", "cwd": "", "tree": None,
+                                      "source_unchanged": True, "timed_out": False,
+                                      "status": "unconfigured"}
+
+        # 5) 复验结束时再确认一次源码没变（判据之间互相干扰、外部编辑器都算）
+        end = await asyncio.to_thread(s.disk_capture)
+        delivery["state"] = {**delivery["state"], "after_verify": end}
+        if target.get("tree") and end and target["tree"] != end:
+            delivery["state"]["changed_during_verify"] = True
+            delivery["status"] = "failed"
+            return "exhausted"
+
+        t_ok = bool(target.get("met")) and bool(target.get("source_unchanged"))
+        if p2p_spec is not None:
+            r_ok = bool(delivery["regression"].get("met")) and bool(delivery["regression"].get("source_unchanged"))
+            delivery["regression"]["status"] = "met" if r_ok else (
+                "timeout" if delivery["regression"].get("timed_out") else "failed")
+        else:
+            r_ok = True
+        if t_ok and r_ok:
+            delivery["status"] = "verified"
+            return "met"
+        delivery["status"] = "failed"
+        return "exhausted"
 
     def _revert_repair(self, s, tree: str | None) -> list[str] | None:
         """把一轮被丢弃的修复从工作区撤掉（回到 `tree`）。拿不到快照返回 None。
@@ -1106,7 +1289,11 @@ class Thread:
         cur = d.capture()
         if not cur:
             return None
-        paths = d.changed(tree, cur)
+        try:
+            paths = d.changed(tree, cur)
+        except Exception:  # noqa: BLE001  快照失效/git 出错：按"没能回滚"上报，不能崩掉回合
+            log.warning("全力以赴：无法判断这一轮改了什么（回滚跳过）", exc_info=True)
+            return None
         if not paths:
             return []                      # 这一轮确实没改文件：不用动，也算回滚成功
         try:
@@ -1561,11 +1748,16 @@ class Thread:
                 it["status"] = "interrupted"
                 self._update(it)
         dur = as_int((time.monotonic() - self.turn_started_at) * 1000)
-        self._add({"type": "turn_end", "reason": reason, "duration_ms": dur, "usage": self._usage_snapshot()})
+        # 交付结论（全力以赴才有）：界面按它显示「交付复验失败 / 验收依据发生变化」，
+        # 不能只显示「跑满轮次未达成」——那是另一个原因。
+        delivery = getattr(self, "_delivery", None)
+        self._add({"type": "turn_end", "reason": reason, "duration_ms": dur,
+                   "usage": self._usage_snapshot(), **({"delivery": delivery} if delivery else {})})
         self.save_meta()
         self.notify("turn/completed", {"thread_id": self.id, "reason": reason, "duration_ms": dur,
                                        "usage": self.usage, "context_left": self.context_left,
-                                       "instructions": self.instructions()})
+                                       "instructions": self.instructions(),
+                                       **({"delivery": delivery} if delivery else {})})
         self.notify("thread/updated", {"thread": {**self.summary(), "status": "idle"}})
         if reason == "completed":
             self._maybe_ai_title()

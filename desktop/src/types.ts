@@ -102,7 +102,25 @@ export type PlanEntry = { content: string; status: "pending" | "in_progress" | "
 export type PlanItem = ItemBase & { type: "plan"; items: PlanEntry[] };
 export type NoticeItem = ItemBase & { type: "notice"; text: string; level: "info" | "warn" };
 export type ErrorItem = ItemBase & { type: "error"; message: string };
-export type TurnEndItem = ItemBase & { type: "turn_end"; reason: string; duration_ms: number; usage: Usage };
+/** 交付验证结论（全力以赴才有）。界面按 status 显示原因，不能一律显示成"跑满轮次"。 */
+export type DeliveryInfo = {
+  /** verified = 交付状态已通过验收；failed = 复验没通过；needs_review = 验收依据变了；interrupted = 验证被中断 */
+  status: "verified" | "failed" | "needs_review" | "failed_apply" | "interrupted" | string;
+  source?: "first_try" | "repair" | "apply" | string;
+  target?: { ran?: boolean; met?: boolean; tests?: number | null; reason?: string; cwd?: string; reused?: boolean; source_unchanged?: boolean };
+  regression?: { status?: string; ran?: boolean; met?: boolean; tests?: number | null; reason?: string; cwd?: string };
+  acceptance?: { changed?: boolean; detail?: string };
+  state?: { changed_after_delivery?: boolean; changed_during_verify?: boolean };
+  apply?: { patch_sha?: string; mismatches?: unknown[]; expected?: { ok?: boolean; reason?: string; uncovered?: string[] } };
+};
+
+export type TurnEndItem = ItemBase & {
+  type: "turn_end";
+  reason: string;
+  duration_ms: number;
+  usage: Usage;
+  delivery?: DeliveryInfo;
+};
 
 export type Item = UserItem | AssistantItem | ToolItem | ApprovalItem | QuestionItem | PlanItem | NoticeItem | ErrorItem | TurnEndItem;
 

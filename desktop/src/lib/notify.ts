@@ -1,7 +1,7 @@
 // 桌面通知（D4-5）：根据后端事件决定要不要弹 Windows 通知、弹什么。纯函数，便于测试。
 // 真正弹不弹（窗口在不在前台、设置是 从不/不在前台/总是）由 Electron 主进程判断。
 import type { Item, ThreadStatus } from "../types";
-import { NOTIFY_HEAD, NOTIFY_KIND, isStopReason } from "./terminal";
+import { NOTIFY_HEAD, NOTIFY_KIND, deliveryText, isStopReason } from "./terminal";
 
 export type NotifyKind = "done" | "error" | "loop" | "approval";
 export type NotifyMsg = { kind: NotifyKind; threadId: string; title: string; body: string };
@@ -34,10 +34,16 @@ export function lastAssistantSnippet(items: Item[] | undefined, max = 120): stri
 }
 
 /** turn/completed：interrupted（用户自己停的）不通知；其他按原因给标题。 */
-export function turnCompletedNotice(p: { thread_id: string; reason: string }, threadTitle: string, items?: Item[]): NotifyMsg | null {
+export function turnCompletedNotice(p: { thread_id: string; reason: string; delivery?: { status?: string } },
+                                    threadTitle: string, items?: Item[]): NotifyMsg | null {
   const r = reasonInfo(p.reason);
   if (!r) return null;
   const name = threadTitle || "对话";
+  // 交付复验失败 / 验收依据变化：通知正文要说清是哪一种，不能只报"回合结束"。
+  const dtext = deliveryText(p.delivery);
+  if (dtext && p.delivery?.status !== "verified") {
+    return { kind: "error", threadId: p.thread_id, title: `${name} · ${dtext}`, body: "点开查看复验结果与恢复入口" };
+  }
   const snippet = r.kind === "done" ? lastAssistantSnippet(items) : "";
   let body = snippet;
   if (!body && r.kind === "error") {
