@@ -1493,6 +1493,14 @@ def _shell_path_args(command: str) -> list[str]:
                 # 只有命令名位置带分隔符时（./script.sh）才当路径。
                 if os.sep not in t and "/" not in t:
                     continue
+            # git 的 `rev:path` 语法（`git show HEAD:.env` / `git diff HEAD~1:.env` /
+            # `git show :.env`）把路径藏在冒号后面，只看整词会漏掉被 .eeignore 排除的文件。
+            # 拆出后半再判一次：多算一个候选只会让判断更保守（Windows 盘符 C:xxx 不拆，
+            # 那是路径本身而不是 rev:path）。
+            if ":" in t and not (len(t) >= 2 and t[1] == ":"):
+                tail = t.rsplit(":", 1)[1].strip("\"'")
+                if tail and (os.sep in tail or "/" in tail or "." in tail):
+                    out.append(tail)
             out.append(t)
     return out
 

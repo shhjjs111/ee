@@ -198,3 +198,20 @@ def test_screenshot_is_a_read_tool(tmp_path):
     assert "screenshot" in READ_TOOLS
     for mode in ("default", "read-only", "auto"):
         assert pol(tmp_path, mode).check("screenshot", {}).action == "allow", mode
+
+
+def test_eeignore_blocks_git_revision_path_syntax(tmp_path):
+    """`git show HEAD:.env` 把路径藏在冒号后面，只看整词会漏（2026-11 审计加固）。
+
+    拒绝文案一直写着「也不要用 shell 绕过」；`rev:path` 是最常见的漏法之一，
+    拆出冒号后半再判一次，代价只是多算一个候选（方向更保守）。
+    """
+    from ee.core.permissions import PermissionPolicy
+    (tmp_path / ".eeignore").write_text(".env\n", encoding="utf-8")
+    p = PermissionPolicy(mode="default", workspace=tmp_path)
+    for c in ["git show HEAD:.env", "git diff HEAD~1:.env", "git show :.env"]:
+        assert p.check("shell", {"command": c}).action != "allow", f"漏拦：{c}"
+    # 无关命令不受影响（这里只验 .eeignore 的误拦：别的规则要问是另一码事）
+    for c in ["ls", "rg foo src"]:
+        d = p.check("shell", {"command": c})
+        assert d.action == "allow" and ".eeignore" not in d.reason, f"误拦：{c} → {d.action} {d.reason}"
