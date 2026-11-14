@@ -616,3 +616,40 @@ def test_turn_start_and_undo_share_workspace_lock(ee_home, workspace):
         await undo
         await started
     asyncio.run(go())
+
+
+@needs_git
+def test_undo_after_multi_round_goal_reverts_whole_turn(ee_home, workspace, monkeypatch):
+    """Goal 一个回合跑了两轮：/undo 一次就要撤掉整回合改过的所有文件。
+
+    `s.run_turn` 每轮都往 `turn_trees` 追加一条 (before, after)，而用户看到的是一回合
+    一条消息。按条撤销只回滚最后一轮，第一轮写的文件留在工作区；从检查点恢复后
+    `turn_trees` 又会按用户条目重建（一条 = 整回合），两条路径粒度不一致。
+    """
+    import ee.core.goal as G
+
+    script = [_write("c1", "第一轮", "a.txt"), text_chunks("改了 a") + finish("stop"),
+              _write("c2", "第二轮", "b.txt"), text_chunks("又改了 b") + finish("stop")]
+    # 先判后跑：红 → 回合1 → 红 → 回合2 → 绿（max_rounds=3 才容得下两轮修复）
+    verdicts = [G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)]
+
+    async def fake_judge(spec, **_kw):
+        return verdicts.pop(0) if verdicts else G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "修好它",
+                                    "goal": {"command": "pytest -q", "max_rounds": 3}})
+        await wait_for(ev, "turn/completed")
+        assert (workspace / "a.txt").exists() and (workspace / "b.txt").exists()
+
+        r = await b.call("thread/undo", {"thread_id": tid})
+        names = {p.replace("\\", "/").rsplit("/", 1)[-1] for p in r["restored"]}
+        assert names == {"a.txt", "b.txt"}, f"只撤回了部分文件：{r['restored']}"
+        assert not (workspace / "a.txt").exists() and not (workspace / "b.txt").exists()
+    asyncio.run(go())

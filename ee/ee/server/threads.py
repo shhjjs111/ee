@@ -752,6 +752,9 @@ class Thread:
         s = self.session
         if s is None:
             raise RuntimeError("会话未初始化")
+        # 这个外层回合内部会调几次 s.run_turn（Goal / 全力以赴），每次都会往
+        # s.turn_trees 追加一条。收尾时再折叠成一条（见 _collapse_turn_trees）。
+        trees0 = len(getattr(s, "turn_trees", []) or [])
         self.turn_started_at = time.monotonic()
         self.cur_assistant = None
         self.plan_item = None
@@ -821,6 +824,10 @@ class Thread:
                 policy = getattr(s, "policy", None)
                 if policy is not None:
                     policy.readonly = False
+                try:
+                    self._collapse_turn_trees(s, trees0)
+                except Exception:  # noqa: BLE001  折叠失败只影响 /undo 粒度，不能拖垮收尾
+                    log.warning("折叠回合快照失败（会话 %s）", self.id, exc_info=True)
             s._turn_role = None
             try:
                 self._finish(reason)
@@ -1611,6 +1618,26 @@ class Thread:
                         it["tree"] = tree
                     self._update(it)
                 break
+
+    def _collapse_turn_trees(self, s, start: int) -> None:
+        """把一个外层回合内部的多次 `s.run_turn` 折叠成一条撤销记录。
+
+        Goal / 全力以赴一个回合会跑多轮，每轮都会往 `s.turn_trees` 追加一条
+        (before, after)。而用户看到的是一回合一条消息，`/undo` 只在 turn_trees 上
+        倒着走**一条**：于是「撤销上一回合」实际只撤掉最后一轮，前面几轮的改动留在
+        工作区，得再点一次；更糟的是从检查点恢复后 `turn_trees` 按用户条目重建
+        （一条 = 整回合），两条路径的粒度就此不一致。
+
+        折叠规则：保留第一条（before = 整个回合开始前的状态），after 用最后一条的。
+        """
+        trees = getattr(s, "turn_trees", None)
+        if not trees or start >= len(trees) - 1:
+            return
+        first, last = trees[start], trees[-1]
+        if not first.get("before"):
+            return
+        del trees[start + 1:]
+        first["after"] = last.get("after")
 
     def _mark_tree_after(self, tree: str) -> None:
         """记下这一回合结束时的磁盘快照。**后来的写法覆盖前面的**。
