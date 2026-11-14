@@ -185,3 +185,32 @@ def test_fork_and_edit_resend_only_return_one_page(ee_home, workspace):
         assert got["items_has_more"] is False
         await wait_for(ev, "turn/completed")
     asyncio.run(go())
+
+
+def test_edit_resend_cannot_raise_permissions(ee_home, workspace):
+    """编辑重发不能顺带改权限模式。
+
+    前端曾经把全局草稿模式（draftMode）当 mode 发过来：打开一个只读会话、编辑重发
+    一句话，就会被提成全自动——界面全程显示只读，用户没有任何线索。
+    现在界面不带了，后端仍要守住：模式只能由 thread/set_mode 改。
+    """
+    script = [_write("c1", "v1"), text_chunks("写好 v1") + finish("stop")]
+
+    async def go():
+        b, fake, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "read-only"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 v1"})
+        await wait_for(ev, "turn/completed")
+        d = (await b.call("thread/get", {"thread_id": tid}))["thread"]
+        u = _users(d["items"])[0]
+        before_items = len(d["items"])
+
+        with pytest.raises(RpcError, match="权限模式"):
+            await b.call("thread/edit_resend", {"thread_id": tid, "item_id": u["id"],
+                                                "text": "再来一次", "mode": "auto"})
+        # 报错必须发生在任何改动之前：历史与文件都不能被动过
+        d2 = (await b.call("thread/get", {"thread_id": tid}))["thread"]
+        assert len(d2["items"]) == before_items
+        assert d2["mode"] == "read-only"
+        assert b.threads[tid].session.policy.mode == "read-only"
+    asyncio.run(go())

@@ -166,6 +166,8 @@ class Backend:
         self.orchestrator = Orchestrator(self)
         self.listeners: list[Callable[[str, dict], Any]] = []
         self._indexes: dict[str, tuple[float, FileIndex]] = {}
+        # 工作区互斥：恢复 / 撤销 / 开回合共用一把，按 cwd 规范化后分桶（见 workspace_lock）
+        self._ws_locks: dict[str, asyncio.Lock] = {}
         self.methods: dict[str, Callable] = {
             "app/info": self.app_info,
             "thread/list": self.thread_list,
@@ -723,6 +725,21 @@ class Backend:
             except Exception:  # noqa: BLE001  附件目录删不掉也要继续删主文件后的收尾
                 log.info("删除会话附件目录失败（忽略）：%s", extra)
 
+    def workspace_lock(self, cwd: str | os.PathLike | None) -> asyncio.Lock:
+        """按规范化工作区路径划分的互斥锁：恢复 / 撤销 / 开回合共用同一把。
+
+        「查一下有没有别的会话在跑，然后回滚整个工作区」是 check-then-act：查完到写完
+        之间，同 cwd 的新回合完全可以开起来，恢复就把对方刚写的成果一起盖掉了
+        （2026-11 独立审查实测：同一桌面实例的两个会话就能触发）。所以判断与写必须
+        在同一把锁里；开回合也要过这把锁，才挡得住「恢复进行中又起一个回合」。
+        """
+        key = os.path.normcase(str(Path(cwd).resolve())) if cwd else ""
+        lock = self._ws_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._ws_locks[key] = lock
+        return lock
+
     async def thread_undo(self, thread_id: str, force: bool = False) -> dict:
         """/undo。要恢复的文件在回合后被用户改过时返回 {needs_confirm, conflicts}、不动文件；
         前端确认后带 force=true 再调：先把当前工作区存成恢复点（时间线里可反悔）再恢复。"""
@@ -734,34 +751,36 @@ class Backend:
             raise RpcError("运行中不能撤销")
         # 同一 cwd 的其它会话正在跑时也不能撤销：undo 会按文件内容把工作区整体回滚，
         # 对方正在写的东西会被一起盖掉，而双方都不知道（多标签 / ee exec 并行）。
+        # 判断与写必须在同一把工作区锁里：查完再写之间新回合可以开起来（见 workspace_lock）。
         cwd = str(t.meta.get("cwd") or "")
-        if cwd:
-            busy = [k for k, o in self.threads.items()
-                    if k != thread_id and o.running and str(o.meta.get("cwd") or "") == cwd]
-            if busy:
-                raise RpcError(f"同一个工作区还有 {len(busy)} 个会话正在运行，撤销会覆盖它们的改动。"
-                               f"等它们结束再试。")
-        box: dict = {}
+        async with self.workspace_lock(cwd):
+            if cwd:
+                busy = [k for k, o in self.threads.items()
+                        if k != thread_id and o.running and str(o.meta.get("cwd") or "") == cwd]
+                if busy:
+                    raise RpcError(f"同一个工作区还有 {len(busy)} 个会话正在运行，撤销会覆盖它们的改动。"
+                                   f"等它们结束再试。")
+            box: dict = {}
 
-        def keep(tree: str) -> None:
-            box["rp"] = add_restore_point(t, tree, "执行 /undo 前的文件（含你手改的内容）")
+            def keep(tree: str) -> None:
+                box["rp"] = add_restore_point(t, tree, "执行 /undo 前的文件（含你手改的内容）")
 
-        from ee.core.snapshot import RestoreBlocked, RestorePartial
-        try:
-            restored = await asyncio.to_thread(s.undo, bool(force), keep)
-        except RestoreConflict as e:
-            return {"restored": [], "needs_confirm": True, "conflicts": e.conflicts}
-        except RestoreBlocked as e:          # 预检没过：一个文件都没动
-            raise RpcError(f"撤销失败：{e}\n关掉占用这些文件的程序后再撤销一次。")
-        except RestorePartial as e:          # 恢复到一半：如实报告，这一回合不标已撤销，可再撤一次
-            t._add({"type": "notice", "level": "warn",
-                    "text": f"撤销只完成了一部分：{e}\n已恢复：\n" + "\n".join(e.restored)
-                            + "\n关掉占用这些文件的程序后再撤销一次即可补上。"})
-            self.notify("git/changed", {"cwd": t.meta.get("cwd")})
-            return {"restored": e.restored, "failed": [{"path": p, "reason": why} for p, why in e.failed],
-                    "partial": True, "restore_point": restore_point_view(box.get("rp"))}
-        if s.last_undo_tree:
-            t.mark_undone(s.last_undo_tree)
+            from ee.core.snapshot import RestoreBlocked, RestorePartial
+            try:
+                restored = await asyncio.to_thread(s.undo, bool(force), keep)
+            except RestoreConflict as e:
+                return {"restored": [], "needs_confirm": True, "conflicts": e.conflicts}
+            except RestoreBlocked as e:          # 预检没过：一个文件都没动
+                raise RpcError(f"撤销失败：{e}\n关掉占用这些文件的程序后再撤销一次。")
+            except RestorePartial as e:          # 恢复到一半：如实报告，这一回合不标已撤销，可再撤一次
+                t._add({"type": "notice", "level": "warn",
+                        "text": f"撤销只完成了一部分：{e}\n已恢复：\n" + "\n".join(e.restored)
+                                + "\n关掉占用这些文件的程序后再撤销一次即可补上。"})
+                self.notify("git/changed", {"cwd": t.meta.get("cwd")})
+                return {"restored": e.restored, "failed": [{"path": p, "reason": why} for p, why in e.failed],
+                        "partial": True, "restore_point": restore_point_view(box.get("rp"))}
+            if s.last_undo_tree:
+                t.mark_undone(s.last_undo_tree)
         if restored:
             t._add({"type": "notice", "text": "已撤销上一回合的文件改动：\n" + "\n".join(restored), "level": "info"})
             self.notify("git/changed", {"cwd": t.meta.get("cwd")})
@@ -841,8 +860,15 @@ class Backend:
                 from ee.core.attachments import save_all
                 images, meta = await asyncio.to_thread(save_all, self.home, thread_id, list(attachments))
             log.info("turn/start 会话 %s：%d 字，%d 张图片", thread_id, len(text), len(images))
-            return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images, attachments=meta,
-                                effort=effort, style=style, queue=queue, goal=goal, allout=allout)
+            # 集中闸门：回合入口不能顺带改权限（界面显示的模式来自会话元数据，
+            # 一旦某条路径塞进全局草稿模式，就变成「看着只读、实际全自动」）。
+            t.require_same_mode(mode)
+            # 开回合要过工作区锁：恢复/撤销正在进行时先等它写完，否则恢复会把这一回合
+            # 刚写的东西当「用户手改」覆盖掉（反之亦然）。持锁时间只覆盖 start_turn。
+            async with self.workspace_lock(t.meta.get("cwd")):
+                return t.start_turn(text or "（见图片）", model=model, mode=mode, images=images,
+                                    attachments=meta, effort=effort, style=style, queue=queue,
+                                    goal=goal, allout=allout)
         except ValueError as e:
             raise RpcError(str(e))
 

@@ -24,8 +24,17 @@ SAMPLES = [
     ("jest_fail", "Test Suites: 1 failed, 2 passed, 3 total\nTests:       1 failed, 11 passed, 12 total\n", 12),
     # ---- go test：成功只打 `ok  pkg  0.12s`，没有计数
     ("go_ok", "ok  \texample.com/pkg\t0.012s\nok  \texample.com/pkg2\t0.003s\n", 2),
-    ("go_fail", "--- FAIL: TestX (0.00s)\nFAIL\nFAIL\texample.com/pkg\t0.01s\n", 0),
+    ("go_fail", "--- FAIL: TestX (0.00s)\nFAIL\nFAIL\texample.com/pkg\t0.01s\n", 1),  # -v：跑过 1 个（失败）
     ("go_verbose", "=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\n--- FAIL: TestB (0.00s)\nFAIL\n", 2),
+    # 单个测试 + `ok pkg` 行：同一件事不能数两遍（实测 1 例被读成 2 例）
+    ("go_verbose_one", "=== RUN   TestA\n--- PASS: TestA (0.00s)\nPASS\nok  \texample.com/pkg\t0.002s\n", 1),
+    # 多套件 maven：每个套件的 `Tests run:` 要相加（实测 2+5 被读成 2）
+    ("maven_multi_suite",
+     "Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.01 s -- in com.example.A\n"
+     "Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.02 s -- in com.example.B\n"
+     "Tests run: 7, Failures: 0, Errors: 0, Skipped: 0\n", 7),
+    # unittest：只打 `Ran N tests`
+    ("unittest_ok", "Ran 5 tests in 0.002s\n\nOK\n", 5),
     # ---- dotnet test：Failed 在前、Passed 在后，两者都跑过
     ("dotnet_ok", "Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12\n", 12),
     ("dotnet_fail", "Failed!  - Failed:     1, Passed:    11, Skipped:     0, Total:    12\n", 12),
@@ -53,7 +62,8 @@ SAMPLES = [
     # ---- pytest 原有形态不能被破坏（回归）
     ("pytest_ok", "===== 15 passed in 1.2s =====\n", 15),
     ("pytest_mixed", "2 failed, 3 passed in 0.5s\n", 5),
-    ("pytest_collected_only", "collected 7 items\n", 7),
+    # 只收集（`--collect-only` 也打这一行，退出 0）：一个用例都没执行 → 0
+    ("pytest_collected_only", "collected 7 items\n", 0),
 ]
 
 

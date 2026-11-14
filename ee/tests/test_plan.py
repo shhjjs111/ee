@@ -43,7 +43,9 @@ def test_plan_flow(ee_home, workspace):
         assert d["mode"] == "plan"
 
         ev.clear()
-        await b.call("turn/start", {"thread_id": tid, "text": "批准，按方案执行", "mode": "default"})
+        # 批准后切权限：走 thread/set_mode（界面也是这么做的）。回合入口不允许顺带改模式。
+        await b.call("thread/set_mode", {"thread_id": tid, "mode": "default"})
+        await b.call("turn/start", {"thread_id": tid, "text": "批准，按方案执行"})
         await wait_for(ev, "turn/completed")
         assert (workspace / "a.txt").read_text() == "hello"
         third = "\n".join(str(m.get("content")) for m in fake.calls[2]["messages"])

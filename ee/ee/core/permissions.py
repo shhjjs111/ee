@@ -1508,6 +1508,20 @@ class PermissionPolicy:
     session_tools: set[str] = field(default_factory=set)         # 会话内“以后都行”的写目录等
     # shell 工具实际用的命令语法（ShellInfo.syntax：posix / powershell / cmd）；None = 不知道，三套都按最严判
     shell: str | None = None
+    # 回合级只读（/review）：**与会话模式分开存**。
+    # 以前审查借「把会话模式改成 read-only、收尾再改回去」实现：用户在回合中切模式
+    # 会直接给审查提权，收尾又把 meta 与策略改成不一致（2026-11 独立审查实测：
+    # 收尾后 meta 是 read-only、实际策略是 auto）。只读约束不应该是一个可切换的偏好。
+    readonly: bool = False
+
+    @property
+    def eff_mode(self) -> str:
+        """实际生效的模式：回合级只读优先于用户偏好。
+
+        所有判定一律读这个，不读 `mode`：`mode` 是用户的意图（要落盘、要显示），
+        `eff_mode` 是这一回合到底能干什么。
+        """
+        return "read-only" if self.readonly else self.mode
 
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
@@ -1576,7 +1590,7 @@ class PermissionPolicy:
             return Decision("allow")
         if tool == "shell_write":
             # 往已经批准启动的后台命令里输入；只读 / 计划模式下不允许（可能让交互程序做写操作）
-            if self.mode in READONLY_MODES:
+            if self.eff_mode in READONLY_MODES:
                 return Decision("deny", "当前是只读模式，不能向后台命令输入")
             if any(_match_rule(r, tool, "") for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
@@ -1587,21 +1601,21 @@ class PermissionPolicy:
             subject = str(args.get("url") or args.get("query") or args.get("description") or "")
             if any(_match_rule(r, tool, subject) for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
-            if self.mode != "auto" and any(_match_rule(r, tool, subject) for r in self.ask):
+            if self.eff_mode != "auto" and any(_match_rule(r, tool, subject) for r in self.ask):
                 return Decision("ask", "命中 ask 规则", prefix=tool)
             return Decision("allow")
         if tool == "memory":
             if args.get("action") in (None, "", "list"):
                 return Decision("allow")
-            if self.mode in READONLY_MODES:
+            if self.eff_mode in READONLY_MODES:
                 return Decision("deny", "当前是只读模式，不能修改记忆")
             if any(_match_rule(r, tool, "") for r in self.deny):
                 return Decision("deny", "命中 deny 规则")
             return Decision("allow")
         # 未知/扩展工具：只读模式拒绝，默认模式问（“以后都行”记在 session_tools）
-        if self.mode in READONLY_MODES:
+        if self.eff_mode in READONLY_MODES:
             return Decision("deny", "只读模式")
-        if self.mode == "auto" or any(_match_rule(r, tool, "") for r in self.allow) \
+        if self.eff_mode == "auto" or any(_match_rule(r, tool, "") for r in self.allow) \
                 or f"{tool}:{tool}" in self.session_tools:
             return Decision("allow")
         return Decision("ask", f"使用工具 {tool}", prefix=tool)
@@ -1628,15 +1642,15 @@ class PermissionPolicy:
         if rule_hit(self.deny):
             return Decision("deny", "命中 deny 规则")
         trusted = bool(info.get("trusted"))
-        if self.mode in READONLY_MODES:
+        if self.eff_mode in READONLY_MODES:
             if not info.get("read_only"):
                 return Decision("deny", "只读模式下只能用标为只读的 MCP 工具")
             if trusted or rule_hit(self.allow):
                 return Decision("allow")
             return Decision("ask", f"MCP 只读工具 {tool}", prefix=tool)
-        if self.mode != "auto" and rule_hit(self.ask):
+        if self.eff_mode != "auto" and rule_hit(self.ask):
             return Decision("ask", "命中 ask 规则", prefix=tool)
-        if self.mode == "auto" or trusted or rule_hit(self.allow) or f"{tool}:{tool}" in self.session_tools \
+        if self.eff_mode == "auto" or trusted or rule_hit(self.allow) or f"{tool}:{tool}" in self.session_tools \
                 or f"{tool}:mcp__{server}__*" in self.session_tools:
             return Decision("allow")
         return Decision("ask", f"调用 MCP 工具 {server} · {tool.split('__', 2)[-1]}", prefix=tool)
@@ -1659,12 +1673,12 @@ class PermissionPolicy:
             if any(_match_rule(r, tool, s) or _match_rule(r, "write", s)
                    for r in self.deny for s in subs):
                 return Decision("deny", f"命中 deny 规则：{p}")
-        if self.mode in READONLY_MODES:
+        if self.eff_mode in READONLY_MODES:
             return Decision("deny", "当前是只读/计划模式，不能修改文件")
         if any(_match_rule(r, tool, s) for r in self.ask
                for s in (x for p in paths for x in (p, _abs_for_match(p, self.workspace)))):
             return Decision("ask", "命中 ask 规则", prefix="")
-        if self.mode == "auto":
+        if self.eff_mode == "auto":
             return Decision("allow")
         ws = self.workspace.resolve()
         for p in paths:
@@ -1716,22 +1730,22 @@ class PermissionPolicy:
         for e in entries:
             for pat, why in FORCE_ASK_PATTERNS:
                 if hits(pat, e.raw, e.norm):
-                    if self.mode in READONLY_MODES:
+                    if self.eff_mode in READONLY_MODES:
                         return Decision("deny", f"只读模式不能执行：{e.raw}")
                     return Decision("ask", why, prefix="", force=True)
         for e in entries:
             if e.dynamic:
-                if self.mode in READONLY_MODES:
+                if self.eff_mode in READONLY_MODES:
                     return Decision("deny", f"只读模式不能执行：{e.raw}（{e.dynamic}）")
                 return Decision("ask", e.dynamic, prefix="", force=True)
         unsafe = list(dict.fromkeys(seg for seg, sx in pairs if not _segment_safe(seg, sx)))
-        if self.mode in READONLY_MODES:
+        if self.eff_mode in READONLY_MODES:
             if unsafe:
                 return Decision("deny", f"只读模式只能运行只读命令，被拦截：{unsafe[0]}")
             return Decision("allow")
         if any(_match_shell_rule(r, s) for r in self.ask for s in segs + norms):
             return Decision("ask", "命中 ask 规则", prefix=command_prefix(segs[0]))
-        if self.mode == "auto":
+        if self.eff_mode == "auto":
             return Decision("allow")
         remaining = []
         for s in unsafe:

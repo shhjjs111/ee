@@ -113,6 +113,12 @@ def register(methods: dict, backend) -> None:
         if not text:
             raise RpcError("消息不能为空")
         t = await _ready(thread_id)
+        # 模式校验必须放在**任何改动之前**：放到最后就变成「文件已恢复、历史已截断，
+        # 然后报错不发送」——用户丢了历史却没换来新回合。
+        try:
+            t.require_same_mode(mode)
+        except ValueError as e:
+            raise RpcError(str(e))
         try:
             it, hist = _locate(t, item_id)
         except BranchError as e:
@@ -123,49 +129,53 @@ def register(methods: dict, backend) -> None:
         reverted = False
         box: dict = {}
         failed: list[tuple[str, str]] = []
-        if revert_files:
-            res = None
-            if it.get("tree"):          # D4-1 磁盘快照：重启后也能恢复，含 shell 改的文件
-                entries = [(x["tree"], x.get("tree_after")) for x in t.items
-                           if x.get("type") == "user" and x.get("tree") and int(x.get("seq", 0)) >= cut]
+        # 恢复文件 + 截断历史 + 开回合都在工作区锁里：这三步任何一步被同 cwd 的
+        # 另一个会话打断，都会留下「文件回到过去、历史却已前进」的半截状态。
+        async with backend.workspace_lock(t.meta.get("cwd")):
+            if revert_files:
+                res = None
+                if it.get("tree"):          # D4-1 磁盘快照：重启后也能恢复，含 shell 改的文件
+                    entries = [(x["tree"], x.get("tree_after")) for x in t.items
+                               if x.get("type") == "user" and x.get("tree") and int(x.get("seq", 0)) >= cut]
 
-                def keep(tree: str) -> None:
-                    box["rp"] = add_restore_point(t, tree, "编辑重发前的文件（含你手改的内容）")
+                    def keep(tree: str) -> None:
+                        box["rp"] = add_restore_point(t, tree, "编辑重发前的文件（含你手改的内容）")
 
-                try:
-                    res = await asyncio.to_thread(s.revert_trees, entries, bool(force), keep)
-                except RestoreConflict as e:   # 用户在回合后手改过要恢复的文件：先让界面确认，什么都不动
-                    return {"thread": None, "restored": [], "files_reverted": False,
-                            "needs_confirm": True, "conflicts": e.conflicts}
-                except RestoreBlocked as e:    # 预检没过：文件、历史都不动
-                    raise RpcError(f"编辑重发失败：{e}\n关掉占用这些文件的程序后再试。")
-                except RestorePartial as e:    # 恢复到一半：照常重发，但如实列出没恢复的文件
-                    res, failed = e.restored, e.failed
-            snap = it.get("snap")
-            if res is None and isinstance(snap, int) and it.get("snap_epoch") == s.snap_epoch:
-                res = await asyncio.to_thread(s.revert_files_from, snap)
-            if res is not None:
-                restored, reverted = res, True
-        s.truncate_to(hist)
-        removed = [x["id"] for x in t.items if int(x.get("seq", 0)) >= cut]
-        t.items = [x for x in t.items if int(x.get("seq", 0)) < cut]
-        t._by_id = {x["id"]: x for x in t.items}
-        s.turns = sum(1 for x in t.items if x.get("type") == "user")
-        if t.persist:
-            s.store.append("truncate", {"from_seq": cut})
-        for rid in removed:
-            t.notify("item/removed", {"thread_id": t.id, "item_id": rid})
-        if revert_files and not reverted:
-            t._add({"type": "notice", "level": "warn",
-                    "text": "这条消息之后的文件改动无法自动恢复（后端重启过，快照已丢失），如需恢复请用 git。"})
-        elif failed:
-            t._add({"type": "notice", "level": "warn",
-                    "text": "编辑重发：这些文件没能恢复（可能被其他程序占用），仍是改动后的内容：\n"
-                            + "\n".join(f"{p}（{why}）" for p, why in failed)
-                            + ("\n已恢复：\n" + "\n".join(restored) if restored else "")})
-        elif restored:
-            t._add({"type": "notice", "level": "info", "text": "编辑重发：已恢复这些文件：\n" + "\n".join(restored)})
-        t.start_turn(text, model=model, mode=mode)
+                    try:
+                        res = await asyncio.to_thread(s.revert_trees, entries, bool(force), keep)
+                    except RestoreConflict as e:   # 用户在回合后手改过要恢复的文件：先让界面确认，什么都不动
+                        return {"thread": None, "restored": [], "files_reverted": False,
+                                "needs_confirm": True, "conflicts": e.conflicts}
+                    except RestoreBlocked as e:    # 预检没过：文件、历史都不动
+                        raise RpcError(f"编辑重发失败：{e}\n关掉占用这些文件的程序后再试。")
+                    except RestorePartial as e:    # 恢复到一半：照常重发，但如实列出没恢复的文件
+                        res, failed = e.restored, e.failed
+                snap = it.get("snap")
+                if res is None and isinstance(snap, int) and it.get("snap_epoch") == s.snap_epoch:
+                    res = await asyncio.to_thread(s.revert_files_from, snap)
+                if res is not None:
+                    restored, reverted = res, True
+            s.truncate_to(hist)
+            removed = [x["id"] for x in t.items if int(x.get("seq", 0)) >= cut]
+            t.items = [x for x in t.items if int(x.get("seq", 0)) < cut]
+            t._by_id = {x["id"]: x for x in t.items}
+            s.turns = sum(1 for x in t.items if x.get("type") == "user")
+            if t.persist:
+                s.store.append("truncate", {"from_seq": cut})
+            for rid in removed:
+                t.notify("item/removed", {"thread_id": t.id, "item_id": rid})
+            if revert_files and not reverted:
+                t._add({"type": "notice", "level": "warn",
+                        "text": "这条消息之后的文件改动无法自动恢复（后端重启过，快照已丢失），如需恢复请用 git。"})
+            elif failed:
+                t._add({"type": "notice", "level": "warn",
+                        "text": "编辑重发：这些文件没能恢复（可能被其他程序占用），仍是改动后的内容：\n"
+                                + "\n".join(f"{p}（{why}）" for p, why in failed)
+                                + ("\n已恢复：\n" + "\n".join(restored) if restored else "")})
+            elif restored:
+                t._add({"type": "notice", "level": "info", "text": "编辑重发：已恢复这些文件：\n" + "\n".join(restored)})
+            # 撤文件、删历史都做完了，模式已在入口校验过（不允许顺带改），这里照旧开回合。
+            t.start_turn(text, model=model, mode=mode)
         # 编辑重发会把切点之后的历史删掉，剩下的条数不变（可能仍有几千条）：
         # 同样只回尾部一页，跟首屏 / loadEarlier 一套规则。
         return {"thread": t.detail(tail=PAGE_SIZE), "restored": restored, "files_reverted": reverted,

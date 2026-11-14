@@ -99,6 +99,7 @@ def _two_files(workspace, ee_home):
     (workspace / "b.txt").write_bytes(b"b1")
     ds = snapshot.DiskSnapshot(workspace, ee_home)
     t1 = ds.capture()
+    assert t1, "首次抓取就失败了，用例前提不成立"
     (workspace / "a.txt").write_bytes(b"a2")
     (workspace / "b.txt").write_bytes(b"b2")
     (workspace / "new.txt").write_bytes(b"n")
@@ -115,7 +116,9 @@ def test_restore_precheck_locked_file_touches_nothing(workspace, ee_home, monkey
             raise PermissionError(32, "另一个程序正在使用此文件，进程无法访问。")
         return real(full)
     monkeypatch.setattr(snapshot, "_probe_writable", probe)
-    paths = ds.changed(t1, ds.capture())
+    t2 = ds.capture()
+    assert t2, "抓不到当前快照，用例前提不成立"
+    paths = ds.changed(t1, t2)
     with pytest.raises(snapshot.RestoreBlocked) as ei:
         ds.restore(t1, paths)
     assert [p for p, _ in ei.value.blocked] == ["b.txt"]
@@ -132,7 +135,9 @@ def test_restore_midway_failure_reports_done_and_failed(workspace, ee_home, monk
             raise PermissionError(32, "被占用")
         return real(full, data, mode)
     monkeypatch.setattr(snapshot, "_put", put)
-    paths = ds.changed(t1, ds.capture())
+    t2 = ds.capture()
+    assert t2, "抓不到当前快照，用例前提不成立"
+    paths = ds.changed(t1, t2)
     with pytest.raises(snapshot.RestorePartial) as ei:
         ds.restore(t1, paths)
     e = ei.value
@@ -579,3 +584,35 @@ def test_legacy_session_items_get_seq_so_paging_can_walk_back(ee_home):
         page = t.detail(before_seq=page["items"][0]["seq"], tail=120)
         got = [it["id"] for it in page["items"]] + got
     assert got == full, "老会话逐页往前翻拼不回完整历史"
+
+
+@needs_git
+def test_turn_start_and_undo_share_workspace_lock(ee_home, workspace):
+    """同 cwd 的「回滚文件」与「开回合」必须互斥（不是各查一次就放手）。
+
+    /undo、检查点恢复、编辑重发都是「查一下没人在跑 → 按文件内容整体回滚」，
+    中间没有占住工作区；同 cwd 的新回合可以在恢复还没写完时开起来，成果被盖掉。
+    现在三者与 turn/start 共用一把按 cwd 分桶的锁：持锁期间开回合必须等。
+    """
+    script = [_write("c1", "v1"), text_chunks("ok") + finish("stop")]
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "写 a"})
+        await wait_for(ev, "turn/completed")
+
+        lock = b.workspace_lock(str(workspace))
+        await lock.acquire()
+        started = asyncio.ensure_future(b.call("turn/start", {"thread_id": tid, "text": "再来一次"}))
+        undo = asyncio.ensure_future(b.call("thread/undo", {"thread_id": tid}))
+        try:
+            await asyncio.sleep(0.1)
+            assert not started.done(), "恢复/撤销持锁期间不能开始回合"
+            assert not undo.done(), "同一把锁：撤销也要排队"
+            assert b.threads[tid].running is False
+        finally:
+            lock.release()
+        await undo
+        await started
+    asyncio.run(go())

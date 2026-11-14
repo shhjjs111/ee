@@ -219,3 +219,47 @@ def test_real_convergence_red_to_green(tmp_path):
     # 第一次判定必须是红的（否则这条用例没验到"先红后绿"）
     assert res.rounds[0].met is False
     assert res.rounds[-1].met is True
+
+
+# ---------------------------------------------------------------- 回合内被停掉
+
+def test_interrupted_turn_stops_the_loop():
+    """模型回合被用户停掉 → 立刻收尾，不再判定、不再续跑。
+
+    `session.interrupt()` 在模型回合里是能停到东西的（返回 True），于是外层 task 不被
+    cancel，内核把取消转成 `TurnDone("interrupted")`，run_turn **正常结束**。
+    runner 不把这个终态传出来，run_goal 就会接着判据、再起一轮：界面已经显示停止，
+    后台还在烧钱（2026-11 独立审查实测：停在第一次模型回合后又跑了两次判定 + 一次回合）。
+    """
+    import asyncio
+    from ee.core.goal import run_goal
+
+    judge = _FakeJudge([_verdict(False), _verdict(False), _verdict(False)])
+    turns = []
+
+    async def turn():
+        turns.append(1)
+        return "interrupted"
+
+    res = asyncio.run(run_goal(_spec(), turn_runner=turn, judge_fn=judge, max_rounds=3))
+    assert res.stop_reason == "interrupted"
+    assert res.met is False
+    assert len(turns) == 1, "中断后不该再起模型回合"
+    assert judge.calls == 1, "中断后不该再跑判据"
+
+
+def test_runner_returning_other_values_keeps_looping():
+    """只有 "interrupted" 才收尾：别的返回值（None / dict）维持原有续跑语义。"""
+    import asyncio
+    from ee.core.goal import run_goal
+
+    judge = _FakeJudge([_verdict(False), _verdict(True)])
+    turns = []
+
+    async def turn():
+        turns.append(1)
+        return {"ok": True}
+
+    res = asyncio.run(run_goal(_spec(), turn_runner=turn, judge_fn=judge, max_rounds=3))
+    assert res.met is True
+    assert len(turns) == 1

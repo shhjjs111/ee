@@ -285,3 +285,20 @@ def test_gc_aborts_pruning_when_a_session_file_is_unreadable(ee_home, workspace)
     alive_after = ds.existing([old_tree])
     assert alive_after is not None, "git 故障与「已删除」不能混为一谈"
     assert old_tree not in alive_after, "读得出来时该清理的仍要清理"
+
+
+def test_tree_after_follows_later_rounds(ee_home, workspace):
+    """一个外层回合跑了多轮时，tree_after 必须是**最后一轮**的状态。
+
+    `_mark_tree_after` 原先「已有值就跳过」：全力以赴的修复轮 / 胜者写回之后，
+    检查点还停在第一轮结束的状态——历史里看不到最终补丁，/undo 只能退到
+    「拿当前工作区推断本回合改动」，把用户之后的修改也圈进撤销范围。
+    """
+    from ee.server.threads import Thread
+
+    th = Thread("t-tree", ee_home, lambda m, p: None, {"cwd": str(workspace)}, persist=False)
+    usr = th._add({"type": "user", "text": "改一下", "tree": "tree-before"})
+    th.notify = lambda m, p: None
+    th._mark_tree_after("tree-round-1")
+    th._mark_tree_after("tree-final")
+    assert usr["tree_after"] == "tree-final"

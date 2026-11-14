@@ -189,7 +189,11 @@ class Orchestrator:
         parent = self._own_parent(parent_id)
         cfg = parent.session.config if parent.session is not None else load_config(parent.cwd)
         try:
-            cap = child_capability(parent_mode=parent.meta.get("mode"),
+            # 用 eff_mode：审查回合的只读是回合级约束（不改 meta 里的用户偏好），
+            # 派发出去的子会话必须继承「这一回合能不能写」，而不是用户的偏好档位。
+            parent_mode = (parent.session.policy.eff_mode if parent.session is not None
+                           else parent.meta.get("mode"))
+            cap = child_capability(parent_mode=parent_mode,
                                    parent_policy=getattr(parent.session, "policy", None),
                                    data=cfg.data, requested_mode=mode, worktree=worktree)
         except CapabilityError as e:

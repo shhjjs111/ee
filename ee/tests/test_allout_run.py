@@ -463,3 +463,197 @@ def test_run_allout_filters_regressed_candidates_before_rank(ee_home, workspace,
     assert ranked == ["cand-2"], "回归的候选不能进排序"
     assert reason == "exhausted"
 
+
+
+# ---------------------------------------------------------------- 取消时回收候选
+
+def _fanout_fakes(monkeypatch, workspace, hang_judge=True):
+    """把 worktree / Session / judge 全换成替身，返回记录用的容器。"""
+    import ee.core.goal as G
+    from ee.core import worktree as W
+
+    seen = {"created": [], "finished": []}
+
+    def fake_create(cwd, label="", home=None):
+        seen["created"].append(label)
+        return {"cwd": str(workspace), "agent_base": "b", "base": "b",
+                "path": str(workspace / label)}
+
+    def fake_finish(info, message, home=None):
+        seen["finished"].append(info["path"])
+        return {"file_count": 0, "files": [], "additions": 0, "deletions": 0}
+
+    monkeypatch.setattr(W, "agent_eligible", lambda cwd: (True, ""))
+    monkeypatch.setattr(W, "create_for_agent", fake_create)
+    monkeypatch.setattr(W, "finish_agent", fake_finish)
+
+    if hang_judge:
+        async def hang(spec, **_kw):
+            await asyncio.sleep(3600)          # 卡在判据：候选活着且占着 worktree
+        monkeypatch.setattr(G, "judge", hang)
+    return seen
+
+
+def _patch_fake_child(monkeypatch):
+    """候选 Session 用替身：不进真实模型回合，直接落到判据。"""
+    from types import SimpleNamespace
+
+    class _FakeChild:
+        def __init__(self, *a, **kw):
+            self.spec = SimpleNamespace(alias="m-effort-unknown")
+            self.stats = SimpleNamespace(totals=lambda: {"cost": 0.0})
+
+        async def run_turn(self, text, images=None):
+            if False:              # 空异步生成器
+                yield None
+
+    monkeypatch.setattr("ee.server.threads.Session", _FakeChild)
+
+
+def test_cancel_reaps_candidate_tasks(ee_home, workspace, monkeypatch):
+    """父回合被取消时，候选任务必须一起停下并回收 worktree。
+
+    候选是独立 asyncio task：取消外层 task 不会传下去。`await watch()` 抛
+    CancelledError 时，原来的 `gather` 在它后面根本不会执行——候选继续跑模型、
+    跑判据、占着 worktree（2026-11 独立审查实测：父回合结束后仍有候选在跑）。
+    """
+    import pytest
+    from ee.core.goal import GoalSpec
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    th._allout_judge_lock = asyncio.Lock()
+    seen = _fanout_fakes(monkeypatch, workspace)
+    _patch_fake_child(monkeypatch)
+
+    async def main():
+        plan = type("P", (), {"temperature_ladder": [0.1, 0.2, 0.3]})()
+        task = asyncio.ensure_future(th._allout_fanout(
+            GoalSpec(command="pytest -q", cwd=str(workspace)), plan, "修好它", 2))
+        await asyncio.sleep(0.1)               # 让两个候选都进到判据
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert len(seen["created"]) == 2
+    assert len(seen["finished"]) == 2, "取消后每个候选的 worktree 都要收尾，不能留半个"
+
+
+def test_cancel_during_worktree_creation_reaps_it(ee_home, workspace, monkeypatch):
+    """创建还在工作线程里时被取消：创建停不下来，但落地后必须立刻回收。
+
+    `asyncio.to_thread` 不能被取消。直接丢掉 future，`git worktree add` 照样跑完，
+    留下一个没有主人的 worktree。
+    """
+    import threading
+
+    import pytest
+    from ee.core.goal import GoalSpec
+    from ee.core import worktree as W
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    th._allout_judge_lock = asyncio.Lock()
+    seen = _fanout_fakes(monkeypatch, workspace)
+    _patch_fake_child(monkeypatch)
+
+    gate = threading.Event()
+
+    def slow_create(cwd, label="", home=None):
+        gate.wait(5)
+        seen["created"].append(label)
+        return {"cwd": str(workspace), "agent_base": "b", "base": "b",
+                "path": str(workspace / label)}
+
+    monkeypatch.setattr(W, "create_for_agent", slow_create)
+
+    async def main():
+        plan = type("P", (), {"temperature_ladder": [0.1]})()
+        task = asyncio.ensure_future(th._allout_fanout(
+            GoalSpec(command="pytest -q", cwd=str(workspace)), plan, "修好它", 1))
+        await asyncio.sleep(0.05)              # 此时卡在 to_thread 的创建里
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        gate.set()
+        await asyncio.sleep(0.3)               # 等工作线程落地 + 回收任务跑完
+
+    asyncio.run(main())
+    assert len(seen["created"]) == 1
+    assert seen["finished"] == [str(workspace / "allout-1")], "创建完的 worktree 必须被回收"
+
+
+# ---------------------------------------------------------------- 丢弃修复要真回滚
+
+def test_discarded_repair_is_reverted_in_workspace(ee_home, workspace, monkeypatch):
+    """keep-policy 说「丢弃」时，磁盘上的修复也必须撤掉。
+
+    修复轮直接跑在主工作区：只改 kept / 判定结果的话，界面说「未保留」、回合以
+    exhausted 收尾，工作区里留着的却是那份没通过判据的改动（2026-11 独立审查实测）。
+    """
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1), _Verdict(False, 1)])
+    _stub_turn(th, ["completed", "completed", "completed"])
+
+    trees = iter([f"tree-{i}" for i in range(10)])
+    th.session.disk_capture = lambda: next(trees)
+    reverted: list[str | None] = []
+    monkeypatch.setattr(th, "_revert_repair", lambda s, tree: reverted.append(tree) or ["a.txt"])
+    notes = []
+    th.notify = lambda m, p: notes.append((m, p))
+
+    reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
+                                        {"enabled": True, "candidates": 1}))
+    assert reason == "exhausted"
+    assert reverted, "没通过判据的修复必须真的撤回"
+    assert all(x is not None for x in reverted), "回滚必须拿到「修复前」的快照"
+    repairs = [p for m, p in notes if m == "allout_progress" and p.get("phase") == "repair"]
+    assert repairs and all(p["kept"] is False for p in repairs)
+    assert repairs[0]["reverted"] == 1, "回滚结果要报给界面，不能只写 kept"
+
+
+def test_kept_repair_is_not_reverted(ee_home, workspace, monkeypatch):
+    """保留的修复不能被回滚（否则「已保留」是假的）。"""
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(True, 12)])
+    _stub_turn(th, ["completed", "completed"])
+    trees = iter([f"tree-{i}" for i in range(10)])
+    th.session.disk_capture = lambda: next(trees)
+    reverted: list[object] = []
+    monkeypatch.setattr(th, "_revert_repair", lambda s, tree: reverted.append(tree) or ["a.txt"])
+    th.notify = lambda m, p: None
+
+    reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
+                                        {"enabled": True, "candidates": 1}))
+    assert reason == "met"
+    assert reverted == [], "保留的修复不该被动"
+
+
+def test_revert_repair_files_restores_snapshot(ee_home, workspace, monkeypatch):
+    """回滚本体：把工作区恢复到修复前，并把「尝试过的修复」存成恢复点。"""
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    s = th.session
+    files = {"a.txt": "fix"}
+
+    class _FakeDisk:
+        def changed(self, a, b):
+            return ["a.txt"] if a != b else []
+
+        def capture(self):
+            return "tree-" + repr(sorted(files.items()))
+
+        def restore(self, tree, paths):
+            files["a.txt"] = "before"
+            return paths
+
+    monkeypatch.setattr(s, "disk", lambda: _FakeDisk())
+    monkeypatch.setattr("ee.server.checkpoint_rpc.add_restore_point",
+                        lambda t, tree, label: {"id": "rp-1", "tree": tree, "label": label})
+    monkeypatch.setattr(s, "_after_restore", lambda restored, note: None)
+    restored = th._revert_repair(s, "tree-before")
+    assert restored == ["a.txt"]
+    assert files["a.txt"] == "before"

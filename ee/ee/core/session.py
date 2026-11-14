@@ -491,7 +491,7 @@ class Session:
 
     def _env_parts(self) -> dict:
         desktop = "screenshot" in self.tool_map      # 工具只在桌面端下发的后端里注册
-        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.mode, self.policy.mode),
+        parts = env_parts(self.cwd, self.shell, self.git, self.gh, MODE_LABEL.get(self.policy.eff_mode, self.policy.eff_mode),
                           plan_tool="present_plan" in self.tool_map, desktop=desktop)
         sp = self._style_part()
         if sp:
@@ -2071,7 +2071,7 @@ class Session:
             # 自动审批建议态（T10-c）：只往事件上挂一段说明，**不改 d.action**。
             # 这一层永远不能放行；放行要用户自己打开开关，且受 deny/force/只读约束。
             _attach_suggestion(ev, decision=d, tool=tool.name, args=args,
-                               mode=self.policy.mode, config=self.config.data)
+                               mode=self.policy.eff_mode, config=self.config.data)
             emit(ev)
             if APPROVAL_TIMEOUT > 0:
                 try:

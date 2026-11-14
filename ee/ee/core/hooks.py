@@ -633,7 +633,7 @@ class HookRunner:
     def base_payload(self, event: str) -> dict:
         s = self.session
         p = {"session_id": s.store.id, "cwd": str(s.cwd), "hook_event_name": event,
-             "permission_mode": s.policy.mode, "agent": "subagent" if self.is_sub else "main"}
+             "permission_mode": s.policy.eff_mode, "agent": "subagent" if self.is_sub else "main"}
         path = getattr(s.store, "path", None)
         if path is not None and getattr(s.store, "enabled", False):
             p["transcript_path"] = str(path)

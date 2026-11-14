@@ -71,6 +71,7 @@ def test_parse_findings():
             '{"priority": 1, "title": "越界", "body": "x", "file": "a.py", "line_start": 2, "line_end": 2, "confidence": 0.9},'
             '{"body": "无标题被丢掉"}]}\n```')
     r = R.parse_findings(text)
+    assert r is not None, "这段输出应该能解析出结构化结果"
     assert r["overall"] == "incorrect" and [f["title"] for f in r["findings"]] == ["越界", "小问题"]
     assert R.parse_findings("没有块") is None and R.parse_findings("```ee-review\n不是json\n```") is None
 
@@ -135,3 +136,80 @@ def test_commit_only_staged(ee_home, repo):
         await b.call("git/commit", {"cwd": str(repo), "message": r["message"], "stage_all": False})
         assert "a.py" in git(repo, "status", "--porcelain")
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------- 只读与会话模式分开
+
+def test_start_turn_readonly_does_not_rewrite_mode(ee_home, workspace):
+    """审查回合不改会话模式元数据：只读是回合级约束，不是把偏好拨到 read-only。"""
+    import contextlib
+    from ee.server.threads import Thread
+
+    th = Thread("t-ro", ee_home, lambda m, p: None,
+                {"cwd": str(workspace), "mode": "default"}, persist=False)
+    th.ensure_session()
+    th.notify = lambda m, p: None
+
+    @contextlib.contextmanager
+    def _no_task():
+        real = asyncio.create_task
+
+        class _Done:
+            def done(self) -> bool:
+                return True
+
+        def _stub(coro, **_kw):
+            coro.close()
+            return _Done()
+
+        asyncio.create_task = _stub
+        try:
+            yield
+        finally:
+            asyncio.create_task = real
+
+    with _no_task():
+        th.start_turn("审查一下", display="审查一下", readonly=True, kind="review")
+    assert th.session.policy.readonly is True, "回合级只读要挂上"
+    assert th.session.policy.mode == "default", "会话模式不能被审查改写"
+    assert th.meta["mode"] == "default"
+    s = th.summary()
+    assert s["mode"] == "default" and s["readonly"] is True
+
+
+def test_review_readonly_survives_mode_switch(ee_home, workspace):
+    """回合中切模式不能给审查提权，收尾也不能让 meta 与策略分叉。
+
+    以前审查借「把会话模式临时改成 read-only、收尾改回去」实现：切模式会立刻提权，
+    收尾只 `set_mode(restore)` 不回写 meta —— 收尾后 meta 说 read-only、实际是 auto。
+    """
+    from ee.core.events import TurnDone
+    from ee.server.threads import Thread
+
+    th = Thread("t-rv", ee_home, lambda m, p: None,
+                {"cwd": str(workspace), "mode": "default"}, persist=False)
+    th.ensure_session()
+    th.notify = lambda m, p: None
+
+    seen: dict[str, object] = {}
+
+    def make(session):
+        async def run_turn(text, images=None):
+            th.set_mode("auto")               # 审查回合进行中，用户把模式拨到全自动
+            seen["write"] = th.session.policy.check(
+                "write", {"path": "a.py", "content": "x"}).action
+            seen["mode"] = th.summary()["mode"]
+            seen["readonly"] = th.summary()["readonly"]
+            yield TurnDone("completed", "")
+        return run_turn
+
+    th.session.run_turn = make(th.session)
+    th.session.policy.readonly = True          # start_turn(readonly=True) 做的事
+    th._new_run("review", initiator="review")
+    asyncio.run(th._consume("审查"))
+
+    assert seen["write"] == "deny", "回合中切模式不能给审查提权"
+    assert seen["mode"] == "auto" and seen["readonly"] is True
+    assert th.session.policy.readonly is False, "收尾要撤掉回合级只读"
+    assert th.session.policy.mode == "auto"
+    assert th.meta["mode"] == "auto", "收尾后 meta 与策略不能分叉"

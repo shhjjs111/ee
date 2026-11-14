@@ -405,6 +405,9 @@ class Thread:
                 "effort": self.session.effort if self.session else self.meta.get("effort", ""),   # D5-9
                 "effort_support": self.session.effort_support() if self.session else None,
                 "style": self.session.style if self.session else (self.meta.get("style") or "default"),
+                # 本回合是否被强制只读（/review）。和 mode 分开报：界面要能说清
+                # 「你的模式是 auto，但这一回合只读」，不能靠改 mode 来暗示。
+                "readonly": bool(self.session.policy.readonly) if self.session else False,
                 # 会话记录写盘失败时的状态（内存态，磁盘写不进去自然也无法从磁盘恢复）：
                 # {count, error, at}。界面据此显示“保存不了”的警告。
                 "save_error": self.save_error,
@@ -569,6 +572,23 @@ class Thread:
         self.notify("thread/updated", {"thread": self.summary()})
         return {"mode": s.policy.mode}
 
+    def require_same_mode(self, mode: str | None) -> None:
+        """回合入口不允许顺带改权限：模式只能由 `thread/set_mode` 或新建会话决定。
+
+        `turn/start` / `thread/edit_resend` 都带 mode 参数，而界面显示的模式来自会话
+        元数据。一旦某条路径把全局草稿模式塞进来，用户看到的是只读、实际是 auto：
+        2026-11 独立审查实测到，编辑重发会把只读会话语权提到全自动且界面无任何线索。
+        放宽权限必须是用户对**这个会话**做的动作，所以不一致就报错（fail closed）。
+        内部调用方（headless / 定时任务）不受这个闸门约束：它们不走 RPC，模式是
+        调用方对本次派发的显式意图。
+        """
+        if not mode:
+            return
+        s = self.ensure_session()
+        if mode != s.policy.mode:
+            raise ValueError(
+                f"权限模式不能随消息一起改（当前 {s.policy.mode}，收到 {mode}）：请用模式控件切换")
+
     def start_turn(self, text: str, model: str | None = None, mode: str | None = None,
                    images: list[str] | None = None, attachments: list[dict] | None = None,
                    display: str | None = None, readonly: bool = False, kind: str | None = None,
@@ -592,7 +612,7 @@ class Thread:
                 # 只读 / 计划模式是硬边界（v2 §9）：allout 要改文件、并行跑多个候选，
                 # 最后还会把补丁写回主目录——这些模式下一律拒绝，不靠模型自觉。
                 eff = mode or getattr(self, "_pending_mode", None) or s.policy.mode
-                if readonly or eff in ("read-only", "plan"):
+                if readonly or s.policy.readonly or eff in ("read-only", "plan"):
                     raise ValueError("只读 / 计划模式下不能开全力以赴：它会改文件并并行跑候选")
             if not allout.get("enabled"):
                 allout = None            # 关着与不传等价：界面不显示、不落条目
@@ -644,9 +664,11 @@ class Thread:
         if not any(it.get("type") == "user" for it in self.items[:-1]) or self.meta.get("title") in (None, "", "新对话"):
             self.meta["title"] = _title(display or text)
         self.save_meta()
-        if readonly and s.policy.mode != "read-only":
-            self._restore_mode = s.policy.mode
-            s.set_mode("read-only")
+        if readonly:
+            # 审查的只读是**回合级约束**，不是改会话模式：不动 meta、不动用户偏好，
+            # 所以回合中切模式既不会给审查提权，收尾也不需要“恢复”（以前恢复时
+            # 只改策略不回写 meta，收尾后 meta 与策略会分叉）。
+            s.policy.readonly = True
         s._turn_role = "review" if kind == "review" else None      # 审查回合按 roles.review 取模型（D5-9）
         self.notify("thread/updated", {"thread": self.summary()})
         self.task = asyncio.create_task(self._consume(text, images, goal=goal, allout=allout))
@@ -792,10 +814,13 @@ class Thread:
             log.error("回合异常（会话 %s）", self.id, exc_info=True)
             self._add({"type": "error", "message": f"内部错误：{type(e).__name__}: {e}"})
         finally:
-            restore = getattr(self, "_restore_mode", None)
-            if restore:
-                self._restore_mode = None
-                s.set_mode(restore)
+            # 只读标记必须无条件撤掉：留着的会话会永久只能读，用户看不出原因。
+            # 用 getattr：测试里的会话替身不一定带 policy，收尾路径绝不能因此抛错
+            # （抛错会跳过后面的 _finish，会话就卡在 running）。
+            if s is not None:
+                policy = getattr(s, "policy", None)
+                if policy is not None:
+                    policy.readonly = False
             s._turn_role = None
             try:
                 self._finish(reason)
@@ -987,6 +1012,8 @@ class Thread:
         # ---- 轮 2：批评修复（判据 + 失败输出喂回去），keep-policy 只在更好时保留。
         for attempt in range(1, max(1, plan.repair_rounds) + 1):
             msg = build_feedback(last_fail or best, spec, attempt=attempt, max_checks=plan.repair_rounds + 2)
+            # 修复轮直接跑在主工作区：先记下修复前的位置，拒绝时能真的撤回去。
+            before = await asyncio.to_thread(s.disk_capture)
             if await one_turn(msg) == "interrupted":
                 return "interrupted"
             after = await judge_serial()
@@ -999,8 +1026,18 @@ class Thread:
                     regressed, last_fail = True, reg_fail_verdict(rv)
                 else:
                     regressed = False
+            # 「丢弃」必须包括磁盘：只改 kept/判定结果的话，界面说未保留、工作区里却是
+            # 那份没过的改动（2026-11 独立审查实测：kept=False、回合 exhausted，文件仍是失败的修复）。
+            reverted: list[str] | None = None
+            if not keep:
+                reverted = await asyncio.to_thread(self._revert_repair, s, before)
+                if reverted is not None:
+                    tree = await asyncio.to_thread(s.disk_capture)
+                    if tree:
+                        self._mark_tree_after(tree)   # 覆盖写：回合结束状态是「已回滚」
             self.notify("allout_progress", {"thread_id": self.id, "phase": "repair",
-                                            "attempt": attempt, "kept": keep, "why": why})
+                                            "attempt": attempt, "kept": keep, "why": why,
+                                            "reverted": None if reverted is None else len(reverted)})
             if keep:
                 best = after
                 last_fail = None
@@ -1031,6 +1068,39 @@ class Thread:
                             self._mark_tree_after(tree)
                         return "met"
         return "exhausted" if (not best.met or regressed) else "met"
+
+    def _revert_repair(self, s, tree: str | None) -> list[str] | None:
+        """把一轮被丢弃的修复从工作区撤掉（回到 `tree`）。拿不到快照返回 None。
+
+        修复轮直接跑在主工作区（候选才在 worktree 里），所以「不保留」必须落到磁盘上。
+        回滚前把当前状态存成恢复点：万一用户其实想要那份尝试，时间线里还能找回来。
+        返回 None 表示**没能回滚**（磁盘快照不可用 / 抓取失败）——调用方要把这件事
+        写进通知，不能默默当成已回滚。
+        """
+        if not tree:
+            return None
+        d = s.disk()
+        if d is None:
+            return None
+        cur = d.capture()
+        if not cur:
+            return None
+        paths = d.changed(tree, cur)
+        if not paths:
+            return []                      # 这一轮确实没改文件：不用动，也算回滚成功
+        try:
+            from ee.server.checkpoint_rpc import add_restore_point
+            add_restore_point(self, cur, "全力以赴：被丢弃的修复尝试")
+        except Exception:  # noqa: BLE001  恢复点只是反悔用的，存不下不能拦住回滚
+            log.warning("全力以赴：存恢复点失败（修复回滚）", exc_info=True)
+        try:
+            restored = d.restore(tree, paths)
+        except Exception:  # noqa: BLE001
+            log.warning("全力以赴：回滚被丢弃的修复失败", exc_info=True)
+            return None
+        s._after_restore(restored, "[系统提示] 全力以赴丢弃了一次没通过判据的修复，"
+                                  "以下文件已恢复到修复前的内容（如需再改请重新 read）：")
+        return restored
 
     def _allout_candidate_event(self, ev, prefix: str) -> bool:
         """候选会话的阻塞事件接回主会话；处理了返回 True。
@@ -1087,13 +1157,42 @@ class Thread:
             return []
         lock = self._allout_judge_lock
 
+        async def _create_worktree(i: int, label: str) -> dict:
+            """建候选 worktree；被取消时把“已交给工作线程”的那次创建收尾掉。
+
+            `asyncio.to_thread` 停不下来：await 被取消时线程里的 `git worktree add`
+            照样会跑完。不管它，就会留下一个没有主人的 worktree（占磁盘、混进列表）。
+            所以取消时挂一个“等它落地再回收”的任务，而不是直接丢掉 future。
+            """
+            fut = asyncio.ensure_future(asyncio.to_thread(W.create_for_agent, self.cwd, label, self.home))
+            try:
+                return await asyncio.shield(fut)
+            except asyncio.CancelledError:
+
+                async def _reap() -> None:
+                    try:
+                        info = await fut
+                    except Exception:  # noqa: BLE001  创建失败就没什么可回收的
+                        return
+                    try:
+                        await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(
+                            W.finish_agent, info, f"ee：全力以赴候选 {label}（已取消）", self.home)))
+                    except BaseException:  # noqa: BLE001  收尾失败不能拖垮事件循环
+                        pass
+
+                asyncio.ensure_future(_reap())
+                raise
+
         async def run_one(i: int) -> dict:
-            wt = await asyncio.to_thread(W.create_for_agent, self.cwd, f"allout-{i + 1}", self.home)
+            label = f"allout-{i + 1}"
+            wt = None
             child = None
-            rec = {"id": f"cand-{i + 1}", "cwd": wt["cwd"], "base": wt["agent_base"],
-                   "worktree": wt["path"], "cost": 0.0, "verdict": None, "regressed": False,
+            rec = {"id": f"cand-{i + 1}", "cwd": None, "base": None, "worktree": None,
+                   "cost": 0.0, "verdict": None, "regressed": False,
                    "touched_tests": False, "files": 0, "additions": 0, "deletions": 0, "votes": 0}
             try:
+                wt = await _create_worktree(i, label)
+                rec.update(cwd=wt["cwd"], base=wt["agent_base"], worktree=wt["path"])
                 data = copy.deepcopy(s.config.data)
                 alias = s.spec.alias
                 models = data.setdefault("models", {})
@@ -1102,7 +1201,7 @@ class Thread:
                 data["ask_user"] = False
                 cfg = copy.copy(s.config)
                 cfg.data = data
-                child = Session(cfg, model=alias, cwd=Path(wt["cwd"]), mode=s.policy.mode,
+                child = Session(cfg, model=alias, cwd=Path(wt["cwd"]), mode=s.policy.eff_mode,
                                 client_factory=self.client_factory, persist=False, home=self.home,
                                 shell=s.shell_name, user_home=self.user_home)
                 p = s.policy
@@ -1164,11 +1263,13 @@ class Thread:
                                                 "id": rec["id"], "met": bool(getattr(v, "met", False))})
                 return rec
             except asyncio.CancelledError:
-                # 被取消（别的候选先通过）：收尾保留改动，别留半个 worktree
-                try:
-                    await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（已取消）", self.home)
-                except Exception:  # noqa: BLE001
-                    pass
+                # 被取消（别的候选先通过 / 用户点停止）：收尾保留改动，别留半个 worktree。
+                # wt 为 None 说明取消在创建阶段，由 _create_worktree 的 reap 路径收尾。
+                if wt is not None:
+                    try:
+                        await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（已取消）", self.home)
+                    except Exception:  # noqa: BLE001
+                        pass
                 rec["cancelled"] = True
                 raise
             except Exception as e:  # noqa: BLE001  单个候选失败不影响其它
@@ -1202,8 +1303,18 @@ class Thread:
                     except Exception:  # noqa: BLE001
                         pass
 
-        await watch()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # 候选是独立 task：watch() 只负责“先通过就取消”，不管回收。
+        # 但 watch() 自己也可能被取消（用户点停止 → Thread.interrupt cancel 外层 task），
+        # 那一刻 CancelledError 直接从 `await watch()` 穿出去，原来跟在后面的 gather 永远不执行——
+        # 候选继续烧 token、跑判据、占 worktree（2026-11 独立审查实测：父回合结束后仍有候选在跑）。
+        # 所以回收放进 finally：不管正常结束、提前通过还是被取消，都要取消并等全部候选落地。
+        try:
+            await watch()
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         return results
 
     @staticmethod
@@ -1285,25 +1396,70 @@ class Thread:
                         timeout=as_float(goal.get("timeout") or 300.0))
         round_no = {"n": 0}
 
-        async def _one_turn(verdict=None) -> None:
-            """跑一个修复回合。
+        # 回归命令（PASS_TO_PASS）：界面把它标成在 Goal 里生效，前端也确实提交了，
+        # 但原来只有全力以赴用它，普通 Goal 静默丢掉整个字段——目标过了、旧测试红了
+        # 照样返回 met（2026-11 独立审查实测）。这里有两条路：要么执行它，要么别在
+        # 界面上摆出来。选执行：它正是"没弄坏其它东西"的唯一客观证据。
+        p2p = str(goal.get("pass_to_pass") or "").strip()
+        p2p_spec = (GoalSpec(command=p2p, cwd=str(self.cwd), min_tests=1,
+                             timeout=as_float(goal.get("timeout") or 300.0)) if p2p else None)
+
+        async def _judge(spec):
+            """目标判据 + 回归门：回归命令失败时这一轮不算达标，并把回归输出交给修复回合。"""
+            from ee.core.goal import Verdict as _Verdict
+            from ee.core.goal import judge as _judge_one
+
+            v = await _judge_one(spec)
+            if not v.met or p2p_spec is None:
+                return v
+            rv = await _judge_one(p2p_spec)
+            if rv.met:
+                return v
+            self._add({"type": "notice", "level": "warn",
+                       "text": f"目标判据已通过，但回归命令未通过（{rv.reason}）：改动弄坏了原有测试。"})
+            return _Verdict(exit=rv.exit, tests=rv.tests, timed_out=rv.timed_out,
+                            output=("目标判据已通过，但回归命令失败（改动破坏了原有测试）。\n\n"
+                                    f"回归命令：\n{p2p}\n\n输出：\n{(rv.output or '').rstrip()}"),
+                            min_tests=1)
+
+        async def _one_turn(verdict=None) -> str:
+            """跑一个修复回合，返回内核给的回合终态（completed / interrupted / ...）。
 
             第一回合发用户原话；之后发「判据命令 + 上一轮失败输出」的完整反馈。
             原来只发固定文案「继续，直到判据通过」——模型既不知道判据是什么、
             也看不到失败原因，只能猜，多跑几轮只是多花钱。
+
+            返回值必须往上传：用户点停止时内核会发 TurnDone("interrupted") 并让
+            run_turn 正常结束（不是抛异常）。这里吞掉它，run_goal 就会接着判据、
+            再起一轮——界面已经显示停止，后台还在跑（独立审查实测到）。
             """
             round_no["n"] += 1
-            if round_no["n"] == 1 or verdict is None:
+            reason = "completed"
+            if round_no["n"] == 1:
                 from ee.core.goal_feedback import build_first_turn
                 # 第一轮就把判据命令作为数据附在用户目标后：Goal 中途可能触发
                 # 自动压缩，判据只在局部变量的话会在压缩时永久丢失（见 goal_feedback.build_first_turn）
                 payload = build_first_turn(text, spec)
+                if verdict is not None:
+                    # 先判后跑：第一个回合之前就已经有一次判定（含回归门）。只给原话 + 判据，
+                    # 模型要重新猜「哪里坏了」；把失败输出一并交出来，省一轮猜测。
+                    from ee.core.goal_feedback import build_feedback as _fb
+                    payload += "\n\n---\n\n" + _fb(verdict, spec, attempt=1,
+                                                     max_checks=as_int(goal.get("max_rounds") or 3))
             else:
                 from ee.core.goal_feedback import build_feedback
                 payload = build_feedback(verdict, spec, attempt=round_no["n"] - 1,
                                          max_checks=as_int(goal.get("max_rounds") or 3))
             async for ev in s.run_turn(payload, images):
+                if isinstance(ev, TurnDone):
+                    if ev.reason:
+                        reason = ev.reason
+                    if ev.tree_after:
+                        # 回合后快照：Goal 的多轮内层回合也要记，否则这一回合的
+                        # tree_after 永远为空，/undo 只能退到「拿当前工作区推断改动」。
+                        self._mark_tree_after(ev.tree_after)
                 self._on_event(ev)
+            return reason
 
         def _emit(verdict) -> None:
             self.notify("goal_check", {
@@ -1315,7 +1471,7 @@ class Thread:
                 "tests": verdict.tests,
             })
 
-        result = await run_goal(spec, turn_runner=_one_turn,
+        result = await run_goal(spec, turn_runner=_one_turn, judge_fn=_judge,
                                 max_rounds=as_int(goal.get("max_rounds") or 3),
                                 budget_exhausted=lambda: bool(getattr(s.budget, "stop_reason", None)),
                                 emit=_emit)
@@ -1457,9 +1613,16 @@ class Thread:
                 break
 
     def _mark_tree_after(self, tree: str) -> None:
+        """记下这一回合结束时的磁盘快照。**后来的写法覆盖前面的**。
+
+        一个外层回合内部可能跑多轮：全力以赴的修复轮、写回胜者，Goal 的多轮内层回合。
+        只在第一次写入，会把「第一轮之后」的状态当成回合结束状态：检查点里看不到
+        最终补丁（全力以赴写回胜者后就漏在那里），/undo 只能退到「拿当前工作区推断
+        本回合的改动」，把用户之后的修改也圈进撤销范围。
+        """
         for it in reversed(self.items):
             if it.get("type") == "user" and it.get("tree"):
-                if "tree_after" not in it:
+                if it.get("tree_after") != tree:
                     it["tree_after"] = tree
                     self._update(it)
                 break

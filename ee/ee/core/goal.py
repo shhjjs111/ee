@@ -77,8 +77,8 @@ class Verdict:
         need = max(1, as_int(self.min_tests))
         if n < need:
             if n == 0:
-                return ("zero_tests：命令成功但没收集到任何测试"
-                        f"（需要 ≥{need} 个）。退出 0 不等于验证通过")
+                return ("zero_tests：命令成功但没有任何测试真正执行"
+                        f"（需要 ≥{need} 个）。只收集、全跳过、退出 0 都不等于验证通过")
             return f"only_{n}_tests：只跑了 {n} 个测试，需要 ≥{need} 个"
         return f"ok：{n} 个测试通过"
 
@@ -140,6 +140,9 @@ _PHPUNIT_SUM = re.compile(r"Tests:\s*(\d+),\s*Assertions:", re.I)
 _BUN_PASS = re.compile(r"^\s*(\d+)\s+pass\s*$", re.M)
 _BUN_FAIL = re.compile(r"^\s*(\d+)\s+fail\s*$", re.M)
 _MAVEN = re.compile(r"Tests run:\s*(\d+)", re.I)
+# surefire 的每套件行：`Tests run: 2, ... Time elapsed: 0.01 s -- in com.example.A`
+_MAVEN_SUITE = re.compile(r"Tests run:\s*(\d+)[^\n]*?--\s*in\s+\S", re.I)
+_UNITTEST = re.compile(r"^Ran\s+(\d+)\s+tests?\s+in\s", re.M)
 _GRADLE_SUMMARY = re.compile(r"(\d+)\s+tests?\s+completed", re.I)   # 失败汇总：3 tests completed, 1 failed
 _GRADLE_LINE = re.compile(r"^.+?\s>\s.+?\s(?:PASSED|FAILED)\s*$", re.M)  # testLogging 逐条 PASSED/FAILED
 
@@ -172,12 +175,14 @@ def parse_tests(output: str) -> int:
       `2 failed, 3 passed` 表示跑了 5 个。只取 passed 会把失败那部分漏掉，
       在"修好一半"的场景里低估进度。
     - 其它 runner（go / dotnet / vitest / jest / mocha / rspec / phpunit / bun /
-      maven / gradle）按各自汇总行解析，口径同样是「通过 + 失败」。
-    - 否则 `collected N items`。
+      maven / gradle / unittest）按各自汇总行解析，口径同样是「通过 + 失败」。
     - 都没有 → 0（读不出就当没跑，不假成功）。
 
-    为什么 `collected` 排在后面：collected 包含 skipped，
-    10 collected / 8 passed / 2 skipped 的真实通过数不是 10。
+    **`collected N items` 不算执行**（2026-11 独立审查实测：`pytest --collect-only`
+    退出 0 时 7 个只被收集的用例被当成跑了 7 个）。收集 ≠ 执行：判据的全部意义是
+    「真的验证过」，把「编译通过 + 收集到用例」当天花板会让假成功变成默认结果。
+    宁可多跑几轮，不可假成功。同理，go 的 `-v` 输出里 `ok pkg` 与 `--- PASS:` 不能
+    相加（一个测试会被算两次）。
     """
     if not output:
         return 0
@@ -206,15 +211,17 @@ def parse_tests(output: str) -> int:
         return as_int(f.group(1))
     c = _COLLECTED.search(output)
     if c:
-        # collected 含 skipped。全 skipped 时「收集到 3 个」不等于「跑了 3 个」：
-        # 扣掉 skip 数，一个都没真跑就返回 0——宁可多跑几轮，不可假成功。
-        total = as_int(c.group(1))
-        s = _SKIPPED.search(output)
-        skipped = as_int(s.group(1)) if s else 0
-        return max(0, total - skipped)
+        # 只有 collected、没有任何「跑过了」的汇总：一律按没跑算（见上面的说明）。
+        # 留着这个分支（而不是直接删）是为了让「只收集 / 全被收集后筛掉」这种输出
+        # 拿到一个明确结论 0，而不是落到别的正则上撞出个数。
+        return 0
     r = _RAN.search(output)
     if r:
         return as_int(r.group(1))
+    m = _UNITTEST.search(output)
+    if m:
+        # `Ran 5 tests in 0.002s`：unittest 每跑一个都算了，成功失败都打这一行
+        return as_int(m.group(1))
 
     # ---- 其它 runner（顺序无关，形态互不重叠；但 vitest/jest 必须在 go 之前判，
     # 否则 `Tests  ... passed` 不会被命中，也不冲突。放在一起按最具体的先查。）
@@ -223,9 +230,14 @@ def parse_tests(output: str) -> int:
         n = _from_vitest_jest(m.group(1))
         if n:
             return n
-    m = _MAVEN.search(output)
+    m = _MAVEN_SUITE.findall(output)
     if m:
-        return as_int(m.group(1))          # Tests run 已含 failures/errors，不能相加
+        # 多套件项目：每个套件一行 `Tests run:`。只取第一行会把 2+5 读成 2。
+        return sum(as_int(x) for x in m)
+    maven = _MAVEN.findall(output)
+    if maven:
+        # 单套件/收尾汇总：`Tests run` 已含 failures/errors，所以取最后一个（汇总行不会重复相加）
+        return as_int(maven[-1])
     gradle_lines = _GRADLE_LINE.findall(output)
     if gradle_lines:
         return len(gradle_lines)        # testLogging 的逐条 PASSED/FAILED
@@ -249,10 +261,16 @@ def parse_tests(output: str) -> int:
     bp, bf = _BUN_PASS.search(output), _BUN_FAIL.search(output)
     if bp:
         return as_int(bp.group(1)) + (as_int(bf.group(1)) if bf else 0)
-    go_fail = bool(_GO_FAIL_SUMMARY.search(output)) or bool(_GO_FAIL.search(output))
-    passes = len(_GO_OK.findall(output)) + len(_GO_PASS.findall(output))
+    go_verbose = _GO_PASS.findall(output) + _GO_FAIL.findall(output)
+    if go_verbose:
+        # `-v`：逐条 `--- PASS/FAIL` 才是测试数。再加 `ok pkg` 行会把
+        # 「1 个测试 + 1 个包」算成 2（实测：单测 1 例被读成 2 例）。
+        return len(go_verbose)
+    go_fail = bool(_GO_FAIL_SUMMARY.search(output))
+    passes = len(_GO_OK.findall(output))
     if passes:
-        return passes + len(_GO_FAIL.findall(output))
+        # 非 -v：只能数包（`ok pkg`），一个包至少跑过一个测试
+        return passes
     if go_fail:
         # go 全失败且没带 -v：没有可数的通过行。0 是保守方向（退出码非零本来就不通过）
         return 0
@@ -328,6 +346,9 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
 
     参数都是注入的，**这里不自己造 agent 回合**：
     - `turn_runner`：跑一个 agent 回合的协程函数，由调用方给（headless 传它自己的）。
+      返回值可以是 `"interrupted"`：**回合自己先被用户停掉了**（内核把取消转成
+      TurnDone("interrupted")，不是异常），这时循环必须立刻收尾，不能接着判据再跑下一轮。
+      返回 None 或别的东西 = 回合正常结束。
     - `judge_fn`：判定函数，默认 `judge`（测试可替换，避免真跑子进程）。
     - `budget_exhausted`：可选的无参函数，返回 True 表示预算用完。
 
@@ -370,7 +391,7 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
             # 但**不能靠捕获 TypeError 再重试**——那样 KeyboardInterrupt/CancelledError
             # 在重试时抛出会绕过外层 except（同一 try 的 except 块内异常不回流），
             # 中断信号会直接穿透整个循环。
-            await _call_runner(turn_runner, v)
+            ran = await _call_runner(turn_runner, v)
         except KeyboardInterrupt:
             result.stop_reason = INTERRUPTED
             result.detail = "用户中断"
@@ -382,6 +403,13 @@ async def run_goal(spec: GoalSpec, *, turn_runner, judge_fn=None, max_rounds: in
         except Exception as e:  # noqa: BLE001  回合失败要报出来，不抛给调用方
             result.stop_reason = ERROR
             result.detail = f"回合执行失败：{type(e).__name__}: {e}"
+            return result
+        if ran == INTERRUPTED:
+            # 回合内部被用户停掉（session 取消 → TurnDone("interrupted")），runner 正常返回。
+            # 不看这个返回值，循环会照常判据并再起一轮模型回合：界面上已经"停止"了，
+            # 后台还在烧钱（2026-11 独立审查实测：停在第一次模型回合后又跑了两次判定 + 一次回合）。
+            result.stop_reason = INTERRUPTED
+            result.detail = "用户停掉了模型回合"
             return result
 
     result.stop_reason = EXHAUSTED

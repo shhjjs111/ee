@@ -286,7 +286,10 @@ def register(methods: dict, backend) -> None:
         t, s = await _session(thread_id)
         if t.running or s.running:
             raise RpcError("运行中不能恢复，先停止这一回合")
-        res = await asyncio.to_thread(_restore, t, s, checkpoint_id, side)
+        # 工作区锁：_restore 里的「别的会话在跑吗」与真正写文件必须原子化，
+        # 否则查完再写之间新回合可以开起来（2026-11 独立审查实测）。
+        async with backend.workspace_lock(t.meta.get("cwd")):
+            res = await asyncio.to_thread(_restore, t, s, checkpoint_id, side)
         if res["restored"]:
             backend.notify("git/changed", {"cwd": t.meta.get("cwd")})
             backend.forget_reads(t.meta.get("cwd") or "")

@@ -150,7 +150,7 @@ def is_read_only(parent, args: dict, adef: AgentDef | None = None) -> bool:
     if adef is None:
         adef = agent_defs(parent.home, parent.cwd).get(kind)
     want = str(args.get("mode") or "").strip().lower()
-    if want in _RO_ALIASES or parent.policy.mode in READONLY_MODES or kind == "explore":
+    if want in _RO_ALIASES or parent.policy.eff_mode in READONLY_MODES or kind == "explore":
         return True
     if adef is not None and adef.tools and kind not in BUILTIN:
         tm = parent.tool_map
@@ -164,7 +164,7 @@ def access(parent, args: dict) -> str:
     adef = agent_defs(parent.home, parent.cwd).get(kind)
     if adef is None or not str(args.get("prompt") or "").strip():
         return parallel.READ               # 马上报错，不碰任何东西
-    if parent.policy.mode in READONLY_MODES and _iso(args) == "worktree":
+    if parent.policy.eff_mode in READONLY_MODES and _iso(args) == "worktree":
         return parallel.READ               # 会被拒绝
     return parallel.READ if is_read_only(parent, args, adef) else parallel.WRITE
 
@@ -312,8 +312,8 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     if not task:
         raise ValueError("prompt（子任务说明）不能为空")
     desc = _clip(str(args.get("description") or task.splitlines()[0]), 80)
-    if parent.policy.mode in READONLY_MODES and _iso(args) == "worktree":
-        raise ValueError(f"当前是{'计划' if parent.policy.mode == 'plan' else '只读'}模式，不能派会改文件的子代理"
+    if parent.policy.eff_mode in READONLY_MODES and _iso(args) == "worktree":
+        raise ValueError(f"当前是{'计划' if parent.policy.eff_mode == 'plan' else '只读'}模式，不能派会改文件的子代理"
                          "（isolation=worktree）。需要改文件请先让用户批准切换到默认或全自动模式；只读调研用 agent=explore。")
 
     fork = _wants_fork(args)
@@ -346,7 +346,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     if fork:
         model = fork_model
     use_wt = (not read_only) and (getattr(parent, "_subagent_plan", None) or {}).get(call_id) == "worktree"
-    mode_label = "read-only" if read_only else parent.policy.mode
+    mode_label = "read-only" if read_only else parent.policy.eff_mode
 
     data = copy.deepcopy(parent.config.data)
     data["max_steps"] = steps
@@ -380,7 +380,7 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
         child_cwd = Path(wt_info["cwd"]) if wt_info else parent.cwd
 
         def build() -> Session:
-            child = Session(cfg, model=model, cwd=child_cwd, mode="read-only" if read_only else parent.policy.mode,
+            child = Session(cfg, model=model, cwd=child_cwd, mode="read-only" if read_only else parent.policy.eff_mode,
                             client=parent._client_override, client_factory=parent._client_factory, persist=False,
                             home=parent.home, shell=parent.shell_name, user_home=parent.user_home)
             p = parent.policy

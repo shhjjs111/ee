@@ -83,9 +83,10 @@ def test_parse_tests_handles_multiple_formats():
     from ee.core.goal import parse_tests
 
     assert parse_tests("5 passed, 1 skipped in 0.5s") == 5
-    assert parse_tests("collected 7 items") == 7
     assert parse_tests("2 failed, 3 passed") == 5
     assert parse_tests("===== 12 passed in 3.4s =====") == 12
+    # 只有 collected 不算执行：收集 ≠ 跑过（`--collect-only` 退出 0 时会假成功）
+    assert parse_tests("collected 7 items") == 0
 
 
 def test_parse_tests_prefers_passed_over_collected():

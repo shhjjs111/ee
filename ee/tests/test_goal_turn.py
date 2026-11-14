@@ -88,7 +88,7 @@ def test_rejects_non_dict():
     from ee.server.threads import _norm_goal
 
     with pytest.raises(ValueError):
-        _norm_goal("pytest -q")
+        _norm_goal("pytest -q")          # type: ignore[arg-type]  故意传错类型：界面坏数据要被挡下
 
 
 def test_rounds_capped():
@@ -163,3 +163,145 @@ def test_invalid_goal_rejected_before_starting_turn(ee_home, workspace):
         with pytest.raises(ValueError):
             th.start_turn("x", goal={"command": ""})
     assert _turns(th) == [], "校验失败却写入了用户条目"
+
+
+# ---------------------------------------------------------------- 回合内被停掉 / 检查点
+
+def test_goal_loop_stops_when_model_turn_interrupted(ee_home, workspace, monkeypatch):
+    """内核把「用户点停止」转成 `TurnDone("interrupted")`（不是异常）。
+
+    `_consume_goal._one_turn` 必须把这个终态交给 run_goal，否则循环会接着判据、
+    再起一轮模型回合：界面显示已停止，后台继续花钱。
+    """
+    from ee.core.events import TurnDone
+    import ee.core.goal as G
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    calls: list[str] = []
+
+    def make(session):
+        async def run_turn(text, images=None):
+            calls.append(text)
+            yield TurnDone("interrupted", "")
+        return run_turn
+
+    th.session.run_turn = make(th.session)
+    judged: list[str] = []
+
+    async def fake_judge(spec, **_kw):
+        judged.append(spec.command)
+        return G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+    notes: list[tuple[str, dict]] = []
+    th.notify = lambda m, p: notes.append((m, p))
+
+    reason = asyncio.run(th._consume_goal("修好它", None, {"command": "pytest -q", "max_rounds": 3}))
+    assert reason == "interrupted"
+    assert len(calls) == 1, "中断后不该再起模型回合"
+    assert len(judged) == 1, "中断后不该再跑判据（首轮判定在前，属正常）"
+    done = [p for m, p in notes if m == "goal_done"]
+    assert done and done[-1]["stop_reason"] == "interrupted"
+
+
+def test_goal_records_tree_after_from_inner_turn(ee_home, workspace, monkeypatch):
+    """内层回合的 tree_after 要记到这一回合的用户条目上。
+
+    不记的话 Goal 回合的 `tree_after` 永远是空的：检查点里看不到「回合结束后」的状态，
+    /undo 只能退到「拿当前工作区推断改动」——用户在这之后的手改会被算进撤销范围。
+    """
+    from ee.core.events import TurnDone
+    import ee.core.goal as G
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    usr = th._add({"type": "user", "text": "修好它", "goal": {"command": "pytest -q"}})
+    usr["tree"] = "tree-before"          # 模拟回合开始时的快照已写入
+
+    def make(session):
+        async def run_turn(text, images=None):
+            yield TurnDone("completed", "", "tree-after")
+        return run_turn
+
+    th.session.run_turn = make(th.session)
+
+    verdicts = [G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)]
+
+    async def fake_judge(spec, **_kw):
+        return verdicts.pop(0)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+    th.notify = lambda m, p: None
+    # 第一轮判定必须是红的，否则 run_goal 一个回合都不跑（先判后跑），也就没有 TurnDone
+    reason = asyncio.run(th._consume_goal("修好它", None, {"command": "pytest -q", "max_rounds": 3}))
+    assert reason == "met"
+    assert usr.get("tree_after") == "tree-after", "Goal 回合必须记下回合后快照"
+
+
+def test_goal_runs_regression_command(ee_home, workspace, monkeypatch):
+    """普通 Goal 必须执行回归命令：目标判据过了、旧测试红了不能算 met。
+
+    界面把「回归命令」标成在 Goal 里生效，前端也确实提交了 pass_to_pass；
+    原来只有全力以赴用它，普通 Goal 静默丢掉整个字段（只收到目标判据就能 met）。
+    """
+    import ee.core.goal as G
+    from ee.core.events import TurnDone
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    turns: list[str] = []
+
+    def make(session):
+        async def run_turn(text, images=None):
+            turns.append(text)
+            yield TurnDone("completed", "")
+        return run_turn
+
+    th.session.run_turn = make(th.session)
+
+    def verdict(met: bool, out: str, tests: int = 3):
+        return G.Verdict(exit=0 if met else 1, tests=tests, output=out, min_tests=1)
+
+    # 每一轮判定都会先跑目标、再跑回归：目标两轮都绿，回归先红后绿（修复轮之后）
+    script = {"pytest -q tests/test_a.py": [verdict(True, "3 passed"), verdict(True, "3 passed")],
+              "pytest -q tests/": [verdict(False, "2 failed, 5 passed"), verdict(True, "7 passed", 7)]}
+    judged: list[str] = []
+
+    async def fake_judge(spec, **_kw):
+        judged.append(spec.command)
+        return script[spec.command].pop(0)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+    notes = []
+    th.notify = lambda m, p: notes.append((m, p))
+
+    reason = asyncio.run(th._consume_goal("修好它", None, {
+        "command": "pytest -q tests/test_a.py", "max_rounds": 2,
+        "pass_to_pass": "pytest -q tests/"}))
+    assert reason == "met"
+    assert "pytest -q tests/" in judged, "回归命令必须真的被执行"
+    assert turns, "回归失败后要有一个修复回合"
+    assert "回归命令失败" in turns[0], "回归失败的输出要交给模型（否则它不知道该修什么）"
+    notices = [it for it in th.items if it.get("type") == "notice"]
+    assert any("回归命令未通过" in str(it.get("text")) for it in notices)
+
+
+def test_goal_without_regression_command_keeps_old_behavior(ee_home, workspace, monkeypatch):
+    """不填回归命令时不多跑任何判定（回归门是可选的）。"""
+    import ee.core.goal as G
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    judged: list[str] = []
+
+    async def fake_judge(spec, **_kw):
+        judged.append(spec.command)
+        return G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+    th.notify = lambda m, p: None
+    reason = asyncio.run(th._consume_goal("修好它", None, {"command": "pytest -q", "max_rounds": 3}))
+    assert reason == "met"
+    assert judged == ["pytest -q"]
