@@ -653,3 +653,41 @@ def test_undo_after_multi_round_goal_reverts_whole_turn(ee_home, workspace, monk
         assert names == {"a.txt", "b.txt"}, f"只撤回了部分文件：{r['restored']}"
         assert not (workspace / "a.txt").exists() and not (workspace / "b.txt").exists()
     asyncio.run(go())
+
+
+@needs_git
+def test_multi_round_turn_records_one_undo_entry(ee_home, workspace, monkeypatch):
+    """多轮回合：条目上的 tree_after 与 turn_trees 必须指向同一个「回合结束状态」。
+
+    检查点恢复会从用户条目重建 `s.turn_trees`（一条 = 整回合）；内存里的那份由
+    `run_turn` 每轮追加、收尾折叠。两边不一致时，/undo 的粒度会随「有没有恢复过
+    检查点」而变——同一份历史，撤销范围却不同。
+    """
+    import ee.core.goal as G
+
+    script = [_write("c1", "第一轮", "a.txt"), text_chunks("改了 a") + finish("stop"),
+              _write("c2", "第二轮", "b.txt"), text_chunks("又改了 b") + finish("stop")]
+    verdicts = [G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)]
+
+    async def fake_judge(spec, **_kw):
+        return verdicts.pop(0) if verdicts else G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+
+    async def go():
+        b, _, ev = make_backend(ee_home, script)
+        tid = (await b.call("thread/start", {"cwd": str(workspace), "mode": "auto"}))["thread"]["id"]
+        await b.call("turn/start", {"thread_id": tid, "text": "修好它",
+                                    "goal": {"command": "pytest -q", "max_rounds": 3}})
+        await wait_for(ev, "turn/completed")
+
+        t = b.threads[tid]
+        s = t.session
+        usr = _users((await b.call("thread/get", {"thread_id": tid}))["thread"]["items"])[0]
+        assert usr.get("tree_after"), "回合后快照必须落在条目上"
+        trees = [e for e in s.turn_trees if e.get("before") == usr["tree"]]
+        assert len(trees) == 1, f"一个外层回合应折叠成一条撤销记录，实际 {len(s.turn_trees)} 条"
+        assert trees[0]["after"] == usr["tree_after"], "条目与 turn_trees 的回合结束状态必须一致"
+    asyncio.run(go())
