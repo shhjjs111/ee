@@ -657,3 +657,46 @@ def test_revert_repair_files_restores_snapshot(ee_home, workspace, monkeypatch):
     restored = th._revert_repair(s, "tree-before")
     assert restored == ["a.txt"]
     assert files["a.txt"] == "before"
+
+
+def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
+    """胜者补丁写回失败时，回合不能报 met。
+
+    写回走的是 `git apply`（全有或全无）；主目录脏了/冲突时它一个文件都不动。
+    此时工作区里既没有候选的改动，第一轮的判据也还是红的——必须如实报 exhausted，
+    否则界面显示「完成」而工作区什么都没成。
+    """
+    import ee.core.allout as A
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1)])   # 首轮 + 修复轮都红
+    _stub_turn(th, ["completed", "completed"])
+    th.session.disk_capture = lambda: None
+
+    winner = {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": False,
+              "cwd": str(workspace), "base": "b", "worktree": str(workspace)}
+
+    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None):
+        return [winner]
+
+    async def fake_rank(passed, task, judge_output):
+        return passed[0]
+
+    monkeypatch.setattr(th, "_allout_fanout", fake_fanout)
+    monkeypatch.setattr(th, "_allout_rank", fake_rank)
+    monkeypatch.setattr(A, "apply_winner", lambda *a, **k: {"applied": False, "files": 2,
+                                                           "error": "补丁应用失败（主目录未改动）：冲突"})
+    notes = []
+    th.notify = lambda m, p: notes.append((m, p))
+
+    reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
+                                        {"enabled": True, "candidates": 2}))
+    assert reason == "exhausted", f"写回失败却报 {reason}"
+    applies = [p for m, p in notes if m == "allout_progress" and p.get("phase") == "apply"]
+    assert applies and applies[-1]["result"]["applied"] is False
+    assert "冲突" in applies[-1]["result"]["error"]
+    # 状态文字收尾就清空了；失败原因与善后路径必须落进对话，否则用户只剩一个「未达成」
+    notices = [it for it in th.items if it.get("type") == "notice"]
+    assert any("没能写回主目录" in str(it.get("text")) and "worktree" in str(it.get("text"))
+               for it in notices), f"缺少写回失败的说明：{notices}"

@@ -1080,6 +1080,14 @@ class Thread:
                         if tree:
                             self._mark_tree_after(tree)
                         return "met"
+                    # 写回失败（git apply 是全有或全无，主目录一个文件都没动）：回合会如实
+                    # 报 exhausted，但状态文字在收尾时就被清掉了，用户看不到原因与善后路径。
+                    # 候选的改动仍提交在它自己的分支上，所以要明确告诉他去合并或对比。
+                    self._add({"type": "notice", "level": "warn",
+                               "text": "全力以赴：候选的补丁没能写回主目录（"
+                                       + (str(res.get("error") or "原因未知"))
+                                       + "）。候选的改动仍保留在它自己的 worktree 分支上，"
+                                         "可以对比后手动合并，或改完冲突再试一次。"})
         return "exhausted" if (not best.met or regressed) else "met"
 
     def _revert_repair(self, s, tree: str | None) -> list[str] | None:
