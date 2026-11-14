@@ -36,7 +36,7 @@ from ee.core.budget import BudgetGuard
 from ee.core.loopguard import REPEAT_NOTE, REPEAT_STOP, LoopGuard, signature
 from ee.core.context import (ContextUpdates, FrozenPrefix, UsageStats, env_parts, load_prompt, system_prompt,
                              wire_fingerprint)
-from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, Error, Notice, PlanUpdate,
+from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Compacted, DialogEnded, Error, Notice, PlanUpdate,
                             QueueDelivered, QueueReturned, ReasoningDelta, Status, StepStart, TextDelta, ToolEnd,
                             ToolOutput, ToolStart, TurnDone, TurnStart, Usage)
 from ee.core.permissions import MODE_LABEL, Decision, PermissionPolicy
@@ -1547,7 +1547,15 @@ class Session:
         self._results.clear()
 
     # ------------------------------------------------------------ 回合
-    async def run_turn(self, text: str, images: list[str] | None = None) -> AsyncIterator:
+    async def run_turn(self, text: str, images: list[str] | None = None, *,
+                       inner: bool = False) -> AsyncIterator:
+        """跑一个回合。
+
+        `inner=True`：这是**外层回合内部的一轮**（Goal / 全力以赴会连着调好几次）。
+        这时不在本轮的 TurnDone 处把排队消息退回界面：Goal 跑第二轮时，「待追加」
+        的消息会提前蹦回输入框，而用户排的语义是「这一回合做完再追加」。
+        退回由外层回合收尾时统一做（见 Thread._consume 的 _return_leftover_queue）。
+        """
         q: asyncio.Queue = asyncio.Queue()
         if self._history_lock.locked():
             yield Status("正在压缩上下文，压缩完成后开始这一回合…")
@@ -1570,7 +1578,7 @@ class Session:
                         self.turn_trees[-1]["after"] = ev.tree_after
                     else:
                         self.turn_trees[-1]["after"] = self.turn_trees[-1].get("before")
-                if isinstance(ev, TurnDone) and self.queue:   # 没送入的排队消息退回界面（之后没有挂起点，不会再有人排进来）
+                if isinstance(ev, TurnDone) and self.queue and not inner:   # 没送入的排队消息退回界面（之后没有挂起点，不会再有人排进来）
                     yield QueueReturned([q.to_dict() for q in self.queue.drain()])
                 yield ev
                 if isinstance(ev, TurnDone):
@@ -2075,13 +2083,23 @@ class Session:
             emit(ev)
             if APPROVAL_TIMEOUT > 0:
                 try:
-                    return await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
+                    dec = await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
                 except (asyncio.TimeoutError, TimeoutError):
                     if not fut.done():
                         fut.cancel()
                     emit(Notice(f"审批等待超过 {APPROVAL_TIMEOUT:.0f} 秒没有回应，按拒绝处理。", "warn"))
+                    # 卡片不能停在「等待批准」：超时后再点「批准」，界面会写成已批准，
+                    # 而工具早就按拒绝走完了（界面说的和实际相反）。
+                    emit(DialogEnded(cid, "cancelled", "等待超过时限，按拒绝处理"))
                     return ApprovalDecision("deny")
-            return await fut
+            else:
+                dec = await fut
+            # 用户点了按钮时 Thread.respond 已经结过条目、也清掉了 approvals 表（这条是空操作）；
+            # 无人值守自动批准 / 外部直接 set_result 时，靠它把卡片从「等待批准」改成真实结论。
+            choice = str(getattr(dec, "choice", "deny") or "deny")
+            emit(DialogEnded(cid, "deny" if choice.startswith("deny") else choice,
+                            str(getattr(dec, "reason", "") or "")))
+            return dec
 
     # ------------------------------------------------------------ 侧路请求（不碰主会话）
     async def side_complete(self, system: str, user: str, role: str | None = None) -> str:

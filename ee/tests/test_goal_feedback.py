@@ -21,7 +21,7 @@ class _FakeSession:
         self.inputs: list[str] = []
         self.budget = type("B", (), {"stop_reason": None})()
 
-    async def run_turn(self, text, images=None):
+    async def run_turn(self, text, images=None, **_kw):
         self.inputs.append(text)
         if False:                       # 让它是异步生成器，但一句都不产出
             yield None
@@ -55,7 +55,8 @@ def _run_goal_with(monkeypatch, failure_output: str, command: str, max_rounds: i
 
     th = _FakeThread()
     import asyncio
-    asyncio.run(Thread._consume_goal(th, "把 parse_date 的时区 bug 修好", None,
+    # 鸭子类型的替身：这里只验「判据输出怎么拼进模型输入」，不建真 Thread / Session
+    asyncio.run(Thread._consume_goal(th, "把 parse_date 的时区 bug 修好", None,  # type: ignore[arg-type]
                                      {"command": command, "max_rounds": max_rounds}))
     return th.session.inputs
 
@@ -89,7 +90,8 @@ def test_goal_zero_turns_when_already_met(monkeypatch):
     import asyncio
 
     th = _FakeThread()
-    reason = asyncio.run(Thread._consume_goal(th, "随便", None, {"command": "pytest -q", "max_rounds": 3}))
+    reason = asyncio.run(Thread._consume_goal(th, "随便", None,  # type: ignore[arg-type]
+                                              {"command": "pytest -q", "max_rounds": 3}))
     assert reason == "met"
     assert th.session.inputs == [], f"判据已成立却跑了模型回合：{th.session.inputs}"
 

@@ -74,7 +74,7 @@ class _FakeSession:
     def effort_support(self):
         return None
 
-    async def run_turn(self, text, images=None):
+    async def run_turn(self, text, images=None, **_kw):
         if False:
             yield None
 

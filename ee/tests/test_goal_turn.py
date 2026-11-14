@@ -181,7 +181,7 @@ def test_goal_loop_stops_when_model_turn_interrupted(ee_home, workspace, monkeyp
     calls: list[str] = []
 
     def make(session):
-        async def run_turn(text, images=None):
+        async def run_turn(text, images=None, inner=False):
             calls.append(text)
             yield TurnDone("interrupted", "")
         return run_turn
@@ -220,7 +220,7 @@ def test_goal_records_tree_after_from_inner_turn(ee_home, workspace, monkeypatch
     usr["tree"] = "tree-before"          # 模拟回合开始时的快照已写入
 
     def make(session):
-        async def run_turn(text, images=None):
+        async def run_turn(text, images=None, inner=False):
             yield TurnDone("completed", "", "tree-after")
         return run_turn
 
@@ -254,7 +254,7 @@ def test_goal_runs_regression_command(ee_home, workspace, monkeypatch):
     turns: list[str] = []
 
     def make(session):
-        async def run_turn(text, images=None):
+        async def run_turn(text, images=None, inner=False):
             turns.append(text)
             yield TurnDone("completed", "")
         return run_turn
@@ -305,3 +305,72 @@ def test_goal_without_regression_command_keeps_old_behavior(ee_home, workspace, 
     reason = asyncio.run(th._consume_goal("修好它", None, {"command": "pytest -q", "max_rounds": 3}))
     assert reason == "met"
     assert judged == ["pytest -q"]
+
+
+def test_inner_turn_keeps_queue_until_outer_turn_ends(workspace):
+    """内层回合（Goal/全力以赴的一轮）不能把「待追加」提前退回界面。
+
+    `run_turn` 在每个 TurnDone 处把没送进的排队消息退回界面；Goal 会连着调好几次
+    `run_turn`，于是在第一轮结束就把用户「这一回合做完再追加」的消息蹦回输入框，
+    而外层回合还在跑。现在内层回合用 `inner=True`，由外层收尾统一退一次。
+    """
+    from conftest import make_session
+    from ee.core.events import QueueReturned, TurnDone
+
+    async def run(inner: bool):
+        s, _ = make_session(workspace, [])
+        s.queue_input("待追加的话", "follow")
+
+        async def fake_turn(text, put, images=None):
+            put(TurnDone("completed", ""))       # 只测 run_turn 的收尾分支，不跑模型
+
+        s._turn = fake_turn
+        evs = [ev async for ev in s.run_turn("做点事", inner=inner)]
+        return s, evs
+
+    s_outer, evs_outer = asyncio.run(run(False))
+    assert any(isinstance(e, QueueReturned) for e in evs_outer), "普通回合结束时该退回"
+    assert not s_outer.queue.items
+
+    s_inner, evs_inner = asyncio.run(run(True))
+    assert not any(isinstance(e, QueueReturned) for e in evs_inner), \
+        "内层回合不该把「待追加」提前退回"
+    assert s_inner.queue.has("follow"), "消息要留在队列里给外层收尾"
+
+
+def test_goal_turn_returns_leftover_queue_once(ee_home, workspace, monkeypatch):
+    """Goal 跑完后，整回合里排的「待追加」在外层收尾时退回一次（且队列清空）。"""
+    from ee.core.events import TurnDone
+    import ee.core.goal as G
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    notes: list[tuple[str, dict]] = []
+    th.notify = lambda m, p: notes.append((m, p))
+    rounds = {"n": 0}
+
+    def make(session):
+        async def run_turn(text, images=None, inner=False):
+            rounds["n"] += 1
+            session.queue_input(f"待追加 {rounds['n']}", "follow")
+            yield TurnDone("completed", "")
+        return run_turn
+
+    th.session.run_turn = make(th.session)
+    # 两轮几回合才停：先判红 → 回合1 → 再判红 → 回合2 → 判绿
+    verdicts = [G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=1, tests=1, output="1 failed", min_tests=1),
+                G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)]
+
+    async def fake_judge(spec, **_kw):
+        return verdicts.pop(0) if verdicts else G.Verdict(exit=0, tests=3, output="3 passed", min_tests=1)
+
+    monkeypatch.setattr(G, "judge", fake_judge)
+    asyncio.run(th._consume("做点事", goal={"command": "pytest -q", "max_rounds": 3}))
+    done = [p for m, p in notes if m == "turn/completed"]
+    assert done and done[-1]["reason"] == "met", f"回合终态不对：{done}"
+    assert rounds["n"] == 2, "前提：Goal 跑了两轮"
+    returned = [p for m, p in notes if m == "turn/queue_returned"]
+    assert len(returned) == 1, f"退回应该只发生一次（外层收尾），实际 {len(returned)} 次"
+    assert [x["text"] for x in returned[0]["items"]] == ["待追加 1", "待追加 2"]
+    assert not th.session.queue.items, "退回之后队列必须清空，否则下一回合会再送一次"

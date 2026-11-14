@@ -125,7 +125,7 @@ def test_fanout_wires_deny_rules_and_worktree_prompt(ee_home, workspace, monkeyp
             self.disk_enabled = True
             self.effort = ""
 
-        async def run_turn(self, prompt, images=None):
+        async def run_turn(self, prompt, images=None, **_kw):
             captured["prompt"] = prompt
             captured["policy"] = self.policy
             if False:                     # 让它是 async generator

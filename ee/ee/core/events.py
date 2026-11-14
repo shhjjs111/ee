@@ -96,6 +96,22 @@ class QuestionRequest(Event):
 
 
 @dataclass
+class DialogEnded(Event):
+    """审批 / 提问在**没有界面点击**的情况下已经有了结论。
+
+    两种场景：超时（`APPROVAL_TIMEOUT`，窗口关了或前端断线→按拒绝/取消），
+    以及无人值守自动批准（`ee exec --approve auto`）。
+
+    没有这条事件，卡片会一直停在「等待批准」：用户过一会儿再点，`approval/respond`
+    还能把条目写成「已批准」，而工具早就被当成拒绝了——界面说的和实际发生的相反
+    （2026-11 审计：审批超时后条目状态从不更新，且 approvals 表里的 future 一直留着）。
+    """
+    call_id: str
+    status: str             # cancelled | deny | once | always | answered
+    reason: str = ""
+
+
+@dataclass
 class CaptureRequest(Event):
     """请求界面截一张当前窗口的图（screenshot 工具用）。界面通过 RPC `ui/capture_result` 回送。"""
     request_id: str

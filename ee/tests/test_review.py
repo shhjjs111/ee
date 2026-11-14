@@ -71,7 +71,8 @@ def test_parse_findings():
             '{"priority": 1, "title": "越界", "body": "x", "file": "a.py", "line_start": 2, "line_end": 2, "confidence": 0.9},'
             '{"body": "无标题被丢掉"}]}\n```')
     r = R.parse_findings(text)
-    assert r is not None, "这段输出应该能解析出结构化结果"
+    if r is None:
+        raise AssertionError("这段输出应该能解析出结构化结果")
     assert r["overall"] == "incorrect" and [f["title"] for f in r["findings"]] == ["越界", "小问题"]
     assert R.parse_findings("没有块") is None and R.parse_findings("```ee-review\n不是json\n```") is None
 
@@ -194,7 +195,7 @@ def test_review_readonly_survives_mode_switch(ee_home, workspace):
     seen: dict[str, object] = {}
 
     def make(session):
-        async def run_turn(text, images=None):
+        async def run_turn(text, images=None, **_kw):
             th.set_mode("auto")               # 审查回合进行中，用户把模式拨到全自动
             seen["write"] = th.session.policy.check(
                 "write", {"path": "a.py", "content": "x"}).action

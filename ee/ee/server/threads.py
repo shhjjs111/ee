@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ee.config import load_config
-from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, Error, Notice, PlanUpdate,
+from ee.core.events import (ApprovalDecision, ApprovalRequest, AssistantMessage, DialogEnded, Error, Notice, PlanUpdate,
                             ReasoningDelta, Status, StepStart, TextDelta, ToolEnd, ToolOutput, ToolStart, TurnDone,
                             TurnStart, Usage)
 from ee.core.events import QuestionRequest, QueueDelivered, QueueReturned, SubagentEnd, SubagentStart, SubagentUpdate
@@ -806,6 +806,12 @@ class Thread:
                         if ev.tree_after:
                             self._mark_tree_after(ev.tree_after)
                     self._on_event(ev)
+            # 多轮编排（Goal / 全力以赴）的内层回合按 inner=True 跑，不各自把排队消息
+            # 退回界面；现在外层回合真的结束了，统一退一次（普通回合的队列在 run_turn
+            # 里已经退过，这里是空操作）。
+            leftover = s.queue.drain()
+            if leftover:
+                self._on_event(QueueReturned([q.to_dict() for q in leftover]))
         except asyncio.CancelledError:
             # 用户点停止时 `interrupt()` 会 cancel 外层 task（session 已经空闲停不到东西时只能这样）：
             # CancelledError 是 BaseException，上面的 except Exception 接不住，reason 会停在初值
@@ -975,7 +981,7 @@ class Thread:
         async def one_turn(msg: str) -> str:
             rounds["n"] += 1
             reason = "completed"
-            async for ev in s.run_turn(msg, images if rounds["n"] == 1 else None):
+            async for ev in s.run_turn(msg, images if rounds["n"] == 1 else None, inner=True):
                 if isinstance(ev, TurnDone):
                     reason = ev.reason
                     if ev.tree_after:
@@ -1457,7 +1463,7 @@ class Thread:
                 from ee.core.goal_feedback import build_feedback
                 payload = build_feedback(verdict, spec, attempt=round_no["n"] - 1,
                                          max_checks=as_int(goal.get("max_rounds") or 3))
-            async for ev in s.run_turn(payload, images):
+            async for ev in s.run_turn(payload, images, inner=True):
                 if isinstance(ev, TurnDone):
                     if ev.reason:
                         reason = ev.reason
@@ -1756,6 +1762,18 @@ class Thread:
                 self.approvals[ev.call_id] = (ev.future, it)
             self.notify("thread/updated", {"thread": self.summary()})
             self._bubble_to_parent("approval", ev.call_id, ev.tool, ev.title, ev.detail, ev.prefix)
+        elif isinstance(ev, DialogEnded):
+            # 审批 / 提问在没有界面点击的情况下结束了（超时 / 无人值守自动批准）：
+            # 卡片的 future 已经作废，状态必须跟着变，否则用户再点一下会把条目写成
+            # 「已批准」，而工具早就按拒绝/取消走完了（2026-11 审计）。
+            entry = self.approvals.pop(ev.call_id, None)
+            if entry is not None:
+                _fut, it = entry
+                it["status"] = ev.status if ev.status in ("once", "always", "deny", "cancelled", "answered")                     else "cancelled"
+                if ev.reason:
+                    it["reason"] = ev.reason[:4000]
+                self._update(it)
+                self.notify("thread/updated", {"thread": self.summary()})
         elif isinstance(ev, CaptureRequest):
             # 截图：工具正等着界面回图（RPC ui/capture_result 唤醒），这里只把请求递给前端。
             self.notify("ui/capture", {"thread_id": self.id, "id": ev.request_id})

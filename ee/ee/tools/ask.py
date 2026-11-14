@@ -54,6 +54,9 @@ class AskUserTool(Tool):
             except (asyncio.TimeoutError, TimeoutError):
                 if not fut.done():
                     fut.cancel()
+                # 卡片不能停在「等你回答」：future 已经死了，用户后来点什么都不会送到模型。
+                from ee.core.events import DialogEnded
+                emit(DialogEnded(ctx.extra.get("call_id", ""), "cancelled", "等待回答超时"))
                 raise ToolError(
                     f"等了 {APPROVAL_TIMEOUT:.0f} 秒没有收到用户的回答（窗口可能关了或断线了）。"
                     "不要假设答案：把这个问题和当前进展写进回复里，等用户回来再继续。") from None

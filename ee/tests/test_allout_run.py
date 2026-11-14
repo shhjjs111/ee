@@ -37,7 +37,7 @@ def _stub_turn(th, script):
     calls: list[str] = []
 
     def make(session):
-        async def run_turn(text, images=None):
+        async def run_turn(text, images=None, **_kw):
             calls.append(text)
             step = script.pop(0) if script else "completed"
             yield TurnDone(step, "")
@@ -503,7 +503,7 @@ def _patch_fake_child(monkeypatch):
             self.spec = SimpleNamespace(alias="m-effort-unknown")
             self.stats = SimpleNamespace(totals=lambda: {"cost": 0.0})
 
-        async def run_turn(self, text, images=None):
+        async def run_turn(self, text, images=None, **_kw):
             if False:              # 空异步生成器
                 yield None
 

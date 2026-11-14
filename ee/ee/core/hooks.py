@@ -293,6 +293,8 @@ def project_files(cwd: Path | None) -> list[Path]:
 
 
 def _project_table(p: Path) -> dict:
+    # 调用方 load() 已经捕获 OSError / ValueError（读不了就记进 cfg.errors 继续）
+    # pi-lens-ignore: unchecked-throwing-call-python -- 异常由 load() 的 try/except 统一处理
     with open(p, "rb") as f:
         data = tomllib.load(f)
     raw = data.get("hooks")
