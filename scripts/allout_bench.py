@@ -56,6 +56,8 @@ class Task:
 def load_tasks(root: Path = BENCH) -> list[Task]:
     out: list[Task] = []
     for path in sorted(p for p in root.iterdir() if p.is_dir()):
+        if path.name.startswith((".", "__")):     # __pycache__ / .venv 之类的产物，不是夹具
+            continue
         prompt = (path / "task.md")
         if not prompt.is_file():
             raise SystemExit(f"夹具缺 task.md：{path}")

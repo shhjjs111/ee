@@ -38,6 +38,11 @@ include = ["ee*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 全量跑（`pytest -c ee/pyproject.toml`，不带路径）时会从仓库根收集：
+# `research/bench` 是基准夹具（运行时才复制进项目），不是仓库测试；
+# `desktop` 是前端；都不该被 Python 测试套件扫进来。
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv",
+                 "{arch}", "research", "desktop"]
 
 # 静态检查只跑「真正的错误」类规则（E9 语法、F63/F7 断言与调试、F82 未定义名、
 # F401 未用导入、F811 重定义、F841 未用变量）。不做风格强制：仓库的排版约定是
