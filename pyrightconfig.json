@@ -1,11 +1,14 @@
 {
-  "include": ["ee/ee"],
+  "include": [
+    "ee/ee"
+  ],
   "exclude": [
     "**/__pycache__",
     "ee/scripts",
     "desktop",
     ".venv",
     "node_modules",
+    "research/bench",
     "**/dist",
     "**/dist-electron",
     "**/build",
@@ -18,7 +21,16 @@
   "executionEnvironments": [
     {
       "root": "ee",
-      "extraPaths": ["ee", "ee/tests"]
+      "extraPaths": [
+        "ee",
+        "ee/tests"
+      ]
+    },
+    {
+      "root": "scripts",
+      "extraPaths": [
+        "ee"
+      ]
     }
   ]
 }

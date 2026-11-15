@@ -1,0 +1,12 @@
+{
+  "include": [
+    "."
+  ],
+  "extraPaths": [
+    "01_first_pass/seed",
+    "02_small_repair/seed",
+    "03_wrong_approach/seed",
+    "04_green_but_missing/seed"
+  ],
+  "typeCheckingMode": "basic"
+}
