@@ -146,3 +146,17 @@
 - Electron Playwright：37 passed / 2 skipped。顺带修了一条**过期的断言**：
   `interaction.spec.ts` 仍期望火力全开无判据回合显示「完成 ·」，而第一批之后正确文案是
   「未独立验收 ·」；已改为接受两者，并断言执行卡片里的「本轮 N 路」。
+
+### 多路冒烟加长版（900s）
+
+把墙钟从 600s 提到 900s 再跑一次 `99_fanout_smoke`：`fanout_started=2`，两个候选都进入
+`preparing → working`，其中一路在 900s 上限到达时 `cancelled`；另一路仍未交卷，本轮被中断，
+`delivery` 为空、**没有报 met**，金额缺失（回合未结束，拿不到 usage）。结论不变：
+多路启动/回收路径可用；候选本身太慢（判据恒失败，模型会一直尝试），不适合当质量样本。
+
+### 双候选择优的确定性覆盖
+
+真实模型下的"双候选都通过 → 择优 → 写回 → 交付复验"仍未观察到（见上）。
+新增 `test_two_passing_candidates_select_and_write_back`：桩模型让两个候选都通过判据，
+断言两个候选都进排序、写回的**只有胜者**的补丁、`delivery.status=verified` 且
+`source=apply`。这条跑在真实 Thread/写回/闸门代码上，只是模型与 `git apply` 被替换。

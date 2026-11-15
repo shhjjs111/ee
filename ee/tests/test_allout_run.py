@@ -19,6 +19,13 @@ def _thread(home, workspace):
     return Thread("t1", home, lambda m, p: None, {"cwd": str(workspace)}, persist=False)
 
 
+def _session(th):
+    """测试里取会话：ensure_session 之后一定存在，但类型上是 Optional。"""
+    s = th.session
+    assert s is not None
+    return s
+
+
 class _Verdict:
     def __init__(self, met: bool, tests: int = 3, output: str = "", reason: str = ""):
         self.met = met
@@ -357,15 +364,16 @@ def test_plan_allout_leaves_used_session_effort_alone(ee_home, workspace, monkey
 
     th = _thread(ee_home, workspace)
     th.ensure_session()
-    th.session.set_effort("low")        # 先落到一个与 plan.effort 不同的档，守卫才有可观测效果
-    th.session.turns = 7
-    before = th.session.effort
+    sess = _session(th)
+    sess.set_effort("low")              # 先落到一个与 plan.effort 不同的档，守卫才有可观测效果
+    sess.turns = 7
+    before = sess.effort
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
         candidates=1, repair_rounds=1, effort="high", max_steps=50,
         temperature_ladder=(0.0,), verified=True, reasons=(), degradations=()))
     asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
                                 {"command": "pytest -q", "max_rounds": 3}))
-    assert th.session.effort == before, "已有会话不能被中途换档"
+    assert sess.effort == before, "已有会话不能被中途换档"
     assert th.meta.get("effort") is None
 
 
@@ -542,7 +550,7 @@ def test_cancel_reaps_candidate_tasks(ee_home, workspace, monkeypatch):
 
     th = _thread(ee_home, workspace)
     th.ensure_session()
-    th._allout_judge_lock = asyncio.Lock()
+    th._allout_judge_lock = asyncio.Semaphore(1)
     seen = _fanout_fakes(monkeypatch, workspace)
     _patch_fake_child(monkeypatch)
 
@@ -574,7 +582,7 @@ def test_cancel_during_worktree_creation_reaps_it(ee_home, workspace, monkeypatc
 
     th = _thread(ee_home, workspace)
     th.ensure_session()
-    th._allout_judge_lock = asyncio.Lock()
+    th._allout_judge_lock = asyncio.Semaphore(1)
     seen = _fanout_fakes(monkeypatch, workspace)
     _patch_fake_child(monkeypatch)
 
@@ -617,7 +625,7 @@ def test_discarded_repair_is_reverted_in_workspace(ee_home, workspace, monkeypat
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1), _Verdict(False, 1)])
     _stub_turn(th, ["completed", "completed", "completed"])
 
-    th.session.disk_capture = lambda: "tree-stable"      # 文件没变时 capture 返回同一个 tree
+    _session(th).disk_capture = lambda: "tree-stable"      # 文件没变时 capture 返回同一个 tree
     reverted: list[str | None] = []
     monkeypatch.setattr(th, "_revert_repair", lambda s, tree: reverted.append(tree) or ["a.txt"])
     notes = []
@@ -639,7 +647,7 @@ def test_kept_repair_is_not_reverted(ee_home, workspace, monkeypatch):
     th.ensure_session()
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(True, 12)])
     _stub_turn(th, ["completed", "completed"])
-    th.session.disk_capture = lambda: "tree-stable"
+    _session(th).disk_capture = lambda: "tree-stable"
     reverted: list[object] = []
     monkeypatch.setattr(th, "_revert_repair", lambda s, tree: reverted.append(tree) or ["a.txt"])
     th.notify = lambda m, p: None
@@ -690,7 +698,7 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
     th.ensure_session()
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1)])   # 首轮 + 修复轮都红
     _stub_turn(th, ["completed", "completed"])
-    th.session.disk_capture = lambda: None
+    _session(th).disk_capture = lambda: None
     # 必须固定推导结果：`derive` 的候选路数按 **CPU 核数** 算（每路 4 核），
     # CI 的 runner 只有 2–4 核 → candidates=1 → 根本不会走到分叉/写回。
     # 这个用例要验的是"写回失败"，不是调度启发式，所以在测试里把计划钉死。
@@ -709,7 +717,7 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
 
     monkeypatch.setattr(th, "_allout_fanout", fake_fanout)
     monkeypatch.setattr(th, "_allout_rank", fake_rank)
-    th.session.disk_capture = lambda: "tree-stable"
+    _session(th).disk_capture = lambda: "tree-stable"
     monkeypatch.setattr(A, "candidate_patch", lambda *a, **k: {
         "ok": True, "patch": b"diff --git a/a.txt b/a.txt\n", "paths": ["a.txt"],
         "sha": "deadbeef", "error": ""})
@@ -728,3 +736,65 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
     notices = [it for it in th.items if it.get("type") == "notice"]
     assert any("没能写回主目录" in str(it.get("text")) and "worktree" in str(it.get("text"))
                for it in notices), f"缺少写回失败的说明：{notices}"
+
+
+def test_two_passing_candidates_select_and_write_back(ee_home, workspace, monkeypatch):
+    """双候选都通过 → 择优 → 写回 → 交付复验：完整闭环（脚本化模型，不花钱）。
+
+    真实模型的冒烟只跑到"分叉启动 + 超时回收"（候选太慢，见 plan 文档），
+    这条用桩模型把剩下的链路钉住：apply 必须恰好一次、走的是胜者、复验通过才 met。
+    """
+    import ee.core.allout as A
+    from ee.core import delivery as D
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
+        candidates=2, repair_rounds=1, effort="", max_steps=50,
+        temperature_ladder=(0.0, 0.3), verified=True, reasons=(), degradations=()))
+    _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1), _Verdict(True, 3)])
+    _stub_turn(th, ["completed", "completed"])
+
+    state = {"tree": "tree-before"}
+    _session(th).disk_capture = lambda: state["tree"]
+    cands = [
+        {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": False, "cwd": str(workspace),
+         "base": "b1", "worktree": str(workspace / "w1"), "files": 2, "additions": 3, "deletions": 0},
+        {"id": "cand-2", "verdict": _Verdict(True, 5), "regressed": False, "cwd": str(workspace),
+         "base": "b2", "worktree": str(workspace / "w2"), "files": 4, "additions": 8, "deletions": 1},
+    ]
+    picked: list[str] = []
+
+    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None, failure=None):
+        return list(cands)
+
+    async def fake_rank(passed, task, judge_output):
+        picked.extend(c["id"] for c in passed)
+        return next(c for c in passed if c["id"] == "cand-2")
+
+    monkeypatch.setattr(th, "_allout_fanout", fake_fanout)
+    monkeypatch.setattr(th, "_allout_rank", fake_rank)
+    monkeypatch.setattr(A, "candidate_patch", lambda cwd, base: {
+        "ok": True, "patch": f"patch-from-{base}".encode(), "paths": ["a.txt"], "sha": "s1", "error": ""})
+    applied: list[str] = []
+
+    def fake_apply(cwd, patch):
+        applied.append(patch.decode())
+        state["tree"] = "tree-after"
+        return {"applied": True, "files": 1, "error": ""}
+
+    monkeypatch.setattr(A, "apply_patch", fake_apply)
+    monkeypatch.setattr(D, "build_expected",
+                        lambda *a, **k: D.Expected(ok=True, files={"a.txt": "x"}))
+    monkeypatch.setattr(D, "compare", lambda *a, **k: [])
+    th.notify = lambda m, p: None
+
+    reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
+                                        {"enabled": True, "candidates": 2}))
+    assert reason == "met", th._delivery
+    assert picked == ["cand-1", "cand-2"], "两个通过的候选都要进排序"
+    assert applied == ["patch-from-b2"], "写回的必须是胜者 cand-2 的补丁"
+    delivery = th._delivery
+    assert delivery is not None, "交付结论没写下来"
+    assert delivery["status"] == "verified" and delivery["source"] == "apply"
+    assert delivery["apply"]["result"]["applied"] is True
