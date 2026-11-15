@@ -53,15 +53,22 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
       }
       if (phase === "repair") {
         // 「未保留」必须说清楚磁盘到底回滚了没有：reverted 是回滚的文件数，null = 没能回滚。
+        // 有明确进展但还没通过完整验收时，代码是**留在工作区继续修**的，不能显示成"未保留"。
+        const fixed = typeof p.fixed === "number" && p.fixed > 0 ? `（修好 ${p.fixed} 条）` : "";
         const tail = p.kept
           ? "，已保留"
-          : typeof p.reverted === "number"
-            ? `，已回滚${p.reverted} 个文件`
-            : "，未保留（未能回滚，工作区仍是这份改动）";
+          : p.progress === "improved"
+            ? `，失败面缩小${fixed}，保留继续修`
+            : typeof p.reverted === "number"
+              ? `，已回滚${p.reverted} 个文件`
+              : "，未保留（未能回滚，工作区仍是这份改动）";
         return { ...t, status_text: `全力以赴：第 ${p.attempt ?? 1} 轮修复${tail}` };
       }
       if (phase === "candidate") {
-        return { ...t, status_text: `全力以赴：候选 ${p.id ?? "?"}${p.met ? "通过判据" : "未通过"}` };
+        // 候选分两种思路：延续（带着上一轮失败继续修）与独立（从原始需求重新定位）。
+        const role = p.role === "continuation" ? "延续路线" : (p.role === "independent" ? "独立路线" : "");
+        const who = role ? `${role}候选 ${p.id ?? "?"}` : `候选 ${p.id ?? "?"}`;
+        return { ...t, status_text: `全力以赴：${who}${p.met ? "通过判据" : "未通过"}` };
       }
       if (phase === "apply") {
         return { ...t, status_text: p.result?.applied ? "全力以赴：候选补丁已写回" : "全力以赴：补丁写回失败" };

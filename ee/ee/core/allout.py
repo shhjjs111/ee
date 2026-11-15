@@ -162,6 +162,20 @@ def keep_policy(before, after) -> tuple[bool, str]:
     return True, f"修复后判据通过且测试数 {n_after} ≥ {n_before}，保留"
 
 
+def attempt_progress(before, after) -> dict:
+    """修复这一轮有没有"可确认的进展"：看同一批用例的身份变化，不看通过总数。
+
+    与 `keep_policy` 的区别：keep_policy 是**交付口径**（必须完全通过判据）；
+    这个函数是**继续修的口径**：8 个失败修到 2 个、且回归没坏，就该保留这版的代码
+    继续修，而不是把最有价值的中间成果扔掉（2026-11 设计评审）。
+    """
+    from ee.core import testreport
+
+    b = getattr(before, "report", None)
+    a = getattr(after, "report", None)
+    return testreport.progress(b, a)
+
+
 def candidate_ok(rec: dict) -> bool:
     """候选能否进入排序/写回：目标判据通过，且没有触发回归门。
 

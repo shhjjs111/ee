@@ -23,6 +23,8 @@ import re
 from typing import Any
 
 from ee.core.coerce import as_float, as_int
+from ee.core import testreport
+from ee.core.testreport import Report
 from dataclasses import dataclass, field
 
 # 停止原因的取值（U2 用，这里先定义好避免两边字面量漂移）
@@ -53,6 +55,9 @@ class Verdict:
     timed_out: bool = False
     output: str = ""
     min_tests: int = 1
+    # 逐用例结果（第三批）：判据命令输出的可解析部分。没有就是 None——
+    # "读不出用例身份"必须显式表示，不能让上层把"没有新失败"当成"没有回归"。
+    report: Report | None = None
 
     @property
     def met(self) -> bool:
@@ -325,9 +330,11 @@ async def judge(spec: GoalSpec, *, runner=None) -> Verdict:
                        output=f"启动判据命令失败：{type(e).__name__}: {e}",
                        min_tests=spec.min_tests)
 
-    return Verdict(exit=code, tests=parse_tests(output or ""),
-                   timed_out=bool(timed_out), output=output or "",
-                   min_tests=spec.min_tests)
+    text = output or ""
+    return Verdict(exit=code, tests=parse_tests(text),
+                   timed_out=bool(timed_out), output=text,
+                   min_tests=spec.min_tests,
+                   report=testreport.parse(text))
 
 
 # ---------------------------------------------------------------- 续跑控制器（U2）

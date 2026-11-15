@@ -459,7 +459,7 @@ def test_run_allout_filters_regressed_candidates_before_rank(ee_home, workspace,
         temperature_ladder=(0.0, 0.3), verified=True, reasons=(), degradations=()))
     seen = {}
 
-    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None):
+    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None, failure=None):
         seen["p2p"] = pass_to_pass
         bad = {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": True,
                "cwd": str(workspace), "base": "x"}
@@ -695,7 +695,7 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
     winner = {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": False,
               "cwd": str(workspace), "base": "b", "worktree": str(workspace)}
 
-    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None):
+    async def fake_fanout(spec, plan, task_text, cap, pass_to_pass=None, failure=None):
         return [winner]
 
     async def fake_rank(passed, task, judge_output):

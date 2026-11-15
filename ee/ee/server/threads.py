@@ -1082,9 +1082,18 @@ class Thread:
         if getattr(s.budget, "stop_reason", None):
             return "budget"
 
-        # ---- 轮 2：批评修复（判据 + 失败输出喂回去），keep-policy 只在更好时保留。
-        for attempt in range(1, max(1, plan.repair_rounds) + 1):
-            msg = build_feedback(last_fail or best, spec, attempt=attempt, max_checks=plan.repair_rounds + 2)
+        # ---- 轮 2：批评修复（判据 + 失败输出喂回去）。
+        # 两个口径分开（2026-11 设计评审）：
+        #   - keep_policy：**能不能交付**（必须完全通过判据，且回归没坏）；
+        #   - attempt_progress：**值不值得继续修**（失败面在缩小、没有新增失败）。
+        # 8 个失败修到 2 个这种中间成果就该留在工作区继续修，而不是整份回滚。
+        allowed = max(1, plan.repair_rounds)
+        attempt = 0
+        stalled = 0
+        best_tree: str | None = None          # 目前工作区里"最有进展"的那一版对应的快照
+        while attempt < allowed:
+            attempt += 1
+            msg = build_feedback(last_fail or best, spec, attempt=attempt, max_checks=allowed + 1)
             # 修复轮直接跑在主工作区：先记下修复前的位置，拒绝时能真的撤回去。
             before = await asyncio.to_thread(s.disk_capture)
             if await one_turn(msg) == "interrupted":
@@ -1099,23 +1108,40 @@ class Thread:
                     regressed, last_fail = True, reg_fail_verdict(rv)
                 else:
                     regressed = False
-            # 「丢弃」必须包括磁盘：只改 kept/判定结果的话，界面说未保留、工作区里却是
-            # 那份没过的改动（2026-11 独立审查实测：kept=False、回合 exhausted，文件仍是失败的修复）。
+            # 进展口径：只有在回归门也过的前提下，失败面缩小才算"值得继续"。
+            prog = {"state": "unknown", "why": "未比较", "fixed": [], "new_failures": []}
+            if not keep and not regressed:
+                prog = await asyncio.to_thread(A.attempt_progress, best, after)
+            keep_files = bool(keep) or (prog.get("state") == "improved")
             reverted: list[str] | None = None
-            if not keep:
+            if not keep_files:
+                # 「丢弃」必须包括磁盘：只改判定的话，界面说未保留、工作区里却是那份改动。
                 reverted = await asyncio.to_thread(self._revert_repair, s, before)
                 if reverted is not None:
                     tree = await asyncio.to_thread(s.disk_capture)
                     if tree:
                         self._mark_tree_after(tree)   # 覆盖写：回合结束状态是「已回滚」
+                if prog.get("state") in ("stalled", "regressed"):
+                    stalled += 1
+                # unknown（解析不到/环境不一致）不算停滞：没有证据就别换路。
+            else:
+                stalled = 0
+                best_tree = await asyncio.to_thread(s.disk_capture)
             self.notify("allout_progress", {"thread_id": self.id, "phase": "repair",
                                             "attempt": attempt, "kept": keep, "why": why,
+                                            "progress": prog.get("state", "unknown"),
+                                            "fixed": len(prog.get("fixed") or []),
                                             "reverted": None if reverted is None else len(reverted)})
             if keep:
                 best = after
                 last_fail = None
+            elif prog.get("state") == "improved":
+                # 代码留在工作区，下一轮从这里继续修（新的判定基准也是它）
+                best = after
+                last_fail = after
+                if attempt >= allowed and allowed < 2 and not getattr(s.budget, "stop_reason", None):
+                    allowed += 1        # 有明确进展就多给一轮修复（预算内）
             elif not after.met:
-                # 这次连目标判据都没过（可能是修复把功能改坏了）：下一轮看它的失败输出。
                 last_fail = after
             if best.met and not regressed:
                 reason = await self._delivery_gate(s, spec, p2p_spec, source="repair")
@@ -1124,10 +1150,12 @@ class Thread:
                 return reason
             if getattr(s.budget, "stop_reason", None):
                 return "budget"
+        self._best_effort_tree = best_tree
+        self._stalled = stalled
 
         # ---- 轮 3：分叉（候选各自 worktree、温度阶梯、判据串行、先通过即取消其余）。
         if cap > 1:
-            cands = await self._allout_fanout(spec, plan, text, cap, pass_to_pass)
+            cands = await self._allout_fanout(spec, plan, text, cap, pass_to_pass, failure=last_fail)
             # 回归门拦下的候选不能进排序：它们让原有测试变红了。
             passed = [c for c in cands if A.candidate_ok(c)]
             if passed:
@@ -1188,6 +1216,18 @@ class Thread:
                                        + (str(res.get("error") or "原因未知"))
                                        + "）。候选的改动仍保留在它自己的 worktree 分支上，"
                                          "可以对比后手动合并，或改完冲突再试一次。"})
+        tree = getattr(self, "_best_effort_tree", None)
+        if tree:
+            # 工作区里留着的是"失败面缩小过、但没通过完整验收"的那一版：不删，
+            # 给它一个恢复点与明确说明，用户/下一轮可以接着做（评审要求：未交付成果可查看）。
+            try:
+                from ee.server.checkpoint_rpc import add_restore_point
+                add_restore_point(self, tree, "全力以赴：最有进展但未通过验收的尝试")
+            except Exception:  # noqa: BLE001  恢复点只是反悔入口，存不下不影响回合
+                log.info("全力以赴：存「最有进展」恢复点失败", exc_info=True)
+            self._add({"type": "notice", "level": "warn",
+                       "text": "全力以赴：这一版有进展但没通过完整验收，代码已留在工作区；"
+                               "时间线里也存了恢复点，可以接着修或对比。"})
         return "exhausted" if (not best.met or regressed) else "met"
 
     async def _delivery_judge(self, s, spec, key: str) -> dict:
@@ -1370,7 +1410,7 @@ class Thread:
         return False
 
     async def _allout_fanout(self, spec, plan, task_text: str, cap: int,
-                             pass_to_pass: str | None = None) -> list[dict]:
+                             pass_to_pass: str | None = None, failure=None) -> list[dict]:
         """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。
 
         `task_text` 是**用户原话**（不是拼好判据段的第一轮输入）：每个候选自己
@@ -1465,7 +1505,19 @@ class Thread:
 
                 from ee.core.goal_feedback import build_first_turn
 
-                cand_prompt = build_first_turn(task_text, _replace(spec, cwd=wt["cwd"]))
+                # 候选分两种思路（2026-11 设计评审）：同模型只差温度基本等于重复劳动。
+                # - 延续路线（i=0 且有失败证据）：带着剩余失败继续修，别从头猜；
+                # - 独立路线：只给原始需求与判据，让它有机会推翻上一条路线的判断。
+                cand_spec_for_prompt = _replace(spec, cwd=wt["cwd"])
+                role = "continuation" if (i == 0 and failure is not None) else "independent"
+                if role == "continuation":
+                    from ee.core.goal_feedback import build_feedback as _fb
+                    cand_prompt = (task_text.strip() + "\n\n---\n\n"
+                                   + _fb(failure, cand_spec_for_prompt, attempt=1,
+                                         max_checks=max(1, int(plan.repair_rounds) + 1)))
+                else:
+                    cand_prompt = build_first_turn(task_text, cand_spec_for_prompt)
+                rec["role"] = role
                 async for ev in child.run_turn(cand_prompt):
                     # 候选的审批接回主会话（与子代理同一条纪律）：一律拒绝会把
                     # pytest 这类命令挡死，分叉路等于永远跑不完。桌面端出审批卡片，
@@ -1500,7 +1552,8 @@ class Thread:
                 rec["touched_tests"] = any(
                     _sub_touched(f.get("path", "")) for f in (v_out.get("files") or []))
                 self.notify("allout_progress", {"thread_id": self.id, "phase": "candidate",
-                                                "id": rec["id"], "met": bool(getattr(v, "met", False))})
+                                                "id": rec["id"], "role": role,
+                                                "met": bool(getattr(v, "met", False))})
                 return rec
             except asyncio.CancelledError:
                 # 被取消（别的候选先通过 / 用户点停止）：收尾保留改动，别留半个 worktree。
@@ -1586,6 +1639,22 @@ class Thread:
 
         for c in passed:
             diffs[c["id"]] = await asyncio.to_thread(_diff, c)
+        # 补丁完全相同（同模型同提示最常见的产物）：A/B 只会得到平票，还白花两次请求。
+        # 直接按客观口径（通过数 / 改动面 / 是否动测试）选。
+        if len({v for v in diffs.values() if v}) <= 1:
+            cands0 = [B.Candidate(id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
+                                  cost=as_float(c.get("cost") or 0.0), votes=0,
+                                  regressed=bool(c.get("regressed")),
+                                  touched_tests=bool(c.get("touched_tests")), files=as_int(c.get("files") or 0),
+                                  additions=as_int(c.get("additions") or 0),
+                                  deletions=as_int(c.get("deletions") or 0))
+                      for c in passed]
+            win0 = B.pick(cands0)
+            if win0 is None:
+                return None
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "judge",
+                                            "met": True, "reason": "候选补丁相同，跳过 A/B 评定"})
+            return next(c for c in passed if c["id"] == win0.id)
         s = self.session
         if s is None:
             raise RuntimeError("会话未初始化")
