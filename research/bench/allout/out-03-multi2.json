@@ -1,0 +1,58 @@
+{
+  "dry_run": false,
+  "model": "deepseek-v4.1-flash11",
+  "records": [
+    {
+      "task": "03_wrong_approach",
+      "mode": "allout",
+      "reason": "met",
+      "delivery": "verified",
+      "duration_s": 37.6,
+      "cost": 0.00427336,
+      "cost_complete": true,
+      "timed_out": false,
+      "error": "",
+      "public_changed": false,
+      "public_changed_files": [],
+      "phases": [
+        {
+          "m": "allout_plan",
+          "requested": 2
+        },
+        {
+          "m": "allout_progress",
+          "phase": "start",
+          "candidates": 2
+        },
+        {
+          "m": "allout_progress",
+          "phase": "judge",
+          "met": true
+        },
+        {
+          "m": "allout_progress",
+          "phase": "done"
+        }
+      ],
+      "fanout_started": 0,
+      "passed": true,
+      "tests": 3,
+      "tail": "...                                                                      [100%]\n3 passed in 0.03s\n"
+    }
+  ],
+  "summary": {
+    "allout": {
+      "samples": 1,
+      "solved": 1,
+      "pass_rate": 1.0,
+      "reported_met": 1,
+      "consistency_error_rate": 0.0,
+      "unverified": 0,
+      "timeouts": 0,
+      "cost_total": 0.004273,
+      "cost_complete": true,
+      "cost_per_solved": 0.004273,
+      "duration_s": 37.6
+    }
+  }
+}

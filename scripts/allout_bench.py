@@ -39,6 +39,7 @@ class Task:
     slug: str
     path: Path
     prompt: str
+    criterion: str = ""          # 夹具自定义判据（criterion.txt）；空 = 用 public/ 的 pytest
 
     @property
     def seed(self) -> Path:
@@ -64,7 +65,9 @@ def load_tasks(root: Path = BENCH) -> list[Task]:
         for sub in ("seed", "public", "hidden"):
             if not (path / sub).is_dir():
                 raise SystemExit(f"夹具缺 {sub}/：{path}")
-        out.append(Task(path.name, path, prompt.read_text(encoding="utf-8")))
+        crit = path / "criterion.txt"
+        out.append(Task(path.name, path, prompt.read_text(encoding="utf-8"),
+                        crit.read_text(encoding="utf-8").strip() if crit.is_file() else ""))
     if not out:
         raise SystemExit(f"没有夹具：{root}")
     return out
@@ -78,7 +81,10 @@ def _pycmd(*args: str) -> str:
     return f"& {body}" if resolve_shell("auto").syntax == "powershell" else body
 
 
-def public_command() -> str:
+def public_command(task: Task | None = None) -> str:
+    """夹具自定义判据优先；`{python}` 换成当前解释器（避免依赖 PATH 上的 python）。"""
+    if task is not None and task.criterion:
+        return task.criterion.replace("{python}", f'"{sys.executable}"')
     return _pycmd(sys.executable, "-m", "pytest", "-q", "public/test_public.py")
 
 
@@ -144,12 +150,22 @@ async def run_sample(task: Task, mode: str, args) -> dict:
     def configure(cfg) -> None:
         cfg.data.setdefault("budget", {})["session"] = args.budget   # argparse 已保证是 float
 
-    th = Thread(f"bench-{task.slug}-{mode}", home, lambda m, p: None,
+    # 记录 allout 的计划/阶段事件：报告里要能说明"多路到底有没有真的启动"，
+    # 而不是只看最终 met（首轮/修复就过时不会分叉）。
+    phases: list[dict] = []
+
+    def notify(method: str, payload: dict) -> None:
+        if method.startswith("allout"):
+            phases.append({"m": method, **{k: payload.get(k) for k in
+                                          ("phase", "started", "candidates", "requested", "winner", "state", "met")
+                                          if k in payload}})
+
+    th = Thread(f"bench-{task.slug}-{mode}", home, notify,
                 {"cwd": str(project), "mode": "auto", "model": args.model or ""},
                 persist=False, configure=configure, user_home=Path.home())
     th.ensure_session()
-    goal = {"command": public_command(), "max_rounds": 3} if mode == "allout" else None
-    allout = {"enabled": True, "candidates": 1} if mode == "allout" else None
+    goal = {"command": public_command(task), "max_rounds": 3} if mode == "allout" else None
+    allout = {"enabled": True, "candidates": args.candidates} if mode == "allout" else None
     started = time.monotonic()
     timed_out = False
     error = ""
@@ -176,6 +192,9 @@ async def run_sample(task: Task, mode: str, args) -> dict:
         "timed_out": timed_out, "error": error,
         "public_changed": before != after,
         "public_changed_files": sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k)),
+        "phases": phases,
+        "fanout_started": next((p.get("started") for p in phases
+                                if p.get("m") == "allout_progress" and p.get("phase") == "fanout"), 0),
     }
     try:
         record.update(await asyncio.to_thread(score, task, project))
@@ -218,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--modes", default="plain,allout")
     ap.add_argument("--model", default="", help="模型别名（空=配置默认）")
     ap.add_argument("--budget", type=float, default=0.5, help="每个样本的会话费用上限")
+    ap.add_argument("--candidates", type=int, default=1,
+                    help="火力全开允许的候选上限（实际路数仍由本机资源推导）")
     ap.add_argument("--timeout", type=float, default=600, help="每个样本的墙钟上限（秒）")
     ap.add_argument("--workdir", default=None, help="临时项目根（默认系统临时目录）")
     ap.add_argument("--out", default="", help="JSON 结果写到这个路径")
@@ -235,7 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     if any(m not in MODES for m in modes):
         raise SystemExit(f"未知模式：{args.modes}（可选 {MODES}）")
 
-    plan = [{"task": t.slug, "mode": m, "criterion": public_command() if m == "allout" else "",
+    plan = [{"task": t.slug, "mode": m, "criterion": public_command(t) if m == "allout" else "",
+             "candidates": args.candidates if m == "allout" else 0,
              "hidden": str(t.hidden)} for t in tasks for m in modes]
     if not args.run:
         print(json.dumps({"dry_run": True, "model": args.model or "(配置默认)",

@@ -116,3 +116,33 @@
 
 **下一步**：在 ≥2 路资源的机器上重复（每任务至少 3 次），补更难的、plain 会失败的任务；
 结果写回本节，并保留每样本的 JSON（`research/bench/allout/out-all.json`）。
+
+
+## 2026-11-15 多路复测（清理后台后：可用内存 8.72 GB）
+
+同一台机器，可用内存从 4.1 GB 升到 8.72 GB 后重新推导：
+`candidates=3, limiting=resource, per_lane=2.0, judge_slots=1, explore_slots=1`
+——**多路是资源推导出来的，不是配置写死的**。
+
+### 多路是否真的启动
+
+`03_wrong_approach` / `04_green_but_missing` 用 `--candidates 2` 复跑，首轮判据直接通过，
+`fanout_started=0`（没有分叉；这是"预算不是配额"的正常结果）。
+
+为了验证分叉路径本身，新增 `99_fanout_smoke`（判据恒 `exit 1`，只做机器冒烟）：
+`fanout_started=2`，两个候选都经历了
+`preparing → working → queued → testing`，其中一路 `cancelled`；600s 墙钟上限到达后本轮被
+中断并回收候选，**没有误报 `met`**（判据恒失败、隐藏验收通过也不报 met，符合交付闸门）。
+该样本 `delivery` 为空（中断在闸门之前），记录为超时。
+
+**本轮没有观察到的**：两个候选都通过判据 → A/B 评定 → 写回 → 交付复验的完整多路闭环。
+冒烟夹具的判据恒失败，候选不可能通过；而四个质量任务都被单路首判解决了。
+这部分目前由单元测试覆盖（`test_allout_rank.py` 的成对评定/缺票回退、`test_allout_run.py`
+的写回失败与回归门），但仍缺一次真实模型下的"双候选都通过→择优→写回"实测。
+
+### 全部测试
+
+- `./scripts/verify.sh`：后端 2749 passed / 17 skipped；前端 417 passed；ruff、typecheck 通过。
+- Electron Playwright：37 passed / 2 skipped。顺带修了一条**过期的断言**：
+  `interaction.spec.ts` 仍期望火力全开无判据回合显示「完成 ·」，而第一批之后正确文案是
+  「未独立验收 ·」；已改为接受两者，并断言执行卡片里的「本轮 N 路」。

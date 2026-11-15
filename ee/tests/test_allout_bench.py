@@ -29,8 +29,10 @@ def _bench():
 def test_fixtures_are_complete():
     mod = _bench()
     tasks = mod.load_tasks()
-    assert [t.slug for t in tasks] == ["01_first_pass", "02_small_repair",
-                                       "03_wrong_approach", "04_green_but_missing"]
+    assert [t.slug for t in tasks][:4] == ["01_first_pass", "02_small_repair",
+                                           "03_wrong_approach", "04_green_but_missing"]
+    smoke = next(t for t in tasks if t.slug == "99_fanout_smoke")
+    assert "raise SystemExit(1)" in smoke.criterion, "冒烟夹具靠恒失败判据稳定触发分叉"
     for t in tasks:
         assert t.seed.is_dir() and t.public.is_dir() and t.hidden.is_dir()
         assert list(t.seed.glob("*.py")), f"{t.slug} 的 seed 里没有模块"
@@ -43,7 +45,8 @@ def test_dry_run_lists_samples_without_model_calls():
         assert mod.main(["--dry-run"]) == 0
     payload = json.loads(out.getvalue())
     assert payload["dry_run"] is True
-    assert payload["samples"] == 8, "4 个夹具 × 2 种模式"
+    assert payload["samples"] == 10, "5 个夹具 × 2 种模式（含 1 个冒烟夹具）"
+    assert {p["candidates"] for p in payload["plan"] if p["mode"] == "allout"} == {1}
     assert {p["mode"] for p in payload["plan"]} == {"plain", "allout"}
     # 普通模式没有判据，火力全开有：这是两组唯一的差别
     assert all(p["criterion"] for p in payload["plan"] if p["mode"] == "allout")

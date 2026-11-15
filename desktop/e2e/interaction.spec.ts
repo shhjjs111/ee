@@ -381,12 +381,16 @@ test("火力全开展示真实执行配置并完成审阅", async () => {
   const summary = win.getByText("火力全开 · 本轮执行配置", { exact: true });
   await expect(summary).toBeVisible({ timeout: 15000 });
   await expect(win.getByText(/本机 .* 核/)).toBeVisible();
+  // 执行卡片要把"用户设置的上限"和"本轮推导路数"分开说清（2026-11 第二批）。
+  await expect(win.getByText(/本轮 \d+ 路/)).toBeVisible();
   await expect.poll(async () => {
     const approval = win.getByRole("button", { name: "允许一次", exact: true });
     if (await approval.count()) await approval.last().click();
     const body = await win.locator("body").innerText();
     const placeholder = await ta.getAttribute("placeholder");
-    return !placeholder?.includes("继续输入：Enter 插话") && /完成 ·/.test(body);
+    // 这一回合没有独立判据 → 结束文案是「未独立验收」，不是普通的「完成」
+    // （2026-11 第一批：完成 ≠ 验收通过）。
+    return !placeholder?.includes("继续输入：Enter 插话") && /(完成|未独立验收) ·/.test(body);
   }, { timeout: 90000 }).toBe(true);
   await expect(summary).toBeVisible();
 });
