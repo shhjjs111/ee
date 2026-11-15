@@ -106,6 +106,8 @@ export function deliveryText(d: { status?: string } | undefined | null): string 
   switch (d.status) {
     case "verified":
       return "交付已复验";
+    case "unverified":
+      return "未独立验收";
     case "failed":
       return "交付复验失败";
     case "needs_review":

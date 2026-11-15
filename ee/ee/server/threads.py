@@ -254,9 +254,17 @@ class Thread:
         self.task: asyncio.Task | None = None
         self.approvals: dict[str, tuple[asyncio.Future, dict]] = {}
         # 交付验证（全力以赴）：本轮起始的验收依据指纹、最近判据记录、交付结论
-        self._accept0: dict | None = None
+        self._accept0: dict = {}
         self._judge_recent: dict[str, dict] = {}
         self._delivery: dict | None = None
+        # 全力以赴的回合状态（直接在测试里调 _run_allout 时也要有初值）
+        self._allout_plan = None
+        self._allout_attempts: list[str] = []
+        self._allout_explore_sem: asyncio.Semaphore | None = None
+        self._allout_work_sem: asyncio.Semaphore | None = None
+        self._allout_judge_lock = None
+        self._best_effort_tree: str | None = None
+        self._stalled = 0
         self.cur_assistant: dict | None = None
         self.plan_item: dict | None = None
         self.turn_started_at = 0.0
@@ -853,6 +861,8 @@ class Thread:
     async def _run_allout_review(self, text, images, probe_denied=False, allout=None):
         """无预置判据：实现后进行一次有工具可用的证据审阅；不冒充外部验收。"""
         s = self.session
+        if s is None:
+            raise RuntimeError("会话未初始化")
         self._add({"type": "notice", "level": "info",
                    "text": ("你没有确认探测到的判据，不会自动执行该判据。" if probe_denied else "") + "全力以赴：先实现并建立验证，再审阅需求与实际产物；没有独立判据，结果仍标注未验证。"})
         boundary = ("用户拒绝了探测到的判据，不得执行该命令或变相绕过拒绝。" if probe_denied else "")
@@ -897,6 +907,13 @@ class Thread:
                                 "validation_files": files, "acceptance_snapshot": frozen}
                         await self._plan_allout(options, goal)
                         return await self._run_allout(text, None, goal, options, initial_done=True)
+        # 没有独立判据（或提案被拒绝/超时）：完成 ≠ 验收通过。落一个显式的未验收结论，
+        # 界面据此显示「未独立验收」，指标把它单列、不混进复验通过率的分母。
+        if self._delivery is None:
+            self._delivery = {"status": "unverified", "source": "review",
+                              "target": {"ran": False, "met": False, "reason": "没有独立判据"},
+                              "regression": {"status": "unconfigured", "met": False},
+                              "acceptance": {"changed": False}, "state": {}}
         return reason
 
     def _bind_turn_model(self, s) -> dict:
@@ -925,6 +942,8 @@ class Thread:
         s._allout_max_steps = None
         s._allout_explore_sem = None
         s._allout_explore_only = False
+        self._allout_explore_sem = None
+        self._allout_work_sem = None
         s.unlock_model()
         before = info.get("effort")
         if before is not None and s.effort != before:
@@ -969,8 +988,10 @@ class Thread:
         # 推理强度由回合级绑定负责（_bind_turn_model）：已有会话也提到最高档，
         # 且只在这一回合生效。这里不再改会话 meta——那样用户下次普通对话会莫名用高强度。
         s._allout_max_steps = plan.max_steps
-        s._allout_explore_only = bool(plan.explore_slots)
-        s._allout_explore_sem = asyncio.Semaphore(max(plan.explore_slots, plan.judge_slots))
+        # 共享名额只发给候选子会话：主线沿用现有权限与 subagent.max_parallel，
+        # 不能因为开了全力以赴就把主线的写型子代理也禁掉（2026-11 边界修复）。
+        self._allout_explore_sem = (
+            asyncio.Semaphore(max(plan.explore_slots, plan.judge_slots)) if plan.explore_slots else None)
         self._allout_plan = plan
         self.notify("allout_plan", {
             "thread_id": self.id,
@@ -1001,16 +1022,38 @@ class Thread:
         给出决定（ask_user 没有自动回答通路，会一直卡到超时）。
         """
         from ee.core.events import ApprovalRequest
+        from ee.core.session import APPROVAL_TIMEOUT
 
+        cid = _new_id("ap")
         fut = asyncio.get_running_loop().create_future()
         ev = ApprovalRequest(
-            call_id=_new_id("ap"), tool="allout_probe",
+            call_id=cid, tool="allout_probe",
             title="全力以赴：用探测到的判据做闸门？",
             detail=f"{proj.command}（来自 {proj.source or '项目文件'}）"
                    + (f"\n\n{proj.note}" if getattr(proj, "note", "") else ""),
             future=fut)
         self._on_event(ev)
-        decision = await fut
+        try:
+            if APPROVAL_TIMEOUT > 0:
+                decision = await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
+            else:
+                decision = await fut
+        except (asyncio.TimeoutError, TimeoutError):
+            # 与普通审批同一约定：超时按拒绝处理，并且**把卡片收尾**——
+            # 否则窗口关掉后回合会一直挂在这里（还占着历史锁），用户回来点一下
+            # 还会改写一个早就结束的审批。
+            if not fut.done():
+                fut.cancel()
+            entry = self.approvals.pop(cid, None)
+            if entry is not None:
+                _fut, it = entry
+                it["status"] = "cancelled"
+                self._update(it)
+            self._add({"type": "notice", "level": "warn",
+                       "text": f"审批等待超过 {APPROVAL_TIMEOUT:.0f} 秒没有回应，按拒绝处理；"
+                               "本轮不执行该判据，改为证据审阅。"})
+            self.notify("thread/updated", {"thread": self.summary()})
+            return False
         return not str(getattr(decision, "choice", "deny")).startswith("deny")
 
     # ------------------------------------------------------------ 全力以赴（阶段 5）
@@ -1037,13 +1080,15 @@ class Thread:
         # 交付闸门要单独跑回归命令（未配置 ≠ 通过），所以在这里就把 spec 备好
         p2p_spec = (GoalSpec(command=pass_to_pass, cwd=str(self.cwd), min_tests=1,
                              timeout=as_float(goal.get("timeout") or 300.0)) if pass_to_pass else None)
-        plan = getattr(self, "_allout_plan", None)
+        plan = self._allout_plan
         if plan is None or not plan.verified:
             await self._plan_allout(allout, goal)
             plan = self._allout_plan
+        if plan is None:
+            raise RuntimeError("全力以赴：没有生成执行计划")
         cap = plan.candidates
         shared = asyncio.Semaphore(max(plan.explore_slots, plan.judge_slots))
-        s._allout_explore_sem = shared if plan.explore_slots else None
+        self._allout_explore_sem = shared if plan.explore_slots else None
         self._allout_work_sem = shared
         lock = self._allout_judge_lock = asyncio.Semaphore(plan.judge_slots)
         # 交付闸门要用的状态：本轮起始的验收依据指纹（命令 + conftest/配置），
@@ -1186,9 +1231,10 @@ class Thread:
             if hasattr(self, "_allout_attempts"):
                 changed = ""
                 after_tree = self._judge_recent.get("target", {}).get("tree")
-                if before and after_tree and s.disk() is not None:
+                disk = s.disk()
+                if before and after_tree and disk is not None:
                     try:
-                        paths = await asyncio.to_thread(s.disk().changed, before, after_tree)
+                        paths = await asyncio.to_thread(disk.changed, before, after_tree)
                         if paths:
                             changed = "涉及文件：" + "、".join(paths[:8]) + "。"
                     except Exception:  # noqa: BLE001
@@ -1559,8 +1605,10 @@ class Thread:
             self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout_skipped", "why": why})
             return []
         lock = self._allout_judge_lock
+        if lock is None:                      # 直接调 _allout_fanout 的调用方（测试/脚本）也可能没建过
+            lock = self._allout_judge_lock = asyncio.Semaphore(1)
         from contextlib import nullcontext
-        work_slot = getattr(self, "_allout_work_sem", None) or nullcontext()
+        work_slot = self._allout_work_sem or nullcontext()
 
         async def _create_worktree(i: int, label: str) -> dict:
             """建候选 worktree；被取消时把“已交给工作线程”的那次创建收尾掉。
@@ -1624,7 +1672,7 @@ class Thread:
                 # 隔离靠 deny：auto 模式下工作区外写是直接放行的，不加这条规则
                 # 模型会用绝对路径改主仓库（2026-11-09 实测到），worktree 等于没用。
                 child._allout_explore_only = True
-                child._allout_explore_sem = getattr(s, "_allout_explore_sem", None)
+                child._allout_explore_sem = getattr(self, "_allout_explore_sem", None)
                 child._allout_max_steps = getattr(plan, "max_steps", None)
                 child.policy = PermissionPolicy(mode=p.mode, workspace=Path(wt["cwd"]),
                                                 allow=list(p.allow), ask=list(p.ask),
@@ -1866,7 +1914,7 @@ class Thread:
                 break
             # 两次请求互相独立。并发验证位置偏差，单对最多消耗一个请求的等待时间。
             timeout = min(45, remaining)
-            wins = await asyncio.gather(compare(x, y, timeout), compare(y, x, timeout))
+            wins = list(await asyncio.gather(compare(x, y, timeout), compare(y, x, timeout)))
             if all(wins):
                 reviewed += 1
                 net = A.net_votes(wins, x["id"], y["id"])

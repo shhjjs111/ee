@@ -97,3 +97,19 @@ def test_rpc_aggregates_loaded_threads(ee_home, workspace):
         assert one["consistency_error_rate"] == 0.5 and one["verify_rate"] == 0.5
 
     asyncio.run(go())
+
+
+def test_unverified_turns_are_excluded_from_verify_rate_denominator():
+    """没有独立判据的回合（unverified）不算复验样本：分母只放有判据的回合。"""
+    got = M.aggregate([_turn(status="unverified", reason="completed", regression="unconfigured"),
+                       _turn()])
+    assert got["samples"] == 2
+    assert got["applicable"] == 1 and got["unverified"] == 1
+    assert got["verify_rate"] == 1.0, "未验收回合不能稀释复验通过率"
+    assert any("未独立验收" in n for n in got["notes"])
+
+
+def test_all_unverified_has_no_verify_rate_but_shows_spend():
+    got = M.aggregate([_turn(status="unverified", reason="completed", regression="unconfigured")])
+    assert got["verify_rate"] is None and got["applicable"] == 0
+    assert got["cost_total"] == 0.5 and got["cost_per_solved"] is None

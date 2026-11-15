@@ -48,6 +48,8 @@ def turn_sample(item: dict) -> dict | None:
         "reason": reason,
         "delivery": status,
         "verified": status == "verified",
+        # 是否适用"独立验收"口径：unverified（无判据的证据审阅）不进复验通过率的分母。
+        "applicable": status in ("verified", "failed", "needs_review"),
         "reported_met": reason == "met",
         "regression": str(reg.get("status") or ""),
         "cost": _num(cost),
@@ -62,6 +64,8 @@ def aggregate(items: list[dict] | None) -> dict:
     samples = [s for s in (turn_sample(x) for x in (items or [])) if s]
     notes: list[str] = []
     n = len(samples)
+    applicable = [s for s in samples if s["applicable"]]
+    unverified = sum(1 for s in samples if s["delivery"] == "unverified")
     solved = sum(1 for s in samples if s["verified"])
     met = [s for s in samples if s["reported_met"]]
     inconsistent = sum(1 for s in met if not s["verified"])
@@ -85,6 +89,11 @@ def aggregate(items: list[dict] | None) -> dict:
 
     if n == 0:
         notes.append("无样本：还没有带交付结论的回合")
+    if unverified:
+        notes.append(f"{unverified} 个回合没有独立判据（完成但未独立验收），不计入复验通过率分母")
+    if len(applicable) != n:
+        notes.append(f"复验通过率的分母是有独立判据的 {len(applicable)} 个回合；"
+                     f"每解决成本按全部 {n} 个回合的支出除以已复验通过数")
     if met and inconsistent == 0:
         notes.append("成功状态一致")
     if solved == 0 and n:
@@ -94,8 +103,10 @@ def aggregate(items: list[dict] | None) -> dict:
 
     return {
         "samples": n,
+        "applicable": len(applicable),
+        "unverified": unverified,
         "solved": solved,
-        "verify_rate": None if n == 0 else round(solved / n, 4),
+        "verify_rate": None if not applicable else round(solved / len(applicable), 4),
         "reported_met": len(met),
         "inconsistent": inconsistent,
         "consistency_error_rate": None if not met else round(inconsistent / len(met), 4),

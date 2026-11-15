@@ -122,6 +122,10 @@ class Session:
         # 本轮模型绑定（全力以赴）：非 None 时，角色配置与子代理都不能换模型。
         # 与 `mode` 一样，它是**回合级**的临时状态，不改 config、不落盘。
         self.model_lock: dict | None = None
+        # 全力以赴回合的相关状态（只用于候选子会话；主线不受影响）
+        self._allout_max_steps: int | None = None
+        self._allout_explore_sem: asyncio.Semaphore | None = None
+        self._allout_explore_only: bool = False
         # 精简模式 full / lean：会话开始时定下（恢复会话时沿用会话记下的），之后切模型也不变
         self.agent_profile = agent if agent in AGENT_PROFILES else agent_profile(config)
         # 指挥会话（D6-1）：子会话拿到的工具表里没有 thread_*（它不能再建子会话）；

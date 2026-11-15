@@ -8,8 +8,8 @@ export type UserItem = ItemBase & { type: "user"; text: string; kind?: "review" 
 /** 全力以赴的火力推导结果（后端 core/allout.py 的 AlloutPlan.as_dict）。 */
 export type AlloutPlanInfo = {
   candidates: number;
+  /** 判定轮数 = 1 次首判 + repair_rounds；不再有单独的 max_rounds（那是普通 Goal 的字段） */
   repair_rounds: number;
-  max_rounds: number;
   effort: string;
   max_steps: number;
   temperature_ladder: number[];
@@ -108,8 +108,9 @@ export type NoticeItem = ItemBase & { type: "notice"; text: string; level: "info
 export type ErrorItem = ItemBase & { type: "error"; message: string };
 /** 交付验证结论（全力以赴才有）。界面按 status 显示原因，不能一律显示成"跑满轮次"。 */
 export type DeliveryInfo = {
-  /** verified = 交付状态已通过验收；failed = 复验没通过；needs_review = 验收依据变了；interrupted = 验证被中断 */
-  status: "verified" | "failed" | "needs_review" | "failed_apply" | "interrupted" | string;
+  /** verified = 交付状态已通过验收；unverified = 完成但没有独立判据；failed = 复验没通过；
+ *  needs_review = 验收依据变了；interrupted = 验证被中断 */
+  status: "verified" | "unverified" | "failed" | "needs_review" | "failed_apply" | "interrupted" | string;
   source?: "first_try" | "repair" | "apply" | string;
   target?: { ran?: boolean; met?: boolean; tests?: number | null; reason?: string; cwd?: string; reused?: boolean; source_unchanged?: boolean };
   regression?: { status?: string; ran?: boolean; met?: boolean; tests?: number | null; reason?: string; cwd?: string };

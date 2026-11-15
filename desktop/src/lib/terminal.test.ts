@@ -7,6 +7,7 @@ import {
   STOP_REASONS,
   TURN_END_TEXT,
   cardText,
+  deliveryText,
   turnEndText,
 } from "./terminal";
 
@@ -41,5 +42,14 @@ describe("停止原因：三张表必须覆盖同一个取值集合", () => {
   it("未知 reason 回落到调用方的默认词，不抛", () => {
     expect(turnEndText("从没见过的值")).toBe("完成");
     expect(cardText(undefined)).toBe("空闲");
+  });
+});
+
+describe("交付结论文案", () => {
+  it("完成但没独立判据要显示「未独立验收」，不能和已验证混在一起", () => {
+    expect(deliveryText({ status: "unverified" })).toBe("未独立验收");
+    expect(deliveryText({ status: "verified" })).toBe("交付已复验");
+    expect(deliveryText({ status: "failed" })).toBe("交付复验失败");
+    expect(deliveryText(undefined)).toBe("");
   });
 });

@@ -10,6 +10,10 @@ allout 该用几路、修几轮、强度拉到哪一档，并给出一句人话�
 2. **没有判据就没有「极限」。** `has_goal=False` 时单路实现与证据审阅，结果标注未验证。
 3. **上限来自模型与机器。** 每个取值都由 `profile` / CPU 数 / 配置钳制出来，
    没有一处写死的「并行 N 路」。`reasons` 必须能向用户解释每一个取值。
+
+轮次语义（2026-11 定）：全力以赴的判定轮数 = 1 次首判 + `repair_rounds` 轮修复，
+不再有单独的 `max_rounds` 字段——它此前只用于展示，和普通 Goal 的 `goal.max_rounds`
+（用户设的"跑到判据通过最多判几次"）是两套东西，混在一起会让界面与实际执行对不上。
 """
 from __future__ import annotations
 
@@ -37,7 +41,6 @@ class AlloutPlan:
     """一次 allout 的火力配置。所有字段都必须能向用户解释。"""
     candidates: int = 1            # 分叉路数（1 = 不分叉）
     repair_rounds: int = 0         # 批评修复轮数（0/1/2）
-    max_rounds: int = 1            # 判据判定的总轮数（goal 的 max_rounds）
     effort: str = ""               # 新会话应使用的推理强度档（"" = 该模型不支持/按默认）
     max_steps: int = 50            # 单个候选的步数预算
     temperature_ladder: tuple = (0.0,)   # 每个候选的 temperature
@@ -51,7 +54,7 @@ class AlloutPlan:
 
     def as_dict(self) -> dict:
         return {"candidates": self.candidates, "repair_rounds": self.repair_rounds,
-                "max_rounds": self.max_rounds, "effort": self.effort, "max_steps": self.max_steps,
+                "effort": self.effort, "max_steps": self.max_steps,
                 "temperature_ladder": list(self.temperature_ladder), "verified": self.verified,
                 "selection_grace_seconds": self.selection_grace_seconds, "feedback_chars": self.feedback_chars,
                 "explore_slots": self.explore_slots, "judge_slots": self.judge_slots,
@@ -179,7 +182,7 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
     if not has_goal:
         degr.append("没有探测到可执行的测试命令：启用单路实现与证据审阅，结果标注「未验证」。"
                     "可以在「目标」里填一条命令启用完整模式。")
-        return AlloutPlan(candidates=1, repair_rounds=1, max_rounds=2, effort=effort, feedback_chars=feedback_chars,
+        return AlloutPlan(candidates=1, repair_rounds=1, effort=effort, feedback_chars=feedback_chars,
                           max_steps=base_steps, temperature_ladder=(0.0,), verified=False,
                           explore_slots=explore_slots, judge_slots=judge_slots,
                           reasons=tuple(reasons), degradations=tuple(degr))
@@ -203,11 +206,10 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
 
     # ---- 轮数与修复：修复优先于并行（预算不是配额）
     repair_rounds = 2
-    max_rounds = 1 + repair_rounds
     reasons.append(f"修复 {repair_rounds} 轮后仍失败才分叉；一次通过则零额外成本")
 
     ladder = _ladder(profile, candidates)
-    return AlloutPlan(candidates=candidates, repair_rounds=repair_rounds, max_rounds=max_rounds,
+    return AlloutPlan(candidates=candidates, repair_rounds=repair_rounds,
                       effort=effort, max_steps=base_steps, temperature_ladder=ladder,
                       verified=True, feedback_chars=feedback_chars, explore_slots=explore_slots,
                       judge_slots=judge_slots, reasons=tuple(reasons), degradations=tuple(degr))

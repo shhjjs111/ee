@@ -51,7 +51,6 @@ def test_no_goal_forces_single_lane_unverified():
     plan = derive(config={}, profile=DEEPSEEK, has_goal=False, cpu_count=16)
     assert plan.candidates == 1
     assert plan.repair_rounds == 1
-    assert plan.max_rounds == 2
     assert plan.verified is False
     assert plan.degraded is True
     assert any("未验证" in d for d in plan.degradations)

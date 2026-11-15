@@ -41,6 +41,10 @@ export function turnCompletedNotice(p: { thread_id: string; reason: string; deli
   const name = threadTitle || "对话";
   // 交付复验失败 / 验收依据变化：通知正文要说清是哪一种，不能只报"回合结束"。
   const dtext = deliveryText(p.delivery);
+  if (dtext && p.delivery?.status === "unverified") {
+    // 完成但没有独立判据：不按失败打扰，但通知要说明"未验收"，别让人当成已验证。
+    return { kind: "done", threadId: p.thread_id, title: `${name} · ${dtext}`, body: "点开查看证据与未确认事项" };
+  }
   if (dtext && p.delivery?.status !== "verified") {
     return { kind: "error", threadId: p.thread_id, title: `${name} · ${dtext}`, body: "点开查看复验结果与恢复入口" };
   }

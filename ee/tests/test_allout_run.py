@@ -344,7 +344,7 @@ def test_plan_allout_does_not_touch_effort(ee_home, workspace, monkeypatch):
     s = th.ensure_session()
     before = s.effort
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
-        candidates=1, repair_rounds=1, max_rounds=2, effort="high", max_steps=50,
+        candidates=1, repair_rounds=1, effort="high", max_steps=50,
         temperature_ladder=(0.0,), verified=True, reasons=(), degradations=()))
     asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
                                 {"command": "pytest -q", "max_rounds": 3}))
@@ -361,7 +361,7 @@ def test_plan_allout_leaves_used_session_effort_alone(ee_home, workspace, monkey
     th.session.turns = 7
     before = th.session.effort
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
-        candidates=1, repair_rounds=1, max_rounds=2, effort="high", max_steps=50,
+        candidates=1, repair_rounds=1, effort="high", max_steps=50,
         temperature_ladder=(0.0,), verified=True, reasons=(), degradations=()))
     asyncio.run(th._plan_allout({"enabled": True, "candidates": 1},
                                 {"command": "pytest -q", "max_rounds": 3}))
@@ -455,7 +455,7 @@ def test_run_allout_filters_regressed_candidates_before_rank(ee_home, workspace,
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1)])
     _stub_turn(th, ["completed", "completed"])
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
-        candidates=2, repair_rounds=1, max_rounds=3, effort="", max_steps=50,
+        candidates=2, repair_rounds=1, effort="", max_steps=50,
         temperature_ladder=(0.0, 0.3), verified=True, reasons=(), degradations=()))
     seen = {}
 
@@ -695,7 +695,7 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
     # CI 的 runner 只有 2–4 核 → candidates=1 → 根本不会走到分叉/写回。
     # 这个用例要验的是"写回失败"，不是调度启发式，所以在测试里把计划钉死。
     monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
-        candidates=2, repair_rounds=1, max_rounds=3, effort="", max_steps=50,
+        candidates=2, repair_rounds=1, effort="", max_steps=50,
         temperature_ladder=(0.0, 0.3), verified=True, reasons=(), degradations=()))
 
     winner = {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": False,
