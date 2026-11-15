@@ -62,7 +62,7 @@ def test_no_goal_forces_single_lane_unverified():
 
 @pytest.mark.parametrize("cpu,want", [(16, 4), (8, 2), (4, 1), (2, 1), (64, 6)])
 def test_candidates_clamped_by_cpu(cpu, want):
-    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=cpu, max_parallel=8)
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=cpu, candidate_gate=8)
     assert plan.candidates == want
 
 
@@ -73,29 +73,33 @@ def test_candidates_clamped_by_context():
 
 
 def test_candidates_clamped_by_gate():
-    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, max_parallel=1)
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, candidate_gate=1)
     assert plan.candidates == 1
     assert any("闸门" in r for r in plan.reasons)
 
 
-def test_gate_defaults_from_config():
-    plan = derive(config={"subagent": {"max_parallel": 2}}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
+def test_gate_defaults_from_allout_config():
+    plan = derive(config={"allout": {"candidates": 2}}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
     assert plan.candidates == 2
+    plan6 = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
+    assert plan6.candidates == 4, "默认闸门是产品上限 6，实际仍按 CPU 收紧（16 核 → 4 路）"
 
 
 # ---------------------------------------------------------------- 温度阶梯
 
 
 def test_temperature_ladder_follows_candidates():
-    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, candidate_gate=3)
     assert plan.candidates == 3
     assert plan.temperature_ladder == (0.0, 0.3, 0.6)
+    wide = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
+    assert len(wide.temperature_ladder) == wide.candidates, "阶梯长度必须与推导路数一致"
 
 
 def test_profile_temperature_goes_first():
     prof = _profile(effort_param="reasoning_effort", effort_levels=("low", "max"),
                     context_window=1_000_000, temperature=0.7)
-    plan = derive(config={}, profile=prof, has_goal=True, cpu_count=16)
+    plan = derive(config={}, profile=prof, has_goal=True, cpu_count=16, candidate_gate=3)
     assert plan.temperature_ladder[0] == 0.7
     assert 0.7 not in plan.temperature_ladder[1:]
     assert len(plan.temperature_ladder) == 3
@@ -119,11 +123,13 @@ def test_max_steps_comes_from_config():
 
 
 def test_as_dict_round_trips():
-    d = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16).as_dict()
-    assert d["candidates"] == 3
-    assert d["temperature_ladder"] == [0.0, 0.3, 0.6]
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16)
+    d = plan.as_dict()
+    assert d["candidates"] == plan.candidates
+    assert d["temperature_ladder"] == list(plan.temperature_ladder)
     assert isinstance(d["reasons"], list) and d["reasons"]
     assert d["verified"] is True
+    assert d["limiting"] == plan.limiting and "max_rounds" not in d
 
 
 def test_model_is_never_changed():
@@ -136,7 +142,7 @@ def test_model_is_never_changed():
 # ---------------------------------------------------------------- 用户上限
 
 
-@pytest.mark.parametrize("cap,want", [(1, 1), (2, 2), (3, 3)])
+@pytest.mark.parametrize("cap,want", [(1, 1), (2, 2), (3, 3), (4, 4)])
 def test_user_cap_participates_in_derivation(cap, want):
     """用户设的上限参与钳制（不是事后截断）。真模型演练时发现过
     「实际 2 路、reasons 写 3 路」的矛盾。"""
@@ -148,10 +154,10 @@ def test_user_cap_participates_in_derivation(cap, want):
 
 def test_user_cap_never_raises_above_hard_cap():
     plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=64, max_candidates=99)
-    assert plan.candidates == 3, "用户上限只能收紧，不能突破硬上界"
+    assert plan.candidates == 6, "用户上限只能收紧，不能突破硬上界（6 路）"
 
 
 def test_user_cap_explained_when_it_is_the_binding_constraint():
-    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, max_parallel=8,
+    plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=16, candidate_gate=8,
                   max_candidates=1)
     assert any("上限设成了 1" in r for r in plan.reasons)

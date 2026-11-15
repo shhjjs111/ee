@@ -228,6 +228,17 @@ function blockKey(b: Block): string {
   return b.kind === "item" ? b.item.id : b.id;
 }
 
+/** 本轮候选被哪个因素限制住：界面直接显示中文，不让用户猜英文键名。 */
+const LIMITING_LABEL: Record<string, string> = {
+  cpu: "CPU 核数",
+  context: "上下文长度",
+  gate: "配置闸门",
+  user: "你设置的上限",
+  resource: "内存/磁盘",
+  cap: "产品上限",
+  no_goal: "没有独立判据",
+};
+
 export function Conversation() {
   // 窄订阅（T22）：只订阅活动会话 id、其详情对象和计时起点。其他会话的 delta flush
   // 会重建 details Record，但本会话的 ThreadDetail 引用不变 → 本组件不重渲染。
@@ -384,7 +395,14 @@ export function Conversation() {
           {d.allout_plan && <details className="my-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs" open>
             <summary className="cursor-pointer font-medium">火力全开 · 本轮执行配置</summary>
             <div className="mt-2 flex flex-wrap gap-2 text-muted">
-              <span>{d.allout_plan.candidates} 路候选上限</span>
+              {/* 用户设置的是"允许的上限"，执行卡片要说清"本轮推导出几路、被什么限制、实际启动几路" */}
+              <span>
+                {typeof d.allout_requested === "number" ? `设置上限 ${d.allout_requested} 路 → ` : ""}
+                本轮 {d.allout_plan.candidates} 路
+                {d.allout_plan.limiting ? `（限制：${LIMITING_LABEL[d.allout_plan.limiting] ?? d.allout_plan.limiting}）` : ""}
+              </span>
+              {typeof d.allout_started === "number" && <span>实际启动 {d.allout_started} 路</span>}
+              {typeof d.allout_plan.per_lane_gb === "number" && <span>每路估算 {d.allout_plan.per_lane_gb} GB</span>}
               <span>推理 {d.allout_plan.effort || "模型默认"}</span>
               <span>每段 {d.allout_plan.max_steps} 步</span>
               <span>诊断 {d.allout_plan.feedback_chars ?? 4000} 字符</span>

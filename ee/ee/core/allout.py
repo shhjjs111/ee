@@ -51,6 +51,9 @@ class AlloutPlan:
     explore_slots: int = 0
     judge_slots: int = 1
     selection_grace_seconds: float = 30.0  # 首个通过后，给其它路线有限的交卷时间
+    # 每路资源估算与"本轮被哪个因素限制"：界面要能说清"设置 6 路、实际 2 路、因内存"。
+    per_lane_gb: float = 2.0
+    limiting: str = ""             # cpu / context / gate / user / resource / cap / no_goal
 
     def as_dict(self) -> dict:
         return {"candidates": self.candidates, "repair_rounds": self.repair_rounds,
@@ -58,6 +61,7 @@ class AlloutPlan:
                 "temperature_ladder": list(self.temperature_ladder), "verified": self.verified,
                 "selection_grace_seconds": self.selection_grace_seconds, "feedback_chars": self.feedback_chars,
                 "explore_slots": self.explore_slots, "judge_slots": self.judge_slots,
+                "per_lane_gb": self.per_lane_gb, "limiting": self.limiting,
                 "reasons": list(self.reasons), "degradations": list(self.degradations)}
 
     @property
@@ -123,13 +127,15 @@ def proposed_validation(text: str, cwd: Path) -> tuple[str, tuple[str, ...]] | N
 
 
 def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = None,
-           max_parallel: int | None = None, max_candidates: int | None = None, hardware=None,
-           parallel_validation: bool = False) -> AlloutPlan:
+           candidate_gate: int | None = None, max_candidates: int | None = None, hardware=None,
+           parallel_validation: bool = False, observed_judge_ms: float | None = None) -> AlloutPlan:
     """推导一次 allout 的火力。`config` 是已加载的配置字典（取 max_steps 等）。
 
-    `max_candidates` 是用户设的上限（界面开关旁的「最多几路」）。它参与钳制而不是
-    事后截断——否则 `reasons` 会写「并行 3 路」而实际只跑 2 路，界面自相矛盾
-    （2026-11-09 真模型演练实测到）。
+    `candidate_gate` 是配置层的候选闸门（`[allout].candidates`），`max_candidates` 是
+    用户这一次设置的上限；两者都参与钳制而不是事后截断——否则 `reasons` 会写「并行 3 路」
+    而实际只跑 2 路，界面自相矛盾（2026-11-09 真模型演练实测到）。
+    `observed_judge_ms` 是该工程上一次判据的实际耗时：项目越重，每路资源估算越保守，
+    但**不**为估算去跑构建或测试。
     """
     reasons: list[str] = []
     degr: list[str] = []
@@ -155,17 +161,29 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
     n_cpu = max(1, n_cpu)
     by_cpu = max(1, min(6, n_cpu // CORES_PER_CANDIDATE))
     by_ctx = CANDIDATES_CAP if ctx >= CONTEXT_MIN_FOR_PARALLEL else 1
-    gate = int(max_parallel) if max_parallel is not None else int(
-        (cfg.get("subagent") or {}).get("max_parallel") or 3)
+    gate = int(candidate_gate) if candidate_gate is not None else int(
+        (cfg.get("allout") or {}).get("candidates") or CANDIDATES_CAP)
     gate = max(1, gate)
     user_cap = CANDIDATES_CAP if max_candidates is None else max(1, int(max_candidates))
+    # 每路预算：未知项目用 2 GB 的保守值；项目体积大或上次判据很慢时上调到 3 GB。
+    # 这两个信号都**不**需要跑构建/测试，只是"已知事实"；没有就不算，别把语言类型当内存。
+    per_lane_gb = 2.0
+    basis = ""
+    if hardware is not None and hardware.project_gb is not None:
+        if hardware.project_gb >= 2.0:
+            per_lane_gb = 3.0
+            basis = f"项目约 {hardware.project_gb:.1f} GB"
+    if observed_judge_ms is not None and observed_judge_ms >= 120_000:
+        per_lane_gb = max(per_lane_gb, 3.0)
+        basis = (basis + "；" if basis else "") + f"上次判据 {observed_judge_ms / 1000:.0f}s"
     resource_cap = CANDIDATES_CAP
     if hardware is not None:
         ram, disk = hardware.available_gb, hardware.disk_free_gb
-        resource_cap = min(1 if ram is None else max(1, int((ram - 2) // 2)),
-                           1 if disk is None else max(1, int((disk - 2) // 2)), CANDIDATES_CAP)
+        resource_cap = min(1 if ram is None else max(1, int((ram - 2) // per_lane_gb)),
+                           1 if disk is None else max(1, int((disk - 2) // per_lane_gb)), CANDIDATES_CAP)
         reasons.append(f"本机 {n_cpu} 核 · 可用内存 {ram:.1f} GB" if ram is not None else f"本机 {n_cpu} 核 · 内存探测不可用，保守单路")
         reasons.append(f"项目与候选磁盘最少剩余 {disk:.1f} GB · 资源允许最多 {resource_cap} 路" if disk is not None else "磁盘探测不可用，保守单路")
+    reasons.append(f"每路按 {per_lane_gb:.1f} GB 估算（{basis or '未知项目的保守值'}；是估算，不是峰值保证）")
     # 总额外本地工作槽位在所有候选间共享，避免每个候选各自放大并发。
     extra_slots = min(4, n_cpu // 8, max(0, resource_cap - 2)) if hardware else 0
     explore_slots = min(extra_slots, int((cfg.get("subagent") or {}).get("max_parallel") or 3))
@@ -185,8 +203,11 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
         return AlloutPlan(candidates=1, repair_rounds=1, effort=effort, feedback_chars=feedback_chars,
                           max_steps=base_steps, temperature_ladder=(0.0,), verified=False,
                           explore_slots=explore_slots, judge_slots=judge_slots,
+                          per_lane_gb=per_lane_gb, limiting="no_goal",
                           reasons=tuple(reasons), degradations=tuple(degr))
 
+    limits = {"cpu": by_cpu, "context": by_ctx, "gate": gate, "user": user_cap, "resource": resource_cap}
+    limiting = min([("cap", CANDIDATES_CAP), *limits.items()], key=lambda kv: kv[1])[0]
     candidates = max(1, min(by_cpu, by_ctx, gate, CANDIDATES_CAP, user_cap, resource_cap))
 
     if candidates == 1:
@@ -212,7 +233,8 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
     return AlloutPlan(candidates=candidates, repair_rounds=repair_rounds,
                       effort=effort, max_steps=base_steps, temperature_ladder=ladder,
                       verified=True, feedback_chars=feedback_chars, explore_slots=explore_slots,
-                      judge_slots=judge_slots, reasons=tuple(reasons), degradations=tuple(degr))
+                      judge_slots=judge_slots, per_lane_gb=per_lane_gb, limiting=limiting,
+                      reasons=tuple(reasons), degradations=tuple(degr))
 
 
 # ---------------------------------------------------------------- keep-policy（修复只在更好时保留）

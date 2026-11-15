@@ -27,6 +27,17 @@ describe("applyItemNotification", () => {
     expect(t.status_text).toContain("3 路");
   });
 
+  it("用户上限、推导上限与实际启动候选分开记", () => {
+    const planned = applyItemNotification(base, "allout_plan", {
+      plan: { candidates: 2, limiting: "resource", per_lane_gb: 3 }, requested: 6,
+    });
+    expect(planned.allout_requested, "用户设置的上限要单独记，不能和推导上限混在一起").toBe(6);
+    expect(planned.allout_plan?.candidates).toBe(2);
+    const started = applyItemNotification(planned, "allout_progress", { phase: "fanout", started: 2 });
+    expect(started.allout_started).toBe(2);
+    expect(started.status_text).toContain("启动 2 路候选");
+  });
+
   it("allout_progress 把修复轮、候选、写回都写进状态（长跑不看起来卡死）", () => {
     const start = applyItemNotification(base, "allout_progress", { phase: "start", candidates: 2 });
     expect(start.status_text).toContain("2 路开始");

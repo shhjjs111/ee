@@ -17,6 +17,9 @@ export type AlloutPlanInfo = {
   explore_slots?: number;
   judge_slots?: number;
   selection_grace_seconds?: number;
+  /** 每路资源估算（GB）与"本轮被哪个因素限制"：cpu/context/gate/user/resource/cap/no_goal */
+  per_lane_gb?: number;
+  limiting?: string;
   verified: boolean;
   reasons: string[];
   degradations: string[];
@@ -224,6 +227,10 @@ export type ThreadDetail = ThreadSummary & {
   git: { is_repo: boolean; branch: string; changed: number; untracked: number } | null;
   instructions?: string[]; // 本会话加载的 AGENTS.md
   allout_plan?: AlloutPlanInfo;
+  /** 用户这一次允许的候选上限（与推导上限分开显示） */
+  allout_requested?: number;
+  /** 实际启动的候选数（分叉被跳过时为 0/undefined） */
+  allout_started?: number;
   allout_candidates?: Record<string, { state: string; strategy?: string; tests?: number; files?: number; votes?: number; detail?: string }>;
   allout_winner?: string;
   allout_review?: string;

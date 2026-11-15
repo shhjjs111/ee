@@ -980,11 +980,15 @@ class Thread:
         from ee.core.hwprobe import probe as hardware_probe
         from ee.core.worktree import root_dir
         hardware = await asyncio.to_thread(hardware_probe, self.cwd, root_dir(self.home))
+        # 上一次判据的实际耗时（按工程记在 meta 里）：重工程把每路资源估算上调，
+        # 但**不**为了估算去跑构建/测试。
+        judge_ms = as_float(self._allout_meta().get("judge_ms") or 0) or None
+        config_cap = as_int((s.config.data.get("allout") or {}).get("candidates") or 6)
+        requested = min(as_int(allout.get("candidates") or config_cap), config_cap)
         plan = derive(hardware=hardware, config=s.config.data, profile=s.profile, has_goal=has_goal,
                       parallel_validation=allout.get("parallel_validation") is True,
-                      max_parallel=as_int((s.config.data.get("allout") or {}).get("candidates") or 6),
-                      max_candidates=min(as_int(allout.get("candidates") or 6),
-                                           as_int((s.config.data.get("allout") or {}).get("candidates") or 6)))
+                      candidate_gate=config_cap, max_candidates=requested,
+                      observed_judge_ms=judge_ms)
         # 推理强度由回合级绑定负责（_bind_turn_model）：已有会话也提到最高档，
         # 且只在这一回合生效。这里不再改会话 meta——那样用户下次普通对话会莫名用高强度。
         s._allout_max_steps = plan.max_steps
@@ -999,6 +1003,8 @@ class Thread:
             "goal": (goal or {}).get("command"),
             "probe": proj.as_dict() if proj is not None else None,
             "candidates_cap": plan.candidates,
+            # 用户这一次允许的上限 vs 本轮推导上限：界面要同时显示，避免"设了 6 路却只跑 1 路"看不出原因。
+            "requested": requested,
         })
         return proj
 
@@ -1102,6 +1108,13 @@ class Thread:
             self._add({"type": "notice", "level": "warn", "text": "批准期间验收文件发生变化，本轮未执行该判据。"})
             return "exhausted"
 
+        def _remember_judge_ms(ms: float) -> None:
+            """记一次判据耗时（按工程，下一次 _plan_allout 用作资源估算信号）。"""
+            m = self._allout_meta()
+            m["judge_ms"] = int(ms)
+            self.meta["allout"] = m
+            self.save_meta()
+
         async def judge_serial(cwd: str | None = None) -> Verdict:
             sp = spec if cwd is None else GoalSpec(command=spec.command, cwd=cwd,
                                                    min_tests=spec.min_tests, timeout=spec.timeout)
@@ -1111,8 +1124,11 @@ class Thread:
             # 主工作区的判据：记下运行前后的树。判据命令自己也可能写文件（生成物、快照），
             # 那样这次结果就不能用来证明"交付状态通过"（见 _delivery_judge 的复用条件）。
             t0 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
+            started = time.monotonic()
             async with lock, shared:
                 v = await judge(sp)
+            if cwd is None:
+                _remember_judge_ms((time.monotonic() - started) * 1000)
             t1 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
             if cwd is None:
                 self._judge_recent["target"] = {"verdict": v, "tree": t1,
@@ -1604,6 +1620,7 @@ class Thread:
         if not ok:
             self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout_skipped", "why": why})
             return []
+        self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout", "started": cap})
         lock = self._allout_judge_lock
         if lock is None:                      # 直接调 _allout_fanout 的调用方（测试/脚本）也可能没建过
             lock = self._allout_judge_lock = asyncio.Semaphore(1)

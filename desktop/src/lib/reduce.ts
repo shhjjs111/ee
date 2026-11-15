@@ -46,6 +46,8 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
         ...t,
         status_text: `全力以赴 · ${p.plan?.candidates ?? 1} 路`,
         allout_plan: p.plan,
+        // 用户设置的上限与推导上限分开存：界面要能显示"设了 6 路、本轮 2 路、因为内存"。
+        allout_requested: p.requested ?? p.plan?.candidates,
       };
     // 全力以赴的执行进度：修复轮、候选、写回都在这里。没有它，长跑只剩
     // 「全力以赴 · 3 路」一行不动，用户看不出到底在修、在试、还是已经写回。
@@ -63,13 +65,10 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
         return { ...t, allout_candidates: candidates, allout_winner: p.winner };
       }
       if (phase === "review") {
-        const review = p.state === "running"
-          ? "正在对照评审通过验收的候选"
-          : p.state === "skipped"
-            ? "已按验收结果择优，无需模型对照"
-            : p.reviewed > 0
-              ? `模型评审完成 ${p.reviewed}/${p.total} 组对照`
-              : "模型评审未完成，已按验收结果择优";
+        let review = "模型评审未完成，已按验收结果择优";
+        if (p.state === "running") review = "正在对照评审通过验收的候选";
+        else if (p.state === "skipped") review = "已按验收结果择优，无需模型对照";
+        else if (p.reviewed > 0) review = `模型评审完成 ${p.reviewed}/${p.total} 组对照`;
         return { ...t, allout_review: review };
       }
       if (phase === "self_review" || phase === "implementation") {
@@ -77,6 +76,10 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
       }
       if (phase === "start") {
         return { ...t, status_text: `全力以赴 · ${p.candidates ?? 1} 路开始` };
+      }
+      if (phase === "fanout") {
+        // 实际启动的候选数：可能少于推导上限（无 Git/无提交/工作区不可隔离时会跳过）。
+        return { ...t, allout_started: p.started ?? 0, status_text: `全力以赴：启动 ${p.started ?? 0} 路候选` };
       }
       if (phase === "judge") {
         const n = typeof p.tests === "number" && p.tests > 0 ? `（${p.tests} 个测试）` : "";
@@ -86,18 +89,17 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
         // 「未保留」必须说清楚磁盘到底回滚了没有：reverted 是回滚的文件数，null = 没能回滚。
         // 有明确进展但还没通过完整验收时，代码是**留在工作区继续修**的，不能显示成"未保留"。
         const fixed = typeof p.fixed === "number" && p.fixed > 0 ? `（修好 ${p.fixed} 条）` : "";
-        const tail = p.kept
-          ? "，已保留"
-          : p.progress === "improved"
-            ? `，失败面缩小${fixed}，保留继续修`
-            : typeof p.reverted === "number"
-              ? `，已回滚${p.reverted} 个文件`
-              : "，未保留（未能回滚，工作区仍是这份改动）";
+        let tail = "，未保留（未能回滚，工作区仍是这份改动）";
+        if (p.kept) tail = "，已保留";
+        else if (p.progress === "improved") tail = `，失败面缩小${fixed}，保留继续修`;
+        else if (typeof p.reverted === "number") tail = `，已回滚${p.reverted} 个文件`;
         return { ...t, status_text: `全力以赴：第 ${p.attempt ?? 1} 轮修复${tail}` };
       }
       if (phase === "candidate") {
         // 候选分两种思路：延续（带着上一轮失败继续修）与独立（从原始需求重新定位）。
-        const role = p.role === "continuation" ? "延续路线" : (p.role === "independent" ? "独立路线" : "");
+        let role = "";
+        if (p.role === "continuation") role = "延续路线";
+        else if (p.role === "independent") role = "独立路线";
         const who = role ? `${role}候选 ${p.id ?? "?"}` : `候选 ${p.id ?? "?"}`;
         return { ...t, status_text: `全力以赴：${who}${p.met ? "通过判据" : "未通过"}` };
       }

@@ -115,8 +115,9 @@ DEFAULTS: dict = {
     "orchestrator": {"enabled": False, "max_children": 4, "max_total_children": 16},
     # 全力以赴（allout）：会话级开关，打开后把推理预算花在「真正通过验证」上
     # （先一次做好，失败按原因修，还不行才分叉；模型固定为用户所选）。
-    # candidates 是分叉路数的**上限**，实际值由 cpu / 上下文 / subagent.max_parallel
-    # 在 core/allout.py 的 derive() 里钳制，不是写死的配额。
+    # candidates 是分叉路数的**上限**（产品上限 6）；实际值由 CPU / 可用内存 / 磁盘 /
+    # 上下文 / 本项配置 / 用户这一次的设置共同钳制（见 core/allout.py 的 derive()），
+    # 不是写死的配额。`subagent.max_parallel` 只影响候选内部的只读探索名额，不再决定候选路数。
     # 项目层只能关、只能调小（见 sanitize_project_layer）。
     "allout": {"enabled": False, "candidates": 6},
     # LSP 诊断（D6-2 / T9）：让模型改完文件看到语言服务器的类型错误。默认关——工具 schema
