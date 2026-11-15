@@ -691,6 +691,12 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1)])   # 首轮 + 修复轮都红
     _stub_turn(th, ["completed", "completed"])
     th.session.disk_capture = lambda: None
+    # 必须固定推导结果：`derive` 的候选路数按 **CPU 核数** 算（每路 4 核），
+    # CI 的 runner 只有 2–4 核 → candidates=1 → 根本不会走到分叉/写回。
+    # 这个用例要验的是"写回失败"，不是调度启发式，所以在测试里把计划钉死。
+    monkeypatch.setattr(A, "derive", lambda **_kw: A.AlloutPlan(
+        candidates=2, repair_rounds=1, max_rounds=3, effort="", max_steps=50,
+        temperature_ladder=(0.0, 0.3), verified=True, reasons=(), degradations=()))
 
     winner = {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": False,
               "cwd": str(workspace), "base": "b", "worktree": str(workspace)}
