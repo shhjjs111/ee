@@ -45,6 +45,7 @@ class GoalSpec:
     min_tests: int = 1
     timeout: float = 300.0
     shell: str = "auto"
+    validation_files: tuple[str, ...] = ()
 
 
 @dataclass

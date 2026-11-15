@@ -288,6 +288,9 @@ def subagent_semaphore(parent, sc: dict) -> asyncio.Semaphore:
     单步内成立：第 1 步派了 3 个还没结束，第 2 步又派 3 个，实际 6 个同时跑。
     闸门必须挂在 Session 上，只建一次；max_parallel 变了才重建。
     """
+    shared = getattr(parent, "_allout_explore_sem", None)
+    if shared is not None:
+        return shared
     want = max(1, as_int(sc.get("max_parallel"), 1))
     cur = getattr(parent, "_subagent_sem", None)
     if cur is not None and getattr(parent, "_subagent_sem_limit", None) == want:
@@ -340,6 +343,8 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
     steps = max(1, min(limit, as_int(steps, 30)))
 
     read_only = is_read_only(parent, args, adef)
+    if getattr(parent, "_allout_explore_only", False) and (not read_only or _iso(args) == "worktree"):
+        raise ValueError("火力全开候选内部只允许只读探索，不允许写型子代理或创建嵌套 worktree")
     # 模型：调用时指定 > 子代理定义 > 只读子代理用 roles.explore（D5-9）> 主会话的模型
     requested = str(args.get("model") or adef.model or "").strip()
     model_ignored = ""
@@ -391,6 +396,9 @@ async def run_subagent(parent, call_id: str, args: dict, emit) -> tuple[str, boo
             child = Session(cfg, model=model, cwd=child_cwd, mode="read-only" if read_only else parent.policy.eff_mode,
                             client=parent._client_override, client_factory=parent._client_factory, persist=False,
                             home=parent.home, shell=parent.shell_name, user_home=parent.user_home)
+            if getattr(parent, "model_lock", None) is not None:
+                child.lock_model()
+                child.effort = parent.effort_for(child.spec)
             p = parent.policy
             if read_only:
                 child.policy = PermissionPolicy(mode="read-only", workspace=parent.cwd, allow=list(p.allow),

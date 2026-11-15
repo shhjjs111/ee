@@ -61,7 +61,7 @@ type State = {
   draftEffort: string | null; // D5-9：新对话首条消息前选的推理强度（null = 按模型默认）
   draftStyle: string | null; // D5-9：新对话首条消息前选的回答风格（null = 设置里的默认）
   /** 全力以赴：这一回合是否开着（会话级开关，只随下一次 turn/start 带过去） */
-  allout: { enabled: boolean; candidates: number };
+  allout: { enabled: boolean; candidates: number; parallel_validation?: boolean };
   defaultEffort: string; // 设置里的全局默认推理强度
   defaultStyle: string; // 设置里的默认回答风格
   draftWorktree: boolean; // 新对话在新 worktree 里开始（D5-1）
@@ -115,7 +115,7 @@ type Actions = {
   send(text: string, attachments?: Attachment[], queue?: QueueKind): Promise<boolean>;
   sendGoal(text: string, command: string, maxRounds: number, passToPass?: string): Promise<boolean>;
   /** 全力以赴开关（会话级）：打开后下一次发送会带上 allout，模型不变。 */
-  setAllout(v: { enabled?: boolean; candidates?: number }): void;
+  setAllout(v: Partial<State["allout"]>): void;
   /** 没有当前对话时按草稿（项目、模型、模式、worktree）新建一个，返回会话 id；没选项目返回 null。 */
   ensureThread(): Promise<string | null>;
   withdrawQueued(itemId: string): Promise<void>;
@@ -161,7 +161,7 @@ export const useApp = create<State & Actions>((set, get) => ({
   draftMode: localStorage.getItem("ee.mode") || "default",
   draftEffort: null,
   draftStyle: null,
-  allout: { enabled: false, candidates: 3 },
+  allout: { enabled: false, candidates: 6 },
   defaultEffort: "",
   defaultStyle: "default",
   draftWorktree: false,
@@ -502,7 +502,11 @@ export const useApp = create<State & Actions>((set, get) => ({
    */
   setAllout(v) {
     const cur = get().allout;
-    const next = { enabled: v.enabled ?? cur.enabled, candidates: Math.max(1, Math.min(3, v.candidates ?? cur.candidates)) };
+    const next = {
+      enabled: v.enabled ?? cur.enabled,
+      candidates: Math.max(1, Math.min(6, v.candidates ?? cur.candidates)),
+      parallel_validation: v.parallel_validation ?? cur.parallel_validation,
+    };
     if (next.enabled) {
       // 只读 / 计划模式是硬边界（后端 start_turn 同样会拒）：这里先拦，
       // 免得用户开了开关、发出去才吃到一条「不能开」的错误。
@@ -538,8 +542,9 @@ export const useApp = create<State & Actions>((set, get) => ({
         model,
         mode,
         goal: { command, max_rounds: maxRounds, ...(passToPass ? { pass_to_pass: passToPass } : {}) },
-        ...(ao.enabled ? { allout: { enabled: true, candidates: ao.candidates } } : {}),
+        ...(ao.enabled ? { allout: { ...ao } } : {}),
       });
+      if (ao.enabled && ao.parallel_validation) set((st) => ({ allout: { ...st.allout, parallel_validation: false } }));
       return true;
     } catch (e) {
       const msg = (e as Error).message;
@@ -580,8 +585,9 @@ export const useApp = create<State & Actions>((set, get) => ({
       const ao = get().allout;
       await rpc.call("turn/start", {
         thread_id: id, text, model, mode, attachments: atts, effort, style, queue,
-        ...(ao.enabled ? { allout: { enabled: true, candidates: ao.candidates } } : {}),
+        ...(ao.enabled ? { allout: { ...ao } } : {}),
       }, atts ? 120000 : undefined);
+      if (ao.enabled && ao.parallel_validation) set((st) => ({ allout: { ...st.allout, parallel_validation: false } }));
       return true;
     } catch (e) {
       const msg = (e as Error).message;

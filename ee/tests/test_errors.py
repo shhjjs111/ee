@@ -424,3 +424,42 @@ def test_endpoint_without_finish_reason_field_is_not_an_error(ee_home, workspace
     status, val = asyncio.run(go())
     assert status == "done", f"兼容端点被误判成截断：{val}"
     assert val.content == "完整回答"
+
+
+def test_concurrent_model_streams_track_finish_fields_independently(workspace):
+    from types import SimpleNamespace
+
+    from ee.config import load_config
+
+    async def go():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def create(*, truncated):
+            async def stream():
+                choice = {"delta": {"content": "回答"}}
+                if truncated:
+                    choice["finish_reason"] = None
+                yield {"choices": [choice]}
+                if truncated:
+                    started.set()
+                    await release.wait()
+
+            return stream()
+
+        sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        client = ChatClient(load_config(workspace).resolve_model("deepseek-flash"), client=sdk)
+
+        async def receive(truncated):
+            return [event async for event in client._stream_once({"truncated": truncated}, None)]
+
+        interrupted = asyncio.create_task(receive(True))
+        await asyncio.wait_for(started.wait(), 5)
+        try:
+            assert (await receive(False))[-1][0] == "done"
+        finally:
+            release.set()
+        with pytest.raises(ModelError, match="没有收到结束标记"):
+            await interrupted
+
+    asyncio.run(go())

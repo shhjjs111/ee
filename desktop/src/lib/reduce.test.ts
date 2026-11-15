@@ -60,6 +60,15 @@ describe("applyItemNotification", () => {
     expect(t.status_text).toBe("全力以赴：判据通过");
   });
 
+  it("评审回退说明保留到回合结束，新回合开始后清除", () => {
+    const start = applyItemNotification(base, "allout_progress", { phase: "review", state: "running" });
+    const fallback = applyItemNotification(start, "allout_progress", { phase: "review", state: "finished", reviewed: 0, total: 1 });
+    const done = applyItemNotification(fallback, "turn/completed", {});
+    expect(done.allout_review).toContain("按验收结果择优");
+    const next = applyItemNotification(done, "item/started", { item: { id: "new", type: "user", text: "下一个任务" } });
+    expect(next.allout_review).toBeUndefined();
+  });
+
   it("started → delta → updated → removed", () => {
     let t = applyItemNotification(base, "item/started", { item: { id: "a1", type: "assistant", text: "", reasoning: "" } });
     t = applyItemNotification(t, "item/delta", { item_id: "a1", field: "text", delta: "你好" });

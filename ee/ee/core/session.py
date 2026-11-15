@@ -1669,13 +1669,14 @@ class Session:
                 self.turn_trees.append({"before": tree, "after": None, "undone": False})
             emit(TurnStart(self.turns, tree))
             step = 0
-            max_steps = max(1, self.config.max_steps)
+            configured_steps = max(1, self.config.max_steps)
+            max_steps = max(1, getattr(self, "_allout_max_steps", None) or configured_steps)
             # 分段续跑：单段 max_steps 步，最多 max_steps_segments 段（1 = 原来的硬停行为）。
             # 段边界只做「原本发生在下回合开始」的那次自动压缩，然后接着跑。请求序列与
             # 「触顶 → 用户手打继续 → 下回合开始压缩」逐条等价（实测 43ca2f：20 次触顶后的
             # 下一回合 20/20 都是先 compact），所以不新增未命中，净省掉触顶那次被迫总结的请求。
             segments = max(1, int(self.config.data.get("max_steps_segments") or 1))
-            total = max_steps * segments
+            total = configured_steps * segments
             self._turn_running = True      # 从这里开始是回合中途：压缩推迟到下一回合开始
             while True:
                 step += 1
@@ -1723,7 +1724,7 @@ class Session:
                         self._append({"role": "tool", "tool_call_id": tc["id"],
                                       "content": "已达到最大步数，此调用未执行。"})
                     self._open_calls.clear()
-                    emit(Notice(f"已达到本回合的步数上限 {total}（{segments} 段 × {max_steps}），本回合结束。", "warn"))
+                    emit(Notice(f"已达到本回合的步数上限 {total}（每段最多 {max_steps} 步），本回合结束。", "warn"))
                     emit(TurnDone("max_steps", final))
                     return
                 self._end_turn = False
@@ -2146,13 +2147,14 @@ class Session:
     # ------------------------------------------------------------ 侧路请求（不碰主会话）
     async def side_complete(self, system: str, user: str, role: str | None = None) -> str:
         """侧路请求（不进历史）。role：按用途取模型（title / compact / commit），花费按那个模型的单价记。
-        不带主会话的推理强度（换了模型的参数不一定被支持）。"""
+        锁定模型时继承本轮推理强度；其它侧路不继承（换模型后参数未必支持）。"""
         spec = self.role_spec(role)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         out = []
         comp = None
         client = await self.ensure_role_client(spec)
-        async for kind, val in client.stream(msgs, None):
+        kwargs = {"effort": self.effort_for(spec)} if self.model_lock is not None else {}
+        async for kind, val in client.stream(msgs, None, **kwargs):
             if kind == "text":
                 out.append(val)
             elif kind == "done":

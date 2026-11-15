@@ -50,8 +50,8 @@ def test_unsupported_model_reason_says_default():
 def test_no_goal_forces_single_lane_unverified():
     plan = derive(config={}, profile=DEEPSEEK, has_goal=False, cpu_count=16)
     assert plan.candidates == 1
-    assert plan.repair_rounds == 0
-    assert plan.max_rounds == 1
+    assert plan.repair_rounds == 1
+    assert plan.max_rounds == 2
     assert plan.verified is False
     assert plan.degraded is True
     assert any("未验证" in d for d in plan.degradations)
@@ -61,7 +61,7 @@ def test_no_goal_forces_single_lane_unverified():
 # ---------------------------------------------------------------- 路数钳制
 
 
-@pytest.mark.parametrize("cpu,want", [(16, 3), (8, 2), (4, 1), (2, 1), (64, 3)])
+@pytest.mark.parametrize("cpu,want", [(16, 4), (8, 2), (4, 1), (2, 1), (64, 6)])
 def test_candidates_clamped_by_cpu(cpu, want):
     plan = derive(config={}, profile=DEEPSEEK, has_goal=True, cpu_count=cpu, max_parallel=8)
     assert plan.candidates == want

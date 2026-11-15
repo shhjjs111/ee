@@ -40,7 +40,7 @@ def clip_output(output: str, limit: int = MAX_OUTPUT_CHARS) -> tuple[str, str | 
     return clipped, f"判据输出共 {len(text)} 字符，已省略中间 {omitted} 字符（保留了开头与失败尾部）"
 
 
-def build_feedback(verdict, spec, *, attempt: int, max_checks: int) -> str:
+def build_feedback(verdict, spec, *, attempt: int, max_checks: int, output_limit: int = MAX_OUTPUT_CHARS) -> str:
     """构造「上一轮判定没通过，请据此修复」的模型输入。
 
     verdict: core.goal.Verdict（有 .reason / .exit / .tests / .timed_out / .output / .min_tests）
@@ -48,7 +48,7 @@ def build_feedback(verdict, spec, *, attempt: int, max_checks: int) -> str:
     attempt: 这是第几个修复回合（从 1 开始）
     max_checks: 本轮最多判定几次（让模型知道还剩多少机会）
     """
-    out, omitted = clip_output(getattr(verdict, "output", "") or "")
+    out, omitted = clip_output(getattr(verdict, "output", "") or "", output_limit)
     reason = getattr(verdict, "reason", "") or "未说明"
     exit_code = getattr(verdict, "exit", None)
     tests = getattr(verdict, "tests", None)

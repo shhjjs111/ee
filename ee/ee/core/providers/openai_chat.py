@@ -369,7 +369,7 @@ class ChatClient:
 
     async def _stream_once(self, params: dict, tools: list[dict] | None, timing=None):
         known = [t["function"]["name"] for t in (tools or [])]
-        self._saw_finish_field = False      # 每次请求重置，避免上一次的痕迹影响判断
+        saw_finish_field = False
         # 等响应对象（连接 + 上游出首包）期间每 heartbeat_s 秒更新一次状态。
         # 实测首包中位 18.8 秒、p90 35.9 秒：一句静态的“正在连接…”在那段时间里是不动的，
         # 用户分不清在排队还是卡死；带上该接口的历史中位数才知道该等还是该换接口。
@@ -412,7 +412,7 @@ class ChatClient:
                 delta = T._get(ch, "delta")
                 fr = T._get(ch, "finish_reason")
                 if "finish_reason" in ch:
-                    self._saw_finish_field = True     # 这个端点会发这个字段
+                    saw_finish_field = True
                 if fr:
                     comp.finish_reason = fr
                 if delta is None:
@@ -465,9 +465,9 @@ class ChatClient:
         #       这种端点若一次都没给非 null 值，说明流确实被截断了 → 抛错。
         #   (b) 少数兼容端点压根不发这个字段。这种端点收不到结束标记是常态，
         #       不能判成截断，只提示一句，让回答正常落地。
-        # _stream_once 用 self._saw_finish_field 记录「有没有见过这个字段」。
+        # 标记只属于当前流，同一个模型客户端可能在并行评审两份回复。
         if comp.finish_reason is None and (comp.content or comp.tool_calls or comp.reasoning):
-            if getattr(self, "_saw_finish_field", False):
+            if saw_finish_field:
                 raise ModelError("模型输出不完整（流被中断，没有收到结束标记）。", kind="truncated")
             log.info("模型 %s 没有发送 finish_reason 字段（兼容端点），按完整回答处理", self.spec.alias)
         yield ("done", comp)

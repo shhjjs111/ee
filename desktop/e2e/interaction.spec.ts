@@ -369,3 +369,24 @@ test("拒绝路径的语义校验：后端工具状态是 denied，不是 ok", a
   // 被拒绝的 shell 绝不能是成功
   expect(shellStatuses.includes("ok") && !shellStatuses.includes("denied"), "被拒绝的命令被记成了成功").toBe(false);
 });
+
+
+test("火力全开展示真实执行配置并完成审阅", async () => {
+  expect(ready && configured).toBe(true);
+  await win.getByRole("button", { name: /^新对话/ }).click();
+  await win.getByRole("button", { name: "火力全开 · 关闭" }).click();
+  const ta = win.locator("textarea").first();
+  await ta.fill("核对实现与验证结果");
+  await ta.press("Enter");
+  const summary = win.getByText("火力全开 · 本轮执行配置", { exact: true });
+  await expect(summary).toBeVisible({ timeout: 15000 });
+  await expect(win.getByText(/本机 .* 核/)).toBeVisible();
+  await expect.poll(async () => {
+    const approval = win.getByRole("button", { name: "允许一次", exact: true });
+    if (await approval.count()) await approval.last().click();
+    const body = await win.locator("body").innerText();
+    const placeholder = await ta.getAttribute("placeholder");
+    return !placeholder?.includes("继续输入：Enter 插话") && /完成 ·/.test(body);
+  }, { timeout: 90000 }).toBe(true);
+  await expect(summary).toBeVisible();
+});

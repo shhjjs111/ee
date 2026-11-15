@@ -77,7 +77,7 @@ def test_rejects_bad_candidates():
 def test_candidates_capped():
     from ee.server.threads import _norm_allout
 
-    assert _norm_allout({"enabled": True, "candidates": 99})["candidates"] <= 3
+    assert _norm_allout({"enabled": True, "candidates": 99})["candidates"] <= 6
 
 
 def test_defaults_applied():
@@ -85,7 +85,7 @@ def test_defaults_applied():
 
     out = _norm_allout({"enabled": True})
     assert out["enabled"] is True
-    assert out["candidates"] == 3
+    assert out["candidates"] == 6
 
 
 def test_rejects_model_field():

@@ -230,7 +230,7 @@ describe("全力以赴开关", () => {
 
   it("candidates 钳在 1..3", () => {
     useApp.getState().setAllout({ enabled: true, candidates: 99 });
-    expect(useApp.getState().allout.candidates).toBe(3);
+    expect(useApp.getState().allout.candidates).toBe(6);
     useApp.getState().setAllout({ candidates: 0 });
     expect(useApp.getState().allout.candidates).toBe(1);
     useApp.getState().setAllout({ enabled: false });

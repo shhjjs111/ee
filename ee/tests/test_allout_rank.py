@@ -77,18 +77,34 @@ def test_rank_runs_position_swapped_two_rounds(ee_home, tmp_path):
     repo, cands = _repo_with_two_candidates(tmp_path)
     th = _thread(ee_home, repo)
     calls: list[str] = []
+    ready = asyncio.Event()
+    events: list[dict] = []
+    th.notify = lambda method, payload: events.append(payload) if method == "allout_progress" else None
+    cands[0]["verdict"].output = "diagnostic for candidate one"
+    cands[1]["verdict"].output = "diagnostic for candidate two"
 
     async def fake_side(system: str, user: str, role: str | None = None) -> str:
         calls.append(user)
+        position = len(calls)
+        if position == 2:
+            ready.set()
+        await ready.wait()
         # 第一轮 A=cand-1 → 投 A；第二轮 A=cand-2 → 投 B
-        return "分析……\nFINAL: A" if len(calls) == 1 else "分析……\nFINAL: B"
+        return "分析……\nFINAL: A" if position == 1 else "分析……\nFINAL: B"
 
     th.session.side_complete = fake_side
-    winner = asyncio.run(th._allout_rank(cands, "修好 add", "3 passed"))
+
+    async def rank():
+        return await asyncio.wait_for(th._allout_rank(cands, "修好 add", "3 passed"), 10)
+
+    winner = asyncio.run(rank())
 
     assert len(calls) == 2, "必须位置对调评两轮"
+    assert calls[0].index("diagnostic for candidate one") < calls[0].index("diagnostic for candidate two")
+    assert calls[1].index("diagnostic for candidate two") < calls[1].index("diagnostic for candidate one")
     assert winner is not None and winner["id"] == "cand-1"
     assert {c["id"]: c["votes"] for c in cands} == {"cand-1": 2, "cand-2": -2}
+    assert events[-1]["state"] == "finished" and events[-1]["reviewed"] == 1
 
 
 def test_slot_biased_votes_cancel_out(ee_home, tmp_path):
@@ -120,6 +136,20 @@ def test_rank_judge_failure_counts_as_tie(ee_home, tmp_path):
     winner = asyncio.run(th._allout_rank(cands, "修好 add", "3 passed"))
     assert winner is not None, "评定失败不应导致没有胜者"
     assert {c["id"]: c["votes"] for c in cands} == {"cand-1": 0, "cand-2": 0}
+
+
+def test_unpaired_review_vote_does_not_bias_selection(ee_home, tmp_path):
+    repo, cands = _repo_with_two_candidates(tmp_path)
+    th = _thread(ee_home, repo)
+    responses = iter(["FINAL: B", "没有有效结论"])
+
+    async def side(system: str, user: str, role: str | None = None) -> str:
+        return next(responses)
+
+    th.session.side_complete = side
+    winner = asyncio.run(th._allout_rank(cands, "修好 add", "3 passed"))
+    assert winner["id"] == "cand-1"
+    assert [c["votes"] for c in cands] == [0, 0]
 
 
 def test_rank_reports_ab_reason(ee_home, tmp_path):

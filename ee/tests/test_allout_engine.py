@@ -82,6 +82,8 @@ def test_parse_ab_takes_last_marker():
     assert parse_ab("FINAL: B\n再想想\nfinal: a") == "A"
     assert parse_ab("FINAL: TIE") == "TIE"
     assert parse_ab("没有结论") == ""
+    assert parse_ab("示例：FINAL: A\n实际判定证据不足") == ""
+    assert parse_ab("FINAL: B 只是格式示例") == ""
 
 
 def test_net_votes_with_position_swap():

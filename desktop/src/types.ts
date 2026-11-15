@@ -13,6 +13,10 @@ export type AlloutPlanInfo = {
   effort: string;
   max_steps: number;
   temperature_ladder: number[];
+  feedback_chars?: number;
+  explore_slots?: number;
+  judge_slots?: number;
+  selection_grace_seconds?: number;
   verified: boolean;
   reasons: string[];
   degradations: string[];
@@ -218,6 +222,10 @@ export type ThreadDetail = ThreadSummary & {
   shell: string | null;
   git: { is_repo: boolean; branch: string; changed: number; untracked: number } | null;
   instructions?: string[]; // 本会话加载的 AGENTS.md
+  allout_plan?: AlloutPlanInfo;
+  allout_candidates?: Record<string, { state: string; strategy?: string; tests?: number; files?: number; votes?: number; detail?: string }>;
+  allout_winner?: string;
+  allout_review?: string;
   status_text?: string; // 临时状态：正在连接模型… 等（turn/status）
   /** 分页信息（首屏只拉尾部一页时用）：本会话总条目数 */
   items_total?: number;

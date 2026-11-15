@@ -588,6 +588,27 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
   return (
     <div className="relative">
       <ChildApprovalBanner />
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+        <button type="button" aria-pressed={s.allout.enabled}
+          disabled={running || ((!s.allout.enabled) && (mode === "read-only" || mode === "plan"))}
+          onClick={() => s.setAllout({ enabled: !s.allout.enabled })}
+          className={clsx("rounded-full border px-3 py-1.5 disabled:opacity-40", s.allout.enabled ? "border-amber-500/50 bg-amber-500/10 text-amber-600" : "border-line text-muted")}>
+          火力全开 · {s.allout.enabled ? "已开启" : "关闭"}
+        </button>
+        {s.allout.enabled && <>
+          <label className="text-muted">候选上限 <select aria-label="火力全开候选上限" disabled={running}
+            value={s.allout.candidates} onChange={(e) => s.setAllout({ candidates: Number(e.target.value) })}
+            className="rounded border border-line bg-elev px-2 py-1 text-fg">
+            {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} 路</option>)}
+          </select></label>
+          <span className="text-faint">固定当前模型 · 额外预算用于验证与择优</span>
+          <label className="flex items-center gap-1.5 text-muted">
+            <input type="checkbox" disabled={running} checked={!!s.allout.parallel_validation}
+              onChange={(e) => s.setAllout({ parallel_validation: e.target.checked })} />
+            本轮测试相互隔离，可并行验收
+          </label>
+        </>}
+      </div>
       {showSlash && slashList && <SlashMenu items={slashList} sel={slashSel} onPick={pickSlash} onHover={setSlashSel} />}
       {mention && files.length > 0 && (
         <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-line bg-elev p-1 shadow-[var(--shadow)] fadein">
@@ -773,7 +794,7 @@ export function Composer({ autoFocus }: { autoFocus?: boolean }) {
                     label: on ? `已开启（上限 ${ao.candidates} 路）` : "全力以赴",
                     desc: blocked
                       ? "只读 / 计划模式下不可用：全力以赴会改文件并并行跑候选"
-                      : "先一次做好，失败按原因修，还不行才分头试；模型不变，多数任务不会多花一分钱",
+                      : "固定当前模型，按资源与配置安排候选；增加验证、修复与择优，可能花费更多",
                     hint: on ? "当前" : undefined,
                     disabled: blocked,
                     onSelect: () => {

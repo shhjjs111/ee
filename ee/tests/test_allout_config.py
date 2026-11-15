@@ -17,7 +17,7 @@ def _user(**kw) -> dict:
 
 def test_default_off():
     assert DEFAULTS["allout"]["enabled"] is False
-    assert DEFAULTS["allout"]["candidates"] == 3
+    assert DEFAULTS["allout"]["candidates"] == 6
 
 
 def test_project_layer_cannot_enable_allout():

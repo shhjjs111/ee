@@ -118,7 +118,7 @@ DEFAULTS: dict = {
     # candidates 是分叉路数的**上限**，实际值由 cpu / 上下文 / subagent.max_parallel
     # 在 core/allout.py 的 derive() 里钳制，不是写死的配额。
     # 项目层只能关、只能调小（见 sanitize_project_layer）。
-    "allout": {"enabled": False, "candidates": 3},
+    "allout": {"enabled": False, "candidates": 6},
     # LSP 诊断（D6-2 / T9）：让模型改完文件看到语言服务器的类型错误。默认关——工具 schema
     # 是固定 token 开销，还进冻结前缀；没装服务器时它也只会一直报 unavailable。
     # **开启后 repo_map 工具会让位**（两个都是"理解代码"，而 full 工具表只剩 79 token

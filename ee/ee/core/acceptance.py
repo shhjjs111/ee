@@ -76,15 +76,19 @@ def inputs(cwd: Path | str | None) -> list[str]:
     return rels
 
 
-def fingerprint(cwd: Path | str | None, command: str) -> dict:
+def fingerprint(cwd: Path | str | None, command: str, extra_files: tuple[str, ...] = ()) -> dict:
     """验收依据指纹：命令 + 依据文件内容 + 执行目录。
 
     `files` 是 {相对路径: 内容哈希}；后续比对用它点名"到底哪个文件变了"。
     """
     root = Path(cwd) if cwd else None
     files: dict[str, str] = {}
-    for rel in inputs(root) if root is not None else []:
-        h = _sha(root / rel) if root is not None else None
+    for rel in dict.fromkeys([*inputs(root), *extra_files]) if root is not None else ():
+        path = root / rel
+        try:
+            h = _sha(path) if path.resolve().is_relative_to(root.resolve()) else None
+        except (OSError, RuntimeError):
+            h = None
         if h is not None:
             files[rel] = h
     return {

@@ -381,6 +381,33 @@ export function Conversation() {
               <ItemBlock key={b.item.id} item={b.item} approval={approvals.get((b.item as { call_id?: string }).call_id ?? "")} />
             ),
           )}
+          {d.allout_plan && <details className="my-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs" open>
+            <summary className="cursor-pointer font-medium">火力全开 · 本轮执行配置</summary>
+            <div className="mt-2 flex flex-wrap gap-2 text-muted">
+              <span>{d.allout_plan.candidates} 路候选上限</span>
+              <span>推理 {d.allout_plan.effort || "模型默认"}</span>
+              <span>每段 {d.allout_plan.max_steps} 步</span>
+              <span>诊断 {d.allout_plan.feedback_chars ?? 4000} 字符</span>
+              <span>验收 {d.allout_plan.judge_slots ?? 1} 槽</span>
+              {!!d.allout_plan.explore_slots && <span>只读探索 {d.allout_plan.explore_slots} 槽</span>}
+              <span>{d.allout_plan.verified ? "使用独立判据（尚不代表通过）" : "证据审阅 · 未独立验收"}</span>
+            </div>
+            <ul className="mt-2 space-y-1 text-muted">{[...d.allout_plan.reasons, ...d.allout_plan.degradations].map((r, i) => <li key={i}>{r}</li>)}</ul>
+            {d.allout_review && <p className="mt-2 text-muted">{d.allout_review}</p>}
+            {d.allout_candidates && <ul aria-label="候选进度" className="mt-2 space-y-1 border-t border-line pt-2 text-muted">
+              {Object.entries(d.allout_candidates).sort(([a], [b]) => a.localeCompare(b)).map(([id, c]) =>
+                <li key={id} className="flex flex-wrap gap-x-2">
+                  <span>候选 {id.replace("cand-", "")}{c.strategy && ` · ${c.strategy}`}</span>
+                  <span>{({ preparing: "准备工作区", working: "实现中", queued: "等待验收", testing: "验收中",
+                    passed: "通过", failed: "未通过", cancelled: "已停止" } as Record<string, string>)[c.state] ?? c.state}</span>
+                  {typeof c.tests === "number" && <span>{c.tests} 项测试</span>}
+                  {typeof c.files === "number" && <span>{c.files} 个文件</span>}
+                  {typeof c.votes === "number" && <span>净胜票 {c.votes}</span>}
+                  {c.detail && <span>{c.detail}</span>}
+                  {id === d.allout_winner && <strong className="text-fg">择优选中</strong>}
+                </li>)}
+            </ul>}
+          </details>}
           {running && (
             <div className="mt-3">
               <Working since={since ?? Date.now()} waiting={d.status === "waiting_approval"} text={d.status_text} />

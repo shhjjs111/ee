@@ -6,7 +6,13 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
     case "item/started": {
       const it = p.item as Item;
       if (t.items.some((x) => x.id === it.id)) return { ...t, items: t.items.map((x) => (x.id === it.id ? it : x)) };
-      return { ...t, items: [...t.items, it] };
+      return {
+        ...t,
+        ...(it.type === "user" && !it.queued && !it.queue
+          ? { allout_plan: undefined, allout_candidates: undefined, allout_winner: undefined, allout_review: undefined }
+          : {}),
+        items: [...t.items, it],
+      };
     }
     case "item/updated": {
       const it = p.item as Item;
@@ -39,11 +45,36 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
       return {
         ...t,
         status_text: `全力以赴 · ${p.plan?.candidates ?? 1} 路`,
+        allout_plan: p.plan,
       };
     // 全力以赴的执行进度：修复轮、候选、写回都在这里。没有它，长跑只剩
     // 「全力以赴 · 3 路」一行不动，用户看不出到底在修、在试、还是已经写回。
     case "allout_progress": {
       const phase = String(p.phase || "");
+      if (phase === "candidate_state" && typeof p.id === "string") {
+        const previous = t.allout_candidates?.[p.id];
+        return { ...t, allout_candidates: { ...t.allout_candidates, [p.id]: { ...previous, ...p } } };
+      }
+      if (phase === "selection") {
+        const candidates = { ...t.allout_candidates };
+        for (const score of p.scores ?? []) {
+          candidates[score.id] = { ...candidates[score.id], ...score, state: "passed" };
+        }
+        return { ...t, allout_candidates: candidates, allout_winner: p.winner };
+      }
+      if (phase === "review") {
+        const review = p.state === "running"
+          ? "正在对照评审通过验收的候选"
+          : p.state === "skipped"
+            ? "已按验收结果择优，无需模型对照"
+            : p.reviewed > 0
+              ? `模型评审完成 ${p.reviewed}/${p.total} 组对照`
+              : "模型评审未完成，已按验收结果择优";
+        return { ...t, allout_review: review };
+      }
+      if (phase === "self_review" || phase === "implementation") {
+        return { ...t, status_text: phase === "self_review" ? "全力以赴：核对需求与验证证据" : "全力以赴：实现与建立验证" };
+      }
       if (phase === "start") {
         return { ...t, status_text: `全力以赴 · ${p.candidates ?? 1} 路开始` };
       }
