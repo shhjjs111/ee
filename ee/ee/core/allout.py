@@ -151,6 +151,8 @@ def keep_policy(before, after) -> tuple[bool, str]:
     规则：修复必须通过判据；并且通过的测试数不少于修复前。
     不满足就丢弃修复、保留原胜者——修复永远不能让结果变差。
     """
+    if getattr(after, "unstable", False):
+        return False, "判据两次运行结果不一致（不稳定），不能据此交付"
     if after is None or not getattr(after, "met", False):
         return False, "修复没有通过判据，丢弃（保留原结果）"
     if before is None:
@@ -171,6 +173,9 @@ def attempt_progress(before, after) -> dict:
     """
     from ee.core import testreport
 
+    if getattr(before, "unstable", False) or getattr(after, "unstable", False):
+        return {"state": "unknown", "why": "判据结果不稳定（两次运行不一致）",
+                "fixed": [], "new_failures": []}
     b = getattr(before, "report", None)
     a = getattr(after, "report", None)
     return testreport.progress(b, a)

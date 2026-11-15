@@ -1099,6 +1099,7 @@ class Thread:
             if await one_turn(msg) == "interrupted":
                 return "interrupted"
             after = await judge_serial()
+            after = await self._flake_confirm(s, spec, after, best)
             keep, why = A.keep_policy(best, after)
             if keep and pass_to_pass:
                 # 修复轮也要过回归门：判据过了但弄坏旧测试的修复不能保留。
@@ -1131,6 +1132,7 @@ class Thread:
                                             "attempt": attempt, "kept": keep, "why": why,
                                             "progress": prog.get("state", "unknown"),
                                             "fixed": len(prog.get("fixed") or []),
+                                            "unstable": bool(getattr(after, "unstable", False)),
                                             "reverted": None if reverted is None else len(reverted)})
             if keep:
                 best = after
@@ -1230,6 +1232,34 @@ class Thread:
                                "时间线里也存了恢复点，可以接着修或对比。"})
         return "exhausted" if (not best.met or regressed) else "met"
 
+    async def _flake_confirm(self, s, spec, verdict, baseline):
+        """出现了基线里没有的失败时，用**原命令**复跑一次确认（flake）。
+
+        只在这种情况复跑：每次都跑两遍等于判据成本翻倍。复跑必须用原命令，不能构造
+        "只跑新增失败"的选择性命令——那会改变初始化、执行顺序与共享状态。
+        两次不一致 → 标 `unstable`：既不能挑绿色的那次宣布通过，也不能据此判回归
+        （没有证据说它是历史 flake，也没有证据说代码真的坏了）。
+        """
+        rep = getattr(verdict, "report", None)
+        base = getattr(baseline, "report", None)
+        if not rep or not base or not rep.cases or not base.cases:
+            return verdict
+        from ee.core.goal import judge
+
+        if not (rep.failed - base.failed):          # 没有新增失败：不需要确认
+            return verdict
+        if getattr(s.budget, "stop_reason", None):
+            return verdict                          # 预算已尽：如实用这次结果
+        again = await judge(spec)
+        rep2 = getattr(again, "report", None)
+        if rep2 is not None and rep2.cases and rep2.failed == rep.failed:
+            return verdict                          # 两次一致：确认为真实回归
+        verdict.unstable = True
+        self._add({"type": "notice", "level": "warn",
+                   "text": "判据两次运行结果不一致（新增失败在第二次没有复现，或换成了别的失败）："
+                           "这次结果按「不稳定」处理，不用来判断进展或交付。"})
+        return verdict
+
     async def _delivery_judge(self, s, spec, key: str) -> dict:
         """跑一次「交付验收」判据，能复用就复用。
 
@@ -1245,10 +1275,11 @@ class Thread:
         now = await asyncio.to_thread(s.disk_capture)
         v = rec.get("verdict")
         if (v is not None and rec.get("source_unchanged") and now and rec.get("tree") == now
-                and not bool(getattr(v, "timed_out", False))):
+                and not bool(getattr(v, "timed_out", False))
+                and not bool(getattr(v, "unstable", False))):
             return {"ran": True, "reused": True, "met": bool(v.met), "tests": v.tests,
                     "reason": v.reason, "cwd": str(spec.cwd or self.cwd), "tree": now,
-                    "source_unchanged": True, "timed_out": False}
+                    "source_unchanged": True, "timed_out": False, "unstable": False}
 
         before = await asyncio.to_thread(s.disk_capture)
         v = await judge(spec)                 # 可取消：用户点停止时子进程会被杀掉
@@ -1256,7 +1287,8 @@ class Thread:
         return {"ran": True, "reused": False, "met": bool(v.met), "tests": v.tests,
                 "reason": v.reason, "cwd": str(spec.cwd or self.cwd), "tree": after,
                 "source_unchanged": bool(before and after and before == after),
-                "timed_out": bool(getattr(v, "timed_out", False))}
+                "timed_out": bool(getattr(v, "timed_out", False)),
+                "unstable": bool(getattr(v, "unstable", False))}
 
     async def _delivery_gate(self, s, spec, p2p_spec, *, source: str,
                              apply_info: dict | None = None,
@@ -1332,9 +1364,12 @@ class Thread:
             delivery["status"] = "failed"
             return "exhausted"
 
-        t_ok = bool(target.get("met")) and bool(target.get("source_unchanged"))
+        t_ok = (bool(target.get("met")) and bool(target.get("source_unchanged"))
+                and not bool(target.get("unstable")))
         if p2p_spec is not None:
-            r_ok = bool(delivery["regression"].get("met")) and bool(delivery["regression"].get("source_unchanged"))
+            r_ok = (bool(delivery["regression"].get("met"))
+                    and bool(delivery["regression"].get("source_unchanged"))
+                    and not bool(delivery["regression"].get("unstable")))
             delivery["regression"]["status"] = "met" if r_ok else (
                 "timeout" if delivery["regression"].get("timed_out") else "failed")
         else:

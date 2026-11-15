@@ -185,6 +185,8 @@ class Backend:
             "thread/wait": self.thread_wait,
             "thread/create_child": self.thread_create_child,
             "thread/undo": self.thread_undo,
+            # 交付与成本指标（第四批）：评测/诊断用，不是产品能力入口。
+            "metrics/summary": self.metrics_summary,
             "thread/compact": self.thread_compact,
             "thread/context_breakdown": self.thread_context_breakdown,
             "turn/start": self.turn_start,
@@ -739,6 +741,22 @@ class Backend:
             lock = asyncio.Lock()
             self._ws_locks[key] = lock
         return lock
+
+    async def metrics_summary(self, thread_id: str | None = None) -> dict:
+        """按已加载会话的 `turn_end` 条目汇总交付与成本指标（core/delivery_metrics）。
+
+        只有带 `delivery` 的回合才算样本（普通对话没有交付结论，混进来会把复验通过率
+        稀释成假的）。这是诊断/评测口径，不是给用户看的产品入口。
+        """
+        from ee.core import delivery_metrics as M
+
+        if thread_id:
+            t = await self._athread(thread_id)
+            threads = [t]
+        else:
+            threads = list(self.threads.values())
+        items = [it for t in threads for it in t.items if it.get("type") == "turn_end"]
+        return M.aggregate(items)
 
     async def thread_undo(self, thread_id: str, force: bool = False) -> dict:
         """/undo。要恢复的文件在回合后被用户改过时返回 {needs_confirm, conflicts}、不动文件；

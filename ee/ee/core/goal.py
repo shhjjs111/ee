@@ -58,6 +58,8 @@ class Verdict:
     # 逐用例结果（第三批）：判据命令输出的可解析部分。没有就是 None——
     # "读不出用例身份"必须显式表示，不能让上层把"没有新失败"当成"没有回归"。
     report: Report | None = None
+    # 两次运行结果不一致（flake 确认后）：这次判定不能用来判断进展、也不能用来交付。
+    unstable: bool = False
 
     @property
     def met(self) -> bool:

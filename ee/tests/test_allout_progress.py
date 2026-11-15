@@ -151,3 +151,52 @@ def test_candidates_split_into_continuation_and_independent(ee_home, workspace, 
     assert len(prompts) == 2, f"两个候选都应跑起来：{len(prompts)}"
     assert "上一轮判定没有通过" in prompts[0], "第一条候选要带着剩余失败（延续路线）"
     assert "上一轮判定没有通过" not in prompts[1], "第二条候选不该看到上一轮的失败（独立路线）"
+
+
+# ---------------------------------------------------------------- flake 确认复跑
+
+def _judge_stub(verdict):
+    async def fake(spec, **_kw):
+        return verdict
+    return fake
+
+
+def test_flake_confirm_marks_unstable_when_two_runs_disagree(ee_home, workspace, monkeypatch):
+    """新增失败复跑一次：两次失败集合不同 → 标 unstable，不当回归也不当通过。"""
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    spec = __import__("ee.core.goal", fromlist=["GoalSpec"]).GoalSpec(command="pytest -q", cwd=str(th.cwd))
+    base = _v(False, ["a"])
+    first = _v(False, ["a", "b"])            # 新增失败 b
+    second = _v(False, ["a", "c"])           # 复跑：b 没了、c 出现
+    monkeypatch.setattr("ee.core.goal.judge", _judge_stub(second))
+    th.notify = lambda m, p: None
+    got = asyncio.run(th._flake_confirm(s, spec, first, base))
+    assert got.unstable is True
+    assert any(it.get("type") == "notice" and "不一致" in str(it.get("text")) for it in th.items)
+
+
+def test_flake_confirm_keeps_verdict_when_two_runs_agree(ee_home, workspace, monkeypatch):
+    """两次一致 → 确认为真实回归，不标 unstable。"""
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    spec = __import__("ee.core.goal", fromlist=["GoalSpec"]).GoalSpec(command="pytest -q", cwd=str(th.cwd))
+    base = _v(False, ["a"])
+    first = _v(False, ["a", "b"])
+    monkeypatch.setattr("ee.core.goal.judge", _judge_stub(_v(False, ["a", "b"])))
+    th.notify = lambda m, p: None
+    got = asyncio.run(th._flake_confirm(s, spec, first, base))
+    assert got.unstable is False
+
+
+def test_unstable_verdict_blocks_progress_and_delivery():
+    """不稳定结果既不参与进展判定，也不允许交付（否则可能挑到绿色的那一次）。"""
+    from ee.core import allout as A
+    from ee.core.testreport import progress as rep_progress
+
+    v1 = _v(False, ["a", "b"])
+    v2 = _v(False, ["a", "b"])
+    v2.unstable = True
+    assert A.attempt_progress(v1, v2)["state"] == "unknown"
+    assert A.keep_policy(v1, v2)[0] is False
+    assert rep_progress(v1.report, v2.report)["state"] in ("stalled", "unknown")
