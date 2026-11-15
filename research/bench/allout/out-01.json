@@ -1,0 +1,64 @@
+{
+  "dry_run": false,
+  "model": "deepseek-v4.1-flash11",
+  "records": [
+    {
+      "task": "01_first_pass",
+      "mode": "plain",
+      "reason": "completed",
+      "delivery": "",
+      "duration_s": 37.6,
+      "cost": 0.0047514,
+      "cost_complete": true,
+      "timed_out": false,
+      "error": "",
+      "public_changed": true,
+      "passed": true,
+      "tests": 3,
+      "tail": "...                                                                      [100%]\n3 passed in 0.05s\n"
+    },
+    {
+      "task": "01_first_pass",
+      "mode": "allout",
+      "reason": "met",
+      "delivery": "verified",
+      "duration_s": 38.7,
+      "cost": 0.00752728,
+      "cost_complete": true,
+      "timed_out": false,
+      "error": "",
+      "public_changed": false,
+      "passed": true,
+      "tests": 3,
+      "tail": "...                                                                      [100%]\n3 passed in 0.02s\n"
+    }
+  ],
+  "summary": {
+    "plain": {
+      "samples": 1,
+      "solved": 1,
+      "pass_rate": 1.0,
+      "reported_met": 0,
+      "consistency_error_rate": null,
+      "unverified": 0,
+      "timeouts": 0,
+      "cost_total": 0.004751,
+      "cost_complete": true,
+      "cost_per_solved": 0.004751,
+      "duration_s": 37.6
+    },
+    "allout": {
+      "samples": 1,
+      "solved": 1,
+      "pass_rate": 1.0,
+      "reported_met": 1,
+      "consistency_error_rate": 0.0,
+      "unverified": 0,
+      "timeouts": 0,
+      "cost_total": 0.007527,
+      "cost_complete": true,
+      "cost_per_solved": 0.007527,
+      "duration_s": 38.7
+    }
+  }
+}

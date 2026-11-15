@@ -92,3 +92,22 @@ def test_aggregate_separates_timeouts_unverified_and_cost():
     assert got["cost_total"] == 0.4 and got["cost_complete"] is False
     assert got["cost_per_solved"] == 0.4
     assert mod.aggregate(rows)["plain"]["timeouts"] == 1
+
+
+def test_public_tamper_signal_ignores_pycache(tmp_path):
+    """跑过 pytest 生成的 pyc 不算"公开测试被改动"：只看源码。"""
+    mod = _bench()
+    public = tmp_path / "public"
+    (public / "__pycache__").mkdir(parents=True)
+    test = public / "test_public.py"
+    test.write_text("def test_a(): pass\n", encoding="utf-8")
+    (public / "__pycache__" / "test_public.cpython-312.pyc").write_bytes(b"pyc")
+
+    sources = mod.public_sources(tmp_path)
+    assert [p.name for p in sources] == ["test_public.py"], sources
+
+    before = mod.fingerprint(sources)
+    (public / "__pycache__" / "test_public.cpython-312.pyc").write_bytes(b"changed")
+    assert mod.fingerprint(mod.public_sources(tmp_path)) == before
+    test.write_text("def test_a(): assert True\n", encoding="utf-8")
+    assert mod.fingerprint(mod.public_sources(tmp_path)) != before

@@ -93,6 +93,14 @@ def prepare(task: Task, dest: Path) -> Path:
     return project
 
 
+def public_sources(project: Path) -> list[Path]:
+    """公开测试的**源文件**：只算 .py，排除 `__pycache__` 之类的运行产物。
+
+    跑过 pytest 就会生成 pyc；把它算进"公开测试被改动"会让每个样本都误报篡改。
+    """
+    return sorted(p for p in (project / "public").glob("**/*.py") if "__pycache__" not in p.parts)
+
+
 def fingerprint(paths: list[Path]) -> dict[str, str]:
     import hashlib
 
@@ -125,12 +133,14 @@ async def run_sample(task: Task, mode: str, args) -> dict:
     """跑一个样本。真实模型调用只在这里发生（调用方必须显式 --run --yes）。"""
     from ee.server.threads import Thread
 
-    project = prepare(task, Path(args.workdir))
-    before = fingerprint(sorted((project / "public").glob("**/*")))
+    # 每个样本一个独立目录：同一个 workdir 下两次 prepare 会撞同名项目。
+    sample_dir = Path(tempfile.mkdtemp(prefix=f"{task.slug}-{mode}-", dir=args.workdir))
+    project = prepare(task, sample_dir)
+    before = fingerprint(public_sources(project))
     home = Path(tempfile.mkdtemp(prefix="ee-bench-home-"))
 
     def configure(cfg) -> None:
-        cfg.data.setdefault("budget", {})["session"] = float(args.budget)
+        cfg.data.setdefault("budget", {})["session"] = args.budget   # argparse 已保证是 float
 
     th = Thread(f"bench-{task.slug}-{mode}", home, lambda m, p: None,
                 {"cwd": str(project), "mode": "auto", "model": args.model or ""},
@@ -143,7 +153,8 @@ async def run_sample(task: Task, mode: str, args) -> dict:
     error = ""
     try:
         th.start_turn(task.prompt, goal=goal, allout=allout)
-        assert th.task is not None
+        if th.task is None:                      # 排队路径不会起 task；基准里不该出现
+            raise RuntimeError("回合没有启动（turn 被排队了？）")
         await asyncio.wait_for(asyncio.shield(th.task), float(args.timeout))
     except TimeoutError:
         timed_out = True
@@ -153,7 +164,7 @@ async def run_sample(task: Task, mode: str, args) -> dict:
     duration = time.monotonic() - started
     turn_end = next((it for it in reversed(th.items) if it.get("type") == "turn_end"), {})
     usage = turn_end.get("usage") or {}
-    after = fingerprint(sorted((project / "public").glob("**/*")))
+    after = fingerprint(public_sources(project))
     record = {
         "task": task.slug, "mode": mode,
         "reason": turn_end.get("reason", ""),
@@ -162,8 +173,13 @@ async def run_sample(task: Task, mode: str, args) -> dict:
         "cost": usage.get("cost"), "cost_complete": bool(usage.get("cost_complete", False)),
         "timed_out": timed_out, "error": error,
         "public_changed": before != after,
+        "public_changed_files": sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k)),
     }
-    record.update(await asyncio.to_thread(score, task, project))
+    try:
+        record.update(await asyncio.to_thread(score, task, project))
+    except Exception as e:  # noqa: BLE001  单个样本判分失败（超时/夹具异常）不能拖垮整批
+        record.update({"passed": False, "tests": 0, "tail": f"{type(e).__name__}: {e}"})
+    # pi-lens-ignore: unchecked-throwing-call-python -- ignore_errors=True 已吞掉 OSError
     shutil.rmtree(home, ignore_errors=True)
     return record
 
@@ -228,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
 
     workdir = Path(args.workdir or tempfile.mkdtemp(prefix="ee-bench-"))
     workdir.mkdir(parents=True, exist_ok=True)
+    args.workdir = str(workdir)          # run_sample 只读这个字段：默认临时目录也要回填
     records = []
     for i, (t, m) in enumerate(((t, m) for t in tasks for m in modes), 1):
         print(f"[{i}/{len(plan)}] {t.slug} · {m}", flush=True)
