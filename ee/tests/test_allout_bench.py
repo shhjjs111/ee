@@ -38,7 +38,9 @@ def test_fixtures_are_complete():
     two = next(t for t in tasks if t.slug == "90_two_winners")
     assert "criterion_runner.py" in two.criterion, "双候选夹具用计数器让前 3 次判据失败"
     for t in tasks:
-        assert t.seed.is_dir() and t.public.is_dir() and t.hidden.is_dir()
+        assert t.seed.is_dir() and t.hidden.is_dir()
+        # 有自定义判据的夹具可以没有 public/（空目录 git 不跟踪，CI checkout 后不存在）
+        assert t.public.is_dir() or t.criterion, f"{t.slug} 既没有 public/ 也没有 criterion.txt"
         assert list(t.seed.glob("*.py")), f"{t.slug} 的 seed 里没有模块"
 
 
@@ -118,3 +120,20 @@ def test_public_tamper_signal_ignores_pycache(tmp_path):
     assert mod.fingerprint(mod.public_sources(tmp_path)) == before
     test.write_text("def test_a(): assert True\n", encoding="utf-8")
     assert mod.fingerprint(mod.public_sources(tmp_path)) != before
+
+
+def test_fixture_with_criterion_does_not_need_public_dir(tmp_path):
+    """有 criterion.txt 的夹具可以没有 public/：空目录 git 不跟踪，CI checkout 后不存在。"""
+    mod = _bench()
+    root = tmp_path / "bench"
+    root.mkdir()
+    fixture = root / "02_custom"
+    (fixture / "seed").mkdir(parents=True)
+    (fixture / "hidden").mkdir()
+    (fixture / "seed" / "m.py").write_text("x = 1\n", encoding="utf-8")
+    (fixture / "task.md").write_text("做点事", encoding="utf-8")
+    (fixture / "criterion.txt").write_text('{python} -c "raise SystemExit(1)"', encoding="utf-8")
+
+    tasks = mod.load_tasks(root)
+    assert [t.slug for t in tasks] == ["02_custom"]
+    assert "SystemExit" in tasks[0].criterion

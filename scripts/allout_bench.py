@@ -62,11 +62,18 @@ def load_tasks(root: Path = BENCH) -> list[Task]:
             continue
         prompt = (path / "task.md")
         if not prompt.is_file():
-            raise SystemExit(f"夹具缺 task.md：{path}")
-        for sub in ("seed", "public", "hidden"):
+            # 不是夹具目录就跳过（pytest 的 tmp_path 里可能有 user-home 之类的别的东西）；
+            # 但"有 seed/ 却没有 task.md"是真配错了，要报出来。
+            if (path / "seed").is_dir():
+                raise SystemExit(f"夹具缺 task.md：{path}")
+            continue
+        crit = path / "criterion.txt"
+        # `public/` 只在"用公开测试当判据"时才必需；有 criterion.txt 的夹具可以没有它
+        # （空目录 git 不跟踪，CI checkout 后本来就不存在）。
+        need = ("seed", "hidden") if crit.is_file() else ("seed", "public", "hidden")
+        for sub in need:
             if not (path / sub).is_dir():
                 raise SystemExit(f"夹具缺 {sub}/：{path}")
-        crit = path / "criterion.txt"
         out.append(Task(path.name, path, prompt.read_text(encoding="utf-8"),
                         crit.read_text(encoding="utf-8").strip() if crit.is_file() else ""))
     if not out:
@@ -98,7 +105,8 @@ def prepare(task: Task, dest: Path) -> Path:
     """复制 seed → 临时项目，git init/commit，公开测试放进 public/。"""
     project = dest / task.slug
     shutil.copytree(task.seed, project)
-    shutil.copytree(task.public, project / "public")
+    if task.public.is_dir():
+        shutil.copytree(task.public, project / "public")
     for cmd in (["init", "-q", "-b", "main"],
                 ["config", "user.email", "bench@example.com"],
                 ["config", "user.name", "bench"],
