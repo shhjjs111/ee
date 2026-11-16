@@ -19,8 +19,8 @@ python scripts/allout_bench.py --run --yes \
   hidden/    隐藏验收（跑完后在独立目录执行，用 PYTHONPATH 指回项目，模型碰不到）
 ```
 
-`99_fanout_smoke` 是**机器路径冒烟**（判据恒失败，用来稳定触发多路分叉），
-不属于质量样本，统计时排除；其余四个覆盖设计评审要的四类任务：
+`99_fanout_smoke`（判据恒失败）与 `90_two_winners`（判据前 3 次人为失败）都是
+**机器路径冒烟**，用来稳定触发多路分叉，不属于质量样本，统计时排除；其余四个覆盖设计评审要的四类任务：
 `01_first_pass`（首轮通过）、`02_small_repair`（小修）、
 `03_wrong_approach`（初始实现走错、需要换思路）、
 `04_green_but_missing`（公开测试全绿但需求遗漏）。
