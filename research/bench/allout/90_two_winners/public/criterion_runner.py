@@ -1,12 +1,15 @@
-"""判据入口：前 3 次判据**人为失败**，让单路 + 修复轮都过不了，从而稳定进入分叉。
+"""判据入口：前 3 次判据**人为失败**，让单路 + 两轮修复都过不了，从而稳定进入分叉。
 
-这是"多路择优"的机器冒烟：不是质量样本（判据被设计成先失败）。第 4 次起才是真实验收。
+计数器路径由基准脚本写进命令的第一个参数（项目外的临时文件）：主目录与候选 worktree
+共享同一个，不会因为 worktree 里没有这个未跟踪文件而重新从 0 开始。第 4 次起才是真实验收。
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-state = Path(__file__).with_name(".runs")
+raw = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EE_BENCH_COUNTER")
+state = Path(raw) if raw else Path(__file__).with_name(".runs")
 n = int(state.read_text(encoding="utf-8")) if state.is_file() else 0
 n += 1
 state.write_text(str(n), encoding="utf-8")

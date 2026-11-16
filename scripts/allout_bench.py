@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,10 +82,15 @@ def _pycmd(*args: str) -> str:
     return f"& {body}" if resolve_shell("auto").syntax == "powershell" else body
 
 
-def public_command(task: Task | None = None) -> str:
-    """夹具自定义判据优先；`{python}` 换成当前解释器（避免依赖 PATH 上的 python）。"""
+def public_command(task: Task | None = None, counter: str = "<counter>") -> str:
+    """夹具自定义判据优先。
+
+    `{python}` 换成当前解释器（不依赖 PATH）；`{counter}` 换成项目外的计数器路径
+    （主目录与候选 worktree 共享同一个，冒烟夹具用它让前几次判据失败）。
+    """
     if task is not None and task.criterion:
-        return task.criterion.replace("{python}", f'"{sys.executable}"')
+        return (task.criterion.replace("{python}", f'"{sys.executable}"')
+                .replace("{counter}", counter))
     return _pycmd(sys.executable, "-m", "pytest", "-q", "public/test_public.py")
 
 
@@ -147,8 +153,18 @@ async def run_sample(task: Task, mode: str, args) -> dict:
     before = fingerprint(public_sources(project))
     home = Path(tempfile.mkdtemp(prefix="ee-bench-home-"))
 
+    # 冒烟夹具（90_two_winners）靠计数器让前几次判据失败：计数器放在项目外的临时文件，
+    # 直接写进判据命令——主目录与候选 worktree 共享同一个，不会因为 worktree 里没有
+    # 那个未跟踪文件而重新从 0 开始。
+    counter = str(Path(tempfile.gettempdir()) / f"ee-bench-{task.slug}-{mode}-{uuid.uuid4().hex[:8]}.runs")
+
     def configure(cfg) -> None:
         cfg.data.setdefault("budget", {})["session"] = args.budget   # argparse 已保证是 float
+        if args.max_steps:
+            # 冒烟时把每回合步数压小：判据被人为失败时，模型会在修复轮里一直尝试，
+            # 不限步就会把墙钟全吃掉、永远轮不到分叉。
+            cfg.data["max_steps"] = int(args.max_steps)
+            cfg.data["max_steps_segments"] = 1
 
     # 记录 allout 的计划/阶段事件：报告里要能说明"多路到底有没有真的启动"，
     # 而不是只看最终 met（首轮/修复就过时不会分叉）。
@@ -164,7 +180,8 @@ async def run_sample(task: Task, mode: str, args) -> dict:
                 {"cwd": str(project), "mode": "auto", "model": args.model or ""},
                 persist=False, configure=configure, user_home=Path.home())
     th.ensure_session()
-    goal = {"command": public_command(task), "max_rounds": 3} if mode == "allout" else None
+    goal = ({"command": public_command(task, counter), "max_rounds": 3}
+            if mode == "allout" else None)
     allout = {"enabled": True, "candidates": args.candidates} if mode == "allout" else None
     started = time.monotonic()
     timed_out = False
@@ -239,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--budget", type=float, default=0.5, help="每个样本的会话费用上限")
     ap.add_argument("--candidates", type=int, default=1,
                     help="火力全开允许的候选上限（实际路数仍由本机资源推导）")
+    ap.add_argument("--max-steps", type=int, default=0,
+                    help="压缩每回合步数（0=用配置默认；冒烟用，避免修复轮吃光墙钟）")
     ap.add_argument("--timeout", type=float, default=600, help="每个样本的墙钟上限（秒）")
     ap.add_argument("--workdir", default=None, help="临时项目根（默认系统临时目录）")
     ap.add_argument("--out", default="", help="JSON 结果写到这个路径")

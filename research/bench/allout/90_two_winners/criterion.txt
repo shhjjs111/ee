@@ -1,1 +1,1 @@
-{python} public/criterion_runner.py
+{python} public/criterion_runner.py {counter}
