@@ -67,11 +67,13 @@ def _tree_entries(disk, tree: str, paths: list[str]) -> dict[str, str]:
 
 
 def build_expected(disk, tree: str | None, patch: bytes, paths: list[str],
-                   worktree: Path) -> Expected:
+                   worktree: Path, path_prefix: str = "") -> Expected:
     """用快照 + 补丁算出预期交付状态。
 
     `paths` 必须来自 `git diff --name-only`（含重命名的两侧），而不是从补丁文本正则解析——
     带空格的路径在 `diff --git` 行里会被引号包起来，自己解析迟早出错。
+    `path_prefix` 是当前工作区相对仓库根的目录（空 = 根目录）。子目录工作区的
+    `paths` 已经相对工作区，但补丁字节仍是仓库根相对；应用时要多剥这一层。
     """
     if not tree:
         return Expected(ok=False, reason="拿不到写回前的快照，无法构造预期状态")
@@ -122,8 +124,10 @@ def build_expected(disk, tree: str | None, patch: bytes, paths: list[str],
 
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-        code, _out, err = run_capture([_git() or "git", "apply", "--binary", "--whitespace=nowarn",
-                                       str(pf)], cwd=base, timeout=120, env=env)
+        level = 1 + len(Path(path_prefix).parts) if path_prefix else 1
+        code, _out, err = run_capture([_git() or "git", "apply", f"-p{level}", "--binary",
+                                       "--whitespace=nowarn", str(pf)], cwd=base,
+                                      timeout=120, env=env)
         if code != 0:
             return Expected(ok=False,
                             reason="在既有快照上应用补丁失败，无法构造预期状态："
@@ -153,12 +157,19 @@ def compare(expected: Expected, worktree: Path, paths: list[str]) -> list[dict]:
     return out
 
 
-def unexpected_changes(disk, before: str | None, after: str | None, allowed: set[str]) -> list[str]:
-    """`before→after` 里补丁路径之外的改动（写回期间被别的程序改过）。"""
-    if not before or not after or before == after:
+def unexpected_changes(disk, before: str | None, after: str | None,
+                       allowed: set[str]) -> list[str] | None:
+    """`before→after` 里补丁路径之外的改动（写回期间被别的程序改过）。
+
+    返回 `None` 表示**没法检查**（快照不可用/git 出错），调用方必须按
+    “未验证”处理，不能把空列表当成“检查通过”。
+    """
+    if not before or not after:
+        return None
+    if before == after:
         return []
     try:
         changed = disk.changed(before, after)
     except SnapshotError:
-        return []
+        return None
     return [p for p in changed if p not in allowed]

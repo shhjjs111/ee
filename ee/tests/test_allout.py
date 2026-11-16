@@ -44,6 +44,15 @@ def test_unsupported_model_reason_says_default():
     assert any("不支持调节" in r for r in plan.reasons)
 
 
+def test_xhigh_alias_is_not_reported_as_effective_plan():
+    """profile 里的 xhigh 是 wire 别名；计划档位必须是实际会发的 high。"""
+    prof = _profile(effort_param="reasoning_effort", effort_levels=("high", "xhigh"),
+                    context_window=1_000_000)
+    plan = derive(config={}, profile=prof, has_goal=True, cpu_count=16)
+    assert plan.effort == "high"
+    assert all("xhigh" not in reason for reason in plan.reasons)
+
+
 # ---------------------------------------------------------------- 降级
 
 

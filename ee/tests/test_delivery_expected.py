@@ -115,6 +115,67 @@ def test_stale_snapshot_is_reported_not_assumed(repo, ee_home):
     assert "不一致" in expected.reason
 
 
+def test_unexpected_changes_reports_non_patch_paths(repo, ee_home):
+    """写回期间非补丁路径被外部改过时，全树差集要能点出来。"""
+    ds = S.DiskSnapshot(repo, ee_home)
+    pre = ds.capture()
+    assert pre
+    (repo / "keep.txt").write_text("changed by someone else\n", encoding="utf-8")
+    post = ds.capture()
+    assert D.unexpected_changes(ds, pre, post, {"edit.txt"}) == ["keep.txt"]
+
+
+def test_unexpected_changes_fail_closed_on_snapshot_error(repo, ee_home, monkeypatch):
+    """检查函数自己出错时返回 None，不能返回 [] 假装检查通过。"""
+    ds = S.DiskSnapshot(repo, ee_home)
+    pre = ds.capture()
+    assert pre
+
+    def broken(a, b):
+        raise D.SnapshotError("snapshot unavailable")
+
+    monkeypatch.setattr(ds, "changed", broken)
+    assert D.unexpected_changes(ds, pre, "another-tree", {"edit.txt"}) is None
+
+
+def test_subdir_workspace_patch_paths_are_relative(tmp_path, ee_home):
+    """工作区是仓库子目录：补丁路径必须相对子目录，预期状态才能构造出来。"""
+    root = tmp_path / "root"
+    sub = root / "sub"
+    sub.mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    (sub / "a.txt").write_text("old\n", encoding="utf-8")
+    (sub / "gone.txt").write_text("bye\n", encoding="utf-8")
+    (root / "root.txt").write_text("root\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    base = git(root, "rev-parse", "HEAD").strip()
+
+    (sub / "a.txt").write_text("new\n", encoding="utf-8")
+    (sub / "gone.txt").unlink()
+    (sub / "new.txt").write_text("new file\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "candidate")
+
+    patch = A.candidate_patch(sub, base)
+    assert patch["ok"], patch.get("error")
+    assert set(patch["paths"]) == {"sub/a.txt", "sub/gone.txt", "sub/new.txt"}
+    expected_paths = A.worktree_patch_paths(sub, patch["paths"])
+    assert set(expected_paths) == {"a.txt", "gone.txt", "new.txt"}
+    git(root, "reset", "-q", "--hard", base)
+
+    ds = S.DiskSnapshot(sub, ee_home)
+    pre = ds.capture()
+    assert pre
+    expected = D.build_expected(ds, pre, patch["patch"], expected_paths, sub, "sub")
+    assert expected.ok, expected.reason
+    assert A.apply_patch(sub, patch["patch"])["applied"]
+    assert D.compare(expected, sub, expected_paths) == []
+    assert not (sub / "gone.txt").exists() and (sub / "new.txt").is_file()
+
+
 def test_uncovered_path_is_reported(repo, ee_home, monkeypatch):
     """快照里没有、但工作区里存在的补丁路径 → 记 uncovered，不能当成"新文件"。
 

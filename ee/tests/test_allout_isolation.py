@@ -82,6 +82,28 @@ def test_normal_commands_still_allowed(tmp_path):
     assert p.check("shell", {"command": "python -m pytest -q"}).action == "allow"
 
 
+def test_workspace_only_blocks_relative_and_drive_relative_escapes(tmp_path):
+    """候选专用 workspace_only：相对 `..`、绝对路径、PowerShell 目录切换都要拒绝。"""
+    from ee.core import allout as A
+
+    main = tmp_path / "repo"
+    wt = tmp_path / "wt" / "agent-allout-1"
+    main.mkdir(parents=True)
+    (wt / "sub").mkdir(parents=True)
+    p = PermissionPolicy(mode="auto", workspace=wt, shell="cmd", workspace_only=True,
+                         deny=A.candidate_deny_rules(str(main)))
+
+    assert p.check("write", {"path": "../outside.txt"}).action == "deny"
+    assert p.check("write", {"path": str(main / "calc.py")}).action == "deny"
+    for cmd in (r"cd ..\..\repo && python x.py",
+                r"c: && cd \repo && python x.py",
+                r'cmd /c "cd ..\..\repo && python x.py"',
+                f'Set-Location "{main}" && python x.py'):
+        d = p.check("shell", {"command": cmd})
+        assert d.action == "deny", f"候选不能跳出工作区：{d} | {cmd}"
+    assert p.check("shell", {"command": "cd sub && python -m pytest -q"}).action == "allow"
+
+
 def test_rule_matches_are_precise(tmp_path):
     """主仓库是 /a/repo，兄弟目录 /a/repo2 不能被误伤。"""
     p, main, _wt = _cand_policy(tmp_path)
@@ -131,16 +153,19 @@ def test_fanout_wires_deny_rules_and_worktree_prompt(ee_home, workspace, monkeyp
             if False:                     # 让它是 async generator
                 yield None
 
-    def fake_create(cwd, label="", home=None):
+    def fake_create(cwd, label="", home=None, base_commit=None):
         p = wt_root / "agent-allout-1"
         p.mkdir(exist_ok=True)
-        return {"path": str(p), "cwd": str(p), "agent_base": "base0", "branch": "ee/x",
-                "repo": str(main), "name": "agent-allout-1"}
+        return {"path": str(p), "cwd": str(p), "agent_base": base_commit or "base0",
+                "branch": "ee/x", "repo": str(main), "name": "agent-allout-1"}
 
     async def fake_judge(spec, **_kw):
         return SimpleNamespace(met=False, tests=1, output="", reason="red", timed_out=False, min_tests=1)
 
     monkeypatch.setattr(S, "Session", FakeSession)
+    monkeypatch.setattr(W, "prepare_dirty_base",
+                        lambda *a, **k: {"base": "base0", "head": "base0", "synced_dirty": False,
+                                         "cleanup": {"removed": True}})
     monkeypatch.setattr(W, "create_for_agent", lambda *a, **k: fake_create(*a, **k))
     monkeypatch.setattr(W, "agent_eligible", lambda *a, **k: (True, ""))
     monkeypatch.setattr(W, "finish_agent", lambda *a, **k: {"file_count": 0, "additions": 0,

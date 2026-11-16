@@ -7,6 +7,7 @@ import {
   STOP_REASONS,
   TURN_END_TEXT,
   cardText,
+  deliveryReason,
   deliveryText,
   turnEndText,
 } from "./terminal";
@@ -51,5 +52,61 @@ describe("交付结论文案", () => {
     expect(deliveryText({ status: "verified" })).toBe("交付已复验");
     expect(deliveryText({ status: "failed" })).toBe("交付复验失败");
     expect(deliveryText(undefined)).toBe("");
+  });
+
+  it("写回失败要说清是「补丁没写回」，不说成复验失败", () => {
+    const why = deliveryReason({ status: "failed_apply" });
+    expect(why).toContain("没能写回");
+    expect(why).toContain("worktree");
+  });
+
+  it("验收依据变化要带上具体文件，用户才知道去确认什么", () => {
+    const why = deliveryReason({ status: "needs_review", acceptance: { changed: true, detail: "pytest.ini" } });
+    expect(why).toContain("验收依据发生变化");
+    expect(why).toContain("pytest.ini");
+  });
+
+  it("复验失败用判据自己的原因兜底，拿不到就不编", () => {
+    expect(deliveryReason({ status: "failed", target: { met: false, reason: "exit=1：命令以非零退出" } })).toContain("exit=1");
+    expect(deliveryReason({ status: "failed" }), "没有原因时宁可不写").toBe("");
+  });
+
+  it("已验证与无交付结论都不附原因", () => {
+    expect(deliveryReason({ status: "verified" })).toBe("");
+    expect(deliveryReason(undefined)).toBe("");
+  });
+
+  it("needs_review 按证据分岔：改测试 / 扫描不完整 / 外部改动不说成同一句话", () => {
+    const tests = deliveryReason({
+      status: "needs_review",
+      acceptance: { changed: true, diff: { tests_changed: ["tests/test_a.py"], tests_removed: ["tests/test_b.py"] } },
+    });
+    expect(tests).toContain("被改写");
+    expect(tests).toContain("tests/test_a.py");
+    expect(tests).toContain("不见了");
+
+    const scan = deliveryReason({ status: "needs_review", acceptance: { changed: true, diff: { tests_incomplete: true } } });
+    expect(scan).toContain("无法完整扫描");
+
+    const cmd = deliveryReason({ status: "needs_review", acceptance: { changed: true, diff: { command: true } } });
+    expect(cmd).toContain("判据命令变了");
+
+    const outside = deliveryReason({ status: "needs_review", apply: { unexpected: ["README.md"] } });
+    expect(outside).toContain("补丁之外");
+    expect(outside).toContain("README.md");
+    expect(outside, "扫描没报缺口时不能凭空说验收依据变了").not.toContain("验收依据发生变化");
+  });
+
+  it("unexpected 三态各不相同：null=没检查成，空数组=检查干净，非空=真被改了", () => {
+    const unknown = deliveryReason({ status: "needs_review", apply: { unexpected: null } });
+    expect(unknown).toContain("无法检查补丁之外的改动");
+    expect(unknown).not.toContain("验收依据发生变化");
+
+    const clean = deliveryReason({ status: "needs_review", apply: { unexpected: [] } });
+    expect(clean, "空数组代表检查干净，不能报成外部改动").not.toContain("补丁之外");
+    expect(clean, "但也不能编一个原因").toContain("无法确认");
+
+    const dirty = deliveryReason({ status: "needs_review", apply: { unexpected: ["src/a.py"] } });
+    expect(dirty).toContain("src/a.py");
   });
 });

@@ -18,6 +18,10 @@ let trayCtl: ReturnType<typeof setupTray> | null = null;
 // electron.launch 直接失败。设 EE_TEST_USER_DATA 后实例用独立目录，互不干扰。
 if (process.env.EE_TEST_USER_DATA) {
   app.setPath("userData", process.env.EE_TEST_USER_DATA);
+  // 日志也要隔离：`logs` 默认与 userData 不同源（Windows 是 %APPDATA%\<app>\logs），
+  // 只设 userData 时临时实例的 backend.log / ee-backend.log 会写进用户真实日志目录。
+  // 后端 spawn 用 path.dirname(logFile) 覆盖 EE_LOG_DIR，所以必须在这里一起改。
+  app.setPath("logs", path.join(process.env.EE_TEST_USER_DATA, "logs"));
 }
 
 const backend = new Backend({

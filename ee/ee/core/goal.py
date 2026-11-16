@@ -46,6 +46,11 @@ class GoalSpec:
     timeout: float = 300.0
     shell: str = "auto"
     validation_files: tuple[str, ...] = ()
+    # 既有验收测试：改写/删除它们会让判据口径变化，交付闸门要标 needs_review；
+    # 新增测试不算破坏（与 validation_files 的「整份冻结」语义不同）。
+    protected_tests: tuple[str, ...] = ()
+    # False = 测试清单扫描被截断/不可读，无法宣称保护完整。
+    protected_tests_complete: bool = True
 
 
 @dataclass

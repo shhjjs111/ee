@@ -29,10 +29,16 @@ def _bench():
 def test_fixtures_are_complete():
     mod = _bench()
     tasks = mod.load_tasks()
-    assert [t.slug for t in tasks][:4] == ["01_first_pass", "02_small_repair",
-                                           "03_wrong_approach", "04_green_but_missing"]
+    assert [t.slug for t in tasks] == ["01_first_pass", "02_small_repair",
+                                       "03_wrong_approach", "04_green_but_missing",
+                                       "05_slugify_hard", "90_two_winners", "99_fanout_smoke"], \
+        "夹具清单必须与仓库实际夹具一一对应，不能有重复或漏项"
     slugs = {t.slug for t in tasks}
+    assert len(slugs) == len(tasks) == 7, "7 个夹具、无重复"
     assert {"99_fanout_smoke", "90_two_winners"} <= slugs, "两个冒烟夹具都要在（机器路径，不是质量样本）"
+    hard = next(t for t in tasks if t.slug == "05_slugify_hard")
+    assert hard.criterion, "05_slugify_hard 的自定义判据不能为空"
+    assert (hard.path / "judge").is_dir(), "05_slugify_hard 的外置 judge/ 必须存在"
     smoke = next(t for t in tasks if t.slug == "99_fanout_smoke")
     assert "raise SystemExit(1)" in smoke.criterion, "冒烟夹具靠恒失败判据稳定触发分叉"
     two = next(t for t in tasks if t.slug == "90_two_winners")
@@ -51,12 +57,21 @@ def test_dry_run_lists_samples_without_model_calls():
         assert mod.main(["--dry-run"]) == 0
     payload = json.loads(out.getvalue())
     assert payload["dry_run"] is True
-    assert payload["samples"] == 12, "6 个夹具 × 2 种模式（含 2 个冒烟夹具）"
+    assert payload["samples"] == 14, "7 个夹具 × 2 种模式（含 05_slugify_hard 和 2 个冒烟夹具）"
     assert {p["candidates"] for p in payload["plan"] if p["mode"] == "allout"} == {1}
     assert {p["mode"] for p in payload["plan"]} == {"plain", "allout"}
     # 普通模式没有判据，火力全开有：这是两组唯一的差别
     assert all(p["criterion"] for p in payload["plan"] if p["mode"] == "allout")
     assert all(not p["criterion"] for p in payload["plan"] if p["mode"] == "plain")
+    plan_pairs = {(p["task"], p["mode"]) for p in payload["plan"]}
+    expected_slugs = {"01_first_pass", "02_small_repair", "03_wrong_approach",
+                      "04_green_but_missing", "05_slugify_hard", "90_two_winners",
+                      "99_fanout_smoke"}
+    assert {p["task"] for p in payload["plan"]} == expected_slugs, "dry-run 不得漏掉或重复夹具"
+    assert plan_pairs == {(slug, mode) for slug in expected_slugs for mode in ("plain", "allout")}, \
+        "每个夹具都必须同时出现在 plain 和 allout 两种模式"
+    assert {("05_slugify_hard", "plain"), ("05_slugify_hard", "allout")} <= plan_pairs, \
+        "新增的 05_slugify_hard 必须进入两种模式"
 
 
 def test_run_requires_explicit_confirmation():

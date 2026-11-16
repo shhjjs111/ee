@@ -33,7 +33,9 @@ CONTEXT_MIN_FOR_PARALLEL = 128_000
 # 会红 2 条，8 路（`-n 8`）全绿——判据命令本身吃 CPU，超载产出假失败。
 CORES_PER_CANDIDATE = 4
 # 强度档的高低顺序（`reasoning.LEVELS` 里可调的档位）。
-_EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
+# 只保留 ee 的规范档位；xhigh 是某些 provider 的 wire 值，由 effort_values 映射，
+# 不是界面/计划档位（见 max_effort 的注释）。
+_EFFORT_ORDER = ("low", "medium", "high", "max")
 
 
 @dataclass(frozen=True)
@@ -70,11 +72,23 @@ class AlloutPlan:
 
 
 def max_effort(profile) -> str:
-    """这个模型能给的最高强度档；不支持调强度时返回 ""（不发参数）。"""
+    """这个模型实际能发的最高强度档；不支持调强度时返回 ""（不发参数）。
+
+    必须返回 ee 的规范档位（low/medium/high/max），不能把模型档案里的别名
+    （例如 `xhigh`）当成计划档位：`reasoning.normalize` 会把 xhigh 规整成 high，
+    面板若写 xhigh、实际发 high，用户会误以为满档生效（2026-11 复核）。
+    """
+    from ee.core import reasoning as RZ
+
     if not getattr(profile, "effort_param", ""):
         return ""
-    levels = [str(x) for x in (getattr(profile, "effort_levels", None) or ("low", "medium", "high"))]
-    levels = [x for x in levels if x in _EFFORT_ORDER]
+    levels: list[str] = []
+    for raw in (getattr(profile, "effort_levels", None) or ()):
+        level = RZ.normalize(str(raw))
+        if level in _EFFORT_ORDER:
+            levels.append(level)
+    if not levels:
+        levels = [x for x in RZ.levels(profile) if x in _EFFORT_ORDER]
     if not levels:
         return ""
     return max(levels, key=_EFFORT_ORDER.index)
@@ -150,7 +164,7 @@ def derive(*, config: dict, profile, has_goal: bool, cpu_count: int | None = Non
     feedback_chars = 24000 if ctx >= 500000 else 12000 if ctx >= 200000 else 6000
     effort = max_effort(profile)
     if effort:
-        reasons.append(f"推理强度：{effort}（该模型支持的最高档，本轮生效）")
+        reasons.append(f"推理强度：计划提到 {effort}（该模型可发送的有效最高档，本轮生效）")
     else:
         reasons.append("推理强度：该模型不支持调节，按默认档")
 
@@ -278,11 +292,14 @@ def attempt_progress(before, after) -> dict:
 
 
 def candidate_ok(rec: dict) -> bool:
-    """候选能否进入排序/写回：目标判据通过，且没有触发回归门。
+    """候选能否进入排序/写回：目标判据通过、没有回归，且不是取消/异常记录。
 
     `rec` 是 `Thread._allout_fanout` 的候选记录（`verdict` + `regressed`）。
-    回归门没启用时 `regressed` 恒为 False，行为与旧版一致。
+    取消候选即使之前拿到过绿色 verdict，也不能进入排序或写回；它的 worktree
+    只允许在交付 verified 后由安全回收处理。
     """
+    if rec.get("cancelled") or rec.get("error"):
+        return False
     return bool(getattr(rec.get("verdict"), "met", False)) and not bool(rec.get("regressed"))
 
 
@@ -412,6 +429,51 @@ def candidate_patch(candidate_dir, agent_base: str) -> dict:
     import hashlib
     return {"ok": True, "patch": patch, "paths": paths, "sha": hashlib.sha256(patch).hexdigest()[:16],
             "error": ""}
+
+
+def worktree_rel_prefix(cwd) -> str:
+    """当前工作区相对 git 仓库根的路径；根目录返回空串，子目录返回 `sub/...`。"""
+    from pathlib import Path
+
+    from ee.core.worktree import repo_root
+
+    try:
+        root = Path(repo_root(cwd)).resolve()
+        rel = Path(cwd).resolve().relative_to(root)
+    except Exception:  # noqa: BLE001  非 git 工作区/路径异常：按根目录处理，交给上层判据
+        return ""
+    return rel.as_posix() if rel.parts else ""
+
+
+def worktree_patch_paths(cwd, paths: list[str]) -> list[str]:
+    """把 git 的仓库根相对路径映射到当前工作区（可能是仓库子目录）。
+
+    `git diff` 输出始终以仓库根为根；而主会话的 `DiskSnapshot`/`D.build_expected`
+    以 `self.cwd` 为根。工作区在子目录时直接使用原路径会被拼成 `sub/sub/a.txt`。
+    这里只做前缀剥离，不改变补丁字节；`git apply` 仍然吃仓库根相对路径。
+    """
+    from pathlib import Path
+
+    from ee.core.worktree import repo_root
+
+    try:
+        root = Path(repo_root(cwd)).resolve()
+        rel = Path(cwd).resolve().relative_to(root)
+    except Exception:  # noqa: BLE001  非 git 工作区/路径异常：原样返回
+        return list(paths)
+    if not rel.parts:
+        return list(paths)
+    prefix = rel.as_posix().rstrip("/") + "/"
+    mapped: list[str] = []
+    for p in paths:
+        norm = p.replace("\\", "/")
+        if norm.startswith(prefix):
+            mapped.append(norm[len(prefix):])
+        elif norm == rel.as_posix():
+            mapped.append(".")
+        else:
+            mapped.append(norm)
+    return mapped
 
 
 def apply_patch(main_cwd, patch: bytes) -> dict:

@@ -122,12 +122,17 @@ def test_candidates_split_into_continuation_and_independent(ee_home, workspace, 
 
     monkeypatch.setattr("ee.core.session.Session", _FakeChild)  # _allout_fanout 是函数内导入
     monkeypatch.setattr(W, "agent_eligible", lambda cwd: (True, ""))
+    monkeypatch.setattr(W, "prepare_dirty_base",
+                        lambda *a, **k: {"base": "b", "head": "b", "synced_dirty": False,
+                                         "cleanup": {"removed": True}})
     monkeypatch.setattr(W, "create_for_agent",
-                        lambda cwd, label="", home=None: {"cwd": str(workspace), "agent_base": "b",
-                                                          "base": "b", "path": str(workspace / label)})
+                        lambda cwd, label="", home=None, base_commit=None: {
+                            "cwd": str(workspace), "agent_base": base_commit or "b",
+                            "base": base_commit or "b", "path": str(workspace / label)})
     monkeypatch.setattr(W, "finish_agent",
                         lambda info, message, home=None: {"file_count": 0, "files": [],
-                                                          "additions": 0, "deletions": 0})
+                                                          "additions": 0, "deletions": 0,
+                                                          "branch": "b", "kept": True})
 
     async def no_judge(spec, **_kw):
         raise AssertionError("分叉用例不该跑判据（候选还没结束）")

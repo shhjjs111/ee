@@ -1432,6 +1432,76 @@ def _match_shell_rule(rule: str, seg: str) -> bool:
     return _match_rule(rule, "shell", seg) or _match_rule(rule, "shell", seg + " ")
 
 
+def _inside_workspace(path: Path, workspace: Path) -> bool:
+    try:
+        path = path.resolve()
+        ws = workspace.resolve()
+    except OSError:
+        return False
+    return path == ws or ws in path.parents
+
+
+def _workspace_only_shell_reason(command: str, workspace: Path, shell: str | None,
+                                 _depth: int = 0) -> str:
+    """候选 shell 的目录约束：拒绝 cd/Set-Location 跳出工作区。
+
+    这是策略层限制，不是进程沙箱：任意脚本（python -c、bash -c）仍可能绕开。
+    它覆盖当前最常见的绕过：盘符切换 + 反斜杠根路径、相对 `..`、PowerShell 绝对路径。
+    """
+    ws = workspace.resolve()
+    syntaxes = [shell] if shell in SYNTAXES else list(SYNTAXES)
+    cd_names = {"cd", "chdir", "set-location", "push-location", "pushd", "popd", "pop-location"}
+    for syntax in syntaxes:
+        current = ws
+        drive: Path | None = None
+        for raw in split_command(command, syntax):
+            w = words(raw, syntax)
+            if not w:
+                continue
+            if len(w) == 1 and re.fullmatch(r"[A-Za-z]:", w[0]):
+                drive = Path(w[0][0].upper() + ":/")
+                current = drive
+                continue
+            name = _cmd_name(w[0])
+            if (name in ("cmd", "powershell", "pwsh", "bash", "sh", "zsh")
+                    and len(w) >= 3 and w[1].lower() in ("/c", "-c", "-command")):
+                if _depth >= 3:
+                    return "候选的嵌套 shell 太深，无法确认目录范围"
+                inner_syntax = ("cmd" if name == "cmd" else
+                                "powershell" if name in ("powershell", "pwsh") else "posix")
+                why = _workspace_only_shell_reason(" ".join(w[2:]), ws, inner_syntax, _depth + 1)
+                if why:
+                    return why
+                continue
+            if name not in cd_names:
+                continue
+            if name in ("popd", "pop-location"):
+                return f"候选不能用 {name} 切换目录"
+            args = [x for x in w[1:] if not x.startswith("-") and x.lower() != "/d"]
+            if not args:
+                return "候选的 cd/Set-Location 缺少明确目标"
+            target = args[0].strip("'\"")
+            if any(ch in target for ch in ("$", "%", "(", ")")):
+                return f"候选的 cd/Set-Location 目标无法静态确认：{target}"
+            if target in ("-", "~") or target.startswith("~"):
+                return f"候选的 cd/Set-Location 目标在工作区外：{target}"
+            p = Path(target).expanduser()
+            if not p.is_absolute():
+                if target.startswith(("\\", "/")):
+                    base = drive if drive is not None else Path(ws.anchor)
+                    p = base / target.lstrip("\\/")
+                else:
+                    p = current / p
+            try:
+                p = p.resolve()
+            except OSError:
+                return f"候选的 cd/Set-Location 目标无法解析：{target}"
+            if not _inside_workspace(p, ws):
+                return f"候选只能在自己的工作区内切换目录：{target}"
+            current = p
+    return ""
+
+
 def _abs_for_match(p: str, workspace: Path) -> str:
     """把待匹配路径折成绝对路径再比规则。
 
@@ -1521,6 +1591,10 @@ class PermissionPolicy:
     # 会直接给审查提权，收尾又把 meta 与策略改成不一致（2026-11 独立审查实测：
     # 收尾后 meta 是 read-only、实际策略是 auto）。只读约束不应该是一个可切换的偏好。
     readonly: bool = False
+    # 候选专用：所有写工具必须落在 workspace 内，shell 不允许用 cd/Set-Location
+    # 跳到工作区外（盘符切换、`..` 都算）。这不是进程沙箱，但能堵住当前
+    # candidate_deny_rules 只看主仓库完整路径、被 `e: && cd \repo` 绕过的口子。
+    workspace_only: bool = False
 
     @property
     def eff_mode(self) -> str:
@@ -1683,12 +1757,25 @@ class PermissionPolicy:
                 return Decision("deny", f"命中 deny 规则：{p}")
         if self.eff_mode in READONLY_MODES:
             return Decision("deny", "当前是只读/计划模式，不能修改文件")
+        ws = self.workspace.resolve()
+        if self.workspace_only:
+            for p in paths:
+                ap = _abs_for_match(p, ws)
+                path = Path(ap).expanduser()
+                try:
+                    path = path.resolve()
+                except OSError:
+                    pass
+                inside = path == ws or ws in path.parents
+                if not inside:
+                    return Decision("deny", f"候选只能写自己的工作区：{path}")
+                if ".git" in [x.lower() for x in path.relative_to(ws).parts]:
+                    return Decision("deny", f"候选不能修改 .git 内部文件：{path}")
         if any(_match_rule(r, tool, s) for r in self.ask
                for s in (x for p in paths for x in (p, _abs_for_match(p, self.workspace)))):
             return Decision("ask", "命中 ask 规则", prefix="")
         if self.eff_mode == "auto":
             return Decision("allow")
-        ws = self.workspace.resolve()
         for p in paths:
             ap = Path(p).expanduser()
             if not ap.is_absolute():
@@ -1723,6 +1810,10 @@ class PermissionPolicy:
             entries.extend(_analyze(command, sx))
         segs = list(dict.fromkeys(seg for seg, _ in pairs))
         norms = [e.norm for e in entries if e.norm]
+        if self.workspace_only:
+            why = _workspace_only_shell_reason(command, self.workspace, self.shell)
+            if why:
+                return Decision("deny", why)
 
         def hits(pat: str, raw: str, norm: str = "") -> bool:
             # 原文任意位置匹配（兼容旧行为）；归一后的命令只从命令名开头匹配，免得把参数里的字样当命令

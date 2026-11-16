@@ -137,6 +137,99 @@ def test_apply_without_expected_state_blocks_met(ee_home, workspace):
     reason = _gate(th, s, GoalSpec(command="pytest -q", cwd=str(th.cwd)),
                    source="apply", apply_info=info)
     assert reason == "exhausted"
+    assert _delivery(th)["status"] == "failed_apply"
+
+
+def test_unexpected_non_patch_change_needs_review(ee_home, workspace):
+    """写回期间补丁路径之外被外部改动：交付要标需要复核，不能 verified。"""
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    th._accept0 = acceptance.fingerprint(th.cwd, "pytest -q")
+    info = {"expected": {"ok": True, "uncovered": []}, "mismatches": [],
+            "unexpected": ["notes.txt"], "result": {"applied": True}}
+    reason = _gate(th, s, GoalSpec(command="pytest -q", cwd=str(th.cwd)),
+                   source="apply", apply_info=info)
+    assert reason == "exhausted"
+    assert _delivery(th)["status"] == "needs_review"
+
+
+def test_unexpected_unknown_needs_review(ee_home, workspace):
+    """无法检查非补丁路径（None/缺字段）时必须按未验证处理。"""
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    th._accept0 = acceptance.fingerprint(th.cwd, "pytest -q")
+    info = {"expected": {"ok": True, "uncovered": []}, "mismatches": [],
+            "unexpected": None, "result": {"applied": True}}
+    reason = _gate(th, s, GoalSpec(command="pytest -q", cwd=str(th.cwd)),
+                   source="apply", apply_info=info)
+    assert reason == "exhausted"
+    assert _delivery(th)["status"] == "needs_review"
+
+
+def test_oversize_acceptance_file_is_marked_unverified(workspace):
+    """超过哈希上限的配置不能被伪造成“已完整核对”。"""
+    big = workspace / "pyproject.toml"
+    big.write_bytes(b"[" + b" " * 1_000_000)
+    fp = acceptance.fingerprint(workspace, "pytest -q")
+    assert fp["unverified_files"] == ["pyproject.toml"]
+    assert acceptance.changed(fp, fp) is True, "无法完整哈希时不能宣称未变化"
+
+
+def test_nested_conftest_is_part_of_acceptance(workspace):
+    """两层以下的 conftest 也必须进入验收依据（ee/tests 这种布局）。"""
+    nested = workspace / "ee" / "tests"
+    nested.mkdir(parents=True)
+    conftest = nested / "conftest.py"
+    conftest.write_text("# old\n", encoding="utf-8")
+    before = acceptance.fingerprint(workspace, "pytest -q")
+    assert "ee/tests/conftest.py" in before["files"]
+    conftest.write_text("# changed\n", encoding="utf-8")
+    after = acceptance.fingerprint(workspace, "pytest -q")
+    assert acceptance.changed(before, after) is True
+
+
+def test_acceptance_scan_truncation_is_visible(workspace):
+    """嵌套配置超过总上限时，指纹要报告扫描不完整。"""
+    for i in range(45):
+        d = workspace / f"p{i}"
+        d.mkdir()
+        (d / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    fp = acceptance.fingerprint(workspace, "pytest -q")
+    assert fp.get("files_complete") is False
+    assert acceptance.changed(fp, fp) is True
+
+
+def test_protected_test_change_blocks_met(ee_home, workspace):
+    """既有验收测试被改写：即使目标判据仍绿，也必须标 needs_review。"""
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    (workspace / "tests").mkdir(exist_ok=True)
+    test = workspace / "tests" / "test_x.py"
+    test.write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    th._accept0 = acceptance.fingerprint(th.cwd, "pytest -q", (),
+                                         ("tests/test_x.py",))
+    test.write_text("def test_x():\n    assert 1 == 1\n", encoding="utf-8")
+
+    reason = _gate(th, s, GoalSpec(command="pytest -q", cwd=str(th.cwd),
+                                   protected_tests=("tests/test_x.py",)), source="first_try")
+    assert reason == "exhausted"
+    d = _delivery(th)
+    assert d["status"] == "needs_review"
+    assert "tests/test_x.py" in d["acceptance"]["detail"]
+
+
+def test_new_test_file_is_allowed(workspace):
+    """正常新增测试不算破坏验收口径。"""
+    (workspace / "tests").mkdir(exist_ok=True)
+    test = workspace / "tests" / "test_x.py"
+    test.write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    before = acceptance.fingerprint(workspace, "pytest -q", (), ("tests/test_x.py",))
+    (workspace / "tests" / "test_new.py").write_text("def test_new():\n    assert True\n",
+                                                      encoding="utf-8")
+    after = acceptance.fingerprint(workspace, "pytest -q", (),
+                                   ("tests/test_x.py", "tests/test_new.py"))
+    assert not acceptance.changed(before, after)
+    assert acceptance.diff(before, after)["tests_added"] == ["tests/test_new.py"]
 
 
 def test_user_stop_during_verify_marks_interrupted(ee_home, workspace, monkeypatch):
@@ -162,3 +255,33 @@ def test_user_stop_during_verify_marks_interrupted(ee_home, workspace, monkeypat
 
     asyncio.run(main())
     assert _delivery(th)["status"] == "interrupted"
+
+
+def test_user_stop_during_regression_marks_interrupted(ee_home, workspace, monkeypatch):
+    """停止发生在回归判据里：整体状态也必须是 interrupted，不是普通 failed。"""
+    th = _thread(ee_home, workspace)
+    s = th.ensure_session()
+    th._accept0 = acceptance.fingerprint(th.cwd, "pytest -q")
+    th._judge_recent = {"target": {"verdict": _v(True), "tree": s.disk_capture(),
+                                   "source_unchanged": True}}
+    started = asyncio.Event()
+
+    async def slow_judge(spec, **_kw):
+        started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr("ee.core.goal.judge", slow_judge)
+
+    async def main():
+        task = asyncio.ensure_future(th._delivery_gate(
+            s, GoalSpec(command="pytest -q", cwd=str(th.cwd)),
+            GoalSpec(command="pytest -q tests/", cwd=str(th.cwd), min_tests=1),
+            source="first_try"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert _delivery(th)["status"] == "interrupted"
+    assert _delivery(th)["regression"]["status"] == "interrupted"

@@ -80,6 +80,32 @@ describe("applyItemNotification", () => {
     expect(next.allout_review).toBeUndefined();
   });
 
+  it("新回合清掉上一回合的候选路数（单路回合不推 fanout，否则面板挂着上轮的路数）", () => {
+    // 后端只在 cap > 1 时才推 allout_progress/fanout：一轮多路、下一轮单路时，
+    // 若 item/started 不清 allout_started，面板会写「本轮 1 路 … 实际启动 4 路」。
+    const planned = applyItemNotification(base, "allout_plan", { plan: { candidates: 4 }, requested: 6 });
+    const started = applyItemNotification(planned, "allout_progress", { phase: "fanout", started: 4 });
+    expect(started.allout_started, "前置：这一回合确实记下了启动路数").toBe(4);
+    const next = applyItemNotification(started, "item/started", { item: { id: "n2", type: "user", text: "下一个任务" } });
+    expect(next.allout_plan).toBeUndefined();
+    expect(next.allout_requested).toBeUndefined();
+    expect(next.allout_started).toBeUndefined();
+  });
+
+  it("上一回合多路、下一回合首轮即通过（单路）时，不得沿用上一回合的路数", () => {
+    // 后端只在 cap > 1 时才推 fanout；首轮一次通过的回合根本不会发 allout_started，
+    // 面板必须显示「本轮 1 路」而不是上一回合的「计划启动 4 路」。
+    const settled = applyItemNotification(
+      applyItemNotification(
+        applyItemNotification(base, "allout_plan", { plan: { candidates: 4 }, requested: 6 }),
+        "allout_progress", { phase: "fanout", started: 4 }),
+      "turn/completed", {});
+    const nextTurn = applyItemNotification(settled, "item/started", { item: { id: "u2", type: "user", text: "换个任务" } });
+    const single = applyItemNotification(nextTurn, "allout_plan", { plan: { candidates: 1, limiting: "cpu" }, requested: 6 });
+    expect(single.allout_plan?.candidates).toBe(1);
+    expect(single.allout_started, "单路回合不推 fanout，不能沿用上一回合的启动路数").toBeUndefined();
+  });
+
   it("started → delta → updated → removed", () => {
     let t = applyItemNotification(base, "item/started", { item: { id: "a1", type: "assistant", text: "", reasoning: "" } });
     t = applyItemNotification(t, "item/delta", { item_id: "a1", field: "text", delta: "你好" });

@@ -12,6 +12,8 @@
  * 并用 Record<StopReason, …> 让 typecheck 在漏 key 时直接报错。
  */
 
+import type { DeliveryInfo } from "../types";
+
 export const STOP_REASONS = [
   "completed",
   "met",
@@ -119,4 +121,64 @@ export function deliveryText(d: { status?: string } | undefined | null): string 
     default:
       return "";
   }
+}
+
+/** 交付结论的原因（一句话）。
+ *  `deliveryText` 只回答"是哪一类结果"，用户还要知道"为什么"：写回失败要去候选分支合并，
+ *  验收依据变了要先确认判据，复验没过则要接着修。这里只读后端已有的字段，不新造数据，
+ *  拿不到具体原因时宁可不写，也不编一个像原因的字串。 */
+export function deliveryReason(d: DeliveryInfo | undefined | null): string {
+  if (!d || d.status === "verified") return "";
+  const out: string[] = [];
+  const show = (xs?: string[] | null) => (xs || []).slice(0, 3).join("、");
+  const diff = d.acceptance?.diff;
+  if (d.acceptance?.changed) {
+    // needs_review 不是一种原因：改测试、扫描不完整、命令/目录变了、写回期间被外部改动，
+    // 处置完全不同。按后端给的那一份指纹差异逐项说，拿不到就退回 detail。
+    if (diff?.tests_changed?.length) out.push(`既有验收测试被改写：${show(diff.tests_changed)}`);
+    if (diff?.tests_removed?.length) out.push(`既有验收测试不见了：${show(diff.tests_removed)}`);
+    if (diff?.files_incomplete || diff?.tests_incomplete) {
+      out.push("验收依据无法完整扫描（文件过多或有不可读项），不能当作完整校验");
+    }
+    if (diff?.unverified_files?.length) out.push(`无法完整比对：${show(diff.unverified_files)}`);
+    if (diff?.tests_unverified?.length) out.push(`验收测试无法完整比对：${show(diff.tests_unverified)}`);
+    if (diff?.command) out.push("判据命令变了");
+    if (diff?.cwd) out.push("判据执行目录变了");
+    const plain = [...(diff?.changed || []), ...(diff?.added || []), ...(diff?.removed || [])];
+    if (plain.length) out.push(`验收配置文件变化：${show(plain)}`);
+    if (!out.length) out.push(d.acceptance.detail ? `验收依据发生变化：${d.acceptance.detail}` : "验收依据发生变化");
+  }
+  // unexpected 三态是三种事实：数组空 = 检查过且干净；非空 = 真的被改了；
+  // null/缺失 = 没检查成（快照缺失），不能说成"验收依据变化"或干脆不说。
+  const ap = d.apply;
+  if (ap && "unexpected" in ap) {
+    if (ap.unexpected === null) {
+      out.push("写回期间无法检查补丁之外的改动（工作区快照缺失），按未验证处理");
+    } else if (Array.isArray(ap.unexpected) && ap.unexpected.length) {
+      out.push(`写回期间补丁之外的文件被改动：${show(ap.unexpected)}`);
+    }
+  }
+  if (d.state?.changed_after_delivery) out.push("写回后工作区又被改动");
+  if (d.state?.changed_during_verify) out.push("复验期间源码被改动");
+  const expected = d.apply?.expected;
+  if (expected && expected.ok === false) {
+    out.push(`写回内容无法核对${expected.reason ? `：${expected.reason}` : ""}`);
+  }
+  if (d.apply?.mismatches?.length) {
+    out.push(`${d.apply.mismatches.length} 处写回内容与补丁不一致`);
+  }
+  if (d.status === "failed_apply") out.push("候选补丁没能写回主目录，改动仍在那个候选自己的 worktree 分支上");
+  if (d.status === "unverified") out.push("没有独立判据，只有证据审阅");
+  if (d.status === "interrupted") out.push("验证被中断（判据没跑完）");
+  if (!out.length) {
+    // 没命中具体分支时，用判据自己的说明兜底；两者都不是模型自述，而是命令输出。
+    if (d.regression?.met === false && d.regression?.reason) out.push(`回归命令未通过：${d.regression.reason}`);
+    else if (d.target?.met === false && d.target?.reason) out.push(`目标判据未通过：${d.target.reason}`);
+  }
+  if (!out.length && d.status === "needs_review") {
+    // 后端给了 needs_review 但界面契约里没有对应字段：如实说"不知道原因"，
+    // 不能随便安一个理由，也不能让用户以为验收依据变了。
+    out.push("这次交付无法确认，原因未在界面数据中给出（看回合内的提示或后端日志）");
+  }
+  return out.join("；");
 }

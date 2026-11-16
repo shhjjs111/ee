@@ -110,6 +110,22 @@ export type PlanItem = ItemBase & { type: "plan"; items: PlanEntry[] };
 export type NoticeItem = ItemBase & { type: "notice"; text: string; level: "info" | "warn" };
 export type ErrorItem = ItemBase & { type: "error"; message: string };
 /** 交付验证结论（全力以赴才有）。界面按 status 显示原因，不能一律显示成"跑满轮次"。 */
+/** 验收依据的差异（后端 acceptance.diff）：测试清单与扫描完整性是 2026-11 第二批新增。 */
+export type AcceptanceDiff = {
+  command?: boolean;
+  cwd?: boolean;
+  changed?: string[];
+  added?: string[];
+  removed?: string[];
+  tests_changed?: string[];
+  tests_removed?: string[];
+  tests_added?: string[];
+  unverified_files?: string[];
+  tests_unverified?: string[];
+  files_incomplete?: boolean;
+  tests_incomplete?: boolean;
+};
+
 export type DeliveryInfo = {
   /** verified = 交付状态已通过验收；unverified = 完成但没有独立判据；failed = 复验没通过；
  *  needs_review = 验收依据变了；interrupted = 验证被中断 */
@@ -117,9 +133,9 @@ export type DeliveryInfo = {
   source?: "first_try" | "repair" | "apply" | string;
   target?: { ran?: boolean; met?: boolean; tests?: number | null; reason?: string; cwd?: string; reused?: boolean; source_unchanged?: boolean };
   regression?: { status?: string; ran?: boolean; met?: boolean; tests?: number | null; reason?: string; cwd?: string };
-  acceptance?: { changed?: boolean; detail?: string };
+  acceptance?: { changed?: boolean; detail?: string; diff?: AcceptanceDiff };
   state?: { changed_after_delivery?: boolean; changed_during_verify?: boolean };
-  apply?: { patch_sha?: string; mismatches?: unknown[]; expected?: { ok?: boolean; reason?: string; uncovered?: string[] } };
+  apply?: { patch_sha?: string; mismatches?: unknown[]; unexpected?: string[] | null; expected?: { ok?: boolean; reason?: string; uncovered?: string[] } };
 };
 
 /** 本轮实际用的模型与推理档位（全力以赴的模型绑定才会带；与模型列表里的 ModelInfo 不同）。 */
@@ -129,7 +145,8 @@ export type RunModelInfo = {
   model?: string;
   effort?: string;
   effort_supported?: boolean;
-  /** 服务端拒了这个参数、真实降级了（4xx 后回退），界面要如实说 */
+  /** 计划档位没有真正发出：可能是本地把档案里不认识的档规整成了可用档，也可能是服务端 4xx
+   *  回退。两种都只代表「这次用的不是计划档」，界面只说事实、不归因。 */
   effort_degraded?: boolean;
   locked?: boolean;
 };
@@ -231,7 +248,7 @@ export type ThreadDetail = ThreadSummary & {
   allout_requested?: number;
   /** 实际启动的候选数（分叉被跳过时为 0/undefined） */
   allout_started?: number;
-  allout_candidates?: Record<string, { state: string; strategy?: string; tests?: number; files?: number; votes?: number; detail?: string }>;
+  allout_candidates?: Record<string, { state: string; strategy?: string; tests?: number; files?: number; votes?: number; comparisons?: number | null; detail?: string }>;
   allout_winner?: string;
   allout_review?: string;
   status_text?: string; // 临时状态：正在连接模型… 等（turn/status）
@@ -771,6 +788,9 @@ export type BestofCandidate = {
   /** allout 的质量信号（老后端不返回时当作中性默认）。 */
   regressed?: boolean;
   votes?: number;
+  /** 完成了几组完整的位置对调（一对 A/B 两轮都有有效票才记 1）。
+   *  null/undefined = 老后端没给（按 raw votes 比较）；0 = 确实没比过（中性）。 */
+  comparisons?: number | null;
   touched_tests?: boolean;
   files?: number;
   additions?: number;

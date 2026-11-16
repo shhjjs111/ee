@@ -81,6 +81,84 @@ def test_remove_autosaves_and_protects_unmerged(repo, ee_home):
     assert W.remove(W.list_for(repo, ee_home)[0]["path"], delete_branch=True, force=True, home=ee_home)["branch_deleted"]
 
 
+def test_prepare_dirty_base_once_for_multiple_agents(repo, ee_home):
+    """脏工作区只固化一次；后续候选复用同一 baseline，主 HEAD/index 不变。"""
+    (repo / "a.txt").write_text("dirty snapshot\n", encoding="utf-8")
+    (repo / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+    head_before = git(repo, "rev-parse", "HEAD").strip()
+    status_before = git(repo, "status", "--porcelain")
+
+    prepared = W.prepare_dirty_base(repo, ee_home)
+    assert prepared["synced_dirty"] is True
+    assert W.list_for(repo, ee_home) == [], "临时基线 worktree 必须已回收"
+    assert git(repo, "rev-parse", "HEAD").strip() == head_before
+    assert git(repo, "status", "--porcelain") == status_before, "不能改主目录索引"
+
+    # 基线准备完成后外部再改主目录，候选不应看到后来的改动。
+    (repo / "a.txt").write_text("later external edit\n", encoding="utf-8")
+    a = W.create_for_agent(repo, "a1", home=ee_home, base_commit=prepared["base"])
+    b = W.create_for_agent(repo, "b1", home=ee_home, base_commit=prepared["base"])
+    try:
+        assert a["agent_base"] == b["agent_base"] == prepared["base"]
+        pa, pb = __import__("pathlib").Path(a["cwd"]), __import__("pathlib").Path(b["cwd"])
+        assert (pa / "a.txt").read_text() == "dirty snapshot\n"
+        assert (pb / "a.txt").read_text() == "dirty snapshot\n"
+        assert (pa / "untracked.txt").read_text() == "untracked\n"
+    finally:
+        W.remove(a["path"], delete_branch=False, force=True, home=ee_home)
+        W.remove(b["path"], delete_branch=False, force=True, home=ee_home)
+
+
+def test_cleanup_losers_preserves_branch_and_keeps_dirty_worktree(repo, ee_home):
+    """交付 verified 后只回收安全的本轮落选者；有未提交变化必须保留。"""
+    from pathlib import Path
+
+    from ee.server.threads import Thread
+
+    def candidate(label: str) -> dict:
+        info = W.create_for_agent(repo, label, home=ee_home)
+        (Path(info["cwd"]) / "a.txt").write_text(label + "\n", encoding="utf-8")
+        W.finish_agent(info, f"candidate {label}", home=ee_home)
+        return info
+
+    winner = candidate("winner")
+    loser = candidate("loser")
+    dirty_loser = candidate("dirty-loser")
+    (Path(dirty_loser["cwd"]) / "after.txt").write_text("new\n", encoding="utf-8")
+
+    th = Thread("t", ee_home, lambda m, p: None, {"cwd": str(repo)}, persist=False)
+    result = asyncio.run(th._cleanup_allout_losers([
+        {"id": "cand-1", "worktree": winner["path"], "branch": winner["branch"],
+         "head": W.head_sha(winner["path"])},
+        {"id": "cand-2", "worktree": loser["path"], "branch": loser["branch"],
+         "head": W.head_sha(loser["path"])},
+        {"id": "cand-3", "worktree": dirty_loser["path"], "branch": dirty_loser["branch"],
+         "head": W.head_sha(dirty_loser["path"])},
+    ], "cand-1"))
+
+    assert result["removed"] == ["cand-2"]
+    assert Path(loser["path"]).exists() is False
+    assert Path(winner["path"]).exists() is True
+    assert Path(dirty_loser["path"]).exists() is True
+    assert loser["branch"] in git(repo, "branch"), "落选分支必须保留可恢复"
+    assert any(k["id"] == "cand-3" for k in result["kept"])
+    W.remove(winner["path"], delete_branch=False, force=True, home=ee_home)
+    W.remove(dirty_loser["path"], delete_branch=False, force=True, home=ee_home)
+
+
+def test_strict_remove_rejects_new_changes(repo, ee_home):
+    """自动回收的严格删除不能把检查后新增的改动 autosave 后悄悄删掉。"""
+    info = W.create(repo, "strict", home=ee_home)
+    p = __import__("pathlib").Path(info["path"])
+    head = W.head_sha(p)
+    (p / "new-after-check.txt").write_text("must keep\n", encoding="utf-8")
+    with pytest.raises(W.WorktreeError, match="新改动|HEAD|不一致"):
+        W.remove(p, delete_branch=False, force=True, home=ee_home,
+                 strict=True, expected_head=head)
+    assert p.exists()
+    W.remove(p, delete_branch=False, force=True, home=ee_home)
+
+
 def test_merge_conflict_aborts(repo, ee_home):
     info = W.create(repo, "c", home=ee_home)
     p = __import__("pathlib").Path(info["path"])

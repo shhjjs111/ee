@@ -74,6 +74,29 @@ def clean_title(t: str) -> str:
 
 
 MAX_GOAL_ROUNDS = 20      # 界面上限：防一次传个巨大值把机器跑满
+MAX_GOAL_FILES = 4000     # probe 最多收集 4000 个测试文件；再多只取前 4000 个
+
+
+def _norm_relative_files(raw, name: str) -> tuple[str, ...]:
+    """校验 goal 里的文件清单：相对工作区、不能是绝对路径或 `..` 穿越。"""
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(f"goal.{name} 必须是文件路径数组")
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError(f"goal.{name} 的每一项必须是字符串")
+        rel = item.strip().replace("\\", "/")
+        if not rel:
+            raise ValueError(f"goal.{name} 不能包含空路径")
+        if rel.startswith("/") or ":" in rel.split("/", 1)[0] or ".." in Path(rel).parts:
+            raise ValueError(f"goal.{name} 必须是工作区内的相对路径：{item!r}")
+        out.append(rel[:1000])
+    files = tuple(dict.fromkeys(out))
+    if len(files) > MAX_GOAL_FILES:
+        raise ValueError(f"goal.{name} 超过 {MAX_GOAL_FILES} 条；不能静默截断成不完整清单")
+    return files
 
 
 def _norm_goal(goal: dict) -> dict:
@@ -110,6 +133,12 @@ def _norm_goal(goal: dict) -> dict:
     p2p = str(goal.get("pass_to_pass") or "").strip()
     if p2p:
         out["pass_to_pass"] = p2p[:2000]
+    # 验收文件与既有测试是两份不同语义的清单：
+    # validation_files 整份冻结（含新增也算变化）；protected_tests 只拦改写/删除。
+    for key in ("validation_files", "protected_tests"):
+        files = _norm_relative_files(goal.get(key), key)
+        if files:
+            out[key] = files
     return out
 
 
@@ -256,6 +285,8 @@ class Thread:
         # 交付验证（全力以赴）：本轮起始的验收依据指纹、最近判据记录、交付结论
         self._accept0: dict = {}
         self._judge_recent: dict[str, dict] = {}
+        self._judge_ms_total: float = 0.0
+        self._allout_last_judge_ms: float | None = None
         self._delivery: dict | None = None
         # 全力以赴的回合状态（直接在测试里调 _run_allout 时也要有初值）
         self._allout_plan = None
@@ -775,6 +806,8 @@ class Thread:
         self._model_report = None
         self._allout_plan = None
         self._allout_attempts = []
+        self._judge_ms_total = 0.0
+        self._allout_last_judge_ms = None
         self.turn_started_at = time.monotonic()
         self.cur_assistant = None
         self.plan_item = None
@@ -785,15 +818,22 @@ class Thread:
                 # 第二批（模型绑定）：本轮锁模型 + 提强度。收尾在 finally 里还原。
                 self._model_turn = self._bind_turn_model(s)
                 proj = await self._plan_allout(allout, goal)
+                if proj is not None and not proj.command and proj.note:
+                    # 根目录是 monorepo 时 probe 会列出子项目判据；必须让用户看见，
+                    # 否则只会看到“没有独立判据”而不知道下一步该填什么。
+                    self._add({"type": "notice", "level": "info", "text": proj.note})
                 if not goal and proj is not None and proj.command:
+                    probe_goal = {"command": proj.command, "max_rounds": 3,
+                                  "protected_tests": tuple(proj.test_files),
+                                  "protected_tests_complete": getattr(proj, "test_files_complete", True)}
                     if self._allout_goal_confirmed(proj.command):
-                        goal = {"command": proj.command, "max_rounds": 3}
+                        goal = probe_goal
                     elif await self._confirm_probe_goal(proj):
                         self._remember_allout_goal(proj.command)
                         self._add({"type": "notice", "level": "info",
                                    "text": f"全力以赴：已确认判据 {proj.command}"
                                            f"（来自 {proj.source or '项目文件'}），以后这个项目不用再确认。"})
-                        goal = {"command": proj.command, "max_rounds": 3}
+                        goal = probe_goal
                         # 重新推导并推一条 allout_plan：确认前的通知是降级版（单路、未验证），
                         # 不重发的话界面会一直显示 1 路，与实际执行的路数不符。
                     else:
@@ -852,6 +892,10 @@ class Thread:
                     log.warning("折叠回合快照失败（会话 %s）", self.id, exc_info=True)
             s._turn_role = None
             try:
+                self._flush_judge_ms()
+            except Exception:  # noqa: BLE001  判据耗时只是资源估算信号，不能拖垮收尾
+                log.info("全力以赴：写入判据耗时失败", exc_info=True)
+            try:
                 self._finish(reason)
             except Exception:  # noqa: BLE001
                 log.error("回合收尾异常（会话 %s）", self.id, exc_info=True)
@@ -893,18 +937,26 @@ class Thread:
             if i == 0 and not probe_denied:
                 from ee.core import acceptance
                 from ee.core.allout import proposed_validation
-                from ee.core.probe import ProbeResult
+                from ee.core.probe import ProbeResult, collect_test_files_ex
                 proposed = proposed_validation(final_text, self.cwd)
                 if proposed:
                     command, files = proposed
-                    frozen = acceptance.fingerprint(self.cwd, command, files)
+                    # 生成验收文件的同时保护项目既有测试；只冻结模型自建的测试文件
+                    # 会让它顺手改现有测试来让新判据变绿。
+                    protected_list, protected_complete = collect_test_files_ex(self.cwd)
+                    protected = tuple(protected_list)
+                    frozen = acceptance.fingerprint(self.cwd, command, files, protected,
+                                                    protected_tests_complete=protected_complete)
                     proposal = ProbeResult(command=command, source="模型新建的验证",
                                            note="验收文件：" + "、".join(files) +
                                            "\n批准后以这些文件进入自动验收和修复。")
                     if await self._confirm_probe_goal(proposal):
                         options = allout or {"enabled": True, "candidates": 6}
                         goal = {"command": command, "max_rounds": 3,
-                                "validation_files": files, "acceptance_snapshot": frozen}
+                                "validation_files": files,
+                                "protected_tests": protected,
+                                "protected_tests_complete": protected_complete,
+                                "acceptance_snapshot": frozen}
                         await self._plan_allout(options, goal)
                         return await self._run_allout(text, None, goal, options, initial_done=True)
         # 没有独立判据（或提案被拒绝/超时）：完成 ≠ 验收通过。落一个显式的未验收结论，
@@ -971,7 +1023,9 @@ class Thread:
         if s is None:
             raise RuntimeError("会话未初始化")
         has_goal = bool(goal and goal.get("command"))
-        proj = None if has_goal else probe_project(self.cwd)
+        # probe 会遍历项目文件（最多 2 秒/4000 个测试），不能在事件循环里同步跑，
+        # 否则一个陌生仓库的扫描会卡住所有会话、心跳和停止按钮。
+        proj = None if has_goal else await asyncio.to_thread(probe_project, self.cwd)
         if proj is not None and proj.command:
             # v2 §5：探测来的判据首次使用前要用户确认一次；确认过就不再问。
             proj.confirmed = self._allout_goal_confirmed(proj.command)
@@ -1011,6 +1065,16 @@ class Thread:
     def _allout_meta(self) -> dict:
         m = self.meta.get("allout")
         return dict(m) if isinstance(m, dict) else {}
+
+    def _flush_judge_ms(self) -> None:
+        """回合内累计判据耗时，完成/异常收尾统一写一次 meta（不每个判据都写盘）。"""
+        total = float(getattr(self, "_judge_ms_total", 0.0) or 0.0)
+        if total <= 0:
+            return
+        m = self._allout_meta()
+        m["judge_ms"] = int(total)
+        self.meta["allout"] = m
+        self.save_meta()
 
     def _allout_goal_confirmed(self, command: str) -> bool:
         return self._allout_meta().get("goal_confirmed") == command
@@ -1081,7 +1145,24 @@ class Thread:
         spec = GoalSpec(command=goal["command"], cwd=str(self.cwd),
                         min_tests=as_int(goal.get("min_tests") or 1),
                         timeout=as_float(goal.get("timeout") or 300.0),
-                        validation_files=tuple(goal.get("validation_files", ())))
+                        validation_files=tuple(goal.get("validation_files", ())),
+                        protected_tests=tuple(goal.get("protected_tests", ())),
+                        protected_tests_complete=bool(goal.get("protected_tests_complete", True)))
+        if not spec.protected_tests:
+            # 用户手填 goal 时没有 probe 的测试清单；仍要把项目既有测试纳入保护，
+            # 否则“改测试让同一命令变绿”在首轮/修复路径上完全不可见。
+            from ee.core.probe import collect_test_files_ex
+            try:
+                files, complete = await asyncio.to_thread(collect_test_files_ex, self.cwd)
+                spec.protected_tests = tuple(files)
+                spec.protected_tests_complete = complete
+                if not complete:
+                    self._add({"type": "notice", "level": "warn",
+                               "text": "全力以赴：测试文件扫描未完整（超过 4000 个或目录不可读），"
+                                       "本次交付会按「无法完整验证」处理。"})
+            except Exception:  # noqa: BLE001  扫描失败不能拖垮回合；但必须降级
+                spec.protected_tests_complete = False
+                log.info("全力以赴：收集既有测试清单失败", exc_info=True)
         pass_to_pass = str(goal.get("pass_to_pass") or "").strip() or None
         # 交付闸门要单独跑回归命令（未配置 ≠ 通过），所以在这里就把 spec 备好
         p2p_spec = (GoalSpec(command=pass_to_pass, cwd=str(self.cwd), min_tests=1,
@@ -1101,26 +1182,43 @@ class Thread:
         # 以及最近一次目标/回归判据的记录（树一致时能复用，不必为了报告再跑一遍）。
         from ee.core import acceptance as _acceptance
         self._accept0 = goal.get("acceptance_snapshot") or _acceptance.fingerprint(
-            self.cwd, spec.command, spec.validation_files)
+            self.cwd, spec.command, spec.validation_files, spec.protected_tests,
+            protected_tests_complete=spec.protected_tests_complete)
         self._judge_recent: dict[str, dict] = {}
         if initial_done and _acceptance.changed(
-                self._accept0, _acceptance.fingerprint(self.cwd, spec.command, spec.validation_files)):
+                self._accept0, _acceptance.fingerprint(
+                    self.cwd, spec.command, spec.validation_files, spec.protected_tests,
+                    protected_tests_complete=spec.protected_tests_complete)):
             self._add({"type": "notice", "level": "warn", "text": "批准期间验收文件发生变化，本轮未执行该判据。"})
+            self._delivery = {"status": "needs_review", "source": "first_try", "target": {},
+                              "regression": {}, "acceptance": {"changed": True},
+                              "state": {}, "apply": {}}
             return "exhausted"
 
         def _remember_judge_ms(ms: float) -> None:
-            """记一次判据耗时（按工程，下一次 _plan_allout 用作资源估算信号）。"""
-            m = self._allout_meta()
-            m["judge_ms"] = int(ms)
-            self.meta["allout"] = m
-            self.save_meta()
+            """累计本轮判据耗时；只在回合收尾统一写一次 meta。"""
+            value = max(0.0, float(ms or 0.0))
+            self._judge_ms_total = float(getattr(self, "_judge_ms_total", 0.0) or 0.0) + value
+            self._allout_last_judge_ms = max(
+                float(getattr(self, "_allout_last_judge_ms", None) or 0.0), value)
 
         async def judge_serial(cwd: str | None = None) -> Verdict:
             sp = spec if cwd is None else GoalSpec(command=spec.command, cwd=cwd,
                                                    min_tests=spec.min_tests, timeout=spec.timeout)
-            if spec.validation_files and _acceptance.changed(
-                    self._accept0, _acceptance.fingerprint(self.cwd, spec.command, spec.validation_files)):
-                return Verdict(exit=None, tests=0, output="冻结的验收文件发生变化。请恢复文件后再验证。")
+            now_fp = _acceptance.fingerprint(self.cwd, spec.command, spec.validation_files,
+                                             spec.protected_tests,
+                                             protected_tests_complete=spec.protected_tests_complete)
+            if (spec.validation_files or spec.protected_tests
+                    or not spec.protected_tests_complete) and _acceptance.changed(self._accept0, now_fp):
+                adiff = _acceptance.diff(self._accept0, now_fp)
+                self._delivery = {"status": "needs_review", "source": "first_try", "target": {},
+                                  "regression": {},
+                                  "acceptance": {"changed": True,
+                                                 "detail": _acceptance.describe(adiff),
+                                                 "diff": adiff},
+                                  "state": {}, "apply": {}}
+                return Verdict(exit=None, tests=0,
+                               output="冻结的验收文件或既有测试发生变化。请恢复文件后再验证。")
             # 主工作区的判据：记下运行前后的树。判据命令自己也可能写文件（生成物、快照），
             # 那样这次结果就不能用来证明"交付状态通过"（见 _delivery_judge 的复用条件）。
             t0 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
@@ -1148,8 +1246,11 @@ class Thread:
                 raise RuntimeError("pass_to_pass 未设置")
             sp = GoalSpec(command=pass_to_pass, cwd=cwd or spec.cwd, min_tests=1, timeout=spec.timeout)
             t0 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
+            started = time.monotonic()
             async with lock, shared:
                 v = await judge(sp)
+            if cwd is None:
+                _remember_judge_ms((time.monotonic() - started) * 1000)
             t1 = await asyncio.to_thread(s.disk_capture) if cwd is None else None
             if cwd is None:
                 self._judge_recent["regression"] = {"verdict": v, "tree": t1,
@@ -1178,7 +1279,7 @@ class Thread:
         # ---- 轮 1：单路。一次就过则零额外成本（预算不是配额）。
         if not initial_done:
             terminal = await one_turn(payload)
-            if terminal in ("interrupted", "budget", "error"):
+            if terminal in ("interrupted", "budget", "error", "blocked", "loop"):
                 return terminal
         best = await judge_serial()      # 目标判据的判定；同时作为 keep-policy 的基线（同一命令才可比）
         regressed = False                # 目标过了但回归失败：best 保持绿的判据结果，这个标记拦住「通过」
@@ -1226,7 +1327,7 @@ class Thread:
             # 修复轮直接跑在主工作区：先记下修复前的位置，拒绝时能真的撤回去。
             before = await asyncio.to_thread(s.disk_capture)
             terminal = await one_turn(msg)
-            if terminal in ("interrupted", "budget", "error"):
+            if terminal in ("interrupted", "budget", "error", "blocked", "loop"):
                 return terminal
             after = await judge_serial()
             after = await self._flake_confirm(s, spec, after, best)
@@ -1302,7 +1403,9 @@ class Thread:
 
         # ---- 轮 3：分叉（候选各自 worktree、温度阶梯、判据串行、先通过即取消其余）。
         if cap > 1:
-            cands = await self._allout_fanout(spec, plan, text, cap, pass_to_pass, failure=last_fail)
+            cands = await self._allout_fanout(spec, plan, text, cap, pass_to_pass,
+                                              failure=last_fail,
+                                              **({"images": images} if images else {}))
             # 回归门拦下的候选不能进排序：它们让原有测试变红了。
             passed = [c for c in cands if A.candidate_ok(c)]
             if passed:
@@ -1311,17 +1414,24 @@ class Thread:
                     self.notify("allout_progress", {"thread_id": self.id, "phase": "selection",
                                                     "winner": winner["id"],
                                                     "scores": [{"id": c["id"], "votes": c.get("votes"),
+                                                                "comparisons": c.get("comparisons", 0),
                                                                 "tests": c["verdict"].tests,
                                                                 "files": c.get("files", 0)} for c in passed]})
                     # 补丁只算一次：写回、预期状态构造、内容比对必须用同一份字节，
                     # 否则中间 HEAD/工作区一变，三者就对不上。
                     patch = await asyncio.to_thread(A.candidate_patch, winner["cwd"], winner["base"])
+                    # git 输出仓库根相对路径；DiskSnapshot/build_expected 以当前工作区为根，
+                    # 工作区在仓库子目录时要先剥掉前缀（补丁字节本身不动）。
+                    expected_paths = await asyncio.to_thread(
+                        A.worktree_patch_paths, self.cwd, list(patch.get("paths") or []))
+                    worktree_prefix = await asyncio.to_thread(A.worktree_rel_prefix, self.cwd)
                     pre_tree = await asyncio.to_thread(s.disk_capture)
-                    info: dict = {"patch_sha": patch.get("sha", ""), "paths": list(patch.get("paths") or []),
-                                  "pre_tree": pre_tree, "expected": {}, "mismatches": [], "result": {}}
+                    info: dict = {"patch_sha": patch.get("sha", ""), "paths": expected_paths,
+                                  "pre_tree": pre_tree, "expected": {}, "mismatches": [],
+                                  "unexpected": None, "result": {}}
                     if not patch.get("ok"):
                         info["result"] = {"applied": False, "error": patch.get("error") or "补丁不可用"}
-                        self._delivery = {"status": "failed", "source": "apply", "target": {},
+                        self._delivery = {"status": "failed_apply", "source": "apply", "target": {},
                                           "regression": {}, "acceptance": {}, "state": {}, "apply": info}
                         self.notify("allout_progress", {"thread_id": self.id, "phase": "apply",
                                                         "winner": winner["id"], "result": info["result"]})
@@ -1336,7 +1446,8 @@ class Thread:
                         from ee.core import delivery as D
                         try:
                             expected = await asyncio.to_thread(
-                                D.build_expected, disk, pre_tree, patch["patch"], patch["paths"], self.cwd)
+                                D.build_expected, disk, pre_tree, patch["patch"], expected_paths,
+                                self.cwd, worktree_prefix)
                         except Exception as e:  # noqa: BLE001  构造失败要如实报告，不能拖垮回合
                             log.warning("全力以赴：构造预期交付状态失败", exc_info=True)
                             info["expected"] = {"ok": False, "reason": f"构造预期状态异常：{type(e).__name__}: {e}"}
@@ -1352,17 +1463,31 @@ class Thread:
                         await asyncio.to_thread(s.refresh_git)
                         if applied_tree:
                             self._mark_tree_after(applied_tree)
+                        # 写回期间被外部程序改过的**非补丁路径**：内容比对只看补丁路径，
+                        # 这里补上 before→after 的全树差集；有就把交付降级为需要复核。
+                        if disk is not None and pre_tree and applied_tree:
+                            try:
+                                from ee.core import delivery as D
+                                info["unexpected"] = await asyncio.to_thread(
+                                    D.unexpected_changes, disk, pre_tree, applied_tree, set(expected_paths))
+                            except Exception:  # noqa: BLE001  检测失败不能拖垮交付，但要如实留空
+                                log.warning("全力以赴：检测非补丁路径变化失败", exc_info=True)
                         # 内容比对：写回的是不是这份补丁、有没有顺带改动别的文件
                         if expected is not None and expected.ok:
                             from ee.core import delivery as D
                             info["mismatches"] = await asyncio.to_thread(
-                                D.compare, expected, self.cwd, patch["paths"])
+                                D.compare, expected, self.cwd, expected_paths)
                         reason = await self._delivery_gate(s, spec, p2p_spec, source="apply",
                                                            apply_info=info, delivered_tree=applied_tree)
+                        if reason == "met":
+                            await self._cleanup_allout_losers(cands, winner["id"])
                         return reason
                     # 写回失败（git apply 是全有或全无，主目录一个文件都没动）：回合会如实
                     # 报 exhausted，但状态文字在收尾时就被清掉了，用户看不到原因与善后路径。
                     # 候选的改动仍提交在它自己的分支上，所以要明确告诉他去合并或对比。
+                    self._delivery = {"status": "failed_apply", "source": "apply", "target": {},
+                                      "regression": {}, "acceptance": {}, "state": {},
+                                      "apply": info, "error": str(res.get("error") or "")}
                     self._add({"type": "notice", "level": "warn",
                                "text": "全力以赴：候选的补丁没能写回主目录（"
                                        + (str(res.get("error") or "原因未知"))
@@ -1456,7 +1581,9 @@ class Thread:
         self._delivery = delivery
 
         # 1) 验收依据在本轮里有没有被改过（改断言、改测试配置、改命令都算）
-        now_fp = acceptance.fingerprint(self.cwd, spec.command, spec.validation_files)
+        now_fp = acceptance.fingerprint(self.cwd, spec.command, spec.validation_files,
+                                        spec.protected_tests,
+                                        protected_tests_complete=spec.protected_tests_complete)
         adiff = acceptance.diff(getattr(self, "_accept0", {}) or {}, now_fp)
         if acceptance.changed(getattr(self, "_accept0", {}) or {}, now_fp):
             delivery["acceptance"] = {"changed": True, "detail": acceptance.describe(adiff), "diff": adiff}
@@ -1479,10 +1606,14 @@ class Thread:
             ap = delivery.get("apply") or {}
             exp = ap.get("expected") or {}
             if not exp.get("ok"):
-                delivery["status"] = "failed"
+                delivery["status"] = "failed_apply"
                 return "exhausted"
             if ap.get("mismatches") or exp.get("uncovered"):
                 delivery["status"] = "failed"
+                return "exhausted"
+            # unexpected 缺失/None 表示全树差集无法检查；不能把空列表误当“检查通过”。
+            if "unexpected" not in ap or ap.get("unexpected") is None or ap.get("unexpected"):
+                delivery["status"] = "needs_review"
                 return "exhausted"
 
         # 3) 目标判据（可复用同一树上的最近结果）
@@ -1496,7 +1627,16 @@ class Thread:
 
         # 4) 回归命令：未配置 ≠ 通过，单列状态；它若改了源码，目标结果一并作废
         if p2p_spec is not None:
-            reg = await self._delivery_judge(s, p2p_spec, "regression")
+            try:
+                reg = await self._delivery_judge(s, p2p_spec, "regression")
+            except asyncio.CancelledError:
+                # 用户点停止：与目标判据同一口径，不能被记成普通失败。
+                delivery["status"] = "interrupted"
+                delivery["regression"] = {"ran": True, "reused": False, "met": False,
+                                          "tests": 0, "reason": "回归验收被中断",
+                                          "status": "interrupted", "timed_out": False,
+                                          "unstable": False, "source_unchanged": False}
+                raise
             delivery["regression"] = reg
             if not reg.get("source_unchanged"):
                 target["source_unchanged"] = False
@@ -1594,8 +1734,20 @@ class Thread:
             return True
         return False
 
+    def _allout_selection_window(self, plan) -> tuple[float, float, float | None]:
+        """本次择优窗口：base 给正常交卷，hard 是总等待上限；judge_s 为 None 表示无历史耗时。"""
+        base = max(0.0, float(getattr(plan, "selection_grace_seconds", 0.0) or 0.0))
+        judge_ms = getattr(self, "_allout_last_judge_ms", None)
+        if not judge_ms or judge_ms <= 0:
+            return base, max(base * 2, 0.3), None
+        judge_s = judge_ms / 1000.0
+        base = max(base, min(120.0, judge_s * 1.5))
+        hard = min(300.0, max(base, judge_s * 4.0))
+        return base, hard, judge_s
+
     async def _allout_fanout(self, spec, plan, task_text: str, cap: int,
-                             pass_to_pass: str | None = None, failure=None) -> list[dict]:
+                             pass_to_pass: str | None = None, failure=None,
+                             images: list[str] | None = None) -> list[dict]:
         """并行候选：各自独立 worktree、温度阶梯、同一模型、判据串行。
 
         `task_text` 是**用户原话**（不是拼好判据段的第一轮输入）：每个候选自己
@@ -1620,12 +1772,24 @@ class Thread:
         if not ok:
             self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout_skipped", "why": why})
             return []
+        try:
+            prepared = await asyncio.to_thread(W.prepare_dirty_base, self.cwd, self.home)
+        except Exception as e:  # noqa: BLE001
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout_skipped",
+                                            "why": f"准备脏工作区基线失败：{type(e).__name__}: {e}"})
+            return []
+        baseline = prepared["base"]
+        if not prepared.get("cleanup", {}).get("removed"):
+            self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout_prepare",
+                                            "cleanup_error": str(prepared.get("cleanup", {}).get("error") or "临时基线 worktree 未删除")})
         self.notify("allout_progress", {"thread_id": self.id, "phase": "fanout", "started": cap})
         lock = self._allout_judge_lock
         if lock is None:                      # 直接调 _allout_fanout 的调用方（测试/脚本）也可能没建过
             lock = self._allout_judge_lock = asyncio.Semaphore(1)
         from contextlib import nullcontext
         work_slot = self._allout_work_sem or nullcontext()
+
+        reap_tasks: list[asyncio.Task] = []
 
         async def _create_worktree(i: int, label: str) -> dict:
             """建候选 worktree；被取消时把“已交给工作线程”的那次创建收尾掉。
@@ -1634,7 +1798,8 @@ class Thread:
             照样会跑完。不管它，就会留下一个没有主人的 worktree（占磁盘、混进列表）。
             所以取消时挂一个“等它落地再回收”的任务，而不是直接丢掉 future。
             """
-            fut = asyncio.ensure_future(asyncio.to_thread(W.create_for_agent, self.cwd, label, self.home))
+            fut = asyncio.ensure_future(asyncio.to_thread(
+                W.create_for_agent, self.cwd, label, self.home, base_commit=baseline))
             try:
                 return await asyncio.shield(fut)
             except asyncio.CancelledError:
@@ -1644,14 +1809,24 @@ class Thread:
                         info = await fut
                     except Exception:  # noqa: BLE001  创建失败就没什么可回收的
                         return
+                    rec = live.get(f"cand-{i + 1}")
+                    if rec is not None:
+                        rec["worktree"] = info.get("path")
+                        rec["branch"] = info.get("branch") or ""
                     try:
-                        await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(
+                        out = await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(
                             W.finish_agent, info, f"ee：全力以赴候选 {label}（已取消）", self.home)))
+                        if rec is not None:
+                            rec["finish"] = out
+                            rec["kept"] = bool(out.get("kept"))
+                            rec["head"] = await asyncio.to_thread(W.head_sha, info["path"])
                     except BaseException:  # noqa: BLE001  收尾失败不能拖垮事件循环
                         pass
 
-                asyncio.ensure_future(_reap())
+                reap_tasks.append(asyncio.ensure_future(_reap()))
                 raise
+
+        live: dict[str, dict] = {}
 
         async def run_one(i: int) -> dict:
             label = f"allout-{i + 1}"
@@ -1659,21 +1834,64 @@ class Thread:
             child = None
             rec = {"id": f"cand-{i + 1}", "cwd": None, "base": None, "worktree": None,
                    "cost": 0.0, "verdict": None, "regressed": False,
-                   "touched_tests": False, "files": 0, "additions": 0, "deletions": 0, "votes": 0}
+                   "touched_tests": False, "files": 0, "additions": 0, "deletions": 0,
+                   "votes": 0, "comparisons": 0, "state": "preparing"}
+            live[rec["id"]] = rec
+
             def progress(state, **detail):
+                rec["state"] = state
+                if state == "testing" and not rec.get("testing_started"):
+                    rec["testing_started"] = time.monotonic()
                 self.notify("allout_progress", {"thread_id": self.id, "phase": "candidate_state",
                                                 "id": rec["id"], "state": state, **detail})
 
-            def acceptance_intact(cwd):
+            def acceptance_intact(cwd, base):
+                """候选自己的验收基线有没有被改写。
+
+                `base` 是**该候选**在模型启动前采的指纹，不是主工作区的 `_accept0`：
+                Windows 上 git 检出会改行尾字节（CRLF 工作区 / LF blob），拿主工作区
+                去比会把没动过的测试判成篡改。主工作区仍由 `_accept0` 与交付闸门守着。
+                """
                 from ee.core import acceptance
-                now = acceptance.fingerprint(cwd, spec.command, spec.validation_files)["files"]
-                return all(now.get(name) == self._accept0["files"].get(name)
-                           and name in now for name in spec.validation_files)
+                now = acceptance.fingerprint(cwd, spec.command, spec.validation_files, spec.protected_tests,
+                                             protected_tests_complete=spec.protected_tests_complete)
+                files_ok = all(now["files"].get(name) == base["files"].get(name)
+                               and name in now["files"] for name in spec.validation_files)
+                return files_ok and acceptance.protected_tests_intact(base, now)
+
+            async def record_finish(info: dict | None) -> None:
+                """保存收尾结果与 HEAD，供回收时做正向绑定校验。"""
+                rec["finish"] = info or {}
+                if not info:
+                    return
+                rec["branch"] = info.get("branch") or ""
+                rec["kept"] = bool(info.get("kept"))
+                rec["head"] = await asyncio.to_thread(W.head_sha, wt["path"]) if wt else None
 
             try:
                 progress("preparing")
                 wt = await _create_worktree(i, label)
                 rec.update(cwd=wt["cwd"], base=wt["agent_base"], worktree=wt["path"])
+                # 候选自己的验收基线：共享不可变 baseline 已建好、模型还没跑，
+                # 此刻磁盘上的字节就是这个候选的起点。
+                # 用主工作区的 _accept0 直接比会误判：主工作区可能是 CRLF、git blob 与
+                # checkout 是 LF（`git status` 仍然干净），未修改的测试哈希就会不同。
+                # 基线本身不完整（文件缺失/读不到/扫描截断）时不能假装完整。
+                from ee.core import acceptance as _acc
+
+                cand_base = _acc.fingerprint(
+                    wt["cwd"], spec.command, spec.validation_files, spec.protected_tests,
+                    protected_tests_complete=spec.protected_tests_complete)
+                problem = _acc.baseline_problem(cand_base, validation_files=spec.validation_files,
+                                                protected_tests=spec.protected_tests)
+                if problem:
+                    rec["regressed"] = True
+                    rec["terminal"] = "failed"
+                    rec["baseline_error"] = problem
+                    progress("failed", detail="候选验收基线不可用：" + problem)
+                    await record_finish(await asyncio.to_thread(
+                        W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（基线不可用）", self.home))
+                    return rec
                 data = copy.deepcopy(s.config.data)
                 alias = s.spec.alias
                 models = data.setdefault("models", {})
@@ -1695,7 +1913,8 @@ class Thread:
                                                 allow=list(p.allow), ask=list(p.ask),
                                                 deny=list(p.deny) + A.candidate_deny_rules(self.cwd),
                                                 session_prefixes=p.session_prefixes,
-                                                session_tools=p.session_tools, shell=p.shell)
+                                                session_tools=p.session_tools, shell=p.shell,
+                                                workspace_only=True)
                 child.budget = s.budget
                 child.budget_owner = False
                 child.budget_root = s.budget_root or s
@@ -1745,26 +1964,43 @@ class Thread:
                     cand_prompt += "\n仅在需要独立核对调用链或边界时，可委派只读探索。"
                 rec["role"] = role
                 progress("working", strategy=strategies[i % len(strategies)].split("：", 1)[0])
-                async for ev in child.run_turn(cand_prompt):
+                terminal = "completed"
+                async for ev in child.run_turn(cand_prompt, **({"images": images} if images else {})):
+                    if isinstance(ev, TurnDone):
+                        terminal = ev.reason or terminal
                     # 候选的审批接回主会话（与子代理同一条纪律）：一律拒绝会把
                     # pytest 这类命令挡死，分叉路等于永远跑不完。桌面端出审批卡片，
                     # 无人值守下由 headless 的 auto_approve 决定。
                     self._allout_candidate_event(ev, f"allout-{i + 1}")
+                if terminal in ("interrupted", "budget", "error", "blocked", "loop"):
+                    rec["error"] = f"候选回合结束：{terminal}"
+                    rec["terminal"] = terminal
+                    progress("failed", detail=rec["error"])
+                    if wt is not None:
+                        try:
+                            info = await asyncio.to_thread(
+                                W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（{terminal}）", self.home)
+                            await record_finish(info)
+                        except Exception:  # noqa: BLE001  收尾失败不能拖垮其它候选
+                            pass
+                    return rec
                 # 判据必须跑在候选自己的 worktree 里：判的是候选的代码，不是主目录的。
                 from ee.core.goal import GoalSpec as _GS
                 cand_spec = _GS(command=spec.command, cwd=wt["cwd"],
                                 min_tests=spec.min_tests, timeout=spec.timeout)
-                if not acceptance_intact(wt["cwd"]):
+                if not acceptance_intact(wt["cwd"], cand_base):
                     rec["regressed"] = True
+                    rec["terminal"] = "failed"
                     progress("failed", detail="冻结的验收文件发生变化")
-                    await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}", self.home)
+                    await record_finish(await asyncio.to_thread(
+                        W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}", self.home))
                     return rec
                 progress("queued")
                 async with lock, work_slot:
                     progress("testing")
                     v = await judge(cand_spec)
                 rec["verdict"] = v
-                rec["regressed"] = not acceptance_intact(wt["cwd"])
+                rec["regressed"] = not acceptance_intact(wt["cwd"], cand_base)
                 if A.candidate_ok(rec) and pass_to_pass:
                     # 回归门：目标判据过了不算数，还要证明没弄坏原有测试。
                     p2p_spec = _GS(command=pass_to_pass, cwd=wt["cwd"], min_tests=1,
@@ -1772,7 +2008,7 @@ class Thread:
                     async with lock, work_slot:
                         rv = await judge(p2p_spec)
                     rec["regressed"] |= not bool(getattr(rv, "met", False))
-                    rec["regressed"] |= not acceptance_intact(wt["cwd"])
+                    rec["regressed"] |= not acceptance_intact(wt["cwd"], cand_base)
                     self.notify("allout_progress", {"thread_id": self.id, "phase": "regression",
                                                     "id": rec["id"], "met": bool(getattr(rv, "met", False)),
                                                     "reason": rv.reason})
@@ -1781,6 +2017,7 @@ class Thread:
                 except Exception:  # noqa: BLE001  费用读不到不影响判定
                     pass
                 v_out = await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}", self.home)
+                await record_finish(v_out)
                 rec["files"] = as_int(v_out.get("file_count") or 0)
                 rec["additions"] = as_int(v_out.get("additions") or 0)
                 rec["deletions"] = as_int(v_out.get("deletions") or 0)
@@ -1789,6 +2026,7 @@ class Thread:
                 self.notify("allout_progress", {"thread_id": self.id, "phase": "candidate",
                                                 "id": rec["id"], "role": role,
                                                 "met": A.candidate_ok(rec)})
+                rec["terminal"] = "passed" if A.candidate_ok(rec) else "failed"
                 progress("passed" if A.candidate_ok(rec) else "failed", tests=v.tests, files=rec["files"])
                 return rec
             except asyncio.CancelledError:
@@ -1796,15 +2034,28 @@ class Thread:
                 # wt 为 None 说明取消在创建阶段，由 _create_worktree 的 reap 路径收尾。
                 if wt is not None:
                     try:
-                        await asyncio.to_thread(W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（已取消）", self.home)
+                        info = await asyncio.to_thread(
+                            W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（已取消）", self.home)
+                        await record_finish(info)
                     except Exception:  # noqa: BLE001
                         pass
                 rec["cancelled"] = True
+                rec["terminal"] = "cancelled"
                 progress("cancelled")
                 raise
             except Exception as e:  # noqa: BLE001  单个候选失败不影响其它
                 rec["error"] = f"{type(e).__name__}: {e}"
-                progress("failed")
+                rec["terminal"] = "error"
+                progress("failed", detail=rec["error"])
+                if wt is not None:
+                    # 异常不是取消：worktree 里可能已有模型改动。先提交到候选分支，
+                    # 否则用户删除 worktree 时这些改动没有任何可恢复的落点。
+                    try:
+                        info = await asyncio.to_thread(
+                            W.finish_agent, wt, f"ee：全力以赴候选 {i + 1}（异常）", self.home)
+                        await record_finish(info)
+                    except Exception:  # noqa: BLE001
+                        log.warning("候选异常收尾失败（worktree 保留）", exc_info=True)
                 return rec
             finally:
                 if child is not None:
@@ -1824,22 +2075,53 @@ class Thread:
             nonlocal results
             pending = set(tasks)
             deadline = None
+            hard_deadline = None
+            judge_s: float | None = None
+
+            def refresh_deadline() -> None:
+                """先通过不等于把后进入 testing 的候选永远关在门外：每 100ms 复核。"""
+                nonlocal deadline
+                if deadline is None or not judge_s:
+                    return
+                for live_rec in live.values():
+                    started = live_rec.get("testing_started")
+                    if live_rec.get("state") == "testing" and started:
+                        expected = started + judge_s
+                        deadline = max(deadline, min(expected + 5.0, hard_deadline or deadline))
+                deadline = min(deadline, hard_deadline or deadline)
+
             while pending:
+                refresh_deadline()
                 remaining = None if deadline is None else max(0, deadline - time.monotonic())
+                if deadline is not None:
+                    # 无事件时也要定期看 queued/working 是否已进入 testing；100ms 是
+                    # 本地计时轮询，不是网络等待；用户停止仍会立即打断。
+                    remaining = min(remaining, 0.1)
                 done, pending = await asyncio.wait(pending, timeout=remaining,
                                                    return_when=asyncio.FIRST_COMPLETED)
                 if not done:
-                    break  # finally 统一取消并回收超出宽限时间的候选
+                    if deadline is not None and time.monotonic() >= deadline:
+                        break
+                    continue  # 仅仅是轮询 tick，继续观察 testing 状态
                 for t in done:
                     try:
                         r = t.result()
                         results.append(r)
-                        if A.candidate_ok(r) and deadline is None:
-                            deadline = time.monotonic() + plan.selection_grace_seconds
+                        if A.candidate_ok(r):
+                            now = time.monotonic()
+                            if deadline is None:
+                                base, hard, judge_s = self._allout_selection_window(plan)
+                                deadline = now + base
+                                hard_deadline = now + hard
+                                refresh_deadline()
+                            else:
+                                # 后续再通过不能无限延长首轮窗口；总上限仍由 hard_deadline 管。
+                                deadline = min(deadline, hard_deadline or deadline)
                     except asyncio.CancelledError:
                         pass
                     except Exception:  # noqa: BLE001
                         pass
+                refresh_deadline()
 
         # 候选是独立 task：watch() 只负责收集与择优窗口，不管回收。
         # 但 watch() 自己也可能被取消（用户点停止 → Thread.interrupt cancel 外层 task），
@@ -1853,7 +2135,99 @@ class Thread:
                 if not t.done():
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # 创建阶段被取消的 worktree 由 _reap 在工作线程落地后收尾；有界等待，
+            # 不让用户停止被无限拖住，也不把“还有 reap 在跑”伪装成全部落地。
+            if reap_tasks:
+                try:
+                    _done, pending = await asyncio.wait(reap_tasks, timeout=10.0)
+                except asyncio.CancelledError:
+                    pending = [t for t in reap_tasks if not t.done()]
+                if pending:
+                    self.notify("allout_progress", {"thread_id": self.id,
+                                                    "phase": "reap", "pending": len(pending)})
+            # watch 只收集已完成 task 的 return；择优劣汰/创建取消的 rec 在 live 里。
+            # 这些记录带 cancelled/terminal 与收尾结果，但不进入 candidate_ok/passed，
+            # 只用于安全回收和如实报告。
+            known = {r.get("id") for r in results}
+            for rec in live.values():
+                if rec.get("id") not in known:
+                    rec.setdefault("terminal", "cancelled" if rec.get("cancelled") else "unknown")
+                    results.append(rec)
+            results.sort(key=lambda x: str(x.get("id") or ""))
         return results
+
+    async def _cleanup_allout_losers(self, cands: list[dict], winner_id: str) -> dict:
+        """交付 verified 后，只回收**本轮 app 创建**的落选 worktree 目录，分支保留。
+
+        安全闸门：归属必须是 worker agent、路径在主仓库 worktree 列表里、没有
+        未提交/未跟踪改动、未被 git lock、不能被忽略文件备份失败。任何一项不满足
+        都保留并说明，绝不 force 丢弃或扫描其他轮次。
+        """
+        from ee.core import worktree as W
+
+        removed: list[str] = []
+        kept: list[dict] = []
+        for rec in cands:
+            if rec.get("id") == winner_id or not rec.get("worktree"):
+                continue
+            path = str(rec["worktree"])
+            try:
+                info = await asyncio.to_thread(W.info_for_dir, path, self.home)
+            except Exception as e:  # noqa: BLE001
+                kept.append({"id": rec["id"], "reason": f"归属查询失败：{type(e).__name__}: {e}"})
+                continue
+            if not info or not info.get("agent"):
+                kept.append({"id": rec["id"], "reason": "不是本轮 app 创建的 worktree（未知归属）"})
+                continue
+            try:
+                root = Path(W.repo_root(self.cwd)).resolve()
+                if Path(info.get("repo") or "").resolve() != root:
+                    kept.append({"id": rec["id"], "reason": "repo 不匹配（不是本项目的候选）"})
+                    continue
+                expected_path = Path(info["path"]).resolve()
+                if expected_path != Path(path).resolve() or not expected_path.is_dir():
+                    kept.append({"id": rec["id"], "reason": "worktree 路径不存在或与登记不一致"})
+                    continue
+                if W.lock_reason(info["path"], root) is not None:
+                    kept.append({"id": rec["id"], "reason": "worktree 被 git lock"})
+                    continue
+                saved_head = rec.get("head")
+                if not rec.get("branch") or not saved_head:
+                    kept.append({"id": rec["id"], "reason": "没有可信的收尾分支/HEAD 记录"})
+                    continue
+                if await asyncio.to_thread(W.head_sha, expected_path) != saved_head:
+                    kept.append({"id": rec["id"], "reason": "HEAD 与收尾时保存的状态不一致（外部新提交/不可读）"})
+                    continue
+                st = await asyncio.to_thread(W.status, info)
+                # git 读不到可信状态（status_ok=False）时一律保留：不能把“读不到”当“干净”
+                if not st.get("status_ok"):
+                    kept.append({"id": rec["id"],
+                                 "reason": "git 读不到可信状态：" + (st.get("error") or "未知")})
+                    continue
+                if not st.get("is_repo"):
+                    kept.append({"id": rec["id"], "reason": "目标不是 git 工作区"})
+                    continue
+                if st.get("branch") != rec["branch"]:
+                    kept.append({"id": rec["id"],
+                                 "reason": f"实际分支（{st.get('branch') or '分离头'}）与收尾记录（{rec['branch']}）不一致"})
+                    continue
+                if st.get("changed") or st.get("untracked"):
+                    kept.append({"id": rec["id"], "reason": "仍有未提交/未跟踪改动"})
+                    continue
+                await asyncio.to_thread(W.remove, info["path"], delete_branch=False,
+                                        force=True, home=self.home, strict=True,
+                                        expected_head=saved_head,
+                                        expected_branch=rec["branch"])
+                removed.append(rec["id"])
+            except Exception as e:  # noqa: BLE001  回收失败保留并说明，不影响交付结论
+                kept.append({"id": rec["id"], "reason": f"{type(e).__name__}: {e}"})
+        self.notify("allout_progress", {"thread_id": self.id, "phase": "cleanup",
+                                        "removed": len(removed), "kept": len(kept)})
+        if kept:
+            detail = "；".join(f"{k['id']}：{k['reason']}" for k in kept[:6])
+            self._add({"type": "notice", "level": "warn",
+                       "text": "全力以赴：部分落选候选未自动回收（分支均保留）：" + detail})
+        return {"removed": removed, "kept": kept}
 
     @staticmethod
     async def _allout_merge_usage(parent, child) -> None:
@@ -1878,6 +2252,15 @@ class Thread:
         exe = gitinfo.git_exe() or "git"
         diffs: dict[str, str] = {}
 
+        def _candidate_obj(c: dict, *, votes: int = 0, comparisons: int = 0):
+            return B.Candidate(
+                id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
+                cost=as_float(c.get("cost") or 0.0), votes=votes, comparisons=comparisons,
+                regressed=bool(c.get("regressed")),
+                touched_tests=bool(c.get("touched_tests")), files=as_int(c.get("files") or 0),
+                additions=as_int(c.get("additions") or 0),
+                deletions=as_int(c.get("deletions") or 0))
+
         def _diff(c: dict) -> str:
             code, out, _ = run_capture([exe, "diff", "--no-color", f"{c['base']}..HEAD"], cwd=c["cwd"], timeout=60)
             return smart_decode(out or b"") if code == 0 else ""
@@ -1890,13 +2273,7 @@ class Thread:
         # 补丁完全相同（同模型同提示最常见的产物）：A/B 只会得到平票，还白花两次请求。
         # 直接按客观口径（通过数 / 改动面 / 是否动测试）选。
         if len({v for v in diffs.values() if v}) <= 1:
-            cands0 = [B.Candidate(id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
-                                  cost=as_float(c.get("cost") or 0.0), votes=0,
-                                  regressed=bool(c.get("regressed")),
-                                  touched_tests=bool(c.get("touched_tests")), files=as_int(c.get("files") or 0),
-                                  additions=as_int(c.get("additions") or 0),
-                                  deletions=as_int(c.get("deletions") or 0))
-                      for c in passed]
+            cands0 = [_candidate_obj(c) for c in passed]
             win0 = B.pick(cands0)
             if win0 is None:
                 return None
@@ -1907,7 +2284,6 @@ class Thread:
         if s is None:
             raise RuntimeError("会话未初始化")
         self.notify("allout_progress", {"thread_id": self.id, "phase": "review", "state": "running"})
-        review_deadline = time.monotonic() + 90
 
         async def compare(a, b, timeout):
             sys_msg, user = A.ab_prompt(task, judge_output, diffs[a["id"]], diffs[b["id"]],
@@ -1921,9 +2297,30 @@ class Thread:
                 return ""
             return {"A": a["id"], "B": b["id"], "TIE": "TIE"}.get(A.parse_ab(text), "")
 
-        from itertools import combinations
-
-        pairs = [(a, b) for a, b in combinations(passed, 2) if diffs[a["id"]] != diffs[b["id"]]]
+        ids = [c["id"] for c in passed]
+        by_id = {c["id"]: c for c in passed}
+        for c in passed:
+            c.setdefault("comparisons", 0)
+        # 用本轮 run id 作为稳定 seed：不同回合不会固定让前排 id 先比，同一回合
+        # 的记录/重放可复现；不使用随机系统全局。
+        run_id = str(((self.meta.get("runs") or [{}])[-1] or {}).get("id") or "")
+        seed = f"{self.id}:{run_id}:{task[:120]}"
+        raw_pairs = list(B.fair_pairs(list(ids), seed=seed))
+        pairs: list[tuple[dict, dict]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for item in raw_pairs:
+            try:
+                x_id, y_id = item
+            except (TypeError, ValueError):
+                continue
+            if x_id == y_id or x_id not in by_id or y_id not in by_id:
+                continue
+            key = tuple(sorted((str(x_id), str(y_id))))
+            if key in seen_pairs or diffs[x_id] == diffs[y_id]:
+                continue
+            seen_pairs.add(key)
+            pairs.append((by_id[x_id], by_id[y_id]))
+        review_deadline = time.monotonic() + min(180.0, max(90.0, 20.0 * len(pairs)))
         reviewed = 0
         for x, y in pairs:
             remaining = review_deadline - time.monotonic()
@@ -1937,13 +2334,13 @@ class Thread:
                 net = A.net_votes(wins, x["id"], y["id"])
                 x["votes"] = as_int(x.get("votes") or 0) + net
                 y["votes"] = as_int(y.get("votes") or 0) - net
+                # 只有完整位置对调的一对才计一次 comparisons；缺失/失败不伪造票数。
+                x["comparisons"] = as_int(x.get("comparisons") or 0) + 1
+                y["comparisons"] = as_int(y.get("comparisons") or 0) + 1
         self.notify("allout_progress", {"thread_id": self.id, "phase": "review",
                                         "state": "finished", "reviewed": reviewed, "total": len(pairs)})
-        cand_objs = [B.Candidate(id=c["id"], title=c["id"], worktree=c["worktree"], verdict=c["verdict"],
-                                 cost=as_float(c.get("cost") or 0.0), votes=as_int(c.get("votes") or 0),
-                                 regressed=bool(c.get("regressed")),
-                                 touched_tests=bool(c.get("touched_tests")), files=as_int(c.get("files") or 0),
-                                 additions=as_int(c.get("additions") or 0), deletions=as_int(c.get("deletions") or 0))
+        cand_objs = [_candidate_obj(c, votes=as_int(c.get("votes") or 0),
+                                    comparisons=as_int(c.get("comparisons") or 0))
                      for c in passed]
         win = B.pick(cand_objs)
         if win is None:

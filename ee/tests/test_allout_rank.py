@@ -107,6 +107,29 @@ def test_rank_runs_position_swapped_two_rounds(ee_home, tmp_path):
     assert events[-1]["state"] == "finished" and events[-1]["reviewed"] == 1
 
 
+def test_rank_uses_fair_pairs_and_counts_comparisons(ee_home, tmp_path, monkeypatch):
+    """生产接线必须走 bestof.fair_pairs，并给完整对调的一对记 comparisons=1。"""
+    from ee.core import bestof as B
+
+    repo, cands = _repo_with_two_candidates(tmp_path)
+    th = _thread(ee_home, repo)
+    called: list[tuple[list[str], str]] = []
+
+    def fake_pairs(ids, seed=""):
+        called.append((list(ids), seed))
+        return [("cand-2", "cand-1")]
+
+    async def side(system: str, user: str, role: str | None = None) -> str:
+        return "FINAL: A"
+
+    monkeypatch.setattr(B, "fair_pairs", fake_pairs, raising=False)
+    th.session.side_complete = side
+    asyncio.run(th._allout_rank(cands, "修好 add", "3 passed"))
+    assert called and called[0][0] == ["cand-1", "cand-2"]
+    assert called[0][1], "fair_pairs 必须收到本轮稳定 seed"
+    assert [c["comparisons"] for c in cands] == [1, 1]
+
+
 def test_slot_biased_votes_cancel_out(ee_home, tmp_path):
     """按槽位投（两轮都投 A）→ 各得 1 票、净胜 0：位置偏差被抵消。"""
     repo, cands = _repo_with_two_candidates(tmp_path)

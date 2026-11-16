@@ -502,16 +502,20 @@ def _fanout_fakes(monkeypatch, workspace, hang_judge=True):
 
     seen = {"created": [], "finished": []}
 
-    def fake_create(cwd, label="", home=None):
+    def fake_create(cwd, label="", home=None, base_commit=None):
         seen["created"].append(label)
-        return {"cwd": str(workspace), "agent_base": "b", "base": "b",
+        return {"cwd": str(workspace), "agent_base": base_commit or "b", "base": base_commit or "b",
                 "path": str(workspace / label)}
 
     def fake_finish(info, message, home=None):
         seen["finished"].append(info["path"])
-        return {"file_count": 0, "files": [], "additions": 0, "deletions": 0}
+        return {"file_count": 0, "files": [], "additions": 0, "deletions": 0,
+                "branch": info.get("branch", "b"), "kept": True}
 
     monkeypatch.setattr(W, "agent_eligible", lambda cwd: (True, ""))
+    monkeypatch.setattr(W, "prepare_dirty_base",
+                        lambda cwd, home=None: {"base": "b", "head": "b", "synced_dirty": False,
+                                                "cleanup": {"removed": True}})
     monkeypatch.setattr(W, "create_for_agent", fake_create)
     monkeypatch.setattr(W, "finish_agent", fake_finish)
 
@@ -536,6 +540,129 @@ def _patch_fake_child(monkeypatch):
                 yield None
 
     monkeypatch.setattr("ee.server.threads.Session", _FakeChild)
+
+
+def test_fanout_passes_original_images_to_candidates(ee_home, workspace, monkeypatch):
+    """候选是新 Session，没有主会话历史；图片必须显式透传。"""
+    from types import SimpleNamespace
+
+    from ee.core.allout import AlloutPlan
+    from ee.core.goal import GoalSpec
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    seen = _fanout_fakes(monkeypatch, workspace, hang_judge=False)
+    seen["images"] = []
+
+    class Child:
+        def __init__(self, *args, **kwargs):
+            self.spec = SimpleNamespace(alias="m")
+            self.stats = SimpleNamespace(records=[], totals=lambda: {"cost": 0.0})
+
+        async def run_turn(self, text, images=None, **_kw):
+            seen["images"].append(images)
+            if False:
+                yield None
+
+    async def judge(spec):
+        return _Verdict(True)
+
+    async def merge(*args):
+        pass
+
+    monkeypatch.setattr("ee.core.session.Session", Child)
+    monkeypatch.setattr("ee.core.goal.judge", judge)
+    monkeypatch.setattr(th, "_allout_merge_usage", merge)
+    th._allout_judge_lock = asyncio.Lock()
+    plan = AlloutPlan(temperature_ladder=(0.0,), selection_grace_seconds=0.15)
+    result = asyncio.run(th._allout_fanout(
+        GoalSpec(command="pytest", cwd=str(workspace)), plan, "任务", 1,
+        images=["C:/tmp/screenshot.png"]))
+    assert result and seen["images"] == [["C:/tmp/screenshot.png"]]
+    assert seen["finished"]
+
+
+def test_run_allout_protects_existing_tests_without_goal_files(ee_home, workspace, monkeypatch):
+    """用户手填 goal 时也要自动保护项目既有测试：改测试不能变成 verified。"""
+    from ee.core.events import TurnDone
+
+    (workspace / "tests").mkdir(exist_ok=True)
+    test = workspace / "tests" / "test_x.py"
+    test.write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    _patch_judge(monkeypatch, [_Verdict(True, 3)])
+
+    async def run_turn(text, images=None, **_kw):
+        test.write_text("def test_x():\n    assert 1 == 1\n", encoding="utf-8")
+        yield TurnDone("completed", "")
+
+    th.session.run_turn = run_turn
+    reason = asyncio.run(th._run_allout(
+        "修好它", None, {"command": "pytest -q", "max_rounds": 3},
+        {"enabled": True, "candidates": 1}))
+    assert reason == "exhausted"
+    assert th._delivery["status"] == "needs_review"
+    assert "tests/test_x.py" in th._delivery["acceptance"]["detail"]
+
+
+def test_judge_ms_flushes_once(ee_home, workspace):
+    """判据耗时只在收尾累计写一次 meta，不再每个判据 save_meta。"""
+    th = _thread(ee_home, workspace)
+    calls: list[int] = []
+    th._judge_ms_total = 1200.0
+    th.save_meta = lambda: calls.append(1)
+    th._flush_judge_ms()
+    assert th.meta["allout"]["judge_ms"] == 1200
+    assert calls == [1]
+
+
+def test_blocked_turn_stops_before_judge(ee_home, workspace, monkeypatch):
+    """hook 拦截 / loop 保护不是 completed：不能继续判据，更不能报 met。"""
+    th = _thread(ee_home, workspace)
+    _stub_turn(th, ["blocked"])
+    called = []
+
+    async def judge(spec):
+        called.append(spec.command)
+        return _Verdict(True)
+
+    monkeypatch.setattr("ee.core.goal.judge", judge)
+    reason = asyncio.run(th._run_allout(
+        "修好它", None, {"command": "pytest -q", "max_rounds": 3},
+        {"enabled": True, "candidates": 1}))
+    assert reason == "blocked"
+    assert called == [], "blocked 回合不应执行判据"
+
+
+def test_candidate_exception_still_finishes_worktree(ee_home, workspace, monkeypatch):
+    """候选异常也要把 worktree 里的改动提交/收尾，不能留未提交目录。"""
+    from types import SimpleNamespace
+
+    from ee.core.allout import AlloutPlan
+    from ee.core.goal import GoalSpec
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+    seen = _fanout_fakes(monkeypatch, workspace, hang_judge=True)
+
+    class Child:
+        def __init__(self, *args, **kwargs):
+            self.spec = SimpleNamespace(alias="m")
+            self.stats = SimpleNamespace(records=[], totals=lambda: {"cost": 0.0})
+
+        async def run_turn(self, text, images=None, **_kw):
+            raise RuntimeError("model stream broke")
+            if False:
+                yield None
+
+    monkeypatch.setattr("ee.core.session.Session", Child)
+    th._allout_judge_lock = asyncio.Lock()
+    plan = AlloutPlan(temperature_ladder=(0.0,), selection_grace_seconds=0.15)
+    result = asyncio.run(th._allout_fanout(
+        GoalSpec(command="pytest", cwd=str(workspace)), plan, "任务", 1))
+    assert result and result[0].get("error")
+    assert len(seen["finished"]) == 1, seen
 
 
 def test_cancel_reaps_candidate_tasks(ee_home, workspace, monkeypatch):
@@ -588,11 +715,11 @@ def test_cancel_during_worktree_creation_reaps_it(ee_home, workspace, monkeypatc
 
     gate = threading.Event()
 
-    def slow_create(cwd, label="", home=None):
+    def slow_create(cwd, label="", home=None, base_commit=None):
         gate.wait(5)
         seen["created"].append(label)
-        return {"cwd": str(workspace), "agent_base": "b", "base": "b",
-                "path": str(workspace / label)}
+        return {"cwd": str(workspace), "agent_base": base_commit or "b",
+                "base": base_commit or "b", "path": str(workspace / label)}
 
     monkeypatch.setattr(W, "create_for_agent", slow_create)
 
@@ -729,6 +856,7 @@ def test_failed_apply_never_reports_met(ee_home, workspace, monkeypatch):
     reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},
                                         {"enabled": True, "candidates": 2}))
     assert reason == "exhausted", f"写回失败却报 {reason}"
+    assert th._delivery and th._delivery.get("status") == "failed_apply", th._delivery
     applies = [p for m, p in notes if m == "allout_progress" and p.get("phase") == "apply"]
     assert applies and applies[-1]["result"]["applied"] is False
     assert "冲突" in applies[-1]["result"]["error"]
@@ -755,8 +883,12 @@ def test_two_passing_candidates_select_and_write_back(ee_home, workspace, monkey
     _patch_judge(monkeypatch, [_Verdict(False, 1), _Verdict(False, 1), _Verdict(True, 3)])
     _stub_turn(th, ["completed", "completed"])
 
+    from types import SimpleNamespace
+
     state = {"tree": "tree-before"}
     _session(th).disk_capture = lambda: state["tree"]
+    _session(th).disk = lambda: SimpleNamespace(capture=lambda: state["tree"],
+                                                changed=lambda a, b: [])
     cands = [
         {"id": "cand-1", "verdict": _Verdict(True, 3), "regressed": False, "cwd": str(workspace),
          "base": "b1", "worktree": str(workspace / "w1"), "files": 2, "additions": 3, "deletions": 0},
@@ -787,6 +919,7 @@ def test_two_passing_candidates_select_and_write_back(ee_home, workspace, monkey
     monkeypatch.setattr(D, "build_expected",
                         lambda *a, **k: D.Expected(ok=True, files={"a.txt": "x"}))
     monkeypatch.setattr(D, "compare", lambda *a, **k: [])
+    monkeypatch.setattr(D, "unexpected_changes", lambda *a, **k: [])
     th.notify = lambda m, p: None
 
     reason = asyncio.run(th._run_allout("修好它", None, {"command": "pytest -q", "max_rounds": 3},

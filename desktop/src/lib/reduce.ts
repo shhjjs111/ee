@@ -9,7 +9,13 @@ export function applyItemNotification(t: ThreadDetail, method: string, p: any): 
       return {
         ...t,
         ...(it.type === "user" && !it.queued && !it.queue
-          ? { allout_plan: undefined, allout_candidates: undefined, allout_winner: undefined, allout_review: undefined }
+          ? {
+              allout_plan: undefined, allout_candidates: undefined, allout_winner: undefined,
+              allout_review: undefined,
+              // 这两个是「上一回合」的事实：清了它们，面板才不会在新回合里
+              // 继续显示上一回合的"实际启动 N 路"（单路回合根本不推 fanout）。
+              allout_started: undefined, allout_requested: undefined,
+            }
           : {}),
         items: [...t.items, it],
       };

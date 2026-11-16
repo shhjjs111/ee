@@ -49,7 +49,7 @@ def turn_sample(item: dict) -> dict | None:
         "delivery": status,
         "verified": status == "verified",
         # 是否适用"独立验收"口径：unverified（无判据的证据审阅）不进复验通过率的分母。
-        "applicable": status in ("verified", "failed", "needs_review"),
+        "applicable": status in ("verified", "failed", "failed_apply", "needs_review"),
         "reported_met": reason == "met",
         "regression": str(reg.get("status") or ""),
         "cost": _num(cost),

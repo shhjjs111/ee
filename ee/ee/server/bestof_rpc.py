@@ -55,6 +55,8 @@ def register(methods: dict, backend) -> None:
                 # allout 的质量信号：全部缺省中性，老调用方不传时行为不变
                 regressed=bool(c.get("regressed")),
                 votes=int(c.get("votes") or 0),
+                # 比较覆盖：None = 调用方没传（旧数据 → 按 raw votes 排序），0 = 确实没比过
+                comparisons=(int(c["comparisons"]) if c.get("comparisons") is not None else None),
                 touched_tests=bool(c.get("touched_tests")),
                 files=int(c.get("files") or 0),
                 additions=int(c.get("additions") or 0),

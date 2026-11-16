@@ -395,17 +395,22 @@ export function Conversation() {
           {d.allout_plan && <details className="my-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs" open>
             <summary className="cursor-pointer font-medium">火力全开 · 本轮执行配置</summary>
             <div className="mt-2 flex flex-wrap gap-2 text-muted">
-              {/* 用户设置的是"允许的上限"，执行卡片要说清"本轮推导出几路、被什么限制、实际启动几路" */}
+              {/* 用户设置的是"允许的上限"，执行卡片要说清"本轮推导出几路、被什么限制、计划启动几路" */}
               <span>
-                {typeof d.allout_requested === "number" ? `设置上限 ${d.allout_requested} 路 → ` : ""}
+                {typeof d.allout_requested === "number" ? `请求 ${d.allout_requested} 路 → ` : ""}
                 本轮 {d.allout_plan.candidates} 路
                 {d.allout_plan.limiting ? `（限制：${LIMITING_LABEL[d.allout_plan.limiting] ?? d.allout_plan.limiting}）` : ""}
               </span>
-              {typeof d.allout_started === "number" && <span>实际启动 {d.allout_started} 路</span>}
+              {/* 后端 fanout 通知里的 started 目前是「计划路数」（创建失败的候选只会在下面的
+                  候选列表里显示成未通过），所以这里不能写「实际启动」。等后端改成回报真实
+                  建成的 worktree 数，再把措辞改回「实际启动」。 */}
+              {typeof d.allout_started === "number" && <span>计划启动 {d.allout_started} 路</span>}
               {typeof d.allout_plan.per_lane_gb === "number" && <span>每路估算 {d.allout_plan.per_lane_gb} GB</span>}
-              <span>推理 {d.allout_plan.effort || "模型默认"}</span>
+              {/* 这里是「计划提升到哪一档」，不等于真正发出去的档位：模型档案里写了 reasoning
+                  不认识的档（如 xhigh）时会被规整掉。真正生效的值由回合尾部的 turn_end.model 说。 */}
+              <span>计划推理 {d.allout_plan.effort || "模型默认"}</span>
               <span>每段 {d.allout_plan.max_steps} 步</span>
-              <span>诊断 {d.allout_plan.feedback_chars ?? 4000} 字符</span>
+              <span>修复反馈 {d.allout_plan.feedback_chars ?? 4000} 字符</span>
               <span>验收 {d.allout_plan.judge_slots ?? 1} 槽</span>
               {!!d.allout_plan.explore_slots && <span>只读探索 {d.allout_plan.explore_slots} 槽</span>}
               <span>{d.allout_plan.verified ? "使用独立判据（尚不代表通过）" : "证据审阅 · 未独立验收"}</span>
@@ -413,6 +418,16 @@ export function Conversation() {
             <ul className="mt-2 space-y-1 text-muted">{[...d.allout_plan.reasons, ...d.allout_plan.degradations].map((r, i) => <li key={i}>{r}</li>)}</ul>
             {d.allout_review && <p className="mt-2 text-muted">{d.allout_review}</p>}
             {d.allout_candidates && <ul aria-label="候选进度" className="mt-2 space-y-1 border-t border-line pt-2 text-muted">
+              {/* 比较覆盖面：预算用完时只比了一部分，排序是按「场均净胜」算的，
+                  不写清楚的话"净胜票 +1"看起来像赢了全部对手。 */}
+              {(() => {
+                const all = Object.values(d.allout_candidates!);
+                const total = (all.length * (all.length - 1)) / 2;
+                const done = all.reduce((s, c) => s + (typeof c.comparisons === "number" ? c.comparisons : 0), 0) / 2;
+                return total > 0 && done < total
+                  ? <li className="text-faint">模型对照完成 {done}/{total} 组（其余对照未完成：预算、相同补丁或调用失败），排序按已完成对照的场均净胜</li>
+                  : null;
+              })()}
               {Object.entries(d.allout_candidates).sort(([a], [b]) => a.localeCompare(b)).map(([id, c]) =>
                 <li key={id} className="flex flex-wrap gap-x-2">
                   <span>候选 {id.replace("cand-", "")}{c.strategy && ` · ${c.strategy}`}</span>
@@ -420,7 +435,12 @@ export function Conversation() {
                     passed: "通过", failed: "未通过", cancelled: "已停止" } as Record<string, string>)[c.state] ?? c.state}</span>
                   {typeof c.tests === "number" && <span>{c.tests} 项测试</span>}
                   {typeof c.files === "number" && <span>{c.files} 个文件</span>}
-                  {typeof c.votes === "number" && <span>净胜票 {c.votes}</span>}
+                  {typeof c.votes === "number" && (
+                    <span title="两候选互换位置各评一次，两次都拿到有效票才算一组完整对照">
+                      净胜票 {c.votes}
+                      {typeof c.comparisons === "number" ? ` · ${c.comparisons} 组完整对照` : ""}
+                    </span>
+                  )}
                   {c.detail && <span>{c.detail}</span>}
                   {id === d.allout_winner && <strong className="text-fg">择优选中</strong>}
                 </li>)}

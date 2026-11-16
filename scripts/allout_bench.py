@@ -89,15 +89,18 @@ def _pycmd(*args: str) -> str:
     return f"& {body}" if resolve_shell("auto").syntax == "powershell" else body
 
 
-def public_command(task: Task | None = None, counter: str = "<counter>") -> str:
+def public_command(task: Task | None = None, counter: str = "<counter>",
+                   judge: str = "<judge>") -> str:
     """夹具自定义判据优先。
 
     `{python}` 换成当前解释器（不依赖 PATH）；`{counter}` 换成项目外的计数器路径
     （主目录与候选 worktree 共享同一个，冒烟夹具用它让前几次判据失败）。
     """
     if task is not None and task.criterion:
-        return (task.criterion.replace("{python}", f'"{sys.executable}"')
-                .replace("{counter}", counter))
+        # {python} 用与默认命令相同的调用写法：PowerShell 需要 `& "exe"`，
+        # 否则带路径的引号会被当成字符串表达式、判据根本不会执行。
+        return (task.criterion.replace("{python}", _pycmd(sys.executable))
+                .replace("{counter}", counter).replace("{judge}", judge))
     return _pycmd(sys.executable, "-m", "pytest", "-q", "public/test_public.py")
 
 
@@ -107,6 +110,9 @@ def prepare(task: Task, dest: Path) -> Path:
     shutil.copytree(task.seed, project)
     if task.public.is_dir():
         shutil.copytree(task.public, project / "public")
+    if (task.path / "judge").is_dir():
+        # 判据放在项目**外**（sample_dir/judge）并冻结：模型看不到、也不在候选可写范围。
+        shutil.copytree(task.path / "judge", dest / "judge")
     for cmd in (["init", "-q", "-b", "main"],
                 ["config", "user.email", "bench@example.com"],
                 ["config", "user.name", "bench"],
@@ -180,15 +186,19 @@ async def run_sample(task: Task, mode: str, args) -> dict:
 
     def notify(method: str, payload: dict) -> None:
         if method.startswith("allout"):
-            phases.append({"m": method, **{k: payload.get(k) for k in
-                                          ("phase", "started", "candidates", "requested", "winner", "state", "met")
-                                          if k in payload}})
+            # 保留整份 payload（去掉 thread_id）：验收要从事件证明走到了哪一步，
+            # 包括每轮判据、候选状态、selection 里的 votes/comparisons、apply 结果。
+            phases.append({"m": method,
+                           **{k: v for k, v in payload.items() if k != "thread_id"}})
 
     th = Thread(f"bench-{task.slug}-{mode}", home, notify,
                 {"cwd": str(project), "mode": "auto", "model": args.model or ""},
                 persist=False, configure=configure, user_home=Path.home())
     th.ensure_session()
-    goal = ({"command": public_command(task, counter), "max_rounds": 3}
+    judge_file = sample_dir / "judge" / "test_judge.py"
+    goal = ({"command": public_command(task, counter,
+                                       f'"{judge_file}"' if judge_file.is_file() else "<judge>"),
+             "max_rounds": 3}
             if mode == "allout" else None)
     allout = {"enabled": True, "candidates": args.candidates} if mode == "allout" else None
     started = time.monotonic()
@@ -220,6 +230,21 @@ async def run_sample(task: Task, mode: str, args) -> dict:
         "phases": phases,
         "fanout_started": next((p.get("started") for p in phases
                                 if p.get("m") == "allout_progress" and p.get("phase") == "fanout"), 0),
+        # 事件证据（自然链路要看得出"首判失败 → 修复 → 仍失败 → 分叉"）：
+        "judge_phases": [{"met": p.get("met"), "tests": p.get("tests")} for p in phases
+                         if p.get("phase") == "judge"],
+        "repair_phases": [{"attempt": p.get("attempt"), "kept": p.get("kept"),
+                           "progress": p.get("progress")} for p in phases
+                          if p.get("phase") == "repair"],
+        "candidate_phases": [{"id": p.get("id"), "state": p.get("state"), "tests": p.get("tests")}
+                             for p in phases if p.get("phase") == "candidate_state"],
+        "selection": next(({"winner": p.get("winner"), "scores": p.get("scores")} for p in phases
+                           if p.get("phase") == "selection"), None),
+        "apply_event": next((p.get("result") for p in phases if p.get("phase") == "apply"), None),
+        "plan": (th._allout_plan.as_dict() if getattr(th, "_allout_plan", None) is not None else {}),
+        "delivery_detail": getattr(th, "_delivery", None),
+        "allout_attempts": list(getattr(th, "_allout_attempts", []) or []),
+        "model_info": turn_end.get("model") or {},
     }
     try:
         record.update(await asyncio.to_thread(score, task, project))

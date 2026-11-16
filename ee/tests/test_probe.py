@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import json
+import os
 
-from ee.core.probe import is_test_file, probe
+import pytest
+
+from ee.core.probe import collect_test_files_ex, is_test_file, probe
 
 
 def _repo(tmp_path, files: dict[str, str]) -> "object":
@@ -101,6 +104,34 @@ def test_nothing_detected_degrades_with_explanation(tmp_path):
     assert "目标" in r.note, "降级要告诉用户去哪里手填"
 
 
+def test_nested_single_project_is_detected(tmp_path):
+    sub = tmp_path / "ee"
+    sub.mkdir()
+    (sub / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    r = probe(tmp_path)
+    assert r.source == "ee/pyproject.toml"
+    assert r.command.startswith("powershell -NoProfile -EncodedCommand ")
+    import base64
+    token = r.command.rsplit(" ", 1)[-1]
+    script = base64.b64decode(token).decode("utf-16-le")
+    assert "Set-Location -LiteralPath 'ee'" in script
+    assert "python -m pytest -q" in script
+    assert "子项目" in r.note
+
+
+def test_nested_multiple_projects_ask_for_choice(tmp_path):
+    (tmp_path / "ee").mkdir()
+    (tmp_path / "ee" / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    (tmp_path / "desktop").mkdir()
+    (tmp_path / "desktop" / "package.json").write_text(
+        json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8")
+    r = probe(tmp_path)
+    assert r.command is None, "多个子项目不能替用户猜"
+    assert "多个子项目" in r.note and "ee" in r.note and "desktop" in r.note
+    assert r.note.count("powershell -NoProfile -EncodedCommand") == 2
+    assert "npm test" not in r.note or "desktop/package.json" in r.note
+
+
 def test_multiple_build_systems_uses_outermost_and_notes_it(tmp_path):
     _repo(tmp_path, {
         "pyproject.toml": "[tool.pytest.ini_options]\n",
@@ -116,7 +147,36 @@ def test_broken_json_does_not_crash(tmp_path):
     assert probe(tmp_path).command is None
 
 
+def test_pyproject_prefers_project_venv(tmp_path):
+    _repo(tmp_path, {"pyproject.toml": "[tool.pytest.ini_options]\n"})
+    venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_bytes(b"")
+    expected = (f'"{venv_py}"' if " " in str(venv_py) else str(venv_py)) + " -m pytest -q"
+    assert probe(tmp_path).command == expected
+
+
 # ---------------------------------------------------------------- 测试文件清单
+
+
+def test_test_file_scan_does_not_follow_symlink_loop(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("", encoding="utf-8")
+    try:
+        os.symlink(tmp_path, tmp_path / "loop", target_is_directory=True)
+    except OSError:
+        pytest.skip("当前环境不支持目录符号链接")
+    files, complete = collect_test_files_ex(tmp_path)
+    assert files == ["tests/test_a.py"]
+    assert complete is True
+
+
+def test_test_file_scan_reports_truncation(tmp_path):
+    for name in ("test_a.py", "test_b.py", "test_c.py"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    files, complete = collect_test_files_ex(tmp_path, limit=1)
+    assert len(files) == 1
+    assert complete is False
 
 
 def test_test_file_patterns():

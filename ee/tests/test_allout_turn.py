@@ -96,6 +96,51 @@ def test_rejects_model_field():
         _norm_allout({"enabled": True, "model": "gpt-5"})
 
 
+def test_plan_allout_probe_does_not_block_event_loop(ee_home, workspace, monkeypatch):
+    """probe 的目录扫描必须在工作线程：阻塞探针期间 heartbeat 仍能跑。"""
+    import time
+
+    from ee.core.probe import ProbeResult
+
+    th = _thread(ee_home, workspace)
+    th.ensure_session()
+
+    def slow_probe(root):
+        time.sleep(0.3)
+        return ProbeResult(command="pytest -q", source="pyproject.toml")
+
+    monkeypatch.setattr("ee.core.probe.probe", slow_probe)
+
+    async def run():
+        ticks: list[float] = []
+        started = time.monotonic()
+        task = asyncio.create_task(th._plan_allout({"enabled": True, "candidates": 2}, None))
+        await asyncio.sleep(0.05)
+        ticks.append(time.monotonic() - started)
+        await task
+        return ticks
+
+    ticks = asyncio.run(run())
+    assert ticks and ticks[0] < 0.15, f"事件循环被 probe 阻塞了：首个 heartbeat 在 {ticks[0]:.2f}s"
+
+
+def test_goal_file_lists_are_kept_and_validated():
+    """入口不能再丢掉 validation_files / protected_tests；路径必须留在工作区内。"""
+    from ee.server.threads import _norm_goal
+
+    out = _norm_goal({"command": "pytest -q", "validation_files": ["tests/test_x.py"],
+                      "protected_tests": ["tests/test_y.py"]})
+    assert out["validation_files"] == ("tests/test_x.py",)
+    assert out["protected_tests"] == ("tests/test_y.py",)
+    with pytest.raises(ValueError):
+        _norm_goal({"command": "pytest -q", "validation_files": ["../outside.py"]})
+    with pytest.raises(ValueError):
+        _norm_goal({"command": "pytest -q", "protected_tests": [r"C:\outside.py"]})
+    with pytest.raises(ValueError):
+        _norm_goal({"command": "pytest -q",
+                    "validation_files": [f"tests/test_{i}.py" for i in range(4001)]})
+
+
 # ---------------------------------------------------------------- 记录
 
 

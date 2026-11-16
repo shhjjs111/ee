@@ -179,9 +179,10 @@ export function BestofDialog() {
                         {res && <span className="mt-0.5 block text-[11px] text-muted">{c.reason}</span>}
                         {res && (
                           <span className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-faint">
-                            {typeof c.votes === "number" && c.votes !== 0 && (
-                              <span title="同模型 A/B 评定，位置对调各评一次后的净胜票">
+                            {typeof c.votes === "number" && (c.votes !== 0 || typeof c.comparisons === "number") && (
+                              <span title="同模型 A/B 评定：两候选各自排前各评一次，两次都拿到有效票才算一组完整对照">
                                 A/B {c.votes > 0 ? `+${c.votes}` : c.votes}
+                                {typeof c.comparisons === "number" ? `（${c.comparisons} 组完整对照）` : ""}
                               </span>
                             )}
                             {c.touched_tests && (

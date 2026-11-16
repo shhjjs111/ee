@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,8 @@ from ee.config import ee_home
 from ee.core import gitinfo
 from ee.proc import run_capture
 from ee.tools.textdecode import smart_decode
+
+log = logging.getLogger("ee.worktree")
 
 _LOCK = threading.Lock()
 BRANCH_PREFIX = "ee/"
@@ -167,10 +170,27 @@ def create(cwd: Path | str, name: str | None = None, base: str | None = None, ho
         copied = [f"（复制 .worktreeinclude 文件失败：{e}）"]
     info = {"name": slug, "path": str(path), "repo": str(root), "branch": branch, "base": base_sha,
             "base_ref": base_ref, "created": time.time(), "included": copied[:200]}
-    with _LOCK:
-        items = [x for x in _load(home) if _norm(x["path"]) != _norm(path)]
-        items.append(info)
-        _save(items, home)
+    try:
+        with _LOCK:
+            items = [x for x in _load(home) if _norm(x["path"]) != _norm(path)]
+            items.append(info)
+            _save(items, home)
+    except Exception as e:  # noqa: BLE001  登记失败：把刚建的 worktree/分支收回，不能留孤儿
+        problems: list[str] = []
+        try:
+            _git(["worktree", "remove", "--force", str(path).replace("\\", "/")], root, timeout=120)
+        except Exception as e2:  # noqa: BLE001
+            problems.append(f"移除 worktree 失败：{type(e2).__name__}: {e2}")
+        try:
+            _git(["branch", "-D", branch], root, timeout=60)
+        except Exception as e3:  # noqa: BLE001
+            problems.append(f"删除分支失败：{type(e3).__name__}: {e3}")
+        detail = "；".join(problems) if problems else "已回收刚创建的工作树与分支"
+        if problems:
+            record_cleanup_failure("create_save_rollback", path=str(path), branch=branch, error=detail)
+        raise WorktreeError(
+            f"worktree 已创建但登记失败（{type(e).__name__}: {e}）；"
+            f"路径 {path} / 分支 {branch}：{detail}") from e
     return info
 
 
@@ -182,17 +202,158 @@ def _find(path: Path | str, home: Path | None = None) -> dict:
     raise WorktreeError(f"不是 ee 管理的 worktree：{path}")
 
 
+def head_sha(path: Path | str) -> str | None:
+    """worktree 当前 HEAD；git 失败/目录不存在返回 None（调用方必须按未知处理）。"""
+    p = Path(path)
+    if not p.is_dir():
+        return None
+    try:
+        return _git(["rev-parse", "HEAD"], p, timeout=10).strip() or None
+    except (OSError, WorktreeError):
+        return None
+
+
+# 本轮判据自己生成的缓存目录：只有它们允许“不备份就舍弃”。其他依赖目录（.venv /
+# node_modules / vendor/...）属于未知用户数据，一律拒绝删除。
+_SAFE_CACHE_DIRS = {"__pycache__", ".pytest_cache"}
+_MAX_CACHE_ENTRIES = 2000
+
+# 后台清理失败必须留痕：调用方可能已被取消，日志与这条记录是唯一线索。
+CLEANUP_FAILURES: list[dict] = []
+_CLEANUP_FAILURES_MAX = 20
+
+
+def record_cleanup_failure(kind: str, **detail) -> None:
+    item = {"kind": kind, "at": time.time(), **detail}
+    CLEANUP_FAILURES.append(item)
+    del CLEANUP_FAILURES[:-_CLEANUP_FAILURES_MAX]
+    log.warning("worktree 清理失败：%s %s", kind, detail)
+
+
+def cleanup_failures() -> list[dict]:
+    """最近的后台清理/回滚失败（供日志与测试查看，不属于 UI 契约）。"""
+    return list(CLEANUP_FAILURES)
+
+
+def _strict_status(p: Path) -> dict:
+    """check=True 的 git status（porcelain v1 -z）+ 真实 root/branch；任何 git 失败都抛。
+
+    不能用 `gitinfo.status`：它在超时/出错时返回“干净”。这里宁可抛错，
+    也不能让删除闸门把“读不到状态”当成“没有改动”。
+    """
+    out = _git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], p, timeout=120)
+    entries = [e for e in out.split("\0") if e.strip()]
+    root = _git(["rev-parse", "--show-toplevel"], p, timeout=30).strip()
+    branch = _git(["symbolic-ref", "--short", "-q", "HEAD"], p, timeout=30, check=False).strip()
+    return {"entries": entries, "root": root, "branch": branch}
+
+
+def _worktree_blocks(root: Path) -> list[dict]:
+    """`git worktree list --porcelain` 的完整块（check=True：失败就抛）。"""
+    out = _git(["worktree", "list", "--porcelain"], root, timeout=60)
+    blocks: list[dict] = []
+    for block in out.replace("\r\n", "\n").split("\n\n"):
+        lines = [ln for ln in block.strip().splitlines() if ln.strip()]
+        if not lines or not lines[0].startswith("worktree "):
+            continue
+        item: dict = {"path": lines[0][len("worktree "):].strip(), "head": None, "branch": None,
+                      "locked": False, "locked_reason": "", "detached": False, "bare": False}
+        for ln in lines[1:]:
+            if ln.startswith("HEAD "):
+                item["head"] = ln[len("HEAD "):].strip()
+            elif ln.startswith("branch "):
+                item["branch"] = ln[len("branch "):].strip()
+            elif ln == "locked" or ln.startswith("locked "):
+                item["locked"] = True
+                item["locked_reason"] = ln[len("locked"):].strip()
+            elif ln == "detached":
+                item["detached"] = True
+            elif ln == "bare":
+                item["bare"] = True
+        blocks.append(item)
+    return blocks
+
+
+def _common_dir(p: Path) -> Path:
+    """git common dir：主仓库与它的 linked worktree 共享同一个 .git。"""
+    out = _git(["rev-parse", "--git-common-dir"], p, timeout=30).strip()
+    if not out:
+        raise WorktreeError(f"读不到 git common dir：{p}")
+    q = Path(out)
+    return (q if q.is_absolute() else (p / q)).resolve()
+
+
+def _verify_linked_worktree(p: Path, repo: Path, *, head: str, branch: str) -> dict:
+    """证明 p 是 repo 的 linked worktree，且 HEAD / 实际分支与收尾记录一致。失败即抛。
+
+    为什么不能只信 index.json 或 `lock_reason(...) is None`：登记可能过期、目录可能
+    被换掉；`lock_reason` 返回 None 同时表示“未锁定”和“git 失败 / 不在列表里”。
+
+    linked worktree 的 `--show-toplevel` 是**它自己**，不能拿它和主仓库路径比；
+    要比 `--git-common-dir`（两者共享同一个）。同 HEAD 的外来 repo / clone
+    因此会被拒（common dir 不同），切了分支的 worktree 也会被拒。
+    """
+    if not p.is_dir():
+        raise WorktreeError(f"worktree 目录不存在：{p}")
+    top = _git(["rev-parse", "--show-toplevel"], p, timeout=30).strip()
+    if not top or _norm(Path(top).resolve()) != _norm(p):
+        raise WorktreeError(
+            f"目标不是它自己的 worktree 根（可能已被替换或里面嵌着别的仓库）：{p} → {top or '（空）'}")
+    if _common_dir(p) != _common_dir(repo):
+        raise WorktreeError(f"目标的 git 归属与登记的仓库不一致，拒绝删除：{p}")
+    blocks = _worktree_blocks(repo)
+    target = next((b for b in blocks if _norm(b["path"]) == _norm(p)), None)
+    if target is None:
+        raise WorktreeError(f"登记的仓库里没有这个 worktree 的完整记录，拒绝删除：{p}")
+    if target.get("locked"):
+        raise WorktreeError(
+            f"这个 worktree 已被 git lock（{target.get('locked_reason') or '未写原因'}），为免误删没有删除")
+    if target.get("bare"):
+        raise WorktreeError("目标被 git 标为 bare，拒绝删除")
+    if not head or target.get("head") != head:
+        raise WorktreeError("git worktree list 里的 HEAD 与收尾记录不一致，拒绝自动回收")
+    want = f"refs/heads/{branch}" if branch else ""
+    if not branch or target.get("branch") != want:
+        raise WorktreeError(
+            f"git worktree list 里的分支（{target.get('branch') or '分离头'}）与收尾记录（{branch or '无'}）不一致")
+    actual = _git(["symbolic-ref", "--short", "-q", "HEAD"], p, timeout=30, check=False).strip()
+    if actual != branch:
+        raise WorktreeError(f"worktree 实际分支（{actual or '分离头'}）与收尾记录（{branch}）不一致")
+    if head_sha(p) != head:
+        raise WorktreeError("worktree 当前 HEAD 与收尾记录不一致，拒绝自动回收")
+    return target
+
+
 def status(info: dict) -> dict:
     p = Path(info["path"])
     out = dict(info)
     out["exists"] = p.is_dir()
+    # git 读不到时绝不能报“干净”：status_ok=False + 原因，调用方必须按未知处理。
+    out["status_ok"] = False
+    out["error"] = ""
+    out["is_repo"] = False
+    out["changed"] = 0
+    out["untracked"] = 0
+    out["commits"] = 0
     if not out["exists"]:
+        out["error"] = "目录不存在"
         return out
-    st = gitinfo.status(p)
-    out["changed"] = st.changed
-    out["untracked"] = st.untracked
-    ahead = _git(["rev-list", "--count", f"{info['base']}..HEAD"], p, timeout=10, check=False).strip()
-    out["commits"] = int(ahead) if ahead.isdigit() else 0
+    try:
+        st = _strict_status(p)
+    except (OSError, WorktreeError) as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+        return out
+    out["status_ok"] = True
+    out["is_repo"] = True
+    out["root"] = st["root"]
+    out["branch"] = st["branch"]          # 实际分支（分离头为空串），不是登记值
+    out["changed"] = sum(1 for e in st["entries"] if not e.startswith("??"))
+    out["untracked"] = sum(1 for e in st["entries"] if e.startswith("??"))
+    try:
+        ahead = _git(["rev-list", "--count", f"{info['base']}..HEAD"], p, timeout=10).strip()
+        out["commits"] = int(ahead) if ahead.isdigit() else 0
+    except (OSError, WorktreeError):
+        out["commits"] = 0
     return out
 
 
@@ -286,18 +447,21 @@ def _ident(cwd: Path) -> list[str]:
 _TMP_RESIDUE = re.compile(r"^\?\? (?:.*/)?\..*\.[0-9]+\.[0-9a-f]{8}\.tmp$")
 
 
-def _dirty(p: Path) -> bool:
+def _dirty(p: Path, *, ignore_tmp_residue: bool = True) -> bool:
     """严格版的“有没有未提交改动”：git 出错/超时直接报错，不当成干净。
 
     ee 自己的原子写残留不算：那是我们制造的垃圾，让它挡住 worktree/merge 等于用户被
     自己的工具拦在门外，而报错只说「主目录有未提交的改动，先提交或暂存后再合并」，
     完全不提那个隐藏临时文件——用户只能自己去翻 git status 才发现。
+
+    `ignore_tmp_residue=False` 用于自动回收：按名字放过任何未跟踪文件都可能删掉
+    真实用户数据（例：`.important.123.deadbeef.tmp` 也匹配），所以严格路径一律不豁免。
     """
     out = _git(["status", "--porcelain", "-z", "--untracked-files=normal"], p, timeout=120)
     for entry in out.split("\0"):
         if not entry.strip():
             continue
-        if _TMP_RESIDUE.match(entry):
+        if ignore_tmp_residue and _TMP_RESIDUE.match(entry):
             continue
         return True
     return False
@@ -355,31 +519,78 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
-def backup_ignored(info: dict, home: Path | None = None) -> dict:
+def _is_discardable_cache(d: Path) -> bool:
+    """只有本轮判据自己产生的缓存（`__pycache__` / `.pytest_cache`）允许不备份就舍弃。
+
+    必须确认里面没有嵌套 `.git`、没有符号链接、条目有上限；任何看不懂的东西都不算安全。
+    依赖目录（`.venv` / `node_modules` / `vendor` …）**不**在允许列表：它们可能是用户数据，
+    宁可保留整个 worktree 让人自己确认。
+    """
+    seen = 0
+    for base, dirs, files in os.walk(d, followlinks=False):
+        if (Path(base) / ".git").exists():
+            return False
+        for name in [*dirs, *files]:
+            if (Path(base) / name).is_symlink():
+                return False
+        seen += len(dirs) + len(files)
+        if seen > _MAX_CACHE_ENTRIES:
+            return False
+    return True
+
+
+def backup_ignored(info: dict, home: Path | None = None, *, strict: bool = False) -> dict:
     """删 worktree 前把里面被 git 忽略的文件（.env、本地配置…）复制到 ~/.ee/worktree-backups/ 下。
 
-    跳过依赖/缓存目录（node_modules、.venv…）和与主目录同路径文件内容完全一样的（从主目录复制来、没改过）。
-    返回 {dir: 备份目录或 None, files: [相对路径], skipped: [超出大小上限没备份的]}；复制出错直接抛，调用方不删。"""
+    返回 {dir, files, skipped, discarded_caches}。
+    **不能静默跳过任何东西**：被忽略的目录（包括嵌套 git 仓库）、符号链接、依赖目录，
+    要么能证明是“本轮判据自己生成的可丢缓存”，否则一律进 `skipped` → 调用方拒删。
+    与主目录同路径内容完全一样的文件不算（从主目录复制来、没改过）。
+    """
     p, root = Path(info["path"]), Path(info["repo"])
     out = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], p, timeout=120)
     todo: list[str] = []
+    skipped: list[str] = []
+    discarded: list[str] = []
     for rel in [x for x in out.split("\0") if x]:
-        parts = rel.replace("\\", "/").split("/")
+        rel_norm = rel.replace("\\", "/")
+        parts = [x for x in rel_norm.rstrip("/").split("/") if x]
+        src = p / rel_norm
+        if src.is_symlink():
+            skipped.append(rel_norm)         # 符号链接指向哪里没人知道，保留
+            continue
+        # 本轮判据自己生成的缓存（__pycache__ / .pytest_cache）：唯一允许不备份就舍弃的
+        if any(x in _SAFE_CACHE_DIRS for x in parts[:-1]):
+            if src.is_dir() and not _is_discardable_cache(src):
+                skipped.append(rel_norm)
+            else:
+                discarded.append(rel_norm)
+            continue
         if any(x in _DEP_DIRS for x in parts[:-1]):
+            # 严格路径（自动回收）一律拒删；手动删除维持旧语义：依赖目录里的文件可丢弃。
+            if strict or src.is_dir():
+                skipped.append(rel_norm)
+            else:
+                discarded.append(rel_norm)
             continue
-        src = p / rel
-        if not src.is_file() or src.is_symlink() or _same_file(src, root / rel):
+        if src.is_dir():
+            if parts and parts[-1] in _SAFE_CACHE_DIRS and _is_discardable_cache(src):
+                discarded.append(rel_norm)
+                continue
+            skipped.append(rel_norm)         # 目录/嵌套仓库：不能只复制叶子，保留
             continue
-        todo.append(rel.replace("\\", "/"))
+        if not src.is_file() or _same_file(src, root / rel_norm):
+            continue
+        todo.append(rel_norm)
     if not todo:
-        return {"dir": None, "files": [], "skipped": []}
+        return {"dir": None, "files": [], "skipped": skipped, "discarded_caches": discarded}
     stamp = time.strftime("%Y%m%d-%H%M%S")
     dest = root_dir(home).parent / BACKUP_DIR / f"{_slug(Path(info['repo']).name) or 'repo'}-{info['name']}-{stamp}"
     n = 1
     while dest.exists():
         n += 1
         dest = dest.with_name(f"{dest.name.rsplit('~', 1)[0]}~{n}")
-    files, skipped, total = [], [], 0
+    files, total = [], 0
     for rel in todo:
         src = p / rel
         size = src.stat().st_size
@@ -395,20 +606,38 @@ def backup_ignored(info: dict, home: Path | None = None) -> dict:
         note = (f"worktree：{info['path']}\n分支：{info['branch']}\n仓库：{info['repo']}\n"
                 f"备份时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n这些文件被 git 忽略，不在分支里，删除 worktree 前备份到这里。\n")
         (dest / "_ee-备份说明.txt").write_text(note, encoding="utf-8")
-    return {"dir": str(dest) if files else None, "files": files, "skipped": skipped}
+    return {"dir": str(dest) if files else None, "files": files, "skipped": skipped,
+            "discarded_caches": discarded}
 
 
 def remove(path: Path | str, delete_branch: bool = False, force: bool = False, home: Path | None = None,
-           discard_unbacked: bool = False) -> dict:
-    """删除 worktree。discard_unbacked=True 才允许删掉“没能备份的被忽略文件”。"""
+           discard_unbacked: bool = False, *, strict: bool = False,
+           expected_head: str | None = None, expected_branch: str | None = None) -> dict:
+    """删除 worktree。discard_unbacked=True 才允许删掉“没能备份的被忽略文件”。
+
+    `strict=True` 用于自动回收：先用 git 证明目标确实是登记仓库的 linked worktree（common dir、
+    worktree list 完整块、实际分支、HEAD、未 locked），再要求工作区完全干净（不做 autosave，
+    也不按文件名豁免任何临时文件），备份不够完整就拒绝。所有 git 命令失败都拒绝，绝不 fallback
+    到 shutil.rmtree。手动删除保持原有语义，但同样不再在 git 失败后硬删文件。
+    """
     info = _find(path, home)
     p, root = Path(info["path"]), Path(info["repo"])
+    st: dict | None = None
+    if strict:
+        if not expected_head or not expected_branch:
+            raise WorktreeError("自动回收缺少收尾时的 HEAD/分支记录，拒绝删除")
+        # 归属、分支、HEAD、locked 全部由 git 证明；index.json 只当作“登记声称”
+        _verify_linked_worktree(p, root, head=expected_head, branch=expected_branch)
+        st = _strict_status(p)
+        if st["entries"]:
+            raise WorktreeError(
+                f"worktree 仍有未提交/未跟踪改动（{len(st['entries'])} 项，含 ee 临时残留也一律算），拒绝自动回收")
     if p.is_dir():
         reason = lock_reason(p, root)
         if reason is not None:           # 被 git worktree lock 锁定（常见于放在移动硬盘/网络盘上）：不管 force 都不删
             raise WorktreeError(f"这个 worktree 已被锁定{'（' + reason + '）' if reason else ''}，为免误删没有删除。\n"
                                 f"确定不要了，先在仓库里执行 git worktree unlock \"{str(p)}\" 再删。")
-    saved = _autosave(p, "ee：删除 worktree 前自动保存") if p.is_dir() else None
+    saved = _autosave(p, "ee：删除 worktree 前自动保存") if p.is_dir() and not strict else None
     if delete_branch and not force:      # 先检查再删目录：拒绝时什么都不动（改动已安全提交在分支上）
         unmerged = _git(["rev-list", "--count", f"{info['base']}..refs/heads/{info['branch']}"], root, timeout=10,
                         check=False).strip()
@@ -416,25 +645,36 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
                                   f"refs/heads/{info['branch']}", "HEAD"], cwd=root, timeout=10)
         if unmerged not in ("", "0") and code != 0:
             raise WorktreeError(f"分支 {info['branch']} 上有 {unmerged} 个未合并的提交；确定不要了请勾选强制删除")
-    backup = {"dir": None, "files": [], "skipped": []}
+    backup = {"dir": None, "files": [], "skipped": [], "discarded_caches": []}
     if p.is_dir():
         try:                             # 被忽略的文件不会被自动保存进分支，删前先备份；备份失败就不删
-            backup = backup_ignored(info, home)
+            backup = backup_ignored(info, home, strict=strict)
         except Exception as e:  # noqa: BLE001
             raise WorktreeError(f"备份 worktree 里被 git 忽略的文件（.env 等）失败，为免丢失没有删除：{e}") from None
-        if backup["skipped"] and not discard_unbacked:
-            # 这些文件既不在分支里、也没有备份副本：删掉就真没了。默认拒绝，要删必须显式要求。
+        if backup["skipped"]:
+            # 这些既不在分支里、也没有可信备份：目录/嵌套仓库/符号链接/依赖目录都算。
             shown = "、".join(backup["skipped"][:20])
             more = f"（共 {len(backup['skipped'])} 个）" if len(backup["skipped"]) > 20 else ""
+            if strict:
+                raise WorktreeError(
+                    f"这些被 git 忽略的目录/文件/符号链接无法完整安全备份，自动回收拒绝删除：{shown}{more}"
+                    f"\nworktree 已保留：{p}")
+            if not discard_unbacked:
+                raise WorktreeError(
+                    f"这些被 git 忽略的文件没能备份，为免丢失没有删除：{shown}{more}\n"
+                    f"备份目录：{backup['dir'] or '（无）'}\n"
+                    "确认这些文件不要了，请先手动备份，或明确选择「丢弃未备份文件」后再删。")
+        try:
+            _git(["worktree", "remove", "--force", str(p).replace("\\", "/")], root, timeout=120)
+        except (OSError, WorktreeError) as e:
+            # Git 拒绝/失败时绝不 fallback 到 shutil.rmtree：不做任何强制文件删除
+            record_cleanup_failure("worktree_remove", path=str(p), branch=info["branch"], error=str(e))
             raise WorktreeError(
-                f"这些被 git 忽略的文件没能备份，为免丢失没有删除：{shown}{more}\n"
-                f"备份目录：{backup['dir'] or '（无）'}\n"
-                "确认这些文件不要了，请先手动备份，或明确选择「丢弃未备份文件」后再删。")
-        _git(["worktree", "remove", "--force", str(p).replace("\\", "/")], root, timeout=120, check=False)
+                f"git worktree remove 失败，未做任何强制文件删除：{p}\n{e}\n"
+                f"改动已保存在分支 {info['branch']} 上；目录保留，处理占用/锁定后再试") from None
         if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
-        if p.exists():                   # 有文件被占用：保留登记，别留下列表里看不到的孤儿目录
-            raise WorktreeError(f"目录没能删干净（可能有文件被其他程序占用）：{p}\n改动已保存在分支 {info['branch']} 上；关掉占用的程序后再删一次")
+            record_cleanup_failure("worktree_remove_leftover", path=str(p), branch=info["branch"])
+            raise WorktreeError(f"git 报告删除成功但目录仍在：{p}（未做强制删除）")
     _git(["worktree", "prune"], root, timeout=60, check=False)
     branch_deleted = False
     if delete_branch:
@@ -445,6 +685,7 @@ def remove(path: Path | str, delete_branch: bool = False, force: bool = False, h
         _save([x for x in _load(home) if _norm(x["path"]) != _norm(p)], home)
     return {"removed": True, "autosaved": saved, "branch": info["branch"], "branch_deleted": branch_deleted,
             "ignored_backup": backup["dir"], "backed_up": backup["files"], "backup_skipped": backup["skipped"],
+            "discarded_caches": list(backup.get("discarded_caches") or []),
             "discarded_unbacked": list(backup["skipped"]) if discard_unbacked else []}
 
 
@@ -541,10 +782,13 @@ def _sync_dirty(src_top: Path, dst: Path) -> str | None:
     return _git(["rev-parse", "HEAD"], dst, timeout=10).strip()
 
 
-def create_for_agent(cwd: Path | str, label: str = "", home: Path | None = None) -> dict:
+def create_for_agent(cwd: Path | str, label: str = "", home: Path | None = None,
+                     *, base_commit: str | None = None) -> dict:
     """给写型子代理建 worktree：基于 cwd 当前 HEAD，并带上主目录的未提交改动（作为基线提交）。
 
-    返回的 info 额外带 `agent_base`（子代理改动的起点：有基线提交就是它，否则同 base）和 `cwd`（对应的子目录）。
+    `base_commit` 用于复用一次准备好的脏工作区基线（多个候选共用同一个不可变 commit），
+    传入时不再重复 diff/commit 主目录。返回的 info 额外带 `agent_base`（子代理改动的
+    起点：有基线提交就是它，否则同 base）和 `cwd`（对应的子目录）。
     """
     cwd = Path(cwd).resolve()
     top = Path(_git(["rev-parse", "--show-toplevel"], cwd, timeout=10).strip()).resolve()
@@ -552,22 +796,26 @@ def create_for_agent(cwd: Path | str, label: str = "", home: Path | None = None)
     slug = _slug(label)[:20].strip("-.")
     name = "agent-" + (slug + "-" if slug and slug.isascii() else "") + _auto_name()
     with AGENT_LOCK:
-        info = create(cwd, name=name, base=head, home=home)
+        info = create(cwd, name=name, base=base_commit or head, home=home)
         p = Path(info["path"])
         try:
-            baseline = _sync_dirty(top, p)
+            baseline = base_commit or _sync_dirty(top, p)
         except Exception as e:  # noqa: BLE001  同步失败：删掉这个 worktree，调用方退回串行
+            rollback = ""
             try:
                 remove(p, delete_branch=True, force=True, home=home)
-            except Exception:  # noqa: BLE001
-                pass
-            raise WorktreeError(f"把主目录未提交的改动带进 worktree 失败：{e}") from None
+            except Exception as e2:  # noqa: BLE001  回滚失败必须可见，不能吞
+                rollback = (f"；回滚也失败：{type(e2).__name__}: {e2}"
+                            f"（目录 {p} / 分支 {info['branch']} 仍在，需手动处理）")
+                record_cleanup_failure("sync_dirty_rollback", path=str(p),
+                                       branch=info["branch"], error=str(e2))
+            raise WorktreeError(f"把主目录未提交的改动带进 worktree 失败：{e}{rollback}") from None
     try:
         rel = cwd.relative_to(top)
     except ValueError:
         rel = Path()
     info["agent_base"] = baseline or info["base"]
-    info["synced_dirty"] = bool(baseline)
+    info["synced_dirty"] = bool(baseline and baseline != info["base"])
     info["cwd"] = str(p / rel)
     with _LOCK:
         items = _load(home)
@@ -577,6 +825,27 @@ def create_for_agent(cwd: Path | str, label: str = "", home: Path | None = None)
                 x["agent"] = True
         _save(items, home)
     return info
+
+
+def prepare_dirty_base(cwd: Path | str, home: Path | None = None) -> dict:
+    """一次性把主目录的未提交改动固化成不可变 baseline commit，供多个候选复用。
+
+    用临时 worktree 完成 diff/commit；不碰主工作区 HEAD 或 index。临时 worktree
+    随即删除（分支删除，commit 对象仍可由后续 `git worktree add <sha>` 使用）。
+    """
+    info = create_for_agent(cwd, label="baseline", home=home)
+    base = info["agent_base"]
+    cleanup: dict = {"removed": False}
+    try:
+        cleanup = remove(info["path"], delete_branch=True, force=True, home=home)
+    except Exception as e:  # noqa: BLE001  保留临时 worktree，不能静默丢
+        cleanup = {"removed": False, "error": f"{type(e).__name__}: {e}",
+                   "path": info["path"], "branch": info.get("branch")}
+        # 调用方可能已被取消（to_thread 的结果拿不到）：日志 + 记录是唯一线索
+        record_cleanup_failure("prepare_dirty_base_cleanup", path=info["path"],
+                               branch=info.get("branch"), error=str(e))
+    return {"base": base, "head": info["base"], "synced_dirty": info["synced_dirty"],
+            "cleanup": cleanup}
 
 
 def finish_agent(info: dict, message: str, home: Path | None = None) -> dict:

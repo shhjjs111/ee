@@ -39,7 +39,7 @@ import { Markdown } from "./Markdown";
 import { Button, Spinner, Tip } from "./ui";
 import { DELIVERED_LABEL } from "../lib/queue";
 import { changedFiles, exploreHint, truncationText } from "../lib/details";
-import { deliveryText, turnEndText } from "../lib/terminal";
+import { deliveryText, deliveryReason, turnEndText } from "../lib/terminal";
 
 // ------------------------------------------------------------ 通用折叠行
 function Row({
@@ -810,6 +810,7 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
   // 交付结论优先：同样是 exhausted，"交付复验失败 / 验收依据发生变化"必须显示出来，
   // 否则用户只能看到"跑满轮次未达成"，不知道是没修好还是验收标准变了。
   const delivery = deliveryText(item.delivery);
+  const deliveryDetail = deliveryReason(item.delivery);
   const reason = delivery || turnEndText(item.reason);
   const bits = [`${reason} · ${formatDuration(item.duration_ms)}`];
   // 主对话口径（P0-1）：侧路请求（标题 / commit / 压缩 / 子代理）命中恒 0 或很低，
@@ -830,7 +831,8 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
     const m = item.model;
     let s = `模型 ${m.alias}`;
     if (m.effort_supported && m.effort) s += ` · 强度 ${m.effort}`;
-    if (m.effort_degraded) s += "（服务端不支持该档，已降级）";
+    // 本地把档案里不认识的档规整掉、与服务端 4xx 回退长得一样：只说事实，不把锅推给服务端。
+    if (m.effort_degraded) s += "（计划档位没发出，已按实际可用档发送）";
     bits.push(s);
   }
   const models = Object.entries(u.by_model ?? {});
@@ -841,9 +843,15 @@ export function TurnEnd({ item }: { item: TurnEndItem }) {
   return (
     <div className="flex items-center gap-3 py-1 text-[11.5px] text-faint">
       <div className="h-px flex-1 bg-line" />
-      <span title={tip} className={clsx((item.reason === "loop" || item.reason === "budget") && "text-warn")}>
+      <span
+        title={[deliveryDetail, tip].filter(Boolean).join("\n\n") || undefined}
+        className={clsx((item.reason === "loop" || item.reason === "budget") && "text-warn")}
+      >
         {bits.join(" · ")}
         {models.length > 1 ? ` · ${models.length} 个模型` : ""}
+        {/* 交付原因要跟着结论一起出现：只说"复验失败"，用户不知道该改代码、去合并候选分支，
+            还是先确认验收标准。完整原因放在 title 里，屏上只留一小段。 */}
+        {deliveryDetail ? ` · ${deliveryDetail.length > 72 ? `${deliveryDetail.slice(0, 72)}…` : deliveryDetail}` : ""}
       </span>
       <div className="h-px flex-1 bg-line" />
     </div>
