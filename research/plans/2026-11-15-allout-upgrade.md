@@ -194,3 +194,20 @@
 
 本轮新增的脚本能力：`--max-steps`（压缩步数，避免修复轮吃光墙钟）、
 判据命令支持 `{counter}` 占位符（项目外临时文件，主目录与 worktree 共享）。
+
+### 双候选择优真实模型尝试（第三~五次：跑到分叉，但候选未通过）
+
+内存恢复到 7.86 GB 后（`candidates=2, limiting=user`），用 90_two_winners 连跑三次：
+
+| 尝试 | 步数/超时 | 结果 |
+| --- | --- | --- |
+| 第三次 | 12 步 / 900s | `fanout_started=2`，两个候选都在 working，900s 到点超时、回收 |
+| 第四次 | 6 步 / 1200s | **完整跑完**：两个候选都经过 preparing→working→queued→testing，判据都未通过（`candidate met=False`）；回合 exhausted、`delivery` 为空、无假 met；隐藏验收通过；¥0.047 / 289s |
+| 第五次 | 12 步 / 1200s | 一个候选测完未通过、另一个到点被取消；超时 |
+
+另有 1 次误用 `deepseek-flash`（provider 未配 key）导致 0.9s 内 `error`，与产品无关。
+
+**结论**：真实模型下"分叉 → 两个候选各自实现 → 判据各自执行 → 都失败 → 不写回、不误报 met"
+这条路径已经跑通（第四次的阶段记录可复现）。"两个候选都通过 → 择优 → 写回 → 复验"
+仍未观察到：6 步时候选实现不完整，12 步时又超时。继续加步数/超时只是在烧钱，
+不值得再试；该闭环继续由 `test_two_passing_candidates_select_and_write_back` 覆盖。

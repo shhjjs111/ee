@@ -1,0 +1,137 @@
+{
+  "dry_run": false,
+  "model": "deepseek-v4.1-flash11",
+  "records": [
+    {
+      "task": "90_two_winners",
+      "mode": "allout",
+      "reason": "exhausted",
+      "delivery": "",
+      "duration_s": 288.9,
+      "cost": 0.04721048,
+      "cost_complete": true,
+      "timed_out": false,
+      "error": "",
+      "public_changed": false,
+      "public_changed_files": [],
+      "phases": [
+        {
+          "m": "allout_plan",
+          "requested": 2
+        },
+        {
+          "m": "allout_progress",
+          "phase": "start",
+          "candidates": 2
+        },
+        {
+          "m": "allout_progress",
+          "phase": "judge",
+          "met": false
+        },
+        {
+          "m": "allout_progress",
+          "phase": "judge",
+          "met": false
+        },
+        {
+          "m": "allout_progress",
+          "phase": "repair"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "judge",
+          "met": false
+        },
+        {
+          "m": "allout_progress",
+          "phase": "repair"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "fanout",
+          "started": 2
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "preparing"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "preparing"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "working"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "working"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "queued"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "testing"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate",
+          "met": false
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "failed"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "queued"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "testing"
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate",
+          "met": false
+        },
+        {
+          "m": "allout_progress",
+          "phase": "candidate_state",
+          "state": "failed"
+        }
+      ],
+      "fanout_started": 2,
+      "passed": true,
+      "tests": 3,
+      "tail": "...                                                                      [100%]\n3 passed in 0.05s\n"
+    }
+  ],
+  "summary": {
+    "allout": {
+      "samples": 1,
+      "solved": 1,
+      "pass_rate": 1.0,
+      "reported_met": 0,
+      "consistency_error_rate": null,
+      "unverified": 0,
+      "timeouts": 0,
+      "cost_total": 0.04721,
+      "cost_complete": true,
+      "cost_per_solved": 0.04721,
+      "duration_s": 288.9
+    }
+  }
+}

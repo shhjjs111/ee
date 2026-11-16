@@ -1,0 +1,49 @@
+{
+  "dry_run": false,
+  "model": "deepseek-flash",
+  "records": [
+    {
+      "task": "90_two_winners",
+      "mode": "allout",
+      "reason": "error",
+      "delivery": "",
+      "duration_s": 0.9,
+      "cost": null,
+      "cost_complete": false,
+      "timed_out": false,
+      "error": "",
+      "public_changed": false,
+      "public_changed_files": [],
+      "phases": [
+        {
+          "m": "allout_plan",
+          "requested": 2
+        },
+        {
+          "m": "allout_progress",
+          "phase": "start",
+          "candidates": 2
+        }
+      ],
+      "fanout_started": 0,
+      "passed": false,
+      "tests": 3,
+      "tail": "____________\n\n    def test_leading_trailing_separators():\n>       assert slugify(\"--Hello--\") == \"hello\"\n               ^^^^^^^^^^^^^^^^^^^^\n\nhidden\\test_hidden.py:13: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n\ntext = '--Hello--'\n\n    def slugify(text: str) -> str:\n>       raise NotImplementedError\nE       NotImplementedError\n\n..\\ee-bench-ta_4x4hp\\90_two_winners-allout-gmojumvy\\90_two_winners\\slugify.py:2: NotImplementedError\n=========================== short test summary info ===========================\nFAILED hidden/test_hidden.py::test_casefold_unicode - NotImplementedError\nFAILED hidden/test_hidden.py::test_collapse_underscores - NotImplementedError\nFAILED hidden/test_hidden.py::test_leading_trailing_separators - NotImplement...\n3 failed in 0.23s\n"
+    }
+  ],
+  "summary": {
+    "allout": {
+      "samples": 1,
+      "solved": 0,
+      "pass_rate": 0.0,
+      "reported_met": 0,
+      "consistency_error_rate": null,
+      "unverified": 0,
+      "timeouts": 0,
+      "cost_total": null,
+      "cost_complete": false,
+      "cost_per_solved": null,
+      "duration_s": 0.9
+    }
+  }
+}
