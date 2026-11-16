@@ -124,21 +124,28 @@ def test_strict_remove_refuses_ignored_nested_git_repo(tmp_path, ee_home):
 
 
 def test_strict_remove_refuses_ignored_symlink(tmp_path, ee_home):
+    from ee.core import worktree as W
+
     repo = _repo(tmp_path)
     info = _made(repo, ee_home)
     p = Path(info["path"])
-    target = p / "outside-target.txt"
+    # 目标放在 worktree 外，避免未跟踪目标文件先触发另一道拒删门控。
+    target = tmp_path / "outside-target.txt"
     target.write_text("x\n", encoding="utf-8", newline="\n")
     link = p / ".env"
     try:
-        link.symlink_to(target.name)
+        link.symlink_to(target)
     except (OSError, NotImplementedError):
         pytest.skip("本机不允许创建符号链接（Windows 需要开发者模式/管理员）")
 
-    with pytest.raises(Exception) as e:
+    assert _git(p, "check-ignore", "--", ".env") == ".env"
+    assert _git(p, "status", "--porcelain", "--untracked-files=all") == "", "夹具不能被未跟踪文件门控挡住"
+    assert W.backup_ignored(info, ee_home, strict=True)["skipped"] == [".env"]
+    with pytest.raises(W.WorktreeError) as e:
         _strict_remove(info, ee_home)
     assert "备份" in str(e.value) or "忽略" in str(e.value)
-    assert p.is_dir() and link.exists(), "符号链接与目录都必须保留"
+    assert p.is_dir() and link.is_symlink(), "符号链接与目录都必须保留"
+    assert target.read_text(encoding="utf-8") == "x\n", "外部目标内容必须保留"
 
 
 def test_strict_remove_allows_only_safe_judge_caches(tmp_path, ee_home):
